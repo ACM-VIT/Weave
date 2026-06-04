@@ -51,9 +51,16 @@ router.post('/:username/follow', async (req, res) => {
             .eq('username', username)
             .single();
 
-        if (targetError || !targetUser) {
+        if (targetError) {
+            if (targetError.code === 'PGRST116') {
             return res.status(404).json({ message: 'Target user not found' });
+            }
+            throw targetError;
         }
+
+if (!targetUser) {
+    return res.status(404).json({ message: 'Target user not found' });
+}
 
         // Prevent self-following
         if (follower_id === targetUser.user_id) {
