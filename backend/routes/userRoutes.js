@@ -87,13 +87,14 @@ router.post('/:username/follow', async (req, res) => {
     }
 });
 
-// DELETE /api/users/:username/follow - Unfollow a user
+// Unfollow a user
 router.delete('/:username/follow', async (req, res) => {
     const { username } = req.params;
-    const { follower_id } = req.body; 
+    const { follower_id } = req.query; 
 
     if (!follower_id) {
-        return res.status(400).json({ error: "follower_id is required in the request body." });
+
+        return res.status(400).json({ error: "follower_id is required as a query parameter." });
     }
 
     // Add UUID check to DELETE route as well
@@ -137,5 +138,4 @@ router.delete('/:username/follow', async (req, res) => {
         res.status(500).json({ error: "Internal server error." });
     }
 });
-
 export default router;
