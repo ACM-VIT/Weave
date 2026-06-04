@@ -32,9 +32,6 @@ router.get('/:username', async (req, res) => {
 // POST /api/users/:username/follow - Follow a user
 router.post('/:username/follow', async (req, res) => {
     const { username } = req.params;
-    
-    // NOTE FOR PR: Right now we grab follower_id from the body. 
-    // In the future, this should be extracted from the user's secure JWT session token.
     const { follower_id } = req.body;
 
     if (!follower_id) {
@@ -47,7 +44,7 @@ router.post('/:username/follow', async (req, res) => {
     }
 
     try {
-        // 1. First, we need to find the UUID of the user they are trying to follow
+        // 1. Find the UUID of the user they are trying to follow
         const { data: targetUser, error: targetError } = await supabase
             .from('users')
             .select('user_id')
@@ -56,6 +53,11 @@ router.post('/:username/follow', async (req, res) => {
 
         if (targetError || !targetUser) {
             return res.status(404).json({ message: 'Target user not found' });
+        }
+
+        // Prevent self-following
+        if (follower_id === targetUser.user_id) {
+            return res.status(400).json({ message: "You cannot follow yourself." });
         }
 
         // 2. Insert the relationship into the follows table
@@ -67,7 +69,7 @@ router.post('/:username/follow', async (req, res) => {
             }]);
 
         if (followError) {
-            // Check if they are already following to prevent duplicate key errors
+            // Check if they are already following
             if (followError.code === '23505') {
                 return res.status(400).json({ message: "You are already following this user." });
             }
@@ -85,10 +87,16 @@ router.post('/:username/follow', async (req, res) => {
 // DELETE /api/users/:username/follow - Unfollow a user
 router.delete('/:username/follow', async (req, res) => {
     const { username } = req.params;
-    const { follower_id } = req.body; // Again, will eventually come from auth token
+    const { follower_id } = req.body; 
 
     if (!follower_id) {
         return res.status(400).json({ error: "follower_id is required in the request body." });
+    }
+
+    // Add UUID check to DELETE route as well
+    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    if (!uuidRegex.test(follower_id)) {
+        return res.status(400).json({ error: "follower_id must be a valid UUID." });
     }
 
     try {
@@ -103,16 +111,21 @@ router.delete('/:username/follow', async (req, res) => {
             return res.status(404).json({ message: 'Target user not found' });
         }
 
-        // 2. Delete the specific relationship from the follows table
-        const { error: unfollowError } = await supabase
+        // 2. Delete the relationship, asking Supabase to count how many rows it actually deleted
+        const { error: unfollowError, count } = await supabase
             .from('follows')
-            .delete()
+            .delete({ count: 'exact' })
             .match({ 
                 follower_id: follower_id, 
                 following_id: targetUser.user_id 
             });
 
         if (unfollowError) throw unfollowError;
+
+        // 3. If no rows were deleted, they weren't following the user
+        if (count === 0) {
+            return res.status(400).json({ message: "You are not following this user." });
+        }
 
         res.json({ status: "success", message: `Successfully unfollowed ${username}` });
 
