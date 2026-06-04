@@ -58,3 +58,15 @@ CREATE TRIGGER on_follow_change
 AFTER INSERT OR DELETE ON follows
 FOR EACH ROW
 EXECUTE FUNCTION update_follow_counts();
+
+-- 1. Enable RLS on both tables (Locks them down)
+ALTER TABLE public.users ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.follows ENABLE ROW LEVEL SECURITY;
+
+-- 2. Allow anyone to READ user profiles (Needed for the frontend)
+CREATE POLICY "Allow public read access to users" 
+ON public.users FOR SELECT USING (true);
+
+-- 3. Allow anyone to READ follow relationships
+CREATE POLICY "Allow public read access to follows" 
+ON public.follows FOR SELECT USING (true);
