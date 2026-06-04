@@ -9,8 +9,8 @@ router.get('/:username', async (req, res) => {
 
     try {
         const { data, error } = await supabase
-            .from('users') 
-            .select('*')
+            .from('users')
+            .select('username, github_handle, avatar_url, followers_count, following_count, saved_repos_count, interests, created_at')
             .eq('username', username)
             .single(); 
 
