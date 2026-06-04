@@ -36,3 +36,25 @@ $$ LANGUAGE plpgsql SECURITY DEFINER;
 CREATE TRIGGER on_auth_user_created
   AFTER INSERT ON auth.users
   FOR EACH ROW EXECUTE PROCEDURE public.handle_new_user();
+
+CREATE OR REPLACE FUNCTION update_follow_counts()
+RETURNS TRIGGER AS $$
+BEGIN
+    IF TG_OP = 'INSERT' THEN
+        -- Someone followed someone: Add 1
+        UPDATE users SET following_count = following_count + 1 WHERE user_id = NEW.follower_id;
+        UPDATE users SET followers_count = followers_count + 1 WHERE user_id = NEW.following_id;
+        RETURN NEW;
+    ELSIF TG_OP = 'DELETE' THEN
+        -- Someone unfollowed someone: Subtract 1
+        UPDATE users SET following_count = following_count - 1 WHERE user_id = OLD.follower_id;
+        UPDATE users SET followers_count = followers_count - 1 WHERE user_id = OLD.following_id;
+        RETURN OLD;
+    END IF;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER on_follow_change
+AFTER INSERT OR DELETE ON follows
+FOR EACH ROW
+EXECUTE FUNCTION update_follow_counts();
