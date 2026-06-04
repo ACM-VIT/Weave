@@ -41,6 +41,11 @@ router.post('/:username/follow', async (req, res) => {
         return res.status(400).json({ error: "follower_id is required in the request body." });
     }
 
+    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    if (!uuidRegex.test(follower_id)) {
+        return res.status(400).json({ error: "follower_id must be a valid UUID." });
+    }
+
     try {
         // 1. First, we need to find the UUID of the user they are trying to follow
         const { data: targetUser, error: targetError } = await supabase
