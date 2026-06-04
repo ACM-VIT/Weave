@@ -69,9 +69,12 @@ router.post('/:username/follow', async (req, res) => {
             }]);
 
         if (followError) {
-            // Check if they are already following
             if (followError.code === '23505') {
                 return res.status(400).json({ message: "You are already following this user." });
+            }
+            // Check if the follower_id actually exists (Foreign Key Violation)
+            if (followError.code === '23503') {
+                return res.status(400).json({ message: "Invalid follower_id: User does not exist." });
             }
             throw followError;
         }
