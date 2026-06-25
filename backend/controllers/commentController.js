@@ -48,51 +48,84 @@ const getRepliesByParentComment = async (req, res) => {
   return sendSuccess(res, 200, data);
 };
 
+const isNotFoundError = (error) => error && error.code === "PGRST116";
+
 // Return one comment row by its primary key.
 const getCommentById = async (req, res) => {
   const { commentId } = req.params;
-  const { data, error } = await commentService.getCommentById(commentId);
 
-  if (error) {
-    return sendError(res, 404, error.message);
+  try {
+    const { data, error } = await commentService.getCommentById(commentId);
+
+    if (isNotFoundError(error)) {
+      return sendError(res, 404, "Comment not found");
+    }
+
+    if (error) {
+      return sendError(res, 500, error.message);
+    }
+
+    return sendSuccess(res, 200, data);
+  } catch (err) {
+    console.error("Error in getCommentById:", err);
+    return sendError(res, 500, "Internal server error.");
   }
-
-  return sendSuccess(res, 200, data);
 };
 
 // Create a new comment row.
 const createComment = async (req, res) => {
-  const { data, error } = await commentService.createComment(req.body);
+  try {
+    const { data, error } = await commentService.createComment(req.body);
 
-  if (error) {
-    return sendError(res, 400, error.message);
+    if (error) {
+      return sendError(res, 400, error.message);
+    }
+
+    return sendSuccess(res, 201, data);
+  } catch (err) {
+    console.error("Error in createComment:", err);
+    return sendError(res, 500, "Internal server error.");
   }
-
-  return sendSuccess(res, 201, data);
 };
 
 // Update one comment directly by primary key.
 const updateCommentById = async (req, res) => {
   const { commentId } = req.params;
-  const { data, error } = await commentService.updateCommentById(commentId, req.body);
 
-  if (error) {
-    return sendError(res, 400, error.message);
+  try {
+    const { data, error } = await commentService.updateCommentById(commentId, req.body);
+
+    if (isNotFoundError(error)) {
+      return sendError(res, 404, "Comment not found");
+    }
+
+    if (error) {
+      return sendError(res, 400, error.message);
+    }
+
+    return sendSuccess(res, 200, data);
+  } catch (err) {
+    console.error("Error in updateCommentById:", err);
+    return sendError(res, 500, "Internal server error.");
   }
-
-  return sendSuccess(res, 200, data);
 };
 
 // Delete one comment directly by primary key.
 const deleteCommentById = async (req, res) => {
   const { commentId } = req.params;
-  const { error } = await commentService.deleteCommentById(commentId);
 
-  if (error) {
-    return sendError(res, 400, error.message);
+  try {
+    const { error } = await commentService.deleteCommentById(commentId);
+
+    if (error) {
+      return sendError(res, 400, error.message);
+    }
+
+    return res.status(204).send();
+  } catch (err) {
+    console.error("Error in deleteCommentById:", err);
+    return sendError(res, 500, "Internal server error.");
   }
-
-  return res.status(204).send();
 };
 
 module.exports = {

@@ -3,6 +3,7 @@ const cors = require("cors");
 const activityRoutes = require("./routes/activityRoutes");
 const commentRoutes = require("./routes/commentRoutes");
 const userRoutes = require("./routes/userRoutes");
+const recommendationRoutes = require("./routes/recommendationRoutes");
 
 const app = express();
 
@@ -25,5 +26,8 @@ app.use("/api/comment", commentRoutes);
 
 // User API routes.
 app.use("/api/users", userRoutes);
+
+// Feed and Feedback API routes.
+app.use("/api", recommendationRoutes);
 
 module.exports = app;
