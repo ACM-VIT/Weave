@@ -1,5 +1,6 @@
 import { Request, Response } from 'express'; 
 import { FeedService } from '../services/feedService.js';
+import { AuthRequest } from '../middlewares/authMiddleware.js';
 
 const feedService = new FeedService();
 
@@ -33,9 +34,10 @@ export const receiveMlRecommendations = async (req: Request, res: Response): Pro
   }
 };
 
-export const getFeedForMobile = async (req: Request, res: Response): Promise<void> => {
+export const getFeedForMobile = async (req: AuthRequest, res: Response): Promise<void> => {
   try {
-    const userId = req.query.userId as string; // Just for local-dev
+    // Retrieve authenticated userId, with a query param fallback for local development/testing
+    const userId = req.user?.userId || (req.query.userId as string);
 
     if (!userId) {
        res.status(400).json({ success: false, message: 'Missing userId parameter.' });
@@ -52,5 +54,27 @@ export const getFeedForMobile = async (req: Request, res: Response): Promise<voi
   } catch (error) {
     console.error('[FeedController] Failed to serve mobile feed:', error);
      res.status(500).json({ success: false, message: 'Internal server error.' });
+  }
+};
+
+export const postFeedback = async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const userId = req.user?.userId || req.body.userId;
+    const { repoId, action } = req.body;
+
+    if (!userId || !repoId || !action) {
+      res.status(400).json({ success: false, message: 'Missing userId, repoId, or action.' });
+      return;
+    }
+
+    await feedService.submitFeedback(userId, repoId, action);
+
+    res.status(200).json({
+      success: true,
+      message: 'Feedback processed successfully.'
+    });
+  } catch (error) {
+    console.error('[FeedController] Failed to process feedback:', error);
+    res.status(500).json({ success: false, message: 'Internal server error.' });
   }
 };
