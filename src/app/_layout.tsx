@@ -1,15 +1,34 @@
-import { DarkTheme, DefaultTheme, ThemeProvider } from 'expo-router';
-import { useColorScheme } from 'react-native';
+import '@/global.css';
+import { useEffect } from 'react';
+import { Stack } from "expo-router";
+import { useFonts } from 'expo-font';
+import * as SplashScreen from 'expo-splash-screen';
+import { GestureHandlerRootView } from 'react-native-gesture-handler';
 
-import { AnimatedSplashOverlay } from '@/components/animated-icon';
-import AppTabs from '@/components/app-tabs';
+// Keep the splash screen visible while we fetch resources
+SplashScreen.preventAutoHideAsync();
 
-export default function TabLayout() {
-  const colorScheme = useColorScheme();
+export default function Layout() {
+  const [loaded, error] = useFonts({
+    'NataSans-Regular': require('../../assets/fonts/NataSans-Regular.ttf'),
+    'NataSans-Medium': require('../../assets/fonts/NataSans-Medium.ttf'),
+    'NataSans-SemiBold': require('../../assets/fonts/NataSans-SemiBold.ttf'),
+    'NataSans-Bold': require('../../assets/fonts/NataSans-Bold.ttf'),
+  });
+
+  useEffect(() => {
+    if (loaded || error) {
+      SplashScreen.hideAsync();
+    }
+  }, [loaded, error]);
+
+  if (!loaded && !error) {
+    return null;
+  }
+
   return (
-    <ThemeProvider value={colorScheme === 'dark' ? DarkTheme : DefaultTheme}>
-      <AnimatedSplashOverlay />
-      <AppTabs />
-    </ThemeProvider>
+    <GestureHandlerRootView style={{ flex: 1 }}>
+      <Stack screenOptions={{ headerShown: false }} />
+    </GestureHandlerRootView>
   );
 }
