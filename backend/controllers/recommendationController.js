@@ -13,6 +13,11 @@ const getFeed = async (req, res) => {
     return sendError(res, 400, "userId parameter is required.");
   }
 
+  // Security Check: Ensure the authenticated user matches the requested feed user ID
+  if (req.user && req.user.id !== userId) {
+    return sendError(res, 403, "Forbidden: You cannot fetch recommendations for another user.");
+  }
+
   try {
     const feed = await recommendationService.getFeed(userId);
     return sendSuccess(res, 200, feed);
@@ -28,10 +33,12 @@ const getFeed = async (req, res) => {
  * and forwards the event to the ML service.
  */
 const submitFeedback = async (req, res) => {
-  const { user_id: userId, repo_id: repoId, action, time_spent: timeSpent } = req.body;
+  // Security Check: Extract user identity from token to prevent caller identity spoofing
+  const userId = req.user ? req.user.id : req.body.user_id;
+  const { repo_id: repoId, action, time_spent: timeSpent } = req.body;
 
   if (!userId || !repoId || !action) {
-    return sendError(res, 400, "Missing required fields: user_id, repo_id, and action are all required.");
+    return sendError(res, 400, "Missing required fields: repo_id and action are required.");
   }
 
   const actionLower = action.toLowerCase();
@@ -90,8 +97,9 @@ const submitFeedback = async (req, res) => {
     const forwardSuccess = await recommendationService.sendFeedback(userId, repoId, actionLower);
 
     if (!forwardSuccess) {
-      console.warn("⚠️ Feedback forwarding to ML service failed or returned error.");
-      // We still return 202 to the frontend since database write & local cache invalidation completed
+      console.error(`❌ Feedback forwarding to ML service failed for user ${userId}`);
+      // Report the failure back to the caller instead of returning a false success
+      return sendError(res, 502, "Failed to submit feedback to the ML recommendation service.");
     }
 
     return sendSuccess(res, 202, {
