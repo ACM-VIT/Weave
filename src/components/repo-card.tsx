@@ -106,32 +106,33 @@ export function RepoCard({ label, height, variant = 'center', isSmallPhone }: Re
   return (
     <Pressable
       style={({ pressed }) => [
-        styles.card,
-        { height },
+        { height, width: '100%' },
         pressed && styles.cardPressed,
       ]}
     >
-      {isTechStack ? (
-        <View style={styles.techStackContainer}>
-          <Text style={[styles.techStackTitle, isSmallPhone && { fontSize: 10, paddingTop: 10 }]}>TECH STACK</Text>
-          <View style={styles.techStackGrid}>
-            {TECH_STACK_ITEMS.map((item) => (
-              <View key={item.name} style={[styles.techStackTile, isSmallPhone && { height: 24 }]}>
-                <item.SvgComponent />
-                <Text style={[styles.techStackText, isSmallPhone && { fontSize: 6.5 }]} numberOfLines={1}>
-                  {item.name}
-                </Text>
-              </View>
-            ))}
+      <View style={[styles.card, { height, width: '100%' }]}>
+        {isTechStack ? (
+          <View style={styles.techStackContainer}>
+            <Text style={[styles.techStackTitle, isSmallPhone && { fontSize: 10, paddingTop: 10 }]}>TECH STACK</Text>
+            <View style={styles.techStackGrid}>
+              {TECH_STACK_ITEMS.map((item) => (
+                <View key={item.name} style={[styles.techStackTile, isSmallPhone && { height: 24 }]}>
+                  <item.SvgComponent />
+                  <Text style={[styles.techStackText, isSmallPhone && { fontSize: 6.5 }]} numberOfLines={1}>
+                    {item.name}
+                  </Text>
+                </View>
+              ))}
+            </View>
           </View>
-        </View>
-      ) : variant === 'section' ? (
-        <Text style={[styles.sectionLabel, isSmallPhone && { fontSize: 9.5, paddingTop: 12 }]}>{label}</Text>
-      ) : (
-        <View style={styles.centerLabelWrap}>
-          <Text style={[styles.centerLabel, isSmallPhone && { fontSize: 12 }]}>{label.toLowerCase()}</Text>
-        </View>
-      )}
+        ) : variant === 'section' ? (
+          <Text style={[styles.sectionLabel, isSmallPhone && { fontSize: 9.5, paddingTop: 12 }]}>{label}</Text>
+        ) : (
+          <View style={styles.centerLabelWrap}>
+            <Text style={[styles.centerLabel, isSmallPhone && { fontSize: 12 }]}>{label}</Text>
+          </View>
+        )}
+      </View>
     </Pressable>
   );
 }
