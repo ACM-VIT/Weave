@@ -68,7 +68,7 @@ export default function Avatar({ color, initial, size = 18, author }: AvatarProp
         justifyContent: 'center',
       }}
     >
-      <Text style={{ color: '#fff', fontSize: size * 0.5, fontFamily: 'NotoSans_700Bold' }}>
+      <Text style={{ color: '#fff', fontSize: size * 0.5, fontFamily: 'NataSans-Bold' }}>
         {initial}
       </Text>
     </View>

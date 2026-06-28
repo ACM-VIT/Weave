@@ -9,6 +9,7 @@ import boardRoutes from './routes/boardRoutes.js';
 import containersRoutes from './routes/containersRoutes.js';
 import onboardingRoutes from './routes/onboardingRoutes.js';
 import cookieParser from 'cookie-parser';
+import feedRoutes from './routes/feedRoutes.js';
 
 const app = express();
 
@@ -50,6 +51,9 @@ app.use('/api/containers', containersRoutes);
 
 // Onboarding API routes.
 app.use('/api/onboarding', onboardingRoutes);
+
+// Redis API routes.
+app.use('/api', feedRoutes);
 
 // Global error handler.
 app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {

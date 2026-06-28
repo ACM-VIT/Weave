@@ -12,8 +12,8 @@ interface TrendingRepoCardProps {
   onPress?: () => void;
 }
 
-const regular = { fontFamily: 'NotoSans_400Regular' };
-const bold = { fontFamily: 'NotoSans_700Bold' };
+const regular = { fontFamily: 'NataSans-Regular' };
+const bold = { fontFamily: 'NataSans-Bold' };
 
 export default function TrendingRepoCard({ repo, onPress }: TrendingRepoCardProps): React.JSX.Element {
   const formattedName = repo.name.replace(/-/g, '- ');

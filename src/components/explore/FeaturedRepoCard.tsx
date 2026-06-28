@@ -11,8 +11,8 @@ interface FeaturedRepoCardProps {
   onPress?: () => void;
 }
 
-const regular = { fontFamily: 'NotoSans_400Regular' };
-const bold = { fontFamily: 'NotoSans_700Bold' };
+const regular = { fontFamily: 'NataSans-Regular' };
+const bold = { fontFamily: 'NataSans-Bold' };
 
 export default function FeaturedRepoCard({ repo, onPress }: FeaturedRepoCardProps): React.JSX.Element {
   return (

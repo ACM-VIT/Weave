@@ -1,3 +1,4 @@
+import { useRouter } from "expo-router";
 import { useState } from "react";
 import { ScrollView, Text, View } from "react-native";
 
@@ -10,6 +11,7 @@ import TermsFooter from "@/components/Auth/TermsFooter";
 import UsernameStatus from "@/components/Auth/UsernameStatus";
 
 export default function CreateProfile() {
+  const router = useRouter();
   const [username, setUsername] = useState("");
 
   return (
@@ -39,7 +41,7 @@ export default function CreateProfile() {
             
             className="text-[#8A8A8A] text-[14px] text-center mt-3 font-nata"
           >
-            Let's set up your profile.
+            Let&apos;s set up your profile.
           </Text>
         </View>
 
@@ -67,7 +69,10 @@ export default function CreateProfile() {
 
         {/* Create Account */}
         <View className="mt-8">
-          <PrimaryButton label="Create Account" />
+          <PrimaryButton
+            label="Create Account"
+            onPress={() => router.push("/onboarding/step1")}
+          />
         </View>
 
         {/* Terms */}

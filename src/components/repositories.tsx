@@ -1,4 +1,4 @@
-import { View, Text, useWindowDimensions, ScrollView } from "react-native"
+import { View, Text, useWindowDimensions } from "react-native"
 import Svg, { Path, Circle } from "react-native-svg"
 import RecentPins from "./recentpins"
 
@@ -21,7 +21,7 @@ export default function Repositories() {
 
   if (isTablet) {
     return (
-      <View style={{ flexShrink: 1 }} className="w-full border border-[#6DA963] rounded-[10px] bg-[#191F18] px-4 pt-[24px] pb-[24px] justify-start relative overflow-visible">
+      <View className="w-full border border-[#6DA963] rounded-[10px] bg-[#191F18] px-4 pt-[24px] pb-[24px] justify-start relative overflow-visible">
         {/* Right segment (aligned to left of Repositories tab) */}
         <Svg
           pointerEvents="none"
@@ -73,7 +73,7 @@ export default function Repositories() {
           <Path d="M8 7.5 L8 20" stroke="#6DA963" strokeWidth="1.5" fill="none" />
         </Svg>
 
-        <ScrollView showsVerticalScrollIndicator={false} style={{ width: '100%', flexShrink: 1 }}>
+        <View style={{ width: '100%' }}>
           {pinnedRepos.map((item) => (
             <RecentPins key={item.id} title={item.pin} isPinned={true} />
           ))}
@@ -85,14 +85,14 @@ export default function Repositories() {
           {allRepos.map((item) => (
             <RecentPins key={item.id} title={item.pin} isPinned={false} />
           ))}
-        </ScrollView>
+        </View>
       </View>
     )
   }
 
   return (
     // Repositories Box
-    <View style={{ flexShrink: 1 }} className="w-full border border-[#6DA963] rounded-[10px] bg-[#191F18] px-4 pt-[24px] pb-[24px] relative overflow-visible">
+    <View className="w-full border border-[#6DA963] rounded-[10px] bg-[#191F18] px-4 pt-[24px] pb-[24px] relative overflow-visible">
         {/* Right segment (aligned to left of Repositories tab) */}
         <Svg
           pointerEvents="none"
@@ -144,7 +144,7 @@ export default function Repositories() {
           <Path d="M8 7.5 L8 20" stroke="#6DA963" strokeWidth="1.5" fill="none" />
         </Svg>
         
-      <ScrollView showsVerticalScrollIndicator={false} style={{ width: '100%', flexShrink: 1 }}>
+      <View style={{ width: '100%' }}>
         {pinnedRepos.map((item) => (
           <RecentPins key={item.id} title={item.pin} isPinned={true} />
         ))}
@@ -156,7 +156,7 @@ export default function Repositories() {
         {allRepos.map((item) => (
           <RecentPins key={item.id} title={item.pin} isPinned={false} />
         ))}
-      </ScrollView>
+      </View>
     </View>
   )
 }

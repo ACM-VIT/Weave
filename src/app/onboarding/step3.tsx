@@ -1,5 +1,5 @@
 import { router } from "expo-router";
-import { ScrollView, View, Text } from "react-native";
+import { Pressable, ScrollView, View, Text } from "react-native";
 
 import ProgressBar from "@/components/onboarding/ProgressBar";
 import PrimaryButton from "@/components/onboarding/PrimaryButton";
@@ -8,6 +8,10 @@ import LogoPlaceholder from "@/components/onboarding/LogoPlaceholder";
 import StepHeader from "@/components/onboarding/StepHeader";
 
 export default function Step3() {
+  const completeOnboarding = () => {
+    router.replace("/(tabs)/home");
+  };
+
   return (
     <ScrollView
       style={{
@@ -84,21 +88,26 @@ export default function Step3() {
 
       <View style={{ marginTop: 20 }}>
         <PrimaryButton
-  title="Finish"
-   onPress={() => router.push("/(auth)/sign-up")}
-/>
+          title="Finish"
+          onPress={completeOnboarding}
+        />
       </View>
 
-      <Text
-        style={{
-          color: "#8A8A8A",
-          textAlign: "center",
-          marginTop: 12,
-          fontSize: 15,
-        }}
+      <Pressable
+        accessibilityRole="button"
+        onPress={completeOnboarding}
+        style={{ marginTop: 12, paddingVertical: 8 }}
       >
-        Skip for now
-      </Text>
+        <Text
+          style={{
+            color: "#8A8A8A",
+            textAlign: "center",
+            fontSize: 15,
+          }}
+        >
+          Skip for now
+        </Text>
+      </Pressable>
     </ScrollView>
   );
 }

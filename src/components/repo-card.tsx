@@ -6,6 +6,7 @@ interface RepoCardProps {
   label: string;
   height: number;
   variant?: 'center' | 'section';
+  isSmallPhone?: boolean;
 }
 
 // High-fidelity Inline SVGs for brand logos
@@ -99,38 +100,39 @@ const TECH_STACK_ITEMS = [
   { name: 'Git', SvgComponent: GitLogo },
 ];
 
-export function RepoCard({ label, height, variant = 'center' }: RepoCardProps) {
+export function RepoCard({ label, height, variant = 'center', isSmallPhone }: RepoCardProps) {
   const isTechStack = label.toLowerCase() === 'tech stack';
 
   return (
     <Pressable
       style={({ pressed }) => [
-        styles.card,
-        { height },
+        { height, width: '100%' },
         pressed && styles.cardPressed,
       ]}
     >
-      {isTechStack ? (
-        <View style={styles.techStackContainer}>
-          <Text style={styles.techStackTitle}>TECH STACK</Text>
-          <View style={styles.techStackGrid}>
-            {TECH_STACK_ITEMS.map((item) => (
-              <View key={item.name} style={styles.techStackTile}>
-                <item.SvgComponent />
-                <Text style={styles.techStackText} numberOfLines={1}>
-                  {item.name}
-                </Text>
-              </View>
-            ))}
+      <View style={[styles.card, { height, width: '100%' }]}>
+        {isTechStack ? (
+          <View style={styles.techStackContainer}>
+            <Text style={[styles.techStackTitle, isSmallPhone && { fontSize: 10, paddingTop: 10 }]}>TECH STACK</Text>
+            <View style={styles.techStackGrid}>
+              {TECH_STACK_ITEMS.map((item) => (
+                <View key={item.name} style={[styles.techStackTile, isSmallPhone && { height: 24 }]}>
+                  <item.SvgComponent />
+                  <Text style={[styles.techStackText, isSmallPhone && { fontSize: 6.5 }]} numberOfLines={1}>
+                    {item.name}
+                  </Text>
+                </View>
+              ))}
+            </View>
           </View>
-        </View>
-      ) : variant === 'section' ? (
-        <Text style={styles.sectionLabel}>{label}</Text>
-      ) : (
-        <View style={styles.centerLabelWrap}>
-          <Text style={styles.centerLabel}>{label.toLowerCase()}</Text>
-        </View>
-      )}
+        ) : variant === 'section' ? (
+          <Text style={[styles.sectionLabel, isSmallPhone && { fontSize: 9.5, paddingTop: 12 }]}>{label}</Text>
+        ) : (
+          <View style={styles.centerLabelWrap}>
+            <Text style={[styles.centerLabel, isSmallPhone && { fontSize: 12 }]}>{label}</Text>
+          </View>
+        )}
+      </View>
     </Pressable>
   );
 }

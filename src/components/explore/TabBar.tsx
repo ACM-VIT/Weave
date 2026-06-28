@@ -9,8 +9,8 @@ interface TabBarProps {
   onTabChange: (tab: TabName) => void;
 }
 
-const regular = { fontFamily: 'NotoSans_400Regular' };
-const bold = { fontFamily: 'NotoSans_700Bold' };
+const regular = { fontFamily: 'NataSans-Regular' };
+const bold = { fontFamily: 'NataSans-Bold' };
 
 export default function TabBar({ activeTab, onTabChange }: TabBarProps): React.JSX.Element {
   return (

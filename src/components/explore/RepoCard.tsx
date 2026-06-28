@@ -10,8 +10,8 @@ interface RepoCardProps {
   onPress?: () => void;
 }
 
-const regular = { fontFamily: 'NotoSans_400Regular' };
-const bold = { fontFamily: 'NotoSans_700Bold' };
+const regular = { fontFamily: 'NataSans-Regular' };
+const bold = { fontFamily: 'NataSans-Bold' };
 
 export default function RepoCard({ repo, onPress }: RepoCardProps): React.JSX.Element {
   // Replace hyphens with hyphen + space to guarantee wrapping on hyphens across all platforms

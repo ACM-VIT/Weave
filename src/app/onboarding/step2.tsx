@@ -168,6 +168,7 @@ export default function Step2() {
         </View>
 
         <TouchableOpacity
+          onPress={() => router.push("/onboarding/step3")}
           style={{
             alignItems: "center",
             marginTop: 12,

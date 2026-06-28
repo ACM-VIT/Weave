@@ -1,4 +1,4 @@
-import { View, Text, useWindowDimensions, ScrollView } from "react-native"
+import { View, Text, useWindowDimensions } from "react-native"
 import RecentPins from "./recentpins"
 import RecentSaves from "./recentsaves"
 
@@ -21,11 +21,11 @@ export default function Lists() {
 
   if (isTablet) {
     return (
-      <View style={{ flexShrink: 1 }} className="w-full border border-[#6DA963] rounded-[10px] bg-[#191F18] px-4 pt-[24px] pb-[24px] justify-start">
+      <View className="w-full border border-[#6DA963] rounded-[10px] bg-[#191F18] px-4 pt-[24px] pb-[24px] justify-start">
         <View className="w-full px-1 mb-3.5 items-center">
           <Text className="text-white text-[15px] font-nataBold relative top-[-2px]">Lists</Text>
         </View>
-        <ScrollView showsVerticalScrollIndicator={false} style={{ width: '100%', flexShrink: 1 }}>
+        <View style={{ width: '100%' }}>
           {pinnedLists.map((item) => (
             <RecentPins key={item.id} title={item.pin} isPinned={true} />
           ))}
@@ -36,19 +36,19 @@ export default function Lists() {
           {savedCollections.map((item) => (
             <RecentSaves key={item.id} title={item.name} />
           ))}
-        </ScrollView>
+        </View>
       </View>
     )
   }
 
   return (
     // Lists Box
-    <View style={{ flexShrink: 1 }} className="w-full border border-[#6DA963] rounded-[10px] bg-[#191F18] px-4 pt-[24px] pb-[24px]">
+    <View className="w-full border border-[#6DA963] rounded-[10px] bg-[#191F18] px-4 pt-[24px] pb-[24px]">
       <View className="w-full px-1 mb-3.5 items-center">
         <Text className="text-white text-[15px] font-bold font-nata sans relative top-[-2px]">Lists</Text>
       </View>
       
-      <ScrollView showsVerticalScrollIndicator={false} style={{ width: '100%', flexShrink: 1 }}>
+      <View style={{ width: '100%' }}>
         {pinnedLists.map((item) => (
           <RecentPins key={item.id} title={item.pin} isPinned={true} />
         ))}
@@ -60,7 +60,7 @@ export default function Lists() {
         {savedCollections.map((item) => (
           <RecentSaves key={item.id} title={item.name} />
         ))}
-      </ScrollView>
+      </View>
     </View>
   )
 }

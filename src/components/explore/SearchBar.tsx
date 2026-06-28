@@ -22,7 +22,7 @@ export default function SearchBar({
         placeholderTextColor="#6B7280"
         value={value}
         onChangeText={onChangeText}
-        style={{ fontFamily: 'NotoSans_400Regular' }}
+        style={{ fontFamily: 'NataSans-Regular' }}
       />
     </View>
   );

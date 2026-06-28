@@ -4,6 +4,8 @@ import { CalendarIcon } from "./icons";
 
 let DateTimePicker: any = null;
 if (Platform.OS !== 'web') {
+  // The native picker must not be loaded into the web bundle.
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
   DateTimePicker = require('@react-native-community/datetimepicker').default;
 }
 

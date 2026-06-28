@@ -1,4 +1,5 @@
 import React from 'react';
+import { useRouter } from 'expo-router';
 import { Platform, Pressable, StyleSheet, View } from 'react-native';
 import { Compass, House, User } from 'lucide-react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -9,12 +10,18 @@ interface BottomNavProps {
 }
 
 export function BottomNav({ activeTab, onTabPress }: BottomNavProps) {
+  const router = useRouter();
   const insets = useSafeAreaInsets();
   const tabs = [
     { id: 'home' as const, Icon: House },
     { id: 'discover' as const, Icon: Compass },
     { id: 'profile' as const, Icon: User },
   ];
+  const routes = {
+    home: '/(tabs)/home',
+    discover: '/(tabs)/explore',
+    profile: '/(tabs)/profile',
+  } as const;
 
   return (
     <View
@@ -31,7 +38,12 @@ export function BottomNav({ activeTab, onTabPress }: BottomNavProps) {
               key={id}
               accessibilityRole="tab"
               accessibilityState={{ selected }}
-              onPress={() => onTabPress(id)}
+              onPress={() => {
+                onTabPress(id);
+                if (id !== activeTab) {
+                  router.navigate(routes[id]);
+                }
+              }}
               style={({ pressed }) => [styles.tab, pressed && styles.pressed]}
             >
               <Icon

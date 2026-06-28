@@ -1,4 +1,4 @@
-import { View, Text, ScrollView } from "react-native"
+import { View, Text } from "react-native"
 import Svg, { Path, Circle } from "react-native-svg"
 import RecentSaves from "./recentsaves"
 import RecentPins from "./recentpins"
@@ -18,10 +18,12 @@ export default function Overview() {
   ]
 
   return (
-    <View style={{ flexShrink: 1 }} className="w-full relative overflow-visible flex-col justify-start">
+    <View style={{ width: '100%' }} className="relative flex-col justify-start">
       {/* Green timeline connector SVG */}
       <Svg
-        className="absolute left-[-14px] top-[-35px] w-[26px] h-[409px]"
+        style={{ position: 'absolute', left: -14, top: -35 }}
+        width={26}
+        height={409}
         viewBox="0 0 26 409"
         fill="none"
       >
@@ -34,9 +36,12 @@ export default function Overview() {
         <Path d="M4 171V388.127C4.52937 401.76 6.57275 406.671 15 408H26" stroke="#6DA963" />
       </Svg>
 
-      <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ gap: 20 }} style={{ flexShrink: 1 }}>
+      <View 
+        style={{ width: "100%", paddingBottom: 40 }}
+        className="w-full"
+      >
         {/* Recent Saves Box */}
-        <View className="border border-[#6DA963] rounded-[10px] bg-[#191F18] px-4 pt-[24px] pb-[24px] w-full justify-start mt-0">
+        <View className="border border-[#6DA963] rounded-[10px] bg-[#191F18] px-4 pt-[24px] pb-[24px] w-full justify-start mt-0 mb-5">
           <View className="w-full px-1 flex-row justify-between items-center mb-[13px]">
             <Text className="text-[#6DA963] text-[12px] font-bold font-noto relative top-[-2px]">Recent Saves</Text>
             <Text className="text-[#6DA963] text-[10px] font-bold font-noto relative top-[-2px]">View All</Text>
@@ -55,7 +60,7 @@ export default function Overview() {
             <RecentPins key={item.id} title={item.pin} isPinned={false} />
           ))}
         </View>
-      </ScrollView>
+      </View>
     </View>
   )
 }
