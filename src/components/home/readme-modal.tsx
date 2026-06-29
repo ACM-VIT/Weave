@@ -127,6 +127,6 @@ const styles = StyleSheet.create({
     fontFamily: fonts.regular,
     fontSize: 16,
     lineHeight: 21,
-    textAlign: "justify"
-  }
+    textAlign: "left",
+  },
 });

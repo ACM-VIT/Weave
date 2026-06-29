@@ -306,7 +306,7 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   cardBoxTop: {
-    backgroundColor: colors.transparentGreen,
+    backgroundColor: colors.cardSurface,
     borderColor: colors.cardStroke,
     borderTopLeftRadius: 8,
     borderTopRightRadius: 8,
@@ -317,7 +317,7 @@ const styles = StyleSheet.create({
     paddingBottom: 10,
   },
   cardBoxBottom: {
-    backgroundColor: colors.transparentGreen,
+    backgroundColor: colors.cardSurface,
     borderColor: colors.cardStroke,
     borderBottomLeftRadius: 8,
     borderBottomRightRadius: 8,

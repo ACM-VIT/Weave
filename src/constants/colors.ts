@@ -12,6 +12,7 @@ export const colors = {
   greenTint: "#052702",
   page: "#090B08",
   panel: "#0F170E",
+  cardSurface: "#151714",
   limeSoft: "#53FA3A",
   reactPink: "#D67B93",
   pythonYellow: "#FDD835",
