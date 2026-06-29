@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 import { useEffect, useRef, useState } from "react";
 import {
   Animated,
@@ -13,19 +12,12 @@ import {
 } from "react-native";
 import { Flame } from "lucide-react-native";
 import { fonts } from "@/constants/colors";
-=======
-import React, { useEffect, useMemo, useState } from 'react';
-import { Animated, Pressable, StyleSheet, Text, TextInput, TouchableOpacity, View, useWindowDimensions } from 'react-native';
-import { Check, Plus, X } from 'lucide-react-native';
-import { getResponsiveContainerStyle } from '@/components/responsive-layout';
->>>>>>> bf6c2bc13d95ef71baa15d4f361017f4fc9658eb
 
 interface SavePopupProps {
   isVisible: boolean;
   onClose: () => void;
 }
 
-<<<<<<< HEAD
 const palette = {
   sheet: "#0B130B",
   sheetBorder: "#84FF70",
@@ -51,15 +43,6 @@ export function SavePopup({ isVisible, onClose }: SavePopupProps) {
   // Mirror session state into component state so React re-renders properly
   const [collections, setCollections] = useState<string[]>(_sessionCollections);
   const [selected, setSelectedState] = useState<string>(_sessionSelected);
-=======
-const INITIAL_COLLECTIONS: string[] = [];
-
-export function SavePopup({ isVisible, onClose }: SavePopupProps) {
-  const { width } = useWindowDimensions();
-  const responsiveSheetStyle = getResponsiveContainerStyle(width);
-  const [selected, setSelected] = useState<string | null>(null);
-  const [collections, setCollections] = useState<string[]>(INITIAL_COLLECTIONS);
->>>>>>> bf6c2bc13d95ef71baa15d4f361017f4fc9658eb
   const [isCreating, setIsCreating] = useState(false);
   const [newName, setNewName] = useState("");
   const [saved, setSaved] = useState(false);
@@ -142,42 +125,19 @@ export function SavePopup({ isVisible, onClose }: SavePopupProps) {
       setIsCreating(false);
       setNewName("");
     }
-<<<<<<< HEAD
     setSaved(true);
     setTimeout(dismiss, 700);
-=======
-    setSelected(name);
-    setIsCreating(false);
-    setNewCollection('');
-  };
-
-  const saveRepository = () => {
-    if (!selected) return;
-    setStatus('saved');
-    setTimeout(closeAnimated, 450);
->>>>>>> bf6c2bc13d95ef71baa15d4f361017f4fc9658eb
   };
 
   if (!isVisible) return null;
 
   return (
-<<<<<<< HEAD
     <View pointerEvents="box-none" style={styles.root}>
       {/* Dimmed backdrop */}
       <Pressable
         accessibilityLabel="Close save repository sheet"
         onPress={dismiss}
         style={StyleSheet.absoluteFill}
-=======
-    <View style={styles.root}>
-      <Pressable style={StyleSheet.absoluteFill} onPress={closeAnimated}>
-        <Animated.View style={[styles.overlay, { opacity }]} />
-      </Pressable>
-      <Animated.View
-        style={[styles.sheet, responsiveSheetStyle, { transform: [{ translateY }] }]}
-        onTouchStart={handleTouchStart}
-        onTouchEnd={handleTouchEnd}
->>>>>>> bf6c2bc13d95ef71baa15d4f361017f4fc9658eb
       >
         <Animated.View style={[styles.overlay, { opacity: fade }]} />
       </Pressable>
@@ -211,7 +171,6 @@ export function SavePopup({ isVisible, onClose }: SavePopupProps) {
           {collections.map((col) => {
             const isSelected = col === selected;
             return (
-<<<<<<< HEAD
               <Pressable
                 accessibilityRole="radio"
                 accessibilityState={{ checked: isSelected }}
@@ -220,15 +179,6 @@ export function SavePopup({ isVisible, onClose }: SavePopupProps) {
                 style={({ pressed }) => [
                   styles.collectionRow,
                   pressed && styles.pressedRow,
-=======
-              <TouchableOpacity
-                key={name}
-                onPress={() => setSelected(name)}
-                activeOpacity={0.7}
-                style={[
-                  styles.collectionRow,
-                  active && styles.collectionRowActive,
->>>>>>> bf6c2bc13d95ef71baa15d4f361017f4fc9658eb
                 ]}
               >
                 {/* Flame icon thumbnail */}
@@ -249,7 +199,7 @@ export function SavePopup({ isVisible, onClose }: SavePopupProps) {
                 <View style={[styles.radio, isSelected && styles.radioSelected]}>
                   {isSelected && <View style={styles.radioInner} />}
                 </View>
-              </TouchableOpacity>
+              </Pressable>
             );
           })}
         </ScrollView>
@@ -270,7 +220,6 @@ export function SavePopup({ isVisible, onClose }: SavePopupProps) {
             />
           </View>
         ) : (
-<<<<<<< HEAD
           <Pressable
             accessibilityRole="button"
             onPress={() => setIsCreating(true)}
@@ -296,28 +245,8 @@ export function SavePopup({ isVisible, onClose }: SavePopupProps) {
         >
           <Text style={styles.saveText}>
             {saved ? "Saved ✓" : `Save to ${ isCreating && newName.trim() ? newName.trim() : selected } `}
-=======
-          <TouchableOpacity
-            onPress={() => setIsCreating(true)}
-            activeOpacity={0.7}
-            style={styles.createButton}
-          >
-            <Plus size={16} color="#D9D9D9" strokeWidth={2.5} />
-            <Text style={styles.createText}>Create new collection</Text>
-          </TouchableOpacity>
-        )}
-
-        <TouchableOpacity
-          onPress={saveRepository}
-          activeOpacity={0.8}
-          style={[styles.saveButton, !selected && { backgroundColor: '#273126', opacity: 0.5 }]}
-          disabled={!selected}
-        >
-          <Text style={styles.saveText}>
-            {status === 'saved' ? 'Saved!' : selected ? `Save to ${selected}` : 'Create a collection'}
->>>>>>> bf6c2bc13d95ef71baa15d4f361017f4fc9658eb
           </Text>
-        </TouchableOpacity>
+        </Pressable>
       </Animated.View>
     </View>
   );
@@ -325,7 +254,6 @@ export function SavePopup({ isVisible, onClose }: SavePopupProps) {
 
 const styles = StyleSheet.create({
   root: {
-<<<<<<< HEAD
     position: "absolute",
     left: 0,
     right: 0,
@@ -333,12 +261,6 @@ const styles = StyleSheet.create({
     bottom: 0,
     justifyContent: "flex-end",
     zIndex: 100,
-=======
-    ...StyleSheet.absoluteFill,
-    zIndex: 50,
-    justifyContent: 'flex-end',
-    alignItems: 'center',
->>>>>>> bf6c2bc13d95ef71baa15d4f361017f4fc9658eb
   },
   overlay: {
     position: "absolute",
@@ -364,15 +286,8 @@ const styles = StyleSheet.create({
     paddingTop: 20,
     paddingBottom: 28,
     paddingHorizontal: 20,
-<<<<<<< HEAD
     width: "100%",
     maxHeight: "85%",
-=======
-    paddingTop: 18,
-    paddingBottom: 27,
-    minHeight: 462,
-    width: '100%',
->>>>>>> bf6c2bc13d95ef71baa15d4f361017f4fc9658eb
   },
 
   // ── Header ──────────────────────────────────────────────────────────────
