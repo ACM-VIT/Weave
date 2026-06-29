@@ -110,14 +110,14 @@ export const RepositoryCard = memo(function RepositoryCard({
 
   const panGesture = Gesture.Pan()
     .activeOffsetX([-12, 12])
-    .failOffsetY([-12, 12])
+    .failOffsetY([-16, 16])
     .onUpdate((event) => {
       const next = Math.min(0, event.translationX);
       translateX.value = next;
     })
     .onEnd((event) => {
-      const isHorizontalSwipe = Math.abs(event.velocityX) > Math.abs(event.velocityY);
-      if (translateX.value < -SWIPE_THRESHOLD || (event.velocityX < -600 && isHorizontalSwipe)) {
+      const isHorizontalSwipe = Math.abs(event.translationX) > Math.abs(event.translationY);
+      if (translateX.value < -SWIPE_THRESHOLD || (isHorizontalSwipe && event.velocityX < -600)) {
         runOnJS(triggerSave)();
       } else {
         runOnJS(snapBack)();
