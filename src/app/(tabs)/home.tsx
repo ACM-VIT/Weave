@@ -72,10 +72,13 @@ export default function HomeScreen() {
         return;
       }
 
-      const index = Math.round(event.nativeEvent.contentOffset.y / viewportHeight);
+      const index = Math.max(
+        0,
+        Math.min(repositories.length - 1, Math.round(event.nativeEvent.contentOffset.y / viewportHeight))
+      );
       listRef.current?.scrollToIndex({ index, animated: true });
     },
-    [viewportHeight]
+    [repositories.length, viewportHeight]
   );
 
   return (
