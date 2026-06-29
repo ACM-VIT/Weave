@@ -8,6 +8,9 @@ import Animated, {
 } from "react-native-reanimated";
 import { Gesture, GestureDetector } from "react-native-gesture-handler";
 import Svg, { Path } from "react-native-svg";
+import Branch1 from "@/assets/branches/branch-1.svg";
+import Branch2 from "@/assets/branches/branch-2.svg";
+import Branch3 from "@/assets/branches/branch-3.svg";
 import { colors } from "@/constants/colors";
 import type { Repository } from "@/types/repository";
 import { DescriptionCard } from "./description-card";
@@ -31,6 +34,59 @@ interface RepositoryCardProps {
 }
 
 const SWIPE_THRESHOLD = 80;
+const TIMELINE_X = 19;
+const DOT_CENTER_X = 20;
+const DOT_CENTER_Y = 7;
+const HEADER_DOT_CENTER_Y = 16;
+const DOT_SIZE = 14;
+const HORIZONTAL_BRANCH_WIDTH = 21;
+const BRANCH1_HEIGHT = 146;
+const BRANCH1_CURVE_START = 125;
+const BRANCH1_CURVE_HEIGHT = BRANCH1_HEIGHT - BRANCH1_CURVE_START;
+
+function TimelineVertical({
+  top,
+  height,
+  bottom,
+}: {
+  top?: number;
+  height?: number;
+  bottom?: number;
+}) {
+  return (
+    <Branch2
+      width={2}
+      preserveAspectRatio="none"
+      pointerEvents="none"
+      style={[styles.branchVertical, { top, height, bottom }]}
+    />
+  );
+}
+
+function HorizontalDotBranch() {
+  return (
+    <Branch3
+      width={HORIZONTAL_BRANCH_WIDTH}
+      height={2}
+      preserveAspectRatio="none"
+      pointerEvents="none"
+      style={styles.branchHorizontal}
+    />
+  );
+}
+
+function ReadmeDotBranch() {
+  return (
+    <View pointerEvents="none" style={styles.readmeBranchClip}>
+      <Branch1
+        width={35}
+        height={BRANCH1_HEIGHT}
+        pointerEvents="none"
+        style={styles.readmeBranchOffset}
+      />
+    </View>
+  );
+}
 
 export const RepositoryCard = memo(function RepositoryCard({
   repository,
@@ -78,10 +134,7 @@ export const RepositoryCard = memo(function RepositoryCard({
             {/* Row 1: Header */}
             <View style={styles.row}>
               <View style={styles.timelineColumnHeader}>
-                <Svg style={StyleSheet.absoluteFill} pointerEvents="none">
-                  {/* Branch line going down from heading dot */}
-                  <Path d="M 20 16 L 20 32" stroke="#84FF70" strokeWidth={2} fill="none" />
-                </Svg>
+                <TimelineVertical top={HEADER_DOT_CENTER_Y} bottom={0} />
                 <View style={styles.connectorDot} />
               </View>
               <View style={styles.contentColumn}>
@@ -92,16 +145,9 @@ export const RepositoryCard = memo(function RepositoryCard({
             {/* Row 2a: Merged Box - Description Part */}
             <View style={[styles.row, { marginTop: 24 }]}>
               <View style={styles.timelineColumn}>
-                {/* Continuous vertical line segment */}
-                <View style={[styles.lineFull, { top: -24 }]} />
-                
-                {/* Dot 2 beside Description */}
+                <TimelineVertical top={-25} bottom={0} />
+                <HorizontalDotBranch />
                 <View style={styles.connectorDot} />
-                
-                {/* Top curve branching into Description box */}
-                <Svg style={StyleSheet.absoluteFill} pointerEvents="none">
-                  <Path d="M 20 7 C 20 12, 28 16, 40 16" stroke="#84FF70" strokeWidth={2} fill="none" />
-                </Svg>
               </View>
               <View style={[styles.contentColumn, styles.cardBoxTop]}>
                 <DescriptionCard description={repository.description} />
@@ -111,21 +157,9 @@ export const RepositoryCard = memo(function RepositoryCard({
             {/* Row 2b: Merged Box - Tech Stack Part */}
             <View style={styles.row}>
               <View style={styles.timelineColumn}>
-                {/* Continuous vertical line segment */}
-                <View style={[styles.lineFull, { top: 0 }]} />
-                
-                {/* Dot 3 beside Tech Stack */}
+                <TimelineVertical top={-1} bottom={0} />
+                <HorizontalDotBranch />
                 <View style={styles.connectorDot} />
-                
-                {/* Middle curve branching into Tech Stack box */}
-                <Svg style={StyleSheet.absoluteFill} pointerEvents="none">
-                  <Path d="M 20 7 C 20 12, 28 16, 40 16" stroke="#84FF70" strokeWidth={2} fill="none" />
-                </Svg>
-
-                {/* Branch 4 SVG (Part 1): Curves out from bottom-left of merged box and goes down */}
-                <Svg style={styles.bottomCurveContainer} pointerEvents="none">
-                  <Path d="M 40 8 C 28 8, 20 12, 20 17 L 20 48" stroke="#84FF70" strokeWidth={2} fill="none" />
-                </Svg>
               </View>
               <View style={[styles.contentColumn, styles.cardBoxBottom]}>
                 <TechStackCard techStack={repository.techStack} />
@@ -135,36 +169,27 @@ export const RepositoryCard = memo(function RepositoryCard({
             {/* Row 4: README Summary Box */}
             <View style={[styles.row, { marginTop: 24 }]}>
               <View style={styles.timelineColumn}>
-                {/* Branch 4 SVG (Part 2): From Dot 3 down to Dot 4 and curves into README box */}
-                <Svg style={StyleSheet.absoluteFill} pointerEvents="none">
-                  <Path d="M 20 -24 L 20 7 C 20 12, 28 16, 40 16" stroke="#84FF70" strokeWidth={2} fill="none" />
-                </Svg>
-
-                {/* Dot 4 beside README box */}
+                <TimelineVertical top={-25} bottom={0} />
+                <ReadmeDotBranch />
                 <View style={styles.connectorDot} />
               </View>
               <View style={[styles.contentColumn, { flexDirection: "row", alignItems: "center" }]}>
-                {/* Readme Card */}
                 <View style={{ flex: 1 }}>
                   <ReadmeSummaryCard summary={repository.readmeSummary} onOpenReadme={onOpenReadme} />
                 </View>
 
-                {/* Connection to Like/Dislike (Branch 5 and 6 SVGs) */}
                 <View style={styles.likeDislikeWrapper}>
-                  {/* Branch 5 SVG (README to Like button) */}
                   <Svg style={StyleSheet.absoluteFill} pointerEvents="none">
                     <Path
-                      d="M 0 56 L 12 56 C 16 56, 16 52, 16 48 L 16 8 C 16 4, 20 0, 24 0 L 28 0 C 32 0, 32 4, 32 8"
+                      d="M 0 56 L 12 56 C 16 56, 16 52, 16 48 L 16 8 C 16 4, 20 0, 48 0 L 52 0"
                       stroke="#84FF70"
                       strokeWidth={2}
                       fill="none"
                     />
                   </Svg>
-
-                  {/* Branch 6 SVG (README to Dislike button) */}
                   <Svg style={StyleSheet.absoluteFill} pointerEvents="none">
                     <Path
-                      d="M 0 56 L 12 56 C 16 56, 16 60, 16 64 L 16 104 C 16 108, 20 112, 24 112 L 28 112 C 32 112, 32 108, 32 104"
+                      d="M 0 56 L 12 56 C 16 56, 16 60, 16 64 L 16 104 C 16 108, 48 110 L 52 110"
                       stroke="#84FF70"
                       strokeWidth={2}
                       fill="none"
@@ -186,7 +211,7 @@ export const RepositoryCard = memo(function RepositoryCard({
 
             {/* Row 5: Profile Row */}
             <View style={[styles.row, { marginTop: 24, alignItems: "center" }]}>
-              <View style={styles.timelineColumn}>
+              <View style={styles.timelineColumnProfile}>
                 <View style={styles.avatar} />
               </View>
               <View style={styles.contentColumn}>
@@ -235,29 +260,47 @@ const styles = StyleSheet.create({
     alignItems: "center",
     position: "relative",
   },
-  lineFull: {
+  timelineColumnProfile: {
+    width: 40,
+    alignItems: "center",
+    justifyContent: "center",
+    position: "relative",
+  },
+  branchVertical: {
     position: "absolute",
-    left: 19,
-    width: 2,
+    left: TIMELINE_X,
+    top: 0,
     bottom: 0,
-    backgroundColor: "#84FF70",
     zIndex: 0,
   },
+  branchHorizontal: {
+    position: "absolute",
+    left: DOT_CENTER_X,
+    top: DOT_CENTER_Y - 1,
+    zIndex: 1,
+  },
+  readmeBranchClip: {
+    position: "absolute",
+    left: TIMELINE_X,
+    top: DOT_CENTER_Y,
+    width: 35,
+    height: BRANCH1_CURVE_HEIGHT + 9,
+    overflow: "hidden",
+    zIndex: 1,
+  },
+  readmeBranchOffset: {
+    position: "absolute",
+    left: 0,
+    top: -BRANCH1_CURVE_START,
+  },
   connectorDot: {
-    width: 14,
-    height: 14,
-    borderRadius: 7,
+    width: DOT_SIZE,
+    height: DOT_SIZE,
+    borderRadius: DOT_SIZE / 2,
     borderWidth: 2,
     borderColor: "#84FF70",
     backgroundColor: "#FFFFFF",
     zIndex: 2,
-  },
-  bottomCurveContainer: {
-    position: "absolute",
-    left: 0,
-    right: 0,
-    bottom: -24,
-    height: 48,
   },
   contentColumn: {
     flex: 1,
