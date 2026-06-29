@@ -2,7 +2,7 @@ import { memo } from "react";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 import Animated, { useAnimatedStyle, useSharedValue, withSequence, withSpring } from "react-native-reanimated";
 import { ThumbsDown, ThumbsUp } from "lucide-react-native";
-import { fonts } from "@/constants/colors";
+import { colors, fonts } from "@/constants/colors";
 
 const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
 
@@ -70,7 +70,7 @@ function ReactionButton({
         }}
         style={[styles.button, animatedStyle]}
       >
-        <Icon color="#84FF70" fill={active ? "#84FF70" : "transparent"} size={16} strokeWidth={2.4} />
+        <Icon color={colors.pythonYellow} fill={active ? colors.pythonYellow : "transparent"} size={16} strokeWidth={2.4} />
       </AnimatedPressable>
       <Text style={[styles.count, active && styles.countActive]}>{count}</Text>
     </View>
@@ -97,7 +97,7 @@ const styles = StyleSheet.create({
   button: {
     alignItems: "center",
     backgroundColor: "#151714",
-    borderColor: "#84FF70",
+    borderColor: colors.pythonYellow,
     borderRadius: 20,
     borderWidth: 1,
     height: 40,
@@ -111,6 +111,6 @@ const styles = StyleSheet.create({
     fontVariant: ["tabular-nums"],
   },
   countActive: {
-    color: "#84FF70"
+    color: colors.pythonYellow
   }
 });
