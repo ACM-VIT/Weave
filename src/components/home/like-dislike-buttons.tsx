@@ -97,7 +97,7 @@ const styles = StyleSheet.create({
   button: {
     alignItems: "center",
     backgroundColor: "#151714",
-    borderColor: colors.pythonYellow,
+    borderColor: "#84FF70",
     borderRadius: 20,
     borderWidth: 1,
     height: 40,
@@ -111,6 +111,6 @@ const styles = StyleSheet.create({
     fontVariant: ["tabular-nums"],
   },
   countActive: {
-    color: colors.pythonYellow
+    color: "#84FF70"
   }
 });

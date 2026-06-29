@@ -184,7 +184,7 @@ export const RepositoryCard = memo(function RepositoryCard({
                   <Svg style={StyleSheet.absoluteFill} pointerEvents="none">
                     <Path
                       d="M 0 56 L 12 56 C 16 56, 16 52, 16 48 L 16 8 C 16 4, 20 0, 48 0 L 52 0"
-                      stroke={colors.pythonYellow}
+                      stroke="#84FF70"
                       strokeWidth={2}
                       fill="none"
                     />
@@ -192,7 +192,7 @@ export const RepositoryCard = memo(function RepositoryCard({
                   <Svg style={StyleSheet.absoluteFill} pointerEvents="none">
                     <Path
                       d="M 0 56 L 12 56 C 16 56, 16 60, 16 64 L 16 104 C 16 108, 48 110 L 52 110"
-                      stroke={colors.pythonYellow}
+                      stroke="#84FF70"
                       strokeWidth={2}
                       fill="none"
                     />
