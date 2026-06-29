@@ -1,15 +1,10 @@
 import { Tabs } from 'expo-router';
-import { useWindowDimensions } from 'react-native';
 import HomeIcon from '../../assets/icons/Vector (1).svg';
 import CompassIcon from '../../assets/icons/material-symbols_explore-outline.svg';
 import UserIcon from '../../assets/icons/Vector (2).svg';
 import { APP_THEME } from '../../constants/theme';
-import { getResponsiveContainerStyle } from '../../components/responsive-layout';
 
 export default function TabsLayout() {
-  const { width } = useWindowDimensions();
-  const responsiveTabBarStyle = getResponsiveContainerStyle(width);
-
   return (
     <Tabs
       initialRouteName="explore"
@@ -19,7 +14,7 @@ export default function TabsLayout() {
           backgroundColor: APP_THEME.tabBarBackground,
           borderTopColor: APP_THEME.tabBarBorder,
           height: 60,
-          ...responsiveTabBarStyle,
+          width: '100%',
         },
         tabBarItemStyle: {
           justifyContent: 'center',
