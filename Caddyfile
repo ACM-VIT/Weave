@@ -1,0 +1,4 @@
+weave-backend.krishang.dev, 54-66-32-148.sslip.io {
+	encode zstd gzip
+	reverse_proxy api:5000
+}
