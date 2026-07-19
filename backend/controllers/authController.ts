@@ -2,10 +2,14 @@ import crypto from "crypto";
 import { eq } from "drizzle-orm";
 import type { CookieOptions, Request, Response } from "express";
 import jwt from "jsonwebtoken";
-import supabase, { supabaseAdmin } from "../config/supabase.js";
+import supabase, {
+  createRecoverySupabaseClient,
+  supabaseAdmin,
+} from "../config/supabase.js";
 import { db } from "../db/index.js";
 import { appOauthCodes as oauthCodes, appRefreshTokens as refreshTokens, appUsers as users } from "../db/v2Schema.js";
 import { ensureIdentityProfile, fallbackUsername } from "../services/identityService.js";
+import { updatePasswordFromRecoverySession } from "../services/passwordRecoveryService.js";
 import {
   sendControllerError,
   sendError,
@@ -371,23 +375,33 @@ export async function requestPasswordReset(req: Request, res: Response): Promise
 
 // POST /api/auth/password/reset/confirm
 export async function confirmPasswordReset(req: Request, res: Response): Promise<void> {
-  const recoveryToken = typeof req.body?.recovery_token === "string"
-    ? req.body.recovery_token.trim()
+  const accessToken = typeof req.body?.access_token === "string"
+    ? req.body.access_token.trim()
+    : "";
+  const refreshToken = typeof req.body?.refresh_token === "string"
+    ? req.body.refresh_token.trim()
     : "";
   const password = typeof req.body?.password === "string" ? req.body.password : "";
 
-  if (!recoveryToken || password.length < 12 || password.length > 128) {
-    return sendError(res, 400, "A valid reset token and a 12-128 character password are required.");
+  if (!accessToken || !refreshToken || password.length < 12 || password.length > 128) {
+    return sendError(res, 400, "A valid reset session and a 12-128 character password are required.");
   }
 
   try {
-    const { data, error } = await supabaseAdmin.auth.getUser(recoveryToken);
-    if (error || !data.user) return sendError(res, 400, "This password reset link is invalid or expired.");
-
-    const { error: updateError } = await supabaseAdmin.auth.admin.updateUserById(data.user.id, {
+    // Recovery tokens represent a user session, not an admin credential. Keep
+    // that session request-scoped so concurrent resets cannot share auth state.
+    const recoveryClient = createRecoverySupabaseClient();
+    const result = await updatePasswordFromRecoverySession(
+      recoveryClient.auth,
+      { access_token: accessToken, refresh_token: refreshToken },
       password,
-    });
-    if (updateError) throw updateError;
+    );
+    if (result === "invalid-session") {
+      return sendError(res, 400, "This password reset link is invalid or expired.");
+    }
+    if (result === "update-failed") {
+      return sendError(res, 400, "Unable to update the password. Request a new reset link and try again.");
+    }
 
     sendSuccess(res, 200, { message: "Password updated successfully." });
   } catch (error) {

@@ -100,14 +100,19 @@ export const requestPasswordReset = async (email: string): Promise<string> => {
 };
 
 export const confirmPasswordReset = async (
-  recoveryToken: string,
+  accessToken: string,
+  refreshToken: string,
   password: string,
 ): Promise<string> => {
   const response = await fetch(`${API_URL}/auth/password/reset/confirm`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     credentials: 'include',
-    body: JSON.stringify({ recovery_token: recoveryToken, password }),
+    body: JSON.stringify({
+      access_token: accessToken,
+      refresh_token: refreshToken,
+      password,
+    }),
   });
   const data = await readJson(response);
   if (!response.ok) throw new Error(data.error || 'Unable to reset your password.');

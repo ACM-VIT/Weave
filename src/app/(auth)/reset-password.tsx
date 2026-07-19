@@ -2,17 +2,24 @@ import { confirmPasswordReset } from '@/api/auth';
 import LoginInput from '@/components/Auth/LoginInput';
 import PrimaryButton from '@/components/Auth/PrimaryButton';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { KeyboardAvoidingView, Platform, Pressable, Text, View } from 'react-native';
 
 export default function ResetPasswordScreen() {
   const router = useRouter();
-  const params = useLocalSearchParams<{ access_token?: string; token?: string; error_description?: string }>();
+  const params = useLocalSearchParams<{
+    access_token?: string;
+    refresh_token?: string;
+    error_description?: string;
+  }>();
   const webHash = Platform.OS === 'web' && typeof window !== 'undefined'
     ? new URLSearchParams(window.location.hash.replace(/^#/, ''))
     : null;
-  const [recoveryToken, setRecoveryToken] = useState(
-    () => params.access_token ?? params.token ?? webHash?.get('access_token') ?? webHash?.get('token') ?? '',
+  const [accessToken, setAccessToken] = useState(
+    () => params.access_token ?? webHash?.get('access_token') ?? '',
+  );
+  const [refreshToken, setRefreshToken] = useState(
+    () => params.refresh_token ?? webHash?.get('refresh_token') ?? '',
   );
   const [password, setPassword] = useState('');
   const [confirmation, setConfirmation] = useState('');
@@ -23,15 +30,25 @@ export default function ResetPasswordScreen() {
   );
 
   const validPassword = password.length >= 12 && password.length <= 128;
-  const isValid = Boolean(recoveryToken) && validPassword && password === confirmation;
+  const isValid = Boolean(accessToken && refreshToken) && validPassword && password === confirmation;
+
+  useEffect(() => {
+    if (Platform.OS !== 'web' || typeof window === 'undefined') return;
+    const cleanUrl = new URL(window.location.href);
+    cleanUrl.hash = '';
+    cleanUrl.searchParams.delete('access_token');
+    cleanUrl.searchParams.delete('refresh_token');
+    window.history.replaceState(null, '', `${cleanUrl.pathname}${cleanUrl.search}`);
+  }, []);
 
   const submit = async () => {
     if (!isValid || isLoading) return;
     setIsLoading(true);
     setError('');
     try {
-      setMessage(await confirmPasswordReset(recoveryToken, password));
-      setRecoveryToken('');
+      setMessage(await confirmPasswordReset(accessToken, refreshToken, password));
+      setAccessToken('');
+      setRefreshToken('');
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'Unable to reset your password.');
     } finally {
@@ -46,7 +63,7 @@ export default function ResetPasswordScreen() {
         <Text className="text-[#8A898F] text-[14px] leading-6 font-nata mt-3 mb-8">
           Use at least 12 characters. Avoid reusing a password from another service.
         </Text>
-        {!recoveryToken && !message ? <Text className="text-[#FF6878] text-[13px] font-nata mb-5">This reset link is invalid or expired.</Text> : null}
+        {(!accessToken || !refreshToken) && !message ? <Text className="text-[#FF6878] text-[13px] font-nata mb-5">This reset link is invalid or expired.</Text> : null}
         <Text className="text-white text-[15px] font-nata mb-3">New Password</Text>
         <LoginInput value={password} onChangeText={setPassword} placeholder="Enter a new password" secureTextEntry />
         <Text className="text-white text-[15px] font-nata mt-6 mb-3">Confirm Password</Text>
