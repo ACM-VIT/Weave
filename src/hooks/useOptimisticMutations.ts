@@ -60,25 +60,26 @@ export function useOptimisticMutations(userId?: string) {
   });
 
   const toggleSaveMutation = useMutation({
-    mutationFn: async ({ repoId, repoName }: { repoId: string, repoName: string }) => {
+    mutationFn: async ({ repoId, repoName: _repoName, saved }: {
+      repoId: string;
+      repoName: string;
+      saved: boolean;
+    }) => {
       if (!userId) throw new Error("No user id");
       const token = await SecureStore.getItemAsync("access_token");
       if (!token) throw new Error("No token");
-      return toggleSaveRepo(userId, repoId, token);
+      return toggleSaveRepo(userId, repoId, token, saved);
     },
-    onMutate: async ({ repoId, repoName }) => {
+    onMutate: async ({ repoId, repoName, saved }) => {
       await queryClient.cancelQueries({ queryKey: ["savedRepos", userId] });
       const previousRepos = queryClient.getQueryData(["savedRepos", userId]);
 
       queryClient.setQueryData(["savedRepos", userId], (old: any) => {
         if (!old) return old;
-        
-        // This is a naive optimistic toggle: If it's already in the list, remove it. If not, add it.
-        const isSaved = old.pages.some((page: any[]) => page.some((item) => item.repo_id === repoId));
-        
+
         let newPages = [...old.pages];
-        
-        if (isSaved) {
+
+        if (saved) {
           // Optimistically remove
           newPages = newPages.map((page) => page.filter((item: any) => item.repo_id !== repoId));
         } else {

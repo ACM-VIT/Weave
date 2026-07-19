@@ -35,8 +35,15 @@ export async function getSavedRepos(_userId: string, token: string, limit = 20, 
   }));
 }
 
-export async function toggleSaveRepo(_userId: string, repoId: string, token: string) {
-  return sendBatchedActivity([prepareQueuedActivity({ repo_id: repoId, action: 'save' })], token);
+export async function toggleSaveRepo(
+  _userId: string,
+  repoId: string,
+  token: string,
+  saved: boolean,
+) {
+  return sendBatchedActivity([
+    prepareQueuedActivity({ repo_id: repoId, action: saved ? 'unsave' : 'save' }),
+  ], token);
 }
 
 export async function sendBatchedActivity(events: ActivityInput[], token: string) {
