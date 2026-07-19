@@ -1,6 +1,6 @@
 import crypto from "crypto";
 import { eq } from "drizzle-orm";
-import type { Request, Response } from "express";
+import type { CookieOptions, Request, Response } from "express";
 import jwt from "jsonwebtoken";
 import supabase, { supabaseAdmin } from "../config/supabase.js";
 import { db } from "../db/index.js";
@@ -12,6 +12,7 @@ import {
   sendSuccess,
 } from "../utils/response.js";
 import { isValidUuid } from "../utils/validators.js";
+import { resolveClientRedirect } from "../security/originPolicy.js";
 
 const CLIENT_URL = process.env.CLIENT_URL;
 const BACKEND_URL = process.env.BACKEND_URL;
@@ -22,6 +23,8 @@ if (!BACKEND_URL)
   throw new Error("Missing required environment variable: BACKEND_URL");
 
 const JWT_SECRET = process.env.JWT_SECRET as string;
+const PASSWORD_RESET_URL = process.env.PASSWORD_RESET_URL
+  ?? CLIENT_URL.replace(/callback\/?$/, "reset-password");
 
 if (!JWT_SECRET) {
   throw new Error(
@@ -34,19 +37,31 @@ const hashToken = (token: string) => {
   return crypto.createHash("sha256").update(token).digest("hex");
 };
 
+const configuredClientRedirects = (process.env.OAUTH_REDIRECT_ORIGINS ?? "")
+  .split(",")
+  .map((value) => value.trim())
+  .filter(Boolean);
+
+const refreshCookieOptions = (): CookieOptions => ({
+  httpOnly: true,
+  secure: process.env.NODE_ENV === "production",
+  sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
+  path: "/api/auth",
+  maxAge: 30 * 24 * 60 * 60 * 1000,
+});
+
+const clearRefreshCookieOptions = (): CookieOptions => {
+  const { maxAge: _maxAge, ...options } = refreshCookieOptions();
+  return options;
+};
+
 const getClientRedirect = (value: unknown): string => {
-  if (typeof value !== "string" || !value.trim()) return CLIENT_URL;
-
-  try {
-    const redirect = new URL(value);
-    const isAppScheme = redirect.protocol === "ghsocial:";
-    const isExpoDevUrl =
-      process.env.NODE_ENV !== "production" && redirect.protocol === "exp:";
-
-    return isAppScheme || isExpoDevUrl ? redirect.toString() : CLIENT_URL;
-  } catch {
-    return CLIENT_URL;
-  }
+  return resolveClientRedirect(
+    value,
+    CLIENT_URL,
+    configuredClientRedirects,
+    process.env.NODE_ENV,
+  );
 };
 
 const isPrivateDevelopmentHost = (hostname: string): boolean => {
@@ -159,13 +174,7 @@ export async function signUp(req: Request, res: Response): Promise<void> {
     const refreshToken = await createAndStoreRefreshToken(userId);
 
     // 3. Set refresh token in HTTP-only cookie
-    res.cookie("refresh_token", refreshToken, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
-      sameSite: "lax",
-      path: "/api/auth", // Restrict cookie to refresh endpoint
-      maxAge: 30 * 24 * 60 * 60 * 1000,
-    });
+    res.cookie("refresh_token", refreshToken, refreshCookieOptions());
 
     return sendSuccess(res, 201, {
       message: "Signup successful",
@@ -205,13 +214,7 @@ export async function login(req: Request, res: Response): Promise<void> {
 
     const refreshToken = await createAndStoreRefreshToken(userId);
 
-    res.cookie("refresh_token", refreshToken, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
-      sameSite: "lax",
-      path: "/api/auth",
-      maxAge: 30 * 24 * 60 * 60 * 1000,
-    });
+    res.cookie("refresh_token", refreshToken, refreshCookieOptions());
 
     return sendSuccess(res, 200, {
       message: "Login successful",
@@ -245,12 +248,7 @@ export async function logout(req: Request, res: Response): Promise<void> {
     }
 
     // Only clear the cookie AFTER the server-side token is successfully revoked!
-    res.clearCookie("refresh_token", {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
-      sameSite: "lax",
-      path: "/api/auth",
-    });
+    res.clearCookie("refresh_token", clearRefreshCookieOptions());
 
     res
       .status(200)
@@ -323,13 +321,7 @@ export async function refreshToken(req: Request, res: Response): Promise<void> {
     });
 
     // 5. Send new refresh token in cookie
-    res.cookie("refresh_token", newRefreshToken, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
-      sameSite: "lax",
-      path: "/api/auth",
-      maxAge: 30 * 24 * 60 * 60 * 1000,
-    });
+    res.cookie("refresh_token", newRefreshToken, refreshCookieOptions());
 
     return sendSuccess(res, 200, {
       accessToken: newAccessToken,
@@ -338,7 +330,7 @@ export async function refreshToken(req: Request, res: Response): Promise<void> {
     });
   } catch (error: any) {
     if (error.message === "InvalidToken" || error.message === "ExpiredToken") {
-      res.clearCookie("refresh_token", { path: "/api/auth" });
+      res.clearCookie("refresh_token", clearRefreshCookieOptions());
       return sendError(
         res,
         401,
@@ -348,6 +340,57 @@ export async function refreshToken(req: Request, res: Response): Promise<void> {
     if (error.message === "UserNotFound") {
       return sendError(res, 404, "User not found in Auth system.");
     }
+    sendControllerError(res, error as Error);
+  }
+}
+
+// POST /api/auth/password/reset/request
+export async function requestPasswordReset(req: Request, res: Response): Promise<void> {
+  const email = typeof req.body?.email === "string" ? req.body.email.trim().toLowerCase() : "";
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || email.length > 320) {
+    return sendError(res, 400, "Enter a valid email address.");
+  }
+
+  try {
+    const { error } = await supabase.auth.resetPasswordForEmail(email, {
+      redirectTo: PASSWORD_RESET_URL,
+    });
+    if (error) console.error("Password reset request failed:", error.message);
+
+    // Always return the same response so this endpoint cannot enumerate accounts.
+    sendSuccess(res, 202, {
+      message: "If an account exists for that email, a reset link has been sent.",
+    });
+  } catch (error) {
+    console.error("Password reset request failed:", error);
+    sendSuccess(res, 202, {
+      message: "If an account exists for that email, a reset link has been sent.",
+    });
+  }
+}
+
+// POST /api/auth/password/reset/confirm
+export async function confirmPasswordReset(req: Request, res: Response): Promise<void> {
+  const recoveryToken = typeof req.body?.recovery_token === "string"
+    ? req.body.recovery_token.trim()
+    : "";
+  const password = typeof req.body?.password === "string" ? req.body.password : "";
+
+  if (!recoveryToken || password.length < 12 || password.length > 128) {
+    return sendError(res, 400, "A valid reset token and a 12-128 character password are required.");
+  }
+
+  try {
+    const { data, error } = await supabaseAdmin.auth.getUser(recoveryToken);
+    if (error || !data.user) return sendError(res, 400, "This password reset link is invalid or expired.");
+
+    const { error: updateError } = await supabaseAdmin.auth.admin.updateUserById(data.user.id, {
+      password,
+    });
+    if (updateError) throw updateError;
+
+    sendSuccess(res, 200, { message: "Password updated successfully." });
+  } catch (error) {
     sendControllerError(res, error as Error);
   }
 }
@@ -494,13 +537,7 @@ export async function exchangeAuthCode(
       expiresAt: newExpiresAt,
     });
 
-    res.cookie("refresh_token", refreshToken, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
-      sameSite: "lax",
-      path: "/api/auth",
-      maxAge: 30 * 24 * 60 * 60 * 1000,
-    });
+    res.cookie("refresh_token", refreshToken, refreshCookieOptions());
 
     return sendSuccess(res, 200, {
       accessToken: token,

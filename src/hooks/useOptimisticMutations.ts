@@ -116,7 +116,13 @@ export function useOptimisticMutations(userId?: string) {
   });
 
   const addRepoToBoardMutation = useMutation({
-    mutationFn: async ({ boardId, repoId, repoName }: { boardId: string, repoId: string, repoName: string }) => {
+    mutationFn: async ({ boardId, repoId, repoName: _repoName, serveId, position }: {
+      boardId: string;
+      repoId: string;
+      repoName: string;
+      serveId?: string | null;
+      position?: number | null;
+    }) => {
       if (!userId) throw new Error("No user id");
       const token = await SecureStore.getItemAsync("access_token");
       if (!token) throw new Error("No token");
@@ -124,7 +130,7 @@ export function useOptimisticMutations(userId?: string) {
       // Since this is atomic and also saves the repo, we use the new board API method
       // It handles both adding to the board and saving to the activity table
       const { addRepoToBoardAtomic } = await import("../api/boards");
-      return addRepoToBoardAtomic(userId, boardId, repoId, token);
+      return addRepoToBoardAtomic(userId, boardId, repoId, token, { serve_id: serveId, position });
     },
     onMutate: async ({ boardId, repoId, repoName }) => {
       // Optimistically update both the board's repos (if we had a query for it) and the savedRepos list

@@ -218,9 +218,16 @@ export async function getRepository(req: AuthRequest, res: Response): Promise<vo
 
 export async function listTrending(req: AuthRequest, res: Response): Promise<void> {
   const period = typeof req.query.period === 'string' ? req.query.period : 'daily';
-  const rows = await sqlClient`SELECT i.position,i.score,i.features,r.repo_id,r.github_id,r.full_name,r.owner,r.name,r.url,c.description,c.primary_language
+  const rows = await sqlClient`SELECT i.position,i.score,i.features,r.repo_id,r.github_id,r.full_name,r.owner,r.name,r.url,
+    c.description,c.primary_language,c.languages,e.likes_count,e.comments_count,e.views_count,
+    COALESCE(stat.star_count,0) AS star_count,COALESCE(stat.fork_count,0) AS fork_count,
+    COALESCE(stat.open_issues_count,0) AS open_issues_count,summary.summary
     FROM app.trending_snapshots s JOIN app.trending_snapshot_items i USING(snapshot_id)
-    JOIN app.repos r USING(repo_id) JOIN app.repo_content c USING(repo_id)
+    JOIN app.repos r USING(repo_id) JOIN app.repo_content c USING(repo_id) JOIN app.repo_engagement e USING(repo_id)
+    LEFT JOIN LATERAL (SELECT star_count,fork_count,open_issues_count FROM app.repo_stat_snapshots x
+      WHERE x.repo_id=r.repo_id ORDER BY observed_at DESC LIMIT 1) stat ON true
+    LEFT JOIN LATERAL (SELECT summary FROM app.repo_card_summaries x
+      WHERE x.repo_id=r.repo_id AND active ORDER BY created_at DESC LIMIT 1) summary ON true
     WHERE s.active AND s.complete AND s.period=${period} ORDER BY i.position LIMIT 100`;
   sendSuccess(res, 200, { period, items: rows });
 }
@@ -228,8 +235,14 @@ export async function listTrending(req: AuthRequest, res: Response): Promise<voi
 export async function listSaved(req: AuthRequest, res: Response): Promise<void> {
   const id = userId(req, res); const page = paging(req); if (!id) return;
   if (!page) return sendError(res, 400, 'Invalid pagination.');
-  const rows = await sqlClient`SELECT s.created_at,r.repo_id,r.github_id,r.full_name,r.owner,r.name,r.url,c.description,c.primary_language
+  const rows = await sqlClient`SELECT s.created_at,r.repo_id,r.github_id,r.full_name,r.owner,r.name,r.url,
+    c.description,c.primary_language,c.languages,e.likes_count,e.comments_count,e.views_count,
+    COALESCE(stat.star_count,0) AS star_count,COALESCE(stat.fork_count,0) AS fork_count,
+    COALESCE(stat.open_issues_count,0) AS open_issues_count
     FROM app.saves s JOIN app.repos r USING(repo_id) JOIN app.repo_content c USING(repo_id)
+    JOIN app.repo_engagement e USING(repo_id)
+    LEFT JOIN LATERAL (SELECT star_count,fork_count,open_issues_count FROM app.repo_stat_snapshots x
+      WHERE x.repo_id=r.repo_id ORDER BY observed_at DESC LIMIT 1) stat ON true
     WHERE s.user_id=${id}::uuid AND r.status='active' ORDER BY s.created_at DESC LIMIT ${page.limit} OFFSET ${page.offset}`;
   sendSuccess(res, 200, { items: rows, ...page });
 }

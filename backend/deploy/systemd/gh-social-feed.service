@@ -1,0 +1,22 @@
+[Unit]
+Description=GH Social Redis feed reservation reconciliation worker
+Documentation=file:///opt/gh-social/docs/runbooks/v2-cutover-and-rollback.md
+Wants=network-online.target
+Requires=docker.service
+After=network-online.target docker.service
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+ExecStartPre=-/usr/bin/docker rm -f gh-social-feed
+ExecStart=/usr/bin/docker run --rm --name gh-social-feed --network host --env-file /etc/gh-social/backend.env gh-social-backend:current node dist/worker.js --role=feed
+ExecStop=/usr/bin/docker stop --time 30 gh-social-feed
+Restart=on-failure
+RestartSec=5
+KillSignal=SIGTERM
+TimeoutStopSec=300
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

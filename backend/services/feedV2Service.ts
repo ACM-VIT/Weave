@@ -115,7 +115,10 @@ export class FeedV2Service {
       }
     }
 
-    const projections = await this.persistence.listActiveRepositories(entries.map((entry) => entry.repo_id));
+    const projections = await this.persistence.listActiveRepositories(
+      entries.map((entry) => entry.repo_id),
+      userId,
+    );
     const byId = new Map(projections.map((repo) => [repo.repo_id, repo]));
     const usable = entries.filter((entry) => byId.has(entry.repo_id));
     if (usable.length === 0 && entries.length > 0) {

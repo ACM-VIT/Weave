@@ -4,7 +4,6 @@ import React, { useEffect, useMemo, useState } from 'react';
 import {
   Animated,
   Easing,
-  Image,
   Modal,
   Pressable,
   ScrollView,
@@ -15,10 +14,10 @@ import {
 } from 'react-native';
 import { BookOpen, X } from 'lucide-react-native';
 import { BlurView } from 'expo-blur';
-import Markdown from 'react-native-markdown-display';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { REFERENCE_THEME } from '@/constants/theme';
+import { prepareReadmeForDisplay } from '@/utils/readme';
 
 interface ReadmePopupProps {
   isVisible: boolean;
@@ -36,7 +35,7 @@ export function ReadmePopup({ isVisible, onClose, title, readmeText }: ReadmePop
   const opacity = useMemo(() => new Animated.Value(0), []);
   const cursorOpacity = useMemo(() => new Animated.Value(1), []);
   const [typed, setTyped] = useState(0);
-  const content = readmeText?.trim() || 'No README content is available for this repository.';
+  const content = prepareReadmeForDisplay(readmeText);
 
   useEffect(() => {
     if (!isVisible) return;
@@ -51,7 +50,8 @@ export function ReadmePopup({ isVisible, onClose, title, readmeText }: ReadmePop
 
     const typingTimer = setInterval(() => {
       setTyped((current) => {
-        const next = Math.min(content.length, current + POPUP_TYPING_STEP);
+        const typingStep = Math.max(POPUP_TYPING_STEP, Math.ceil(content.length / 250));
+        const next = Math.min(content.length, current + typingStep);
         if (next >= content.length) clearInterval(typingTimer);
         return next;
       });
@@ -148,9 +148,9 @@ export function ReadmePopup({ isVisible, onClose, title, readmeText }: ReadmePop
             showsVerticalScrollIndicator={false}
           >
             <Text style={styles.repoTitle}>{title}</Text>
-            <Markdown style={markdownStyles} rules={markdownRules}>
+            <Text selectable style={styles.readmeText}>
               {content.slice(0, typed)}
-            </Markdown>
+            </Text>
             <Animated.View style={[styles.cursor, { opacity: cursorOpacity }]} />
           </ScrollView>
         </Animated.View>
@@ -241,98 +241,11 @@ const styles = StyleSheet.create({
   pressed: {
     opacity: 0.7,
   },
-  markdownImage: {
-    width: '100%',
-    height: 200,
-    marginVertical: 8,
-  },
-});
-
-const markdownStyles = {
-  body: {
+  readmeText: {
     color: REFERENCE_THEME.textPrimary,
     fontFamily: 'NataSans-Regular',
     fontSize: 14,
-    lineHeight: 21.7,
+    lineHeight: 22,
     letterSpacing: -0.1,
   },
-  heading1: {
-    color: REFERENCE_THEME.text,
-    fontFamily: 'NataSans-Bold',
-    fontSize: 20,
-    lineHeight: 26,
-    marginTop: 18,
-    marginBottom: 8,
-  },
-  heading2: {
-    color: REFERENCE_THEME.text,
-    fontFamily: 'NataSans-SemiBold',
-    fontSize: 16,
-    lineHeight: 22,
-    marginTop: 20,
-    marginBottom: 8,
-  },
-  heading3: {
-    color: REFERENCE_THEME.text,
-    fontFamily: 'NataSans-SemiBold',
-    fontSize: 14,
-    lineHeight: 20,
-    marginTop: 16,
-    marginBottom: 6,
-  },
-  paragraph: {
-    marginTop: 0,
-    marginBottom: 10,
-  },
-  link: {
-    color: REFERENCE_THEME.accentLight,
-    textDecorationLine: 'underline' as const,
-  },
-  code_inline: {
-    color: '#E8E8ED',
-    backgroundColor: REFERENCE_THEME.background,
-    fontFamily: 'monospace',
-    fontSize: 11.5,
-    paddingHorizontal: 4,
-    paddingVertical: 2,
-    borderRadius: 4,
-  },
-  code_block: {
-    color: '#E8E8ED',
-    backgroundColor: REFERENCE_THEME.background,
-    fontFamily: 'monospace',
-    fontSize: 11.5,
-    lineHeight: 17,
-    paddingVertical: 13,
-    paddingHorizontal: 15,
-    borderRadius: 12,
-    marginVertical: 8,
-  },
-  fence: {
-    color: '#E8E8ED',
-    backgroundColor: REFERENCE_THEME.background,
-    fontFamily: 'monospace',
-    fontSize: 11.5,
-    lineHeight: 17,
-    paddingVertical: 13,
-    paddingHorizontal: 15,
-    borderRadius: 12,
-    marginVertical: 8,
-  },
-  bullet_list: { marginVertical: 8 },
-  ordered_list: { marginVertical: 8 },
-  list_item: { marginBottom: 4 },
-};
-
-const markdownRules = {
-  image: (node: any) => (
-    <Image
-      accessibilityLabel={node.attributes.alt}
-      accessible={Boolean(node.attributes.alt)}
-      key={node.key}
-      resizeMode="contain"
-      source={{ uri: node.attributes.src }}
-      style={styles.markdownImage}
-    />
-  ),
-};
+});

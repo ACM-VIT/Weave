@@ -1,7 +1,7 @@
 import React, { createContext, useCallback, useContext, useEffect, useState } from 'react';
 import { getStorageItem, setStorageItem, removeStorageItem } from '../utils/storage';
 import { API_URL } from '../api/config';
-import { apiV2 } from '../api/client';
+import { apiV2, refreshSession, setSessionExpiredHandler } from '../api/client';
 import {
   AUTH_BYPASS_ENABLED,
   AUTH_BYPASS_PROFILE_STORAGE_KEY,
@@ -81,7 +81,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         return;
       }
 
-      const token = await getStorageItem('access_token');
+      let token = await getStorageItem('access_token');
+      if (!token) token = await refreshSession().catch(() => null);
       if (token) {
         await fetchUserProfile(token);
       }
@@ -173,6 +174,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setUser(null);
     }
   };
+
+  useEffect(() => {
+    setSessionExpiredHandler(() => setUser(null));
+    return () => setSessionExpiredHandler(null);
+  }, []);
 
   useEffect(() => {
     const timer = setTimeout(() => {

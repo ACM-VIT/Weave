@@ -6,6 +6,8 @@ declare namespace NodeJS {
     BACKEND_URL: string;
     CLIENT_URL: string;
     CORS_ORIGINS?: string;
+    OAUTH_REDIRECT_ORIGINS?: string;
+    PASSWORD_RESET_URL?: string;
     PORT?: string;
     NODE_ENV?: string;
   }

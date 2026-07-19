@@ -1,5 +1,15 @@
 import { Router } from 'express';
-import { signUp, login, logout, getOAuthUrl, refreshToken, handleOAuthCallback, exchangeAuthCode } from '../controllers/authController.js';
+import {
+  confirmPasswordReset,
+  exchangeAuthCode,
+  getOAuthUrl,
+  handleOAuthCallback,
+  login,
+  logout,
+  refreshToken,
+  requestPasswordReset,
+  signUp,
+} from '../controllers/authController.js';
 
 const router: Router = Router();
 
@@ -9,6 +19,8 @@ router.post('/login', login);
 router.get('/oauth/:provider', getOAuthUrl);
 router.post('/refresh', refreshToken);
 router.post('/logout', logout);
+router.post('/password/reset/request', requestPasswordReset);
+router.post('/password/reset/confirm', confirmPasswordReset);
 router.get('/callback', handleOAuthCallback);
 
 // POST /api/auth/exchange

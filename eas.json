@@ -6,19 +6,16 @@
   "build": {
     "development": {
       "developmentClient": true,
-      "distribution": "internal"
+      "distribution": "internal",
+      "environment": "development"
     },
     "preview": {
       "distribution": "internal",
-      "env": {
-        "EXPO_PUBLIC_BACKEND_URL": "https://gh-social.onrender.com/api"
-      }
+      "environment": "preview"
     },
     "production": {
       "autoIncrement": true,
-      "env": {
-        "EXPO_PUBLIC_BACKEND_URL": "https://gh-social.onrender.com/api"
-      }
+      "environment": "production"
     }
   },
   "submit": {

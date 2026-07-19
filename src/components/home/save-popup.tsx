@@ -31,6 +31,8 @@ interface SavePopupProps {
   onSaved?: () => void;
   repoId?: string;
   repoName?: string;
+  serveId?: string | null;
+  position?: number | null;
 }
 
 export function SavePopup({
@@ -39,6 +41,8 @@ export function SavePopup({
   onSaved,
   repoId,
   repoName,
+  serveId,
+  position,
 }: SavePopupProps) {
   const { height, width } = useWindowDimensions();
   const insets = useSafeAreaInsets();
@@ -143,7 +147,7 @@ export function SavePopup({
     if (!effectiveSelected || !repoId || !repoName || addRepoToBoardMutation.isPending) return;
     setError('');
     addRepoToBoardMutation.mutate(
-      { boardId: effectiveSelected, repoId, repoName },
+      { boardId: effectiveSelected, repoId, repoName, serveId, position },
       {
         onSuccess: () => {
           setStatus('saved');

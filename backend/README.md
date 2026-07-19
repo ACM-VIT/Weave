@@ -228,16 +228,23 @@ After a database reset: run repository ingestion first, allow the outbox worker 
 
 ## Processes and production configuration
 
-Run separately so HTTP scaling never duplicates periodic jobs:
+The production image is immutable and runs as four systemd-managed containers
+so HTTP scaling never duplicates periodic jobs:
 
 ```text
-API:                  npm start
-Outbox worker:        npm run worker:outbox
-Feed reconciliation: WORKER_ROLE=feed npm run worker
-Maintenance:         WORKER_ROLE=maintenance npm run worker
+gh-social-api.service
+gh-social-outbox.service
+gh-social-feed.service
+gh-social-maintenance.service
 ```
 
 Use one or more outbox workers; claiming is concurrency-safe. Run one feed and one maintenance worker initially. `WORKER_ROLE=all` is for local development only.
+
+CI builds and tests `backend/Dockerfile`, transfers the commit-SHA image, tags
+it as `gh-social-backend:current`, installs all four units, and rolls back to
+`gh-social-backend:previous` when `/readyz` fails. The host must provide Docker
+and a root-owned `/etc/gh-social/backend.env`; credentials are never copied into
+the image.
 
 Required production environment variables: `DATABASE_URL`, `SUPABASE_URL`, `SUPABASE_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, `JWT_SECRET`, `CLIENT_URL`, `BACKEND_URL`, `REDIS_URL`, `ML_SERVICE_URL`, and `INTERNAL_API_SECRET`. Start from `.env.production.example`, set `FEED_V2_CANARY_PERCENT=100`, and keep `LEGACY_API_ENABLED=false`. Leave `ML_V2_RECOMMENDATIONS=false` until the ingestion canary proves non-empty canonical repository UUID results; `ML_FEEDBACK_OUTBOX=true` still allows onboarding and repository indexing jobs to drain. Rotate internal secrets only through the documented primary/previous overlap, not when adding another worker process.
 

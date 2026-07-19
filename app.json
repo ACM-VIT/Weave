@@ -1,13 +1,17 @@
 {
   "expo": {
-    "name": "gh-social",
+    "name": "Weave",
     "slug": "gh-social",
     "version": "1.0.0",
+    "description": "Discover open-source repositories and connect with developers.",
+    "icon": "./assets/images/logo/weavelogo.png",
     "orientation": "portrait",
     "scheme": "ghsocial",
     "userInterfaceStyle": "automatic",
+    "backgroundColor": "#151110",
     "ios": {
       "bundleIdentifier": "com.weave.app",
+      "supportsTablet": true,
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false
       }
@@ -15,6 +19,10 @@
     "android": {
       "predictiveBackGestureEnabled": false,
       "package": "com.weave.app",
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/images/logo/weavelogo.png",
+        "backgroundColor": "#151110"
+      },
       "intentFilters": [
         {
           "action": "VIEW",
@@ -32,7 +40,13 @@
       ]
     },
     "web": {
-      "output": "static"
+      "output": "static",
+      "favicon": "./assets/images/logo/weavelogo.png",
+      "name": "Weave",
+      "shortName": "Weave",
+      "description": "Discover open-source repositories and connect with developers.",
+      "themeColor": "#151110",
+      "backgroundColor": "#151110"
     },
     "plugins": [
       "expo-router",
@@ -40,7 +54,16 @@
       "@react-native-community/datetimepicker",
       "expo-secure-store",
       "expo-image",
-      "expo-splash-screen"
+      [
+        "expo-splash-screen",
+        {
+          "backgroundColor": "#151110",
+          "image": "./assets/images/logo/weavelogo.png",
+          "imageWidth": 220,
+          "resizeMode": "contain"
+        }
+      ],
+      "@sentry/react-native"
     ],
     "experiments": {
       "typedRoutes": true,

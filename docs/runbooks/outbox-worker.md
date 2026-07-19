@@ -14,10 +14,10 @@ repository refresh jobs to the authenticated ML v2 endpoints.
   shorter `ML_TIMEOUT_MS=5000` bound.
 - Keep `ML_V2_RECOMMENDATIONS=false` until the ingestion canary returns a
   non-empty set of canonical backend `repo_id` UUIDs.
-- Leave `WORKER_ROLE` blank in the shared environment file. The worker service
-  sets `WORKER_ROLE=outbox`, while the API process remains role `api`.
-- Run `npm run build` before restarting the service. The worker intentionally
-  fails startup if its owning feature is disabled or its role conflicts.
+- Leave `WORKER_ROLE` blank in the shared environment file. The worker unit
+  passes `--role=outbox`, while the API process remains role `api`.
+- Deploy only an image that passed `npm run build` and `npm test`. The worker
+  intentionally fails startup if its owning feature is disabled or its role conflicts.
 
 The checked-in production example is `backend/.env.production.example`. Store
 the real environment outside the checkout, owned by root and readable only by
@@ -26,21 +26,21 @@ does not contain secrets.
 
 ## Systemd installation
 
-The template assumes this checkout is installed at `/opt/gh-social`, Node/npm
-are under `/usr/bin`, and a locked-down `gh-social` service account exists.
-Adjust those three values to the host before installing it.
+The template assumes Docker is installed at `/usr/bin/docker`, the immutable
+image is tagged `gh-social-backend:current`, and the root-owned environment file
+is `/etc/gh-social/backend.env`.
 
-1. Build the backend with `npm ci` and `npm run build` from `backend/`.
+1. Build and test `backend/Dockerfile` in CI.
 2. Copy `backend/deploy/systemd/gh-social-outbox.service` to
    `/etc/systemd/system/gh-social-outbox.service`.
 3. Validate the unit with `systemd-analyze verify`.
 4. Reload systemd, then enable and start `gh-social-outbox.service`.
 5. Inspect `systemctl status gh-social-outbox` and its journal before ingestion.
 
-For another process manager, the platform-neutral launch command is:
+For another container supervisor, the process command is:
 
 ```text
-npm run worker:outbox
+node dist/worker.js --role=outbox
 ```
 
 The script passes `--role=outbox`; an explicitly supplied `WORKER_ROLE` must

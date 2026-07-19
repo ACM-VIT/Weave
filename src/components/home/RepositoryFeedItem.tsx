@@ -43,7 +43,7 @@ export function RepositoryFeedItem({
   const [isSaveVisible, setIsSaveVisible] = useState(false);
   const [isReadmeVisible, setIsReadmeVisible] = useState(false);
   const [isCommentsVisible, setIsCommentsVisible] = useState(false);
-  const [isSaved, setIsSaved] = useState(false);
+  const [isSaved, setIsSaved] = useState(repository.viewerSaved === true);
   const [commentCount, setCommentCount] = useState(
     Number(repository.stats.comments || 0) || 0
   );
@@ -55,17 +55,8 @@ export function RepositoryFeedItem({
   const saveSwipeRef = useRef(false);
 
   React.useEffect(() => {
-    if (isViewable) {
-      visibleStartTime.current = Date.now();
-      impressionSentRef.current = false;
-      if (impressionTimeoutRef.current) clearTimeout(impressionTimeoutRef.current);
-      impressionTimeoutRef.current = setTimeout(() => {
-        if (visibleStartTime.current !== null && !impressionSentRef.current) {
-          impressionSentRef.current = true;
-          onQueueActivity?.({ repo_id: repository.id, action: FEEDBACK_ACTIONS.impression });
-        }
-      }, IMPRESSION_VISIBILITY_THRESHOLD_MS);
-    } else if (visibleStartTime.current !== null) {
+    const finishVisibility = () => {
+      if (visibleStartTime.current === null) return;
       const dwellSeconds = (Date.now() - visibleStartTime.current) / 1000;
       if (impressionTimeoutRef.current) {
         clearTimeout(impressionTimeoutRef.current);
@@ -79,14 +70,21 @@ export function RepositoryFeedItem({
         });
       }
       visibleStartTime.current = null;
-    }
-
-    return () => {
-      if (impressionTimeoutRef.current) {
-        clearTimeout(impressionTimeoutRef.current);
-        impressionTimeoutRef.current = null;
-      }
     };
+
+    if (isViewable) {
+      visibleStartTime.current = Date.now();
+      impressionSentRef.current = false;
+      if (impressionTimeoutRef.current) clearTimeout(impressionTimeoutRef.current);
+      impressionTimeoutRef.current = setTimeout(() => {
+        if (visibleStartTime.current !== null && !impressionSentRef.current) {
+          impressionSentRef.current = true;
+          onQueueActivity?.({ repo_id: repository.id, action: FEEDBACK_ACTIONS.impression });
+        }
+      }, IMPRESSION_VISIBILITY_THRESHOLD_MS);
+    } else finishVisibility();
+
+    return finishVisibility;
   }, [isViewable, onQueueActivity, repository.id]);
 
   const overlaysOpen = isSaveVisible || isReadmeVisible || isCommentsVisible;
@@ -151,6 +149,8 @@ export function RepositoryFeedItem({
         onSaved={() => setIsSaved(true)}
         repoId={repository.id}
         repoName={repository.title}
+        serveId={repository.serveId}
+        position={repository.feedPosition}
       />
       <CommentSheet
         initialCommentCount={commentCount}

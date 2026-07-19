@@ -2,6 +2,8 @@ export type RepositoryData = {
   id: string;
   serveId?: string | null;
   feedPosition?: number | null;
+  viewerReaction?: 'like' | 'dislike' | null;
+  viewerSaved?: boolean;
   title: string;
   owner: string;
   description: string;
