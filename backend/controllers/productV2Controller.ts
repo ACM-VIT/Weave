@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import type { Response } from 'express';
 import { sqlClient } from '../db/index.js';
 import type { AuthRequest } from '../middlewares/authMiddleware.js';
+import { setRepositorySaved } from '../services/savedRepositoryService.js';
 import { isValidUuid } from '../utils/validators.js';
 import { sendControllerError, sendError, sendSuccess } from '../utils/response.js';
 
@@ -366,11 +367,19 @@ export async function listBoardRepos(req: AuthRequest, res: Response): Promise<v
 
 export async function addBoardRepo(req: AuthRequest, res: Response): Promise<void> {
   const id = userId(req, res); const board = idParam(req, res, 'boardId'); const repo = idParam(req, res, 'repoId'); if (!id || !board || !repo) return;
-  const rows = await sqlClient`INSERT INTO app.board_repos(board_id,repo_id,added_by)
-    SELECT ${board}::uuid,${repo}::uuid,${id}::uuid FROM app.boards WHERE board_id=${board}::uuid AND user_id=${id}::uuid
-    ON CONFLICT DO NOTHING RETURNING board_id`;
-  if (!rows.length) { const owned = await sqlClient`SELECT 1 FROM app.boards WHERE board_id=${board}::uuid AND user_id=${id}::uuid`; if (!owned.length) return sendError(res, 404, 'Board not found.'); }
-  res.status(204).end();
+  try {
+    await sqlClient.begin(async (tx) => {
+      const owned = await tx`SELECT 1 FROM app.boards WHERE board_id=${board}::uuid AND user_id=${id}::uuid`;
+      if (!owned.length) throw Object.assign(new Error('Board not found.'), { statusCode: 404 });
+      await tx`
+        INSERT INTO app.board_repos(board_id,repo_id,added_by)
+        VALUES (${board}::uuid,${repo}::uuid,${id}::uuid)
+        ON CONFLICT (board_id,repo_id) DO NOTHING
+      `;
+      await setRepositorySaved(tx, id, repo, true);
+    });
+    res.status(204).end();
+  } catch (error) { sendControllerError(res, error); }
 }
 
 export async function removeBoardRepo(req: AuthRequest, res: Response): Promise<void> {
