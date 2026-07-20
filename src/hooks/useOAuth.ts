@@ -4,7 +4,7 @@ import { useState } from 'react';
 import { useAuth } from '@/store/AuthContext';
 import { getOAuthUrl, exchangeCode } from '@/api/auth';
 
-export function useOAuth() {
+export function useOAuth(flow: 'login' | 'signup' = 'login') {
   const { setSession } = useAuth();
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -15,7 +15,9 @@ export function useOAuth() {
 
     try {
       // Build the callback first so the backend returns to this exact Expo runtime.
-      const redirectUri = Linking.createURL('callback');
+      const redirectUri = Linking.createURL('callback', {
+        queryParams: { flow },
+      });
 
       // Get the OAuth URL from our backend, including the current runtime callback.
       const oauthUrl = await getOAuthUrl(provider, redirectUri);
@@ -43,7 +45,9 @@ export function useOAuth() {
 
       // 6. Persist session — AuthContext fetches profile which includes onboarding_completed.
       //    _layout.tsx will then automatically redirect to onboarding or tabs.
-      await setSession(data.accessToken, data.user);
+      await setSession(data.accessToken, data.user, {
+        requireOnboarding: flow === 'signup',
+      });
 
     } catch (err: any) {
       setError(err.message || 'OAuth sign-in failed');

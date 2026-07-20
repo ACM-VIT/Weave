@@ -110,6 +110,16 @@ const getBackendCallbackUrl = (req: Request): URL => {
   return configuredCallback;
 };
 
+const withClientRedirectParam = (
+  clientRedirect: string,
+  key: "code" | "error",
+  value: string,
+): string => {
+  const redirect = new URL(clientRedirect);
+  redirect.searchParams.set(key, value);
+  return redirect.toString();
+};
+
 const isLocalOAuthRequest = (req: Request): boolean => {
   return process.env.NODE_ENV !== "production"
     && req.socket.localPort === 3000
@@ -474,6 +484,7 @@ export async function getOAuthUrl(req: Request, res: Response): Promise<void> {
     const url = new URL(`${process.env.SUPABASE_URL}/auth/v1/authorize`);
     url.searchParams.set("provider", provider);
     url.searchParams.set("redirect_to", callbackUrl.toString());
+    url.searchParams.set("prompt", "select_account");
 
     return sendSuccess(res, 200, { url: url.toString() });
   } catch (error) {
@@ -503,6 +514,7 @@ export async function startLocalOAuth(req: Request, res: Response): Promise<void
   const url = new URL(`${process.env.SUPABASE_URL}/auth/v1/authorize`);
   url.searchParams.set("provider", provider);
   url.searchParams.set("redirect_to", `${LOCAL_OAUTH_ORIGIN}/`);
+  url.searchParams.set("prompt", "select_account");
   res.redirect(url.toString());
 }
 
@@ -592,9 +604,7 @@ export async function handleOAuthCallback(
 
   if (!code) {
     const reason = (req.query.error as string) || "no_code";
-    return res.redirect(
-      `${clientRedirect}?error=${encodeURIComponent(reason)}`,
-    );
+    return res.redirect(withClientRedirectParam(clientRedirect, "error", reason));
   }
 
   try {
@@ -604,19 +614,17 @@ export async function handleOAuthCallback(
 
     if (error || !data.user) {
       console.error("OAuth Exchange Error:", error);
-      return res.redirect(
-        `${clientRedirect}?error=Authentication failed`,
-      );
+      return res.redirect(withClientRedirectParam(clientRedirect, "error", "Authentication failed"));
     }
 
     // 2. Ensure the product profile exists and issue a one-time app exchange code.
     const exchangeCode = await createOAuthCode(data.user);
 
     // 4. Redirect to your frontend with the short-lived code.
-    res.redirect(`${clientRedirect}?code=${exchangeCode}`);
+    res.redirect(withClientRedirectParam(clientRedirect, "code", exchangeCode));
   } catch (error) {
     console.error("OAuth Callback Caught Error:", error);
-    res.redirect(`${clientRedirect}?error=Internal server error`);
+    res.redirect(withClientRedirectParam(clientRedirect, "error", "Internal server error"));
   }
 }
 

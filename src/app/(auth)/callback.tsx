@@ -15,7 +15,11 @@ import { exchangeCode } from '@/api/auth';
  * Expo Router parses those into search params automatically.
  */
 export default function OAuthCallbackScreen() {
-  const { code, error: oauthError } = useLocalSearchParams<{ code?: string; error?: string }>();
+  const { code, error: oauthError, flow } = useLocalSearchParams<{
+    code?: string;
+    error?: string;
+    flow?: 'login' | 'signup';
+  }>();
   const { setSession } = useAuth();
   const router = useRouter();
   const [exchangeError, setExchangeError] = useState<string | null>(null);
@@ -33,9 +37,11 @@ export default function OAuthCallbackScreen() {
 
     // Exchange the short-lived code for a JWT — _layout.tsx handles the redirect after
     exchangeCode(code)
-      .then((data) => setSession(data.accessToken, data.user))
+      .then((data) => setSession(data.accessToken, data.user, {
+        requireOnboarding: flow === 'signup',
+      }))
       .catch((err) => setExchangeError(err.message || 'Authentication failed'));
-  }, [code, oauthError, setSession]);
+  }, [code, flow, oauthError, setSession]);
 
   if (errorMsg) {
     return (

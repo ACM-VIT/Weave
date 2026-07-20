@@ -24,7 +24,7 @@ export default function LoginScreen() {
   const router = useRouter();
   const scrollViewRef = useRef<ScrollView>(null);
   const { setSession, enterOnboardingPreview } = useAuth();
-  const { signInWithProvider, isLoading: oauthLoading, error: oauthError } = useOAuth();
+  const { signInWithProvider, isLoading: oauthLoading, error: oauthError } = useOAuth('login');
 
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -45,7 +45,7 @@ export default function LoginScreen() {
     setErrorMsg("");
     try {
       const data = await login(email, password);
-      await setSession(data.accessToken, data.user);
+      await setSession(data.accessToken, data.user, { requireOnboarding: false });
       // _layout.tsx will handle redirection
     } catch (err: any) {
       setErrorMsg(err.message || 'Login failed');

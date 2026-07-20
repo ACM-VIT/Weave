@@ -19,7 +19,11 @@ interface User {
 interface AuthContextType {
   user: User | null;
   isLoading: boolean;
-  setSession: (token: string, user: any) => Promise<void>;
+  setSession: (
+    token: string,
+    user: any,
+    options?: { requireOnboarding?: boolean },
+  ) => Promise<void>;
   enterOnboardingPreview: () => Promise<void>;
   completeOnboardingPreview: () => void;
   signOut: () => Promise<void>;
@@ -27,6 +31,7 @@ interface AuthContextType {
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
+const ONBOARDING_REQUIRED_STORAGE_KEY = 'onboarding_required';
 
 export const isDemoModeEnabled =
   __DEV__ && process.env.EXPO_PUBLIC_DEMO_MODE === 'true';
@@ -52,14 +57,18 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
-  const fetchUserProfile = useCallback(async (token: string) => {
+  const fetchUserProfile = useCallback(async (token: string, requireOnboarding = false) => {
     try {
       const profile = await apiV2<Record<string, unknown> & { topics?: unknown[] }>('/users/me', {}, token);
+      const canonicalOnboardingComplete = Array.isArray(profile.topics) && profile.topics.length > 0;
+      if (canonicalOnboardingComplete) {
+        await setStorageItem(ONBOARDING_REQUIRED_STORAGE_KEY, 'false');
+      }
       setUser({
         ...profile,
         user_id: String(profile.user_id),
         username: String(profile.username),
-        onboarding_completed: Array.isArray(profile.topics) && profile.topics.length > 0,
+        onboarding_completed: requireOnboarding ? canonicalOnboardingComplete : true,
       });
     } catch (error) {
       const status = (error as { status?: number }).status;
@@ -84,7 +93,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       let token = await getStorageItem('access_token');
       if (!token) token = await refreshSession().catch(() => null);
       if (token) {
-        await fetchUserProfile(token);
+        const requireOnboarding = await getStorageItem(ONBOARDING_REQUIRED_STORAGE_KEY) === 'true';
+        await fetchUserProfile(token, requireOnboarding);
       }
     } catch (e) {
       console.error('Failed to load session', e);
@@ -101,20 +111,29 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
     const token = await getStorageItem('access_token');
     if (token) {
-      await fetchUserProfile(token);
+      const requireOnboarding = await getStorageItem(ONBOARDING_REQUIRED_STORAGE_KEY) === 'true';
+      await fetchUserProfile(token, requireOnboarding);
     }
   };
 
-  const setSession = async (token: string, authUser: any) => {
+  const setSession = async (
+    token: string,
+    authUser: any,
+    options: { requireOnboarding?: boolean } = {},
+  ) => {
     if (AUTH_BYPASS_ENABLED) {
       setUser(await loadBypassUser());
       return;
     }
 
-    await setStorageItem('access_token', token);
+    const requireOnboarding = options.requireOnboarding === true;
+    await Promise.all([
+      setStorageItem('access_token', token),
+      setStorageItem(ONBOARDING_REQUIRED_STORAGE_KEY, String(requireOnboarding)),
+    ]);
 
-    // Let routing move a newly-created account into onboarding immediately,
-    // then replace this optimistic value with the canonical backend profile.
+    // Login flows enter the app immediately. Signup flows remain in onboarding
+    // until the canonical backend profile contains completed onboarding topics.
     setUser({
       ...authUser,
       user_id: authUser?.user_id ?? authUser?.id,
@@ -122,9 +141,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         authUser?.username ??
         authUser?.user_metadata?.user_name ??
         'new-user',
-      onboarding_completed: false,
+      onboarding_completed: !requireOnboarding,
     });
-    await fetchUserProfile(token);
+    await fetchUserProfile(token, requireOnboarding);
   };
 
   const enterOnboardingPreview = async () => {
@@ -167,7 +186,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
     
     try {
-      await removeStorageItem('access_token');
+      await Promise.all([
+        removeStorageItem('access_token'),
+        removeStorageItem(ONBOARDING_REQUIRED_STORAGE_KEY),
+      ]);
     } catch (e) {
       console.error('Failed to clear session storage', e);
     } finally {

@@ -26,7 +26,7 @@ import SocialButton from "@/components/Auth/SocialButton";
 export default function SignUpEmail() {
   const router = useRouter();
   const scrollViewRef = useRef<ScrollView>(null);
-  const { signInWithProvider, isLoading: oauthLoading, error: oauthError } = useOAuth();
+  const { signInWithProvider, isLoading: oauthLoading, error: oauthError } = useOAuth('signup');
 
   const [fullName, setFullName] = useState("");
   const [email, setEmail] = useState("");
@@ -59,7 +59,7 @@ export default function SignUpEmail() {
     setErrorMsg("");
     try {
       const data = await register(email, password, fullName);
-      await setSession(data.accessToken, data.user);
+      await setSession(data.accessToken, data.user, { requireOnboarding: true });
       // _layout.tsx will automatically redirect to onboarding
     } catch (err: any) {
       setErrorMsg(err.message || 'Registration failed');
