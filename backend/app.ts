@@ -16,6 +16,7 @@ import ingestionRoutes from './routes/ingestionRoutes.js';
 import operationsRoutes from './routes/operationsRoutes.js';
 import productV2Routes from './routes/productV2Routes.js';
 import { readiness } from './controllers/operationsController.js';
+import { serveLocalOAuthBridge } from './controllers/authController.js';
 import { requestTelemetry } from './middlewares/requestTelemetryMiddleware.js';
 import { authRateLimit, securityHeaders } from './middlewares/securityMiddleware.js';
 import { isCorsOriginAllowed } from './security/originPolicy.js';
@@ -58,7 +59,7 @@ app.use(securityHeaders);
 app.use(requestTelemetry);
 
 // Basic health route to confirm the backend is running.
-app.get('/', (_req: Request, res: Response) => {
+app.get('/', serveLocalOAuthBridge, (_req: Request, res: Response) => {
   res.json({ message: 'GH Social backend is running' });
 });
 app.get('/healthz', (_req: Request, res: Response) => res.status(200).json({ healthy: true }));

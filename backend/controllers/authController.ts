@@ -1,6 +1,6 @@
 import crypto from "crypto";
 import { eq } from "drizzle-orm";
-import type { CookieOptions, Request, Response } from "express";
+import type { CookieOptions, NextFunction, Request, Response } from "express";
 import jwt from "jsonwebtoken";
 import supabase, {
   createRecoverySupabaseClient,
@@ -29,6 +29,8 @@ if (!BACKEND_URL)
 const JWT_SECRET = process.env.JWT_SECRET as string;
 const PASSWORD_RESET_URL = process.env.PASSWORD_RESET_URL
   ?? CLIENT_URL.replace(/callback\/?$/, "reset-password");
+const LOCAL_OAUTH_ORIGIN = "http://localhost:3000";
+const LOCAL_OAUTH_REDIRECT_COOKIE = "local_oauth_client_redirect";
 
 if (!JWT_SECRET) {
   throw new Error(
@@ -106,6 +108,37 @@ const getBackendCallbackUrl = (req: Request): URL => {
   }
 
   return configuredCallback;
+};
+
+const isLocalOAuthRequest = (req: Request): boolean => {
+  return process.env.NODE_ENV !== "production"
+    && req.socket.localPort === 3000
+    && (req.hostname === "localhost" || req.hostname === "127.0.0.1");
+};
+
+const createOAuthCode = async (user: {
+  id: string;
+  user_metadata?: Record<string, unknown>;
+}): Promise<string> => {
+  await ensureIdentityProfile({
+    userId: user.id,
+    username: fallbackUsername(user.id, user.user_metadata),
+    fullName: typeof user.user_metadata?.full_name === "string" ? user.user_metadata.full_name : null,
+    githubId: typeof user.user_metadata?.provider_id === "string" ? user.user_metadata.provider_id : null,
+    githubHandle: typeof user.user_metadata?.user_name === "string" ? user.user_metadata.user_name : null,
+    avatarUrl: typeof user.user_metadata?.avatar_url === "string" ? user.user_metadata.avatar_url : null,
+  });
+
+  const [codeData] = await db
+    .insert(oauthCodes)
+    .values({
+      userId: user.id,
+      expiresAt: new Date(Date.now() + 5 * 60 * 1000),
+    })
+    .returning({ code: oauthCodes.code });
+
+  if (!codeData) throw new Error("Failed to generate OAuth exchange code");
+  return codeData.code;
 };
 
 // Helper: Create and store a refresh token securely
@@ -417,6 +450,25 @@ export async function getOAuthUrl(req: Request, res: Response): Promise<void> {
 
   try {
     const clientRedirect = getClientRedirect(req.query.redirect_uri);
+
+    if (process.env.NODE_ENV !== "production") {
+      const host = req.get("host");
+      try {
+        const requestOrigin = host ? new URL(`http://${host}`) : null;
+        if (
+          requestOrigin
+          && requestOrigin.port === "5000"
+          && isPrivateDevelopmentHost(requestOrigin.hostname)
+        ) {
+          const localStartUrl = new URL(`/api/auth/local/start/${provider}`, LOCAL_OAUTH_ORIGIN);
+          localStartUrl.searchParams.set("client_redirect", clientRedirect);
+          return sendSuccess(res, 200, { url: localStartUrl.toString() });
+        }
+      } catch {
+        // Use the normal public callback path when the request host is invalid.
+      }
+    }
+
     const callbackUrl = getBackendCallbackUrl(req);
     callbackUrl.searchParams.set("client_redirect", clientRedirect);
     const url = new URL(`${process.env.SUPABASE_URL}/auth/v1/authorize`);
@@ -427,6 +479,107 @@ export async function getOAuthUrl(req: Request, res: Response): Promise<void> {
   } catch (error) {
     sendControllerError(res, error as Error);
   }
+}
+
+// GET /api/auth/local/start/:provider
+// Development-only bridge that deliberately uses Supabase's existing localhost Site URL.
+export async function startLocalOAuth(req: Request, res: Response): Promise<void> {
+  if (!isLocalOAuthRequest(req)) return sendError(res, 404, "Not found");
+
+  const { provider } = req.params;
+  if (provider !== "github" && provider !== "google") {
+    return sendError(res, 400, "Invalid provider.");
+  }
+
+  const clientRedirect = getClientRedirect(req.query.client_redirect);
+  res.cookie(LOCAL_OAUTH_REDIRECT_COOKIE, clientRedirect, {
+    httpOnly: true,
+    sameSite: "lax",
+    secure: false,
+    path: "/",
+    maxAge: 10 * 60 * 1000,
+  });
+
+  const url = new URL(`${process.env.SUPABASE_URL}/auth/v1/authorize`);
+  url.searchParams.set("provider", provider);
+  url.searchParams.set("redirect_to", `${LOCAL_OAUTH_ORIGIN}/`);
+  res.redirect(url.toString());
+}
+
+// POST /api/auth/local/session
+// Converts the localhost fallback's Supabase token into the existing one-time code flow.
+export async function exchangeLocalSupabaseSession(req: Request, res: Response): Promise<void> {
+  if (!isLocalOAuthRequest(req)) return sendError(res, 404, "Not found");
+
+  const accessToken = typeof req.body?.access_token === "string"
+    ? req.body.access_token.trim()
+    : "";
+  if (!accessToken || accessToken.length > 8192) {
+    return sendError(res, 400, "A valid Supabase access token is required");
+  }
+
+  try {
+    const { data, error } = await supabaseAdmin.auth.getUser(accessToken);
+    if (error || !data.user) return sendError(res, 401, "Invalid Supabase session");
+
+    const code = await createOAuthCode(data.user);
+    res.clearCookie(LOCAL_OAUTH_REDIRECT_COOKIE, { path: "/" });
+    return sendSuccess(res, 200, { code });
+  } catch (error) {
+    sendControllerError(res, error);
+  }
+}
+
+// GET / on the development-only port 3000.
+export function serveLocalOAuthBridge(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): void {
+  if (!isLocalOAuthRequest(req)) return next();
+
+  const clientRedirect = getClientRedirect(req.cookies[LOCAL_OAUTH_REDIRECT_COOKIE]);
+  const serializedRedirect = JSON.stringify(clientRedirect).replace(/</g, "\\u003c");
+  res.setHeader("Cache-Control", "no-store");
+  res.type("html").send(`<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Completing sign-in</title></head>
+<body style="margin:0;background:#000;color:#fff;font-family:system-ui;display:grid;place-items:center;min-height:100vh">
+  <main style="text-align:center;padding:24px"><h2>Completing sign-in…</h2><p id="status" style="color:#aaa">Returning to GH Social</p></main>
+  <script>
+    (async function () {
+      const target = ${serializedRedirect};
+      const hash = new URLSearchParams(location.hash.slice(1));
+      const query = new URLSearchParams(location.search);
+      const error = hash.get('error_description') || hash.get('error') || query.get('error_description') || query.get('error');
+      const goBack = (key, value) => {
+        const separator = target.includes('?') ? '&' : '?';
+        location.replace(target + separator + key + '=' + encodeURIComponent(value));
+      };
+      if (error) return goBack('error', error);
+
+      const accessToken = hash.get('access_token');
+      history.replaceState(null, '', '/');
+      if (!accessToken) return goBack('error', 'OAuth completed without a session token');
+
+      try {
+        const response = await fetch('/api/auth/local/session', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ access_token: accessToken })
+        });
+        const payload = await response.json();
+        if (!response.ok || !payload.data?.code) {
+          throw new Error(payload.error || 'Unable to create the local app session');
+        }
+        goBack('code', payload.data.code);
+      } catch (error) {
+        document.getElementById('status').textContent = error.message || 'Local OAuth failed';
+      }
+    })();
+  </script>
+</body>
+</html>`);
 }
 
 // GET /api/auth/callback
@@ -456,33 +609,11 @@ export async function handleOAuthCallback(
       );
     }
 
-    // 2. Ensure the v2 product profile exists before the one-time code references it.
-    const expiresAt = new Date(Date.now() + 5 * 60 * 1000);
-    await ensureIdentityProfile({
-      userId: data.user.id,
-      username: fallbackUsername(data.user.id, data.user.user_metadata),
-      fullName: typeof data.user.user_metadata?.full_name === "string" ? data.user.user_metadata.full_name : null,
-      githubId: typeof data.user.user_metadata?.provider_id === "string" ? data.user.user_metadata.provider_id : null,
-      githubHandle: typeof data.user.user_metadata?.user_name === "string" ? data.user.user_metadata.user_name : null,
-      avatarUrl: typeof data.user.user_metadata?.avatar_url === "string" ? data.user.user_metadata.avatar_url : null,
-    });
-    const [codeData] = await db
-      .insert(oauthCodes)
-      .values({
-        userId: data.user.id,
-        expiresAt,
-      })
-      .returning({ code: oauthCodes.code });
-
-    if (!codeData) {
-      console.error("OAuth Code Insert Error");
-      return res.redirect(
-        `${clientRedirect}?error=Failed to generate auth code`,
-      );
-    }
+    // 2. Ensure the product profile exists and issue a one-time app exchange code.
+    const exchangeCode = await createOAuthCode(data.user);
 
     // 4. Redirect to your frontend with the short-lived code.
-    res.redirect(`${clientRedirect}?code=${codeData.code}`);
+    res.redirect(`${clientRedirect}?code=${exchangeCode}`);
   } catch (error) {
     console.error("OAuth Callback Caught Error:", error);
     res.redirect(`${clientRedirect}?error=Internal server error`);

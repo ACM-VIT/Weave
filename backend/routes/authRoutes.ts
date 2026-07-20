@@ -2,6 +2,7 @@ import { Router } from 'express';
 import {
   confirmPasswordReset,
   exchangeAuthCode,
+  exchangeLocalSupabaseSession,
   getOAuthUrl,
   handleOAuthCallback,
   login,
@@ -9,6 +10,7 @@ import {
   refreshToken,
   requestPasswordReset,
   signUp,
+  startLocalOAuth,
 } from '../controllers/authController.js';
 
 const router: Router = Router();
@@ -17,6 +19,8 @@ const router: Router = Router();
 router.post('/signup', signUp);
 router.post('/login', login);
 router.get('/oauth/:provider', getOAuthUrl);
+router.get('/local/start/:provider', startLocalOAuth);
+router.post('/local/session', exchangeLocalSupabaseSession);
 router.post('/refresh', refreshToken);
 router.post('/logout', logout);
 router.post('/password/reset/request', requestPasswordReset);

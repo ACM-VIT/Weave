@@ -54,7 +54,7 @@
     "start": "expo start",
     "dev": "expo start --web",
     "reset-project": "node ./scripts/reset-project.js",
-    "android": "expo start --android",
+    "android": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/android-local.ps1",
     "ios": "expo start --ios",
     "web": "expo start --web",
     "lint": "expo lint",
