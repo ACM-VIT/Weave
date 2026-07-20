@@ -122,6 +122,24 @@ integration('v2 database, outbox, and Redis feed flows preserve invariants', asy
   `;
   assert.equal(Number(counters[0].likes_count) + Number(counters[0].dislikes_count), 1);
 
+  // User-facing ML work must not wait behind an older bulk repository import.
+  // Onboarding stays ahead of feedback so a new user's vector exists before
+  // their first feedback event reaches the ordered ML consumer.
+  await sqlClient`
+    INSERT INTO telemetry.ml_outbox (
+      job_type,aggregate_id,idempotency_key,payload,created_at
+    ) VALUES
+      ('repo_index',${repoId}::uuid,'integration:old-repo-index','{}'::jsonb,now()-interval '1 day'),
+      ('onboard',${userId}::uuid,'integration:new-onboard','{}'::jsonb,now())
+  `;
+  const priorityWorker = new OutboxService();
+  const [onboardingClaim] = await priorityWorker.claim(1);
+  assert.equal(onboardingClaim.job_type, 'onboard');
+  await priorityWorker.markDelivered(onboardingClaim);
+  const [feedbackClaim] = await priorityWorker.claim(1);
+  assert.equal(feedbackClaim.job_type, 'feedback');
+  await priorityWorker.markDelivered(feedbackClaim);
+
   const firstWorker = new OutboxService();
   const secondWorker = new OutboxService();
   const [claimA, claimB] = await Promise.all([firstWorker.claim(1), secondWorker.claim(1)]);

@@ -43,7 +43,18 @@ export class OutboxService {
         SELECT outbox_id FROM telemetry.ml_outbox
         WHERE (status='pending' AND available_at<=now())
            OR (status='claimed' AND claimed_at < now()-(${leaseMs}::text || ' milliseconds')::interval)
-        ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT ${limit}
+        ORDER BY
+          CASE job_type
+            WHEN 'onboard' THEN 0
+            WHEN 'feedback' THEN 1
+            WHEN 'repo_refresh' THEN 2
+            ELSE 3
+          END,
+          created_at,
+          CASE WHEN job_type='feedback' THEN aggregate_id END,
+          CASE WHEN job_type='feedback' THEN (payload->>'feedback_version')::bigint END,
+          outbox_id
+        FOR UPDATE SKIP LOCKED LIMIT ${limit}
       )
       UPDATE telemetry.ml_outbox outbox SET status='claimed',claimed_at=now(),claim_token=${token}::uuid,
         attempts=outbox.attempts+1
