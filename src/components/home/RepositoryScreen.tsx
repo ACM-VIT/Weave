@@ -20,6 +20,8 @@ import Svg, {
 } from 'react-native-svg';
 import {
   Bookmark,
+  CircleAlert,
+  Eye,
   GitFork,
   MessageCircle,
   Pin,
@@ -153,14 +155,16 @@ export function RepositoryScreen({
 }) {
   const insets = useSafeAreaInsets();
   const compact = pageWidth < 360 || pageHeight < 720;
-  const [liked, setLiked] = React.useState(false);
-  const [disliked, setDisliked] = React.useState(false);
+  const serverLiked = repository.viewerReaction === 'like';
+  const serverDisliked = repository.viewerReaction === 'dislike';
+  const [liked, setLiked] = React.useState(serverLiked);
+  const [disliked, setDisliked] = React.useState(serverDisliked);
   const [starred, setStarred] = React.useState(false);
   const [forked, setForked] = React.useState(false);
   const [pinned, setPinned] = React.useState(false);
 
   const initialLikes = Number(repository.stats.likes || 0) || 0;
-  const likeCount = Math.max(0, initialLikes + (liked ? 1 : 0) - (disliked ? 1 : 0));
+  const likeCount = Math.max(0, initialLikes + Number(liked) - Number(serverLiked));
   const dislikeCount = disliked ? 1 : 0;
   const visibleCommentCount = (commentCount ?? Number(repository.stats.comments || 0)) || 0;
   const language = repository.techStack?.[0] || '';
@@ -318,6 +322,14 @@ export function RepositoryScreen({
               <GitFork size={16} color={forked ? REFERENCE_THEME.success : REFERENCE_THEME.text} strokeWidth={1.9} />
               <Text style={styles.statText}>{formatCount(repository.stats.forks)}</Text>
             </Pressable>
+            <View accessibilityLabel={`${formatCount(repository.stats.views)} views`} style={styles.statButton}>
+              <Eye size={16} color={REFERENCE_THEME.text} strokeWidth={1.9} />
+              <Text style={styles.statText}>{formatCount(repository.stats.views)}</Text>
+            </View>
+            <View accessibilityLabel={`${formatCount(repository.stats.bugs)} open issues`} style={styles.statButton}>
+              <CircleAlert size={16} color={REFERENCE_THEME.text} strokeWidth={1.9} />
+              <Text style={styles.statText}>{formatCount(repository.stats.bugs)}</Text>
+            </View>
           </View>
         </View>
       </View>
@@ -537,8 +549,10 @@ const styles = StyleSheet.create({
   },
   repoStats: {
     flexDirection: 'row',
+    flexWrap: 'wrap',
     alignItems: 'center',
-    gap: 18,
+    columnGap: 14,
+    rowGap: 4,
     transform: [{ translateY: -8 }],
   },
   statButton: {

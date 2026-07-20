@@ -1,4 +1,4 @@
-import { useRouter } from "expo-router";
+import { Href, useRouter } from "expo-router";
 import { useEffect, useRef, useState } from "react";
 import { KeyboardAvoidingView, Platform, ScrollView, Text, TouchableOpacity, View } from "react-native";
 import { isDemoModeEnabled, useAuth } from "../../store/AuthContext";
@@ -13,7 +13,7 @@ import PrimaryButton from "@/components/Auth/PrimaryButton";
 import SocialButton from "@/components/Auth/SocialButton";
 
 import LoginInput from "@/components/Auth/LoginInput";
-import RememberMe from "@/components/Auth/RememberMe";
+import ForgotPassword from "@/components/Auth/ForgotPassword";
 
 import {
     GithubIcon,
@@ -157,8 +157,9 @@ export default function LoginScreen() {
             onChangeText={setPassword}
           />
 
-          {/* Remember me */}
-          <RememberMe />
+          <View className="items-end mt-5">
+            <ForgotPassword onPress={() => router.push('/(auth)/forgot-password' as Href)} />
+          </View>
 
           {errorMsg ? (
             <Text className="text-[#FF453A] text-[13px] font-nata mt-4 text-center">

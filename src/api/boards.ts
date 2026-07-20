@@ -30,10 +30,16 @@ export async function createBoard(_userId: string, boardName: string, token: str
   return { ...board, board_name: board.name, repos_count: 0 };
 }
 
-export async function addRepoToBoardAtomic(_userId: string, boardId: string, repoId: string, token: string) {
+export async function addRepoToBoardAtomic(
+  _userId: string,
+  boardId: string,
+  repoId: string,
+  token: string,
+  attribution?: { serve_id?: string | null; position?: number | null },
+) {
   await apiV2Raw(`/boards/${encodeURIComponent(boardId)}/repositories/${encodeURIComponent(repoId)}`, {
     method: 'PUT',
   }, token);
-  await sendBatchedActivity([{ repo_id: repoId, action: 'save' }], token);
+  await sendBatchedActivity([{ repo_id: repoId, action: 'save', ...attribution }], token);
   return { board_id: boardId, repo_id: repoId };
 }

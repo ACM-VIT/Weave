@@ -1,0 +1,22 @@
+[Unit]
+Description=GH Social Backend API Service
+Documentation=file:///opt/gh-social/docs/runbooks/api-server.md
+Wants=network-online.target
+Requires=docker.service
+After=network-online.target docker.service
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+ExecStartPre=-/usr/bin/docker rm -f gh-social-api
+ExecStart=/usr/bin/docker run --rm --name gh-social-api --network host --env-file /etc/gh-social/backend.env gh-social-backend:current node dist/server.js
+ExecStop=/usr/bin/docker stop --time 30 gh-social-api
+Restart=on-failure
+RestartSec=5
+KillSignal=SIGTERM
+TimeoutStopSec=300
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

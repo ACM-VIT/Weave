@@ -1,0 +1,89 @@
+name: Deploy Backend to AWS
+
+on:
+  push:
+    branches:
+      - main
+      - master
+    paths:
+      - 'backend/**'
+      - '.github/workflows/deploy.yml'
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+
+      - name: Verify backend
+        working-directory: backend
+        run: |
+          npm ci
+          npm run build
+          npm test
+
+      - name: Verify backend container
+        run: |
+          docker build -t gh-social-backend:${{ github.sha }} backend
+          docker save gh-social-backend:${{ github.sha }} | gzip > gh-social-backend.tar.gz
+
+      - name: Upload immutable image and service units
+        uses: appleboy/scp-action@v1.0.0
+        with:
+          host: ${{ secrets.AWS_HOST }}
+          username: ${{ secrets.AWS_USER }}
+          key: ${{ secrets.AWS_PRIVATE_KEY }}
+          source: "gh-social-backend.tar.gz,backend/deploy/systemd/*.service"
+          target: /tmp/gh-social-backend-deploy
+
+      - name: Deploy using SSH
+        uses: appleboy/ssh-action@v1.2.4
+        with:
+          host: ${{ secrets.AWS_HOST }}
+          username: ${{ secrets.AWS_USER }}
+          key: ${{ secrets.AWS_PRIVATE_KEY }}
+          script: |
+            set -e
+            test -f /etc/gh-social/backend.env
+            if sudo docker image inspect gh-social-backend:current >/dev/null 2>&1; then
+              sudo docker tag gh-social-backend:current gh-social-backend:previous
+            fi
+            sudo docker load -i /tmp/gh-social-backend-deploy/gh-social-backend.tar.gz
+            sudo docker tag gh-social-backend:${{ github.sha }} gh-social-backend:current
+            sudo cp /tmp/gh-social-backend-deploy/backend/deploy/systemd/gh-social-api.service /etc/systemd/system/gh-social-api.service
+            sudo cp /tmp/gh-social-backend-deploy/backend/deploy/systemd/gh-social-outbox.service /etc/systemd/system/gh-social-outbox.service
+            sudo cp /tmp/gh-social-backend-deploy/backend/deploy/systemd/gh-social-feed.service /etc/systemd/system/gh-social-feed.service
+            sudo cp /tmp/gh-social-backend-deploy/backend/deploy/systemd/gh-social-maintenance.service /etc/systemd/system/gh-social-maintenance.service
+            sudo systemctl daemon-reload
+            sudo systemctl enable gh-social-api
+            sudo systemctl enable gh-social-outbox
+            sudo systemctl enable gh-social-feed
+            sudo systemctl enable gh-social-maintenance
+            sudo systemctl restart gh-social-api
+            sudo systemctl restart gh-social-outbox
+            sudo systemctl restart gh-social-feed
+            sudo systemctl restart gh-social-maintenance
+            healthy=false
+            for attempt in $(seq 1 12); do
+              if curl --fail --silent --max-time 15 http://127.0.0.1:5000/readyz >/dev/null; then
+                healthy=true
+                break
+              fi
+              sleep 5
+            done
+            if ! $healthy; then
+              if sudo docker image inspect gh-social-backend:previous >/dev/null 2>&1; then
+                sudo docker tag gh-social-backend:previous gh-social-backend:current
+                sudo systemctl restart gh-social-api gh-social-outbox gh-social-feed gh-social-maintenance
+              fi
+              exit 1
+            fi

@@ -9,8 +9,10 @@ import { FeedRequestInProgressError, FeedV2Service } from '../../services/feedV2
 
 const repo: RepositoryProjection = {
   repo_id: '00000000-0000-4000-8000-000000000001', full_name: 'owner/repo', description: null,
-  primary_language: 'TypeScript', topics: [], star_count: 1, fork_count: 0, summary_id: null,
-  summary: null, status: 'active',
+  primary_language: 'TypeScript', languages: ['TypeScript'], topics: [], star_count: 1, fork_count: 0,
+  likes_count: 0, comments_count: 0, views_count: 0, open_issues_count: 0,
+  summary_id: null, summary: null, readme_md: null, updated_at: null, status: 'active',
+  viewer_reaction: null, viewer_saved: false,
 };
 
 class FakePersistence implements FeedPersistencePort {

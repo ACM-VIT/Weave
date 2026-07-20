@@ -1,9 +1,5 @@
 import { Tabs } from 'expo-router';
 import { Home, Search, User } from 'lucide-react-native';
-import { useEffect, useMemo, type ReactNode } from 'react';
-import { Animated, Easing, StyleSheet, View, type ColorValue } from 'react-native';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import Svg, { Circle, Path } from 'react-native-svg';
 
 export default function TabsLayout() {
   return (

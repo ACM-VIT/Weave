@@ -1,14 +1,16 @@
 import * as SecureStore from 'expo-secure-store';
 import { Platform } from 'react-native';
 
+function getWebStorage(key: string): Storage {
+  if (key === 'access_token' && typeof sessionStorage !== 'undefined') return sessionStorage;
+  if (typeof localStorage !== 'undefined') return localStorage;
+  throw new Error('Browser storage is unavailable');
+}
+
 export async function setStorageItem(key: string, value: string): Promise<void> {
   if (Platform.OS === 'web') {
     try {
-      if (typeof localStorage !== 'undefined') {
-        localStorage.setItem(key, value);
-      } else {
-        throw new Error('localStorage is undefined');
-      }
+      getWebStorage(key).setItem(key, value);
     } catch (e) {
       console.error('Local storage error:', e);
       throw e;
@@ -21,9 +23,7 @@ export async function setStorageItem(key: string, value: string): Promise<void> 
 export async function getStorageItem(key: string): Promise<string | null> {
   if (Platform.OS === 'web') {
     try {
-      if (typeof localStorage !== 'undefined') {
-        return localStorage.getItem(key);
-      }
+      return getWebStorage(key).getItem(key);
     } catch (e) {
       console.error('Local storage is unavailable:', e);
     }
@@ -36,11 +36,7 @@ export async function getStorageItem(key: string): Promise<string | null> {
 export async function removeStorageItem(key: string): Promise<void> {
   if (Platform.OS === 'web') {
     try {
-      if (typeof localStorage !== 'undefined') {
-        localStorage.removeItem(key);
-      } else {
-        throw new Error('localStorage is undefined');
-      }
+      getWebStorage(key).removeItem(key);
     } catch (e) {
       console.error('Local storage error:', e);
       throw e;

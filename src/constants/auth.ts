@@ -4,10 +4,10 @@ export const AUTH_BYPASS_PROFILE_STORAGE_KEY = "auth_bypass_profile"
 
 export const AUTH_BYPASS_USER = {
   user_id: "local-development-user",
-  username: "navyaabatra",
+  username: "demo_user",
   email: "local-development@gh-social.test",
-  full_name: "Navyaa Batra",
-  bio: "Full stack developer",
+  full_name: "Demo User",
+  bio: "Developer preview",
   onboarding_completed: true,
   likes_given_count: 1200,
   followers_count: 300,

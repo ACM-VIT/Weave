@@ -5,12 +5,25 @@ import { createUuid, getAppSessionId } from '../utils/uuid';
 export type { FeedbackAction } from '../constants/feedbackActions';
 
 export type QueuedActivity = {
+  event_id: string;
+  client_occurred_at: string;
   repo_id: string;
   action: FeedbackAction;
   dwell_seconds?: number;
   serve_id?: string | null;
   position?: number | null;
 };
+
+export type ActivityInput = Omit<QueuedActivity, 'event_id' | 'client_occurred_at'>
+  & Partial<Pick<QueuedActivity, 'event_id' | 'client_occurred_at'>>;
+
+export function prepareQueuedActivity(event: ActivityInput): QueuedActivity {
+  return {
+    ...event,
+    event_id: event.event_id ?? createUuid(),
+    client_occurred_at: event.client_occurred_at ?? new Date().toISOString(),
+  };
+}
 
 export async function getSavedRepos(_userId: string, token: string, limit = 20, offset = 0) {
   const data = await apiV2<{ items: Record<string, unknown>[] }>(`/repositories/saved?limit=${limit}&offset=${offset}`, {}, token);
@@ -22,15 +35,21 @@ export async function getSavedRepos(_userId: string, token: string, limit = 20, 
   }));
 }
 
-export async function toggleSaveRepo(_userId: string, repoId: string, token: string) {
-  return sendBatchedActivity([{ repo_id: repoId, action: 'save' }], token);
+export async function toggleSaveRepo(
+  _userId: string,
+  repoId: string,
+  token: string,
+  saved: boolean,
+) {
+  return sendBatchedActivity([
+    prepareQueuedActivity({ repo_id: repoId, action: saved ? 'unsave' : 'save' }),
+  ], token);
 }
 
-export async function sendBatchedActivity(events: QueuedActivity[], token: string) {
+export async function sendBatchedActivity(events: ActivityInput[], token: string) {
   if (events.length === 0) return;
-  const now = new Date().toISOString();
-  const payload = events.map((event) => ({
-    event_id: createUuid(),
+  const payload = events.map(prepareQueuedActivity).map((event) => ({
+    event_id: event.event_id,
     schema_version: 2 as const,
     session_id: getAppSessionId(),
     serve_id: event.serve_id ?? null,
@@ -40,7 +59,7 @@ export async function sendBatchedActivity(events: QueuedActivity[], token: strin
     dwell_ms: event.action === 'dwell'
       ? Math.min(300_000, Math.max(3_000, Math.round((event.dwell_seconds ?? 3) * 1_000)))
       : null,
-    client_occurred_at: now,
+    client_occurred_at: event.client_occurred_at,
     context: { client: 'expo', source: event.serve_id ? 'feed' : 'product' },
   }));
   const { data } = await apiV2Raw('/interactions/batch', {

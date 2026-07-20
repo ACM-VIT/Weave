@@ -139,9 +139,26 @@ integration('registered v2 HTTP paths complete controlled integration flows', as
     const boardId = ((await board.json()) as { data: { board_id: string } }).data.board_id;
     const addRepo = await fetch(`${base}/api/v2/boards/${boardId}/repositories/${repoId}`, { method: 'PUT', headers: authHeaders });
     assert.equal(addRepo.status, 204);
+    const duplicateAdd = await fetch(`${base}/api/v2/boards/${boardId}/repositories/${repoId}`, { method: 'PUT', headers: authHeaders });
+    assert.equal(duplicateAdd.status, 204);
+    assert.equal(Number((await sqlClient`
+      SELECT count(*) AS count FROM app.saves WHERE user_id=${userId}::uuid AND repo_id=${repoId}::uuid
+    `)[0].count), 1);
+    assert.equal(Number((await sqlClient`
+      SELECT saves_count FROM app.repo_engagement WHERE repo_id=${repoId}::uuid
+    `)[0].saves_count), 1);
+    assert.equal(Number((await sqlClient`
+      SELECT saved_repos_count FROM app.user_stats WHERE user_id=${userId}::uuid
+    `)[0].saved_repos_count), 1);
     const boardRepos = await fetch(`${base}/api/v2/boards/${boardId}/repositories`, { headers: authHeaders });
     assert.equal(boardRepos.status, 200);
     assert.equal(((await boardRepos.json()) as { data: { items: unknown[] } }).data.items.length, 1);
+    const savedRepos = await fetch(`${base}/api/v2/repositories/saved`, { headers: authHeaders });
+    assert.equal(savedRepos.status, 200);
+    assert.deepEqual(
+      ((await savedRepos.json()) as { data: { items: Array<{ repo_id: string }> } }).data.items.map((item) => item.repo_id),
+      [repoId],
+    );
 
     const legacy = await fetch(`${base}/api/users/id/${userId}`, { headers: authHeaders });
     assert.equal(legacy.status, 404);

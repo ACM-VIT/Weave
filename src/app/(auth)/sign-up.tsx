@@ -1,4 +1,4 @@
-import { useRouter } from 'expo-router';
+import { Href, useRouter } from 'expo-router';
 import { ScrollView, Text, View } from 'react-native';
 import { useOAuth } from '../../hooks/useOAuth';
 
@@ -85,8 +85,8 @@ export default function SignUpScreen() {
 
         <Text className="text-[rgba(235,235,245,0.3)] text-[16px] text-center mt-6 leading-6 font-nata">
           By signing up, you agree to our{'\n'}
-          <Text className="text-[#63E08A] font-nata">Terms of Service</Text>{' '}
-          and <Text className="text-[#63E08A] font-nata">Privacy Policy</Text>.
+          <Text accessibilityRole="link" onPress={() => router.push('/terms' as Href)} className="text-[#63E08A] font-nata">Terms of Service</Text>{' '}
+          and <Text accessibilityRole="link" onPress={() => router.push('/privacy' as Href)} className="text-[#63E08A] font-nata">Privacy Policy</Text>.
         </Text>
         </View>
       </ScrollView>

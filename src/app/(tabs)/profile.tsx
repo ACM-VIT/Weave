@@ -3,7 +3,9 @@ import { ActivityIndicator, Modal, Pressable, ScrollView, Text, TextInput, View,
 import { Bookmark, ChevronRight, LogOut, Pin, Square, SquarePen } from "lucide-react-native"
 import { Href, router } from "expo-router"
 import { useSafeAreaInsets } from "react-native-safe-area-context"
+import { useQuery } from "@tanstack/react-query"
 import { API_URL } from "@/api/config"
+import { getProfileContent } from "@/api/profile"
 import { useAuth } from "@/store/AuthContext"
 import { AUTH_BYPASS_ENABLED, AUTH_BYPASS_PROFILE_STORAGE_KEY } from "@/constants/auth"
 import { getStorageItem, setStorageItem } from "@/utils/storage"
@@ -11,21 +13,9 @@ import { formatCompactCount } from "@/utils/format-count"
 
 type TabName = "Lists" | "Repositories"
 
-const DEFAULT_USERNAME = "navyaabatra"
+const DEFAULT_USERNAME = "user"
 const COLORS = { background: "#000000", card: "#151515", selected: "#68686B", white: "#F7F7F8", muted: "#77767C", green: "#63E08A", purple: "#9B4FE4" }
-const pinnedLists = ["meal-planner", "QuickNotes", "Travel-mate"]
-const collections = [
-  { name: "Game development", count: 24, color: "#A849D8" },
-  { name: "Design and UI", count: 61, color: "#F04C70" },
-  { name: "Open source", count: 71, color: "#38AAE1" },
-]
-const pinnedRepositories = ["github-social-mobileapp", "weather-app", "task-manager"]
-const repositories = [
-  { name: "notes-app", stars: 128 },
-  { name: "calculator-app", stars: 54 },
-  { name: "no-name-app", stars: 12 },
-  { name: "stocks-app", stars: 86 },
-]
+const COLLECTION_COLORS = ["#A849D8", "#F04C70", "#38AAE1", "#2E9E6B"]
 
 function requestError(error: unknown, fallback: string) {
   if (error instanceof TypeError) return `Unable to connect to the local backend at ${API_URL}.`
@@ -43,13 +33,26 @@ export default function ProfileScreen() {
   const [loggingOut, setLoggingOut] = useState(false)
   const [logoutError, setLogoutError] = useState("")
   const [savedProfile, setSavedProfile] = useState<{ name: string; job: string; username: string } | null>(null)
-  const name = savedProfile?.name ?? user?.full_name ?? "Navyaa Batra"
-  const job = savedProfile?.job ?? user?.bio ?? "Full stack developer"
+  const name = savedProfile?.name ?? user?.full_name ?? "Weave user"
+  const job = savedProfile?.job ?? user?.bio ?? "Developer"
   const username = savedProfile?.username ?? user?.username ?? DEFAULT_USERNAME
   const [draft, setDraft] = useState({ name, job, username })
   const [isSaving, setIsSaving] = useState(false)
   const [editError, setEditError] = useState("")
   const [activeTab, setActiveTab] = useState<TabName>("Lists")
+  const profileContentQuery = useQuery({
+    queryKey: ["profile-content", user?.user_id],
+    enabled: Boolean(user?.user_id) && !user?.isPreview && !AUTH_BYPASS_ENABLED,
+    queryFn: async () => {
+      const token = await getStorageItem("access_token")
+      if (!token) throw new Error("Your session has expired. Please log in again.")
+      return getProfileContent(token)
+    },
+    staleTime: 60_000,
+  })
+  const boards = profileContentQuery.data?.boards ?? []
+  const collections = profileContentQuery.data?.collections ?? []
+  const repositories = profileContentQuery.data?.repositories ?? []
 
   const openEditor = () => {
     setDraft({ name, job, username })
@@ -154,40 +157,53 @@ export default function ProfileScreen() {
   const jobFontSize = fitSingleLineText(job, isCompact ? 12 : 15, detailsWidth)
   const fullNameFontSize = fitSingleLineText(name, isCompact ? 11 : 14, detailsWidth)
 
-  const listContent = activeTab === "Lists" ? <View key="lists" style={{ minHeight: tabContentHeight, gap: sectionGap }}>
+  const loadingContent = profileContentQuery.isLoading && !AUTH_BYPASS_ENABLED
+  const contentError = profileContentQuery.isError
+  const contentState = loadingContent ? (
+    <View style={{ minHeight: tabContentHeight, alignItems: "center", justifyContent: "center", gap: 12 }}>
+      <ActivityIndicator color="#63E08A" />
+      <Text className="text-[#77767C] font-nata">Loading your profile content…</Text>
+    </View>
+  ) : contentError ? (
+    <View style={{ minHeight: tabContentHeight, alignItems: "center", justifyContent: "center", gap: 12 }}>
+      <Text className="text-[#FF6878] font-nata text-center">Unable to load your saved content.</Text>
+      <Pressable onPress={() => void profileContentQuery.refetch()} className="rounded-[12px] bg-[#292929] px-5 py-3">
+        <Text className="text-white font-nataSemiBold">Retry</Text>
+      </Pressable>
+    </View>
+  ) : null
+
+  const listContent = contentState ?? (activeTab === "Lists" ? <View key="lists" style={{ minHeight: tabContentHeight, gap: sectionGap }}>
     <View style={{ gap: contentGap }}>
-      {pinnedLists.map((item) => <View key={item} className="w-full flex-row items-center bg-[#151515]" style={{ height: cardHeight, paddingHorizontal: "5%", borderRadius: 16, gap: "4%", borderCurve: "continuous" }}>
+      {boards.map((item) => <View key={item.board_id} className="w-full flex-row items-center bg-[#151515]" style={{ height: cardHeight, paddingHorizontal: "5%", borderRadius: 16, gap: "4%", borderCurve: "continuous" }}>
         <Square size={isCompact ? 15 : 18} color="#B8B7BD" />
-        <Text numberOfLines={1} className="flex-1 text-white font-nata" style={{ fontSize: isCompact ? 13 : 16 }}>{item}</Text>
+        <Text numberOfLines={1} className="flex-1 text-white font-nata" style={{ fontSize: isCompact ? 13 : 16 }}>{item.name}</Text>
+        <Text className="text-[#77767C] font-nata">{item.repo_count}</Text>
         <Pin size={isCompact ? 14 : 17} color="#1EE15B" />
       </View>)}
+      {boards.length === 0 ? <Text className="text-[#77767C] font-nata text-center py-5">No boards yet.</Text> : null}
     </View>
     <Text className="text-[#63E08A] font-nataMedium" style={{ fontSize: isCompact ? 13 : 16 }}>Saved Collections</Text>
     <View style={{ gap: contentGap }}>
-      {collections.map((item) => <View key={item.name} className="w-full flex-row items-center bg-[#151515]" style={{ height: cardHeight, paddingHorizontal: "4%", borderRadius: 16, gap: "4%", borderCurve: "continuous" }}>
-        <View className="items-center justify-center" style={{ height: "70%", aspectRatio: 1, borderRadius: 9, backgroundColor: item.color, borderCurve: "continuous" }}><Bookmark size={isCompact ? 13 : 16} color="white" /></View>
+      {collections.map((item, index) => <View key={item.collection_id} className="w-full flex-row items-center bg-[#151515]" style={{ height: cardHeight, paddingHorizontal: "4%", borderRadius: 16, gap: "4%", borderCurve: "continuous" }}>
+        <View className="items-center justify-center" style={{ height: "70%", aspectRatio: 1, borderRadius: 9, backgroundColor: COLLECTION_COLORS[index % COLLECTION_COLORS.length], borderCurve: "continuous" }}><Bookmark size={isCompact ? 13 : 16} color="white" /></View>
         <Text numberOfLines={1} className="flex-1 text-white font-nata" style={{ fontSize: isCompact ? 13 : 16 }}>{item.name}</Text>
-        <Text className="text-[#67666C] font-nata" style={{ fontVariant: ["tabular-nums"] }}>{item.count}</Text>
+        <Text className="text-[#67666C] font-nata" style={{ fontVariant: ["tabular-nums"] }}>{item.board_count}</Text>
         <ChevronRight size={isCompact ? 14 : 17} color="#4F4E54" />
       </View>)}
+      {collections.length === 0 ? <Text className="text-[#77767C] font-nata text-center py-5">No collections yet.</Text> : null}
     </View>
   </View> : <View key="repositories" style={{ minHeight: tabContentHeight, gap: sectionGap }}>
+    <Text className="text-[#63E08A] font-nataMedium" style={{ fontSize: isCompact ? 13 : 16 }}>Saved Repositories</Text>
     <View style={{ gap: contentGap }}>
-      {pinnedRepositories.map((item) => <View key={item} className="w-full flex-row items-center bg-[#151515]" style={{ height: cardHeight, paddingHorizontal: "5%", borderRadius: 16, gap: "4%", borderCurve: "continuous" }}>
+      {repositories.map((item) => <View key={item.repo_id} className="w-full flex-row items-center bg-[#151515]" style={{ height: cardHeight, paddingHorizontal: "5%", borderRadius: 16, gap: "4%", borderCurve: "continuous" }}>
         <Square size={isCompact ? 15 : 18} color="#B8B7BD" />
-        <Text numberOfLines={1} className="flex-1 text-white font-nata" style={{ fontSize: isCompact ? 13 : 16 }}>{item}</Text>
-        <Pin size={isCompact ? 14 : 17} color="#1EE15B" />
+        <Text numberOfLines={1} className="flex-1 text-white font-nata" style={{ fontSize: isCompact ? 13 : 16 }}>{item.full_name || item.name}</Text>
+        <Text className="text-[#FFD600] font-nata" style={{ fontSize: isCompact ? 11 : 13 }}>★ <Text className="text-[#77767C]">{formatCompactCount(item.star_count)}</Text></Text>
       </View>)}
+      {repositories.length === 0 ? <Text className="text-[#77767C] font-nata text-center py-5">No saved repositories yet.</Text> : null}
     </View>
-    <Text className="text-[#63E08A] font-nataMedium" style={{ fontSize: isCompact ? 13 : 16 }}>All Repositories</Text>
-    <View style={{ gap: contentGap }}>
-      {repositories.map((item) => <View key={item.name} className="w-full flex-row items-center bg-[#151515]" style={{ height: cardHeight, paddingHorizontal: "5%", borderRadius: 16, gap: "4%", borderCurve: "continuous" }}>
-        <Square size={isCompact ? 15 : 18} color="#B8B7BD" />
-        <Text numberOfLines={1} className="flex-1 text-white font-nata" style={{ fontSize: isCompact ? 13 : 16 }}>{item.name}</Text>
-        <Text className="text-[#FFD600] font-nata" style={{ fontSize: isCompact ? 11 : 13 }}>★ <Text className="text-[#77767C]">{item.stars}</Text></Text>
-      </View>)}
-    </View>
-  </View>
+  </View>)
 
   return (
     <ScrollView
@@ -235,7 +251,7 @@ export default function ProfileScreen() {
           <Text className="text-white font-nataBold text-[27px]">Edit profile</Text>
           {[
             { key: "username" as const, label: "Username" },
-            { key: "job" as const, label: "Job role" },
+            { key: "job" as const, label: "Bio" },
             { key: "name" as const, label: "Name" },
           ].map((field) => <View key={field.key} className="gap-2"><Text className="text-[#63E08A] font-nataMedium">{field.label}</Text><TextInput value={draft[field.key]} onChangeText={(value) => setDraft((current) => ({ ...current, [field.key]: value }))} autoCapitalize={field.key === "username" ? "none" : "sentences"} className="min-h-[54px] text-white bg-[#151515] rounded-[14px] px-[5%] font-nata text-base" /></View>)}
           {editError ? <Text selectable className="text-[#FF6878] font-nata">{editError}</Text> : null}

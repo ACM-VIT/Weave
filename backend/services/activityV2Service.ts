@@ -7,6 +7,7 @@ import {
 } from '../contracts/interactions.v2.js';
 import { FEEDBACK_WEIGHTS } from '../config/feedback.js';
 import { sqlClient } from '../db/index.js';
+import { setRepositorySaved } from './savedRepositoryService.js';
 
 export type ReactionState = 'like' | 'dislike' | null;
 
@@ -129,26 +130,12 @@ export async function processInteractionBatchV2(
           `;
         }
       } else if (event.event_type === 'save' || event.event_type === 'unsave') {
-        const currentRows = await tx`
-          SELECT 1 FROM app.saves WHERE user_id=${userId}::uuid AND repo_id=${event.repo_id}::uuid FOR UPDATE
-        `;
-        const before = currentRows.length > 0;
-        const after = event.event_type === 'save';
-        stateChanged = before !== after;
-        if (stateChanged) {
-          if (after) await tx`INSERT INTO app.saves (user_id,repo_id) VALUES (${userId}::uuid,${event.repo_id}::uuid)`;
-          else await tx`DELETE FROM app.saves WHERE user_id=${userId}::uuid AND repo_id=${event.repo_id}::uuid`;
-          const delta = Number(after) - Number(before);
-          await tx`INSERT INTO app.repo_engagement (repo_id) VALUES (${event.repo_id}::uuid) ON CONFLICT DO NOTHING`;
-          await tx`
-            UPDATE app.repo_engagement SET saves_count=GREATEST(0,saves_count+${delta}),updated_at=now()
-            WHERE repo_id=${event.repo_id}::uuid
-          `;
-          await tx`
-            UPDATE app.user_stats SET saved_repos_count=GREATEST(0,saved_repos_count+${delta}),updated_at=now()
-            WHERE user_id=${userId}::uuid
-          `;
-        }
+        stateChanged = await setRepositorySaved(
+          tx,
+          userId,
+          event.repo_id,
+          event.event_type === 'save',
+        );
       }
 
       await tx`

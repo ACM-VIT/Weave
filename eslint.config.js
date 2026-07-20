@@ -7,7 +7,7 @@ module.exports = defineConfig([
   {
     ignores: ["backend/**", "dist/**", "scratch-*.js"],
     rules: {
-      "import/no-unresolved": ["error", { ignore: ["\\.svg$", "^react-native-markdown-display$"] }],
+      "import/no-unresolved": ["error", { ignore: ["\\.svg$"] }],
       "import/namespace": "off",
     },
   }

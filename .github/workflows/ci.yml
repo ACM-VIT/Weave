@@ -1,0 +1,45 @@
+name: Verify GitSocial
+
+on:
+  pull_request:
+  push:
+    branches: [dev, main, master]
+
+jobs:
+  frontend:
+    runs-on: ubuntu-latest
+    env:
+      EXPO_PUBLIC_BACKEND_URL: https://api.example.invalid/api
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run doctor
+      - run: npx expo install --check
+      - run: npm audit --omit=dev --audit-level=high
+      - run: npm run export:all -- --output-dir dist
+
+  backend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+      - run: npm ci
+      - run: npm run build
+      - run: npm test
+      - name: Build production image
+        working-directory: .
+        run: docker build -t gh-social-backend:${{ github.sha }} backend

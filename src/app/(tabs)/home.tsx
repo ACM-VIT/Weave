@@ -1,6 +1,7 @@
-import { useState, useRef, useCallback, useMemo } from 'react';
+import { useState, useRef, useCallback, useEffect, useMemo } from 'react';
 import {
   ActivityIndicator,
+  AppState,
   FlatList,
   Platform,
   Pressable,
@@ -18,14 +19,22 @@ import { REFERENCE_THEME } from '@/constants/theme';
 import { useInfiniteQuery } from '@tanstack/react-query';
 import * as SecureStore from '../../utils/storage';
 import { fetchFeed } from '@/api/feed';
-import { sendBatchedActivity, type FeedbackAction, type QueuedActivity } from '@/api/activity';
+import {
+  prepareQueuedActivity,
+  sendBatchedActivity,
+  type FeedbackAction,
+  type QueuedActivity,
+} from '@/api/activity';
 import { useAuth } from '@/store/AuthContext';
+import { loadActivityOutbox, persistActivityOutbox } from '@/services/activityOutboxStorage';
 
 const WEB_FEED_LIST_STYLE =
   Platform.OS === 'web'
     ? ({ overflowY: 'auto', scrollSnapType: 'y mandatory' } as ViewStyle)
     : null;
 const VIEWABILITY_CONFIG = { itemVisiblePercentThreshold: 50 } as const;
+const ACTIVITY_FLUSH_INTERVAL_MS = 8_000;
+const ACTIVITY_RETRY_MAX_MS = 60_000;
 
 // Helper to map backend ML JSON to the frontend RepositoryData format
 function mapBackendToFrontend(backendItem: any): RepositoryData {
@@ -47,6 +56,9 @@ function mapBackendToFrontend(backendItem: any): RepositoryData {
     id: backendItem.repo_id || repoFullName || Math.random().toString(),
     serveId: backendItem.serve_id ?? null,
     feedPosition: backendItem.position ?? null,
+    viewerReaction: backendItem.viewer_reaction === 'like' || backendItem.viewer_reaction === 'dislike'
+      ? backendItem.viewer_reaction : null,
+    viewerSaved: backendItem.viewer_saved === true,
     title,
     owner,
     description: backendItem.description || '',
@@ -80,28 +92,44 @@ export default function HomeScreen() {
   const pageHeight = viewport.height;
   
   const pendingActivityBatch = useRef<QueuedActivity[]>([]);
+  const flushPromiseRef = useRef<Promise<void> | null>(null);
+  const activityUserIdRef = useRef<string | null>(null);
+  const retryDelayRef = useRef(1_000);
+  const retryNotBeforeRef = useRef(0);
 
   const flushActivityBatch = useCallback(async () => {
-    if (pendingActivityBatch.current.length > 0) {
+    if (flushPromiseRef.current) return flushPromiseRef.current;
+    const operation = (async () => {
+      if (pendingActivityBatch.current.length === 0) return;
+      if (Date.now() < retryNotBeforeRef.current) return;
       const token = await SecureStore.getItemAsync('access_token');
-      if (token) {
-        const events = [...pendingActivityBatch.current];
-        pendingActivityBatch.current = [];
-        try {
-          await sendBatchedActivity(events, token);
-        } catch (err: any) {
-          const errorMessage = err?.message?.toLowerCase() || '';
-          const isAuthError = errorMessage.includes('token') || errorMessage.includes('unauthorized');
-          
-          if (!isAuthError) {
-            // It's likely a network error, put the events back in the queue to retry later
-            pendingActivityBatch.current = [...events, ...pendingActivityBatch.current];
-            console.log('Network issue: restored batched activity to queue');
-          } else {
-            console.log('Auth issue: discarding batched activity');
-          }
-        }
+      if (!token) return;
+
+      const events = [...pendingActivityBatch.current];
+      pendingActivityBatch.current = [];
+      const ownerId = activityUserIdRef.current;
+      if (ownerId) void persistActivityOutbox(ownerId, pendingActivityBatch.current);
+      try {
+        await sendBatchedActivity(events, token);
+        retryDelayRef.current = 1_000;
+        retryNotBeforeRef.current = 0;
+      } catch {
+        const queuedIds = new Set(pendingActivityBatch.current.map((event) => event.event_id));
+        pendingActivityBatch.current = [
+          ...events.filter((event) => !queuedIds.has(event.event_id)),
+          ...pendingActivityBatch.current,
+        ];
+        if (ownerId) await persistActivityOutbox(ownerId, pendingActivityBatch.current);
+        retryNotBeforeRef.current = Date.now() + retryDelayRef.current;
+        retryDelayRef.current = Math.min(ACTIVITY_RETRY_MAX_MS, retryDelayRef.current * 2);
+        throw new Error('Activity delivery failed; events remain queued.');
       }
+    })();
+    flushPromiseRef.current = operation;
+    try {
+      await operation;
+    } finally {
+      flushPromiseRef.current = null;
     }
   }, []);
 
@@ -142,20 +170,63 @@ export default function HomeScreen() {
         repository: mapBackendToFrontend(item),
       })) || [], [data?.pages, isPreview]);
 
+  const feedContextRef = useRef(new Map<string, { serve_id: string | null; position: number | null }>());
+  useEffect(() => {
+    feedContextRef.current = new Map(feedItems.map(({ repository }) => [repository.id, {
+      serve_id: repository.serveId ?? null,
+      position: repository.feedPosition ?? null,
+    }]));
+  }, [feedItems]);
+
   const handleQueueActivity = useCallback((event: { repo_id: string; action: FeedbackAction; dwell_seconds?: number }, flushNow?: boolean) => {
     if (isPreview) return;
 
-    const item = feedItems.find((feedItem) => feedItem.repository.id === event.repo_id);
-    pendingActivityBatch.current.push({
+    const context = feedContextRef.current.get(event.repo_id);
+    pendingActivityBatch.current.push(prepareQueuedActivity({
       ...event,
-      serve_id: item?.repository.serveId ?? null,
-      position: item?.repository.feedPosition ?? null,
-    });
+      serve_id: context?.serve_id ?? null,
+      position: context?.position ?? null,
+    }));
+    const ownerId = activityUserIdRef.current;
+    if (ownerId) void persistActivityOutbox(ownerId, pendingActivityBatch.current);
     
     if (flushNow || pendingActivityBatch.current.length >= 10) {
-      flushActivityBatch();
+      void flushActivityBatch().catch(() => undefined);
     }
-  }, [feedItems, flushActivityBatch, isPreview]);
+  }, [flushActivityBatch, isPreview]);
+
+  useEffect(() => {
+    if (isPreview || !user?.user_id) return;
+    const ownerId = user.user_id;
+    let cancelled = false;
+    activityUserIdRef.current = ownerId;
+
+    void loadActivityOutbox(ownerId).then((stored) => {
+      if (cancelled) return;
+      const existingIds = new Set(pendingActivityBatch.current.map((event) => event.event_id));
+      pendingActivityBatch.current = [
+        ...stored.filter((event) => !existingIds.has(event.event_id)),
+        ...pendingActivityBatch.current,
+      ];
+      void flushActivityBatch().catch(() => undefined);
+    });
+
+    const interval = setInterval(() => {
+      void flushActivityBatch().catch(() => undefined);
+    }, ACTIVITY_FLUSH_INTERVAL_MS);
+    const subscription = AppState.addEventListener('change', (state) => {
+      if (state !== 'active') void flushActivityBatch().catch(() => undefined);
+    });
+
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+      subscription.remove();
+      void persistActivityOutbox(ownerId, pendingActivityBatch.current);
+      void flushActivityBatch().catch(() => undefined);
+      if (activityUserIdRef.current === ownerId) activityUserIdRef.current = null;
+    };
+  }, [flushActivityBatch, isPreview, user?.user_id]);
 
   const [viewableItems, setViewableItems] = useState<string[]>([]);
   const onViewableItemsChanged = useCallback(({ viewableItems }: any) => {

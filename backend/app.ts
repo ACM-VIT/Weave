@@ -18,44 +18,18 @@ import productV2Routes from './routes/productV2Routes.js';
 import { readiness } from './controllers/operationsController.js';
 import { requestTelemetry } from './middlewares/requestTelemetryMiddleware.js';
 import { authRateLimit, securityHeaders } from './middlewares/securityMiddleware.js';
+import { isCorsOriginAllowed } from './security/originPolicy.js';
 
 const app = express();
 app.disable('x-powered-by');
 if (process.env.TRUST_PROXY === 'true') app.set('trust proxy', 1);
 
-const configuredCorsOrigins = new Set(
-  [
+const configuredCorsOrigins = [
     ...(process.env.CORS_ORIGINS ?? '').split(','),
     process.env.CLIENT_URL?.startsWith('http') ? process.env.CLIENT_URL : '',
   ]
     .map((origin) => origin.trim().replace(/\/$/, ''))
-    .filter(Boolean),
-);
-
-const isLocalDevelopmentOrigin = (origin: string): boolean => {
-  if (process.env.NODE_ENV === 'production') return false;
-
-  try {
-    const url = new URL(origin);
-    const private172Match = url.hostname.match(/^172\.(\d{1,2})\./);
-    const isPrivate172 = Boolean(
-      private172Match &&
-        Number(private172Match[1]) >= 16 &&
-        Number(private172Match[1]) <= 31,
-    );
-    return (
-      (url.protocol === 'http:' || url.protocol === 'https:') &&
-      (url.hostname === 'localhost' ||
-        url.hostname === '127.0.0.1' ||
-        url.hostname === '10.0.2.2' ||
-        url.hostname.startsWith('10.') ||
-        url.hostname.startsWith('192.168.') ||
-        isPrivate172)
-    );
-  } catch {
-    return false;
-  }
-};
+    .filter(Boolean);
 
 // Global middleware used by every route.
 app.use(
@@ -64,16 +38,16 @@ app.use(
     // explicitly configured in production; local/LAN origins are allowed in dev.
     origin: (origin, callback) => {
       const normalizedOrigin = origin?.replace(/\/$/, '');
-      if (
-        !normalizedOrigin ||
-        configuredCorsOrigins.has(normalizedOrigin) ||
-        isLocalDevelopmentOrigin(normalizedOrigin)
-      ) {
+      if (isCorsOriginAllowed(normalizedOrigin, configuredCorsOrigins, process.env.NODE_ENV)) {
         callback(null, true);
         return;
       }
 
-      callback(new Error(`CORS origin is not allowed: ${normalizedOrigin}`));
+      const error = new Error(`CORS origin is not allowed: ${normalizedOrigin}`) as Error & {
+        code?: string;
+      };
+      error.code = 'CORS_ORIGIN_DENIED';
+      callback(error);
     },
     credentials: true,
   })
@@ -113,7 +87,11 @@ app.use('/api/internal/v2/ingestion', ingestionRoutes);
 app.use('/api/internal/v2/operations', operationsRoutes);
 
 // Global error handler.
-app.use((err: Error & { type?: string }, _req: Request, res: Response, _next: NextFunction) => {
+app.use((err: Error & { code?: string; type?: string }, _req: Request, res: Response, _next: NextFunction) => {
+  if (err.code === 'CORS_ORIGIN_DENIED') {
+    res.status(403).json({ error: 'Request origin is not allowed.' });
+    return;
+  }
   if (err.type === 'entity.too.large') {
     res.status(413).json({ error: 'Request payload exceeds 256 KB.' });
     return;

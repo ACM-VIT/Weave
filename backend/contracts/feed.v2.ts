@@ -16,11 +16,20 @@ export interface RepositoryProjection {
   full_name: string;
   description: string | null;
   primary_language: string | null;
+  languages: string[];
   topics: string[];
   star_count: number;
   fork_count: number;
+  likes_count: number;
+  comments_count: number;
+  views_count: number;
+  open_issues_count: number;
   summary_id: string | null;
   summary: string | null;
+  readme_md: string | null;
+  updated_at: string | null;
+  viewer_reaction: 'like' | 'dislike' | null;
+  viewer_saved: boolean;
   status: 'active' | 'archived' | 'deleted' | 'blocked';
 }
 

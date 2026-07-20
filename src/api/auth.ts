@@ -86,3 +86,35 @@ export const exchangeCode = async (code: string): Promise<{ accessToken: string;
   }
   return data.data as { accessToken: string; user: any };
 };
+
+export const requestPasswordReset = async (email: string): Promise<string> => {
+  const response = await fetch(`${API_URL}/auth/password/reset/request`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    credentials: 'include',
+    body: JSON.stringify({ email }),
+  });
+  const data = await readJson(response);
+  if (!response.ok) throw new Error(data.error || 'Unable to request a password reset.');
+  return data.data?.message ?? 'If an account exists for that email, a reset link has been sent.';
+};
+
+export const confirmPasswordReset = async (
+  accessToken: string,
+  refreshToken: string,
+  password: string,
+): Promise<string> => {
+  const response = await fetch(`${API_URL}/auth/password/reset/confirm`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    credentials: 'include',
+    body: JSON.stringify({
+      access_token: accessToken,
+      refresh_token: refreshToken,
+      password,
+    }),
+  });
+  const data = await readJson(response);
+  if (!response.ok) throw new Error(data.error || 'Unable to reset your password.');
+  return data.data?.message ?? 'Password updated successfully.';
+};

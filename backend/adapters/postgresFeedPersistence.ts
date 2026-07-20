@@ -13,11 +13,21 @@ function projection(row: Record<string, unknown>): RepositoryProjection {
     full_name: String(row.full_name),
     description: row.description == null ? null : String(row.description),
     primary_language: row.primary_language == null ? null : String(row.primary_language),
+    languages: Array.isArray(row.languages) ? row.languages.map(String) : [],
     topics: Array.isArray(row.topics) ? row.topics.map(String) : [],
     star_count: Number(row.star_count ?? 0),
     fork_count: Number(row.fork_count ?? 0),
+    likes_count: Number(row.likes_count ?? 0),
+    comments_count: Number(row.comments_count ?? 0),
+    views_count: Number(row.views_count ?? 0),
+    open_issues_count: Number(row.open_issues_count ?? 0),
     summary_id: row.summary_id == null ? null : String(row.summary_id),
     summary: row.summary == null ? null : String(row.summary),
+    readme_md: row.readme == null ? null : String(row.readme),
+    updated_at: row.updated_at == null ? null : String(row.updated_at),
+    viewer_reaction: row.viewer_reaction === 'like' || row.viewer_reaction === 'dislike'
+      ? row.viewer_reaction : null,
+    viewer_saved: Boolean(row.viewer_saved),
     status: row.status as RepositoryProjection['status'],
   };
 }
@@ -52,9 +62,12 @@ export class PostgresFeedPersistence implements FeedPersistencePort {
     if (serves.length === 0) return null;
     const serve = serves[0];
     const rows = await sqlClient`
-      SELECT item.*, repo.full_name, content.description, content.primary_language,
+      SELECT item.*, repo.full_name, repo.updated_at, content.description, content.primary_language, content.languages, content.readme,
              COALESCE(topic_values.topics, '[]'::jsonb) AS topics,
-             stats.star_count, stats.fork_count, summary.summary, repo.status
+             stats.star_count, stats.fork_count, stats.open_issues_count,
+             engagement.likes_count, engagement.comments_count, engagement.views_count,
+             summary.summary, reaction.reaction AS viewer_reaction,
+             (saved.repo_id IS NOT NULL) AS viewer_saved, repo.status
       FROM telemetry.feed_serve_items item
       JOIN app.repos repo ON repo.repo_id = item.repo_id
       LEFT JOIN app.repo_content content ON content.repo_id = repo.repo_id
@@ -64,10 +77,13 @@ export class PostgresFeedPersistence implements FeedPersistencePort {
         WHERE rt.repo_id = repo.repo_id
       ) topic_values ON true
       LEFT JOIN LATERAL (
-        SELECT star_count, fork_count FROM app.repo_stat_snapshots snapshot
+        SELECT star_count, fork_count, open_issues_count FROM app.repo_stat_snapshots snapshot
         WHERE snapshot.repo_id = repo.repo_id ORDER BY observed_at DESC LIMIT 1
       ) stats ON true
+      LEFT JOIN app.repo_engagement engagement ON engagement.repo_id = repo.repo_id
       LEFT JOIN app.repo_card_summaries summary ON summary.summary_id = item.summary_id
+      LEFT JOIN app.reactions reaction ON reaction.repo_id=repo.repo_id AND reaction.user_id=${String(serve.user_id)}::uuid
+      LEFT JOIN app.saves saved ON saved.repo_id=repo.repo_id AND saved.user_id=${String(serve.user_id)}::uuid
       WHERE item.serve_id = ${serve.serve_id}::uuid ORDER BY item.position
     `;
     const items: StoredServeItem[] = rows.map((row) => ({
@@ -113,13 +129,15 @@ export class PostgresFeedPersistence implements FeedPersistencePort {
     return stored;
   }
 
-  async listActiveRepositories(repoIds: string[]): Promise<RepositoryProjection[]> {
+  async listActiveRepositories(repoIds: string[], viewerUserId?: string): Promise<RepositoryProjection[]> {
     if (repoIds.length === 0) return [];
     const rows = await sqlClient`
-      SELECT repo.repo_id, repo.full_name, repo.status, content.description, content.primary_language,
+      SELECT repo.repo_id, repo.full_name, repo.status, repo.updated_at, content.description, content.primary_language, content.languages, content.readme,
              COALESCE(topic_values.topics, '[]'::jsonb) AS topics,
-             COALESCE(stats.star_count, 0) AS star_count, COALESCE(stats.fork_count, 0) AS fork_count,
-             summary.summary_id, summary.summary
+             COALESCE(stats.star_count, 0) AS star_count, COALESCE(stats.fork_count, 0) AS fork_count, COALESCE(stats.open_issues_count, 0) AS open_issues_count,
+             COALESCE(engagement.likes_count, 0) AS likes_count, COALESCE(engagement.comments_count, 0) AS comments_count, COALESCE(engagement.views_count, 0) AS views_count,
+             summary.summary_id, summary.summary, reaction.reaction AS viewer_reaction,
+             (saved.repo_id IS NOT NULL) AS viewer_saved
       FROM app.repos repo
       LEFT JOIN app.repo_content content ON content.repo_id=repo.repo_id
       LEFT JOIN LATERAL (
@@ -127,10 +145,13 @@ export class PostgresFeedPersistence implements FeedPersistencePort {
         FROM app.repo_topics rt JOIN app.topics topic ON topic.topic_id=rt.topic_id WHERE rt.repo_id=repo.repo_id
       ) topic_values ON true
       LEFT JOIN LATERAL (
-        SELECT star_count,fork_count FROM app.repo_stat_snapshots snapshot
+        SELECT star_count,fork_count,open_issues_count FROM app.repo_stat_snapshots snapshot
         WHERE snapshot.repo_id=repo.repo_id ORDER BY observed_at DESC LIMIT 1
       ) stats ON true
+      LEFT JOIN app.repo_engagement engagement ON engagement.repo_id = repo.repo_id
       LEFT JOIN app.repo_card_summaries summary ON summary.repo_id=repo.repo_id AND summary.active
+      LEFT JOIN app.reactions reaction ON reaction.repo_id=repo.repo_id AND reaction.user_id=${viewerUserId ?? null}::uuid
+      LEFT JOIN app.saves saved ON saved.repo_id=repo.repo_id AND saved.user_id=${viewerUserId ?? null}::uuid
       WHERE repo.repo_id = ANY(${repoIds}::uuid[]) AND repo.status='active'
     `;
     return rows.map((row) => projection(row));

@@ -1,5 +1,5 @@
 import React from 'react';
-import { StyleSheet, Text, View } from 'react-native';
+import { ScrollView, StyleSheet, Text, View } from 'react-native';
 import { Layers } from 'lucide-react-native';
 
 import { REFERENCE_THEME } from '@/constants/theme';
@@ -57,7 +57,7 @@ export default function DescriptionCard({
   compact = false,
   availableWidth,
 }: DescriptionCardProps) {
-  const technologies = (repository.techStack ?? []).slice(0, 3);
+  const technologies = repository.techStack ?? [];
   const veryNarrow = availableWidth < 240;
   const circleSize = compact
     ? clamp(availableWidth * 0.14, 31, 38)
@@ -78,12 +78,20 @@ export default function DescriptionCard({
         <Text style={styles.heading}>TECH STACK</Text>
       </View>
 
-      <View style={[styles.grid, compact && styles.gridCompact]}>
+      <ScrollView
+        contentContainerStyle={[styles.grid, compact && styles.gridCompact]}
+        horizontal
+        nestedScrollEnabled
+        showsHorizontalScrollIndicator={technologies.length > 3}
+      >
         {technologies.length > 0 ? technologies.map((technology) => {
           const colour = TECH_COLORS[technology] ?? '#8E8E93';
 
           return (
-            <View key={technology} style={styles.item}>
+            <View
+              key={technology}
+              style={[styles.item, { width: Math.max((availableWidth - horizontalPadding * 2 - 24) / 3, 64) }]}
+            >
               <View
                 style={[
                   styles.iconCircle,
@@ -116,7 +124,7 @@ export default function DescriptionCard({
             <Text style={styles.emptyText}>Stack details unavailable</Text>
           </View>
         )}
-      </View>
+      </ScrollView>
     </View>
   );
 }
@@ -158,8 +166,6 @@ const styles = StyleSheet.create({
     columnGap: 6,
   },
   item: {
-    flex: 1,
-    minWidth: 0,
     alignItems: 'center',
     gap: 8,
   },
