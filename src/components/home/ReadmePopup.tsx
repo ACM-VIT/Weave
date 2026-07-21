@@ -1,9 +1,10 @@
 "use no memo";
 
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo } from 'react';
 import {
   Animated,
   Easing,
+  Linking,
   Modal,
   Pressable,
   ScrollView,
@@ -15,6 +16,8 @@ import {
 import { BookOpen, X } from 'lucide-react-native';
 import { BlurView } from 'expo-blur';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import RenderHtml, { defaultSystemFonts } from 'react-native-render-html';
+import { marked } from 'marked';
 
 import { REFERENCE_THEME } from '@/constants/theme';
 import { prepareReadmeForDisplay } from '@/utils/readme';
@@ -26,63 +29,139 @@ interface ReadmePopupProps {
   readmeText: string;
 }
 
-const POPUP_TYPING_STEP = 12;
-const POPUP_TYPING_INTERVAL_MS = 12;
+const markdownFonts = [
+  ...defaultSystemFonts,
+  'NataSans-Regular',
+  'NataSans-SemiBold',
+  'NataSans-Bold',
+];
+
+const markdownTagStyles = {
+  body: {
+    color: REFERENCE_THEME.textPrimary,
+    fontFamily: 'NataSans-Regular',
+    fontSize: 14,
+    lineHeight: 22,
+  },
+  h1: {
+    color: REFERENCE_THEME.text,
+    fontFamily: 'NataSans-Bold',
+    fontSize: 26,
+    lineHeight: 34,
+    marginTop: 18,
+    marginBottom: 12,
+  },
+  h2: {
+    color: REFERENCE_THEME.text,
+    fontFamily: 'NataSans-Bold',
+    fontSize: 21,
+    lineHeight: 29,
+    marginTop: 18,
+    marginBottom: 10,
+  },
+  h3: {
+    color: REFERENCE_THEME.text,
+    fontFamily: 'NataSans-SemiBold',
+    fontSize: 17,
+    lineHeight: 25,
+    marginTop: 16,
+    marginBottom: 8,
+  },
+  h4: {
+    color: REFERENCE_THEME.text,
+    fontFamily: 'NataSans-SemiBold',
+    fontSize: 15,
+    lineHeight: 23,
+    marginTop: 14,
+    marginBottom: 7,
+  },
+  p: {
+    marginTop: 0,
+    marginBottom: 12,
+  },
+  a: {
+    color: REFERENCE_THEME.accentLight,
+    textDecorationLine: 'underline' as const,
+  },
+  strong: {
+    color: REFERENCE_THEME.text,
+    fontFamily: 'NataSans-Bold',
+  },
+  em: {
+    fontStyle: 'italic' as const,
+  },
+  blockquote: {
+    marginVertical: 10,
+    marginHorizontal: 0,
+    paddingVertical: 8,
+    paddingHorizontal: 14,
+    borderLeftWidth: 3,
+    borderLeftColor: REFERENCE_THEME.accent,
+    backgroundColor: 'rgba(255,255,255,0.035)',
+    color: REFERENCE_THEME.textSecondary,
+  },
+  code: {
+    borderRadius: 5,
+    paddingHorizontal: 5,
+    paddingVertical: 2,
+    backgroundColor: 'rgba(255,255,255,0.09)',
+    color: '#F0F0F5',
+    fontFamily: 'monospace',
+    fontSize: 13,
+  },
+  pre: {
+    marginVertical: 10,
+    padding: 14,
+    borderRadius: 10,
+    backgroundColor: '#111114',
+    color: '#F0F0F5',
+    fontFamily: 'monospace',
+    fontSize: 13,
+    lineHeight: 20,
+  },
+  ul: {
+    marginTop: 0,
+    marginBottom: 12,
+    paddingLeft: 8,
+  },
+  ol: {
+    marginTop: 0,
+    marginBottom: 12,
+    paddingLeft: 8,
+  },
+  li: {
+    marginBottom: 5,
+  },
+  hr: {
+    marginVertical: 18,
+    borderColor: REFERENCE_THEME.separator,
+  },
+  img: {
+    marginVertical: 10,
+    borderRadius: 8,
+  },
+} as const;
 
 export function ReadmePopup({ isVisible, onClose, title, readmeText }: ReadmePopupProps) {
   const { width, height } = useWindowDimensions();
   const insets = useSafeAreaInsets();
   const opacity = useMemo(() => new Animated.Value(0), []);
-  const cursorOpacity = useMemo(() => new Animated.Value(1), []);
-  const [typed, setTyped] = useState(0);
   const content = prepareReadmeForDisplay(readmeText);
+  const markdownHtml = useMemo(
+    () => marked.parse(content, { async: false, gfm: true }) as string,
+    [content],
+  );
 
   useEffect(() => {
     if (!isVisible) return;
     opacity.setValue(0);
-    const resetTimer = setTimeout(() => setTyped(0), 0);
     Animated.timing(opacity, {
       toValue: 1,
       duration: 220,
       easing: Easing.out(Easing.cubic),
       useNativeDriver: true,
     }).start();
-
-    const typingTimer = setInterval(() => {
-      setTyped((current) => {
-        const typingStep = Math.max(POPUP_TYPING_STEP, Math.ceil(content.length / 250));
-        const next = Math.min(content.length, current + typingStep);
-        if (next >= content.length) clearInterval(typingTimer);
-        return next;
-      });
-    }, POPUP_TYPING_INTERVAL_MS);
-
-    return () => {
-      clearTimeout(resetTimer);
-      clearInterval(typingTimer);
-    };
-  }, [content, isVisible, opacity]);
-
-  useEffect(() => {
-    const cursorAnimation = Animated.loop(
-      Animated.sequence([
-        Animated.timing(cursorOpacity, {
-          toValue: 0,
-          duration: 1,
-          delay: 449,
-          useNativeDriver: true,
-        }),
-        Animated.timing(cursorOpacity, {
-          toValue: 1,
-          duration: 1,
-          delay: 449,
-          useNativeDriver: true,
-        }),
-      ])
-    );
-    cursorAnimation.start();
-    return () => cursorAnimation.stop();
-  }, [cursorOpacity]);
+  }, [isVisible, opacity]);
 
   const closeAnimated = () => {
     Animated.timing(opacity, {
@@ -148,10 +227,22 @@ export function ReadmePopup({ isVisible, onClose, title, readmeText }: ReadmePop
             showsVerticalScrollIndicator={false}
           >
             <Text style={styles.repoTitle}>{title}</Text>
-            <Text selectable style={styles.readmeText}>
-              {content.slice(0, typed)}
-            </Text>
-            <Animated.View style={[styles.cursor, { opacity: cursorOpacity }]} />
+            <RenderHtml
+              contentWidth={cardWidth - 44}
+              defaultTextProps={{ selectable: true }}
+              enableExperimentalMarginCollapsing
+              ignoredDomTags={['script', 'style', 'iframe', 'object', 'embed', 'form', 'input', 'button']}
+              renderersProps={{
+                a: {
+                  onPress: (_event, href) => {
+                    if (/^(https?:|mailto:)/i.test(href)) void Linking.openURL(href);
+                  },
+                },
+              }}
+              source={{ html: markdownHtml }}
+              systemFonts={markdownFonts}
+              tagsStyles={markdownTagStyles}
+            />
           </ScrollView>
         </Animated.View>
       </View>
@@ -230,22 +321,7 @@ const styles = StyleSheet.create({
     lineHeight: 30,
     letterSpacing: -0.5,
   },
-  cursor: {
-    width: 6,
-    height: 12,
-    marginTop: 2,
-    marginLeft: 2,
-    borderRadius: 1,
-    backgroundColor: REFERENCE_THEME.accent,
-  },
   pressed: {
     opacity: 0.7,
-  },
-  readmeText: {
-    color: REFERENCE_THEME.textPrimary,
-    fontFamily: 'NataSans-Regular',
-    fontSize: 14,
-    lineHeight: 22,
-    letterSpacing: -0.1,
   },
 });

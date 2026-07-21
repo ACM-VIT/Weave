@@ -1,6 +1,8 @@
-import React, { useEffect, useMemo, useState } from 'react';
-import { Animated, Easing, Pressable, StyleSheet, Text, View } from 'react-native';
+import React, { useMemo } from 'react';
+import { Linking, Pressable, StyleSheet, Text, View } from 'react-native';
 import { BookOpen, ChevronRight } from 'lucide-react-native';
+import RenderHtml, { defaultSystemFonts } from 'react-native-render-html';
+import { marked } from 'marked';
 
 import { REFERENCE_THEME } from '@/constants/theme';
 
@@ -13,8 +15,8 @@ type RepositoryData = {
 
 type ReadmeCardProps = {
   repository: RepositoryData;
+  availableWidth: number;
   onReadFullPress: () => void;
-  isActive: boolean;
   compact?: boolean;
 };
 
@@ -28,59 +30,92 @@ const LANGUAGE_COLOURS: Record<string, string> = {
   React: '#61DAFB',
 };
 
+const README_PREVIEW_MAX_CHARACTERS = 4_000;
+const markdownFonts = [
+  ...defaultSystemFonts,
+  'NataSans-Regular',
+  'NataSans-SemiBold',
+  'NataSans-Bold',
+];
+
+const markdownTagStyles = {
+  body: {
+    color: REFERENCE_THEME.textStrong,
+    fontFamily: 'NataSans-Regular',
+    fontSize: 14,
+    lineHeight: 22,
+  },
+  p: {
+    marginTop: 0,
+    marginBottom: 8,
+  },
+  h1: {
+    color: REFERENCE_THEME.text,
+    fontFamily: 'NataSans-Bold',
+    fontSize: 18,
+    lineHeight: 24,
+    marginTop: 0,
+    marginBottom: 8,
+  },
+  h2: {
+    color: REFERENCE_THEME.text,
+    fontFamily: 'NataSans-Bold',
+    fontSize: 16,
+    lineHeight: 22,
+    marginTop: 0,
+    marginBottom: 7,
+  },
+  h3: {
+    color: REFERENCE_THEME.text,
+    fontFamily: 'NataSans-SemiBold',
+    fontSize: 15,
+    lineHeight: 21,
+    marginTop: 0,
+    marginBottom: 6,
+  },
+  a: {
+    color: REFERENCE_THEME.accentLight,
+    textDecorationLine: 'underline' as const,
+  },
+  strong: {
+    color: REFERENCE_THEME.text,
+    fontFamily: 'NataSans-Bold',
+  },
+  ul: {
+    marginTop: 0,
+    marginBottom: 8,
+    paddingLeft: 6,
+  },
+  ol: {
+    marginTop: 0,
+    marginBottom: 8,
+    paddingLeft: 6,
+  },
+  li: {
+    marginBottom: 3,
+  },
+  code: {
+    borderRadius: 4,
+    paddingHorizontal: 4,
+    backgroundColor: 'rgba(255,255,255,0.09)',
+    color: REFERENCE_THEME.text,
+    fontFamily: 'monospace',
+    fontSize: 12,
+  },
+} as const;
+
 export default function ReadmeCard({
   repository,
+  availableWidth,
   onReadFullPress,
-  isActive,
   compact = false,
 }: ReadmeCardProps) {
   const summary = repository.readmeSummary || repository.readmeFull || 'No summary available.';
-  const [typed, setTyped] = useState(0);
-  const cursorOpacity = useMemo(() => new Animated.Value(1), []);
-
-  useEffect(() => {
-    const resetTimer = setTimeout(() => setTyped(0), 0);
-    if (!isActive) {
-      return () => clearTimeout(resetTimer);
-    }
-
-    const timer = setInterval(() => {
-      setTyped((current) => {
-        const next = Math.min(summary.length, current + 2);
-        if (next >= summary.length) clearInterval(timer);
-        return next;
-      });
-    }, 30);
-
-    return () => {
-      clearTimeout(resetTimer);
-      clearInterval(timer);
-    };
-  }, [isActive, summary]);
-
-  useEffect(() => {
-    const animation = Animated.loop(
-      Animated.sequence([
-        Animated.timing(cursorOpacity, {
-          toValue: 0,
-          duration: 1,
-          delay: 449,
-          easing: Easing.linear,
-          useNativeDriver: true,
-        }),
-        Animated.timing(cursorOpacity, {
-          toValue: 1,
-          duration: 1,
-          delay: 449,
-          easing: Easing.linear,
-          useNativeDriver: true,
-        }),
-      ])
-    );
-    animation.start();
-    return () => animation.stop();
-  }, [cursorOpacity]);
-
+  const preview = summary.slice(0, README_PREVIEW_MAX_CHARACTERS);
+  const markdownHtml = useMemo(
+    () => marked.parse(preview, { async: false, gfm: true }) as string,
+    [preview],
+  );
   const language = repository.techStack?.[0] || 'Code';
   const languageColour = LANGUAGE_COLOURS[language] ?? '#8E8E93';
 
@@ -98,13 +133,24 @@ export default function ReadmeCard({
       </View>
 
       <View style={[styles.body, compact && styles.bodyCompact]}>
-        <Text
-          numberOfLines={compact ? 6 : 8}
-          style={[styles.summary, compact && styles.summaryCompact]}
-        >
-          {summary.slice(0, typed)}
-          <Animated.Text style={[styles.cursor, { opacity: cursorOpacity }]}>▍</Animated.Text>
-        </Text>
+        <View style={[styles.markdownViewport, compact && styles.markdownViewportCompact]}>
+          <RenderHtml
+            contentWidth={Math.max(availableWidth - (compact ? 28 : 36), 1)}
+            defaultTextProps={{ selectable: true }}
+            enableExperimentalMarginCollapsing
+            ignoredDomTags={['script', 'style', 'iframe', 'object', 'embed', 'form', 'input', 'button', 'img']}
+            renderersProps={{
+              a: {
+                onPress: (_event, href) => {
+                  if (/^(https?:|mailto:)/i.test(href)) void Linking.openURL(href);
+                },
+              },
+            }}
+            source={{ html: markdownHtml }}
+            systemFonts={markdownFonts}
+            tagsStyles={markdownTagStyles}
+          />
+        </View>
         <Pressable
           accessibilityRole="button"
           onPress={onReadFullPress}
@@ -186,23 +232,14 @@ const styles = StyleSheet.create({
     paddingBottom: 10,
     gap: 6,
   },
-  summary: {
+  markdownViewport: {
     minHeight: 150,
-    color: REFERENCE_THEME.textStrong,
-    fontFamily: 'NataSans-Regular',
-    fontSize: 14,
-    lineHeight: 22.4,
-    letterSpacing: -0.1,
+    maxHeight: 150,
+    overflow: 'hidden',
   },
-  summaryCompact: {
+  markdownViewportCompact: {
     minHeight: 54,
-    fontSize: 11.5,
-    lineHeight: 16,
-  },
-  cursor: {
-    color: REFERENCE_THEME.accent,
-    fontFamily: 'NataSans-Regular',
-    fontSize: 13,
+    maxHeight: 88,
   },
   readFull: {
     alignSelf: 'flex-start',
