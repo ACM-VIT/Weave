@@ -8,10 +8,17 @@ import SearchBar from '../../components/explore/SearchBar';
 import TabBar from '../../components/explore/TabBar';
 import TrendingRepoCard from '../../components/explore/TrendingRepoCard';
 import { Repo, TabName } from '../../types';
+import { useAuth } from '../../store/AuthContext';
+import { getStorageItem } from '../../utils/storage';
+import { getActivityOutbox } from '../../services/activityOutboxClient';
 
 export default function ExploreScreen() {
+  const { user } = useAuth();
+  const activityOutbox = user?.user_id && !(__DEV__ && user.isPreview)
+    ? getActivityOutbox(user.user_id)
+    : null;
   const insets = useSafeAreaInsets();
-  const [activeTab, setActiveTab] = useState<TabName>('For you');
+  const [activeTab, setActiveTab] = useState<TabName>('Latest');
   const [searchQuery, setSearchQuery] = useState('');
   const trimmedSearchQuery = searchQuery.trim();
 
@@ -47,9 +54,19 @@ export default function ExploreScreen() {
     setSearchQuery('');
   };
 
-  const handleRepoPress = (repo: Repo) => {
-    const url = repo.url ?? `https://github.com/${repo.author}/${repo.name}`;
-    Linking.openURL(url).catch(() => undefined);
+  const handleRepoPress = async (repo: Repo) => {
+    const fallbackUrl = `https://github.com/${repo.author}/${repo.name}`;
+    const url = repo.url?.startsWith('https://github.com/') ? repo.url : fallbackUrl;
+    try {
+      await Linking.openURL(url);
+      if (!activityOutbox) return;
+      await activityOutbox.enqueue({ repo_id: repo.id, action: 'github_open' });
+      const token = await getStorageItem('access_token');
+      if (!token) return;
+      await activityOutbox.flush(token);
+    } catch {
+      // The durable event remains queued when delivery is offline or interrupted.
+    }
   };
 
   const feedbackMessage = isError
@@ -102,7 +119,7 @@ export default function ExploreScreen() {
               {feedbackMessage}
             </Text>
           </View>
-        ) : activeTab === 'For you' ? (
+        ) : activeTab === 'Latest' ? (
           <View style={{ flexDirection: 'row', gap: 10, paddingTop: 8, paddingHorizontal: 20 }}>
             <View style={{ flex: 1, gap: 10 }}>
               {leftColumn.map((repo) => (

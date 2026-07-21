@@ -1,5 +1,5 @@
-import crypto from 'node:crypto';
 import { sqlClient } from '../db/index.js';
+import { buildMlOnboardingJob, hasMlEmbeddingContext } from './mlOnboardingService.js';
 
 interface IdentityProfile {
   userId: string;
@@ -11,17 +11,37 @@ interface IdentityProfile {
   avatarUrl?: string | null;
 }
 
+interface AuthIdentity {
+  id?: string;
+  provider?: string;
+  identity_data?: Record<string, unknown>;
+}
+
+export function githubIdentityFromAuthUser(user: {
+  identities?: AuthIdentity[] | null;
+}): { githubId: string | null; githubHandle: string | null } {
+  const identity = user.identities?.find((candidate) => candidate.provider === 'github');
+  const identityData = identity?.identity_data;
+  const rawId = identityData?.provider_id ?? identityData?.sub ?? identity?.id;
+  const githubId = (typeof rawId === 'string' || typeof rawId === 'number')
+    && /^\d{1,30}$/.test(String(rawId).trim())
+    ? String(rawId).trim()
+    : null;
+  const rawHandle = [identityData?.preferred_username, identityData?.user_name]
+    .find((value) => typeof value === 'string' && value.trim()) as string | undefined;
+  const githubHandle = rawHandle && /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/.test(rawHandle.trim())
+    ? rawHandle.trim()
+    : null;
+  return { githubId, githubHandle };
+}
+
 export async function ensureIdentityProfile(profile: IdentityProfile): Promise<void> {
-  const outboxPayload = JSON.stringify({
-    job_id: crypto.randomUUID(),
-    user_id: profile.userId,
-    profile_version: 1,
-    profile: {
-      username: profile.username,
-      full_name: profile.fullName ?? null,
-      bio: profile.bio ?? null,
-      interests: [], skills: [], tech_stack: [],
-    },
+  const onboardingJob = buildMlOnboardingJob(profile.userId, 1, {
+    username: profile.username,
+    fullName: profile.fullName,
+    bio: profile.bio,
+    githubUsername: profile.githubHandle,
+    avatarUrl: profile.avatarUrl,
   });
   await sqlClient.begin(async (tx) => {
     await tx`
@@ -37,11 +57,13 @@ export async function ensureIdentityProfile(profile: IdentityProfile): Promise<v
     `;
     await tx`INSERT INTO app.user_stats (user_id) VALUES (${profile.userId}::uuid) ON CONFLICT DO NOTHING`;
     await tx`INSERT INTO app.user_feed_state (user_id) VALUES (${profile.userId}::uuid) ON CONFLICT DO NOTHING`;
-    await tx`
-      INSERT INTO telemetry.ml_outbox (job_type,aggregate_id,idempotency_key,payload)
-      VALUES ('onboard',${profile.userId}::uuid,${`onboard:${profile.userId}:1`},${outboxPayload}::jsonb)
-      ON CONFLICT (idempotency_key) DO NOTHING
-    `;
+    if (hasMlEmbeddingContext(onboardingJob.profile)) {
+      await tx`
+        INSERT INTO telemetry.ml_outbox (job_type,aggregate_id,idempotency_key,payload)
+        VALUES ('onboard',${profile.userId}::uuid,${`onboard:${profile.userId}:1`},${JSON.stringify(onboardingJob)}::jsonb)
+        ON CONFLICT (idempotency_key) DO NOTHING
+      `;
+    }
   });
 }
 

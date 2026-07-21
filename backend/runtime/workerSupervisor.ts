@@ -1,3 +1,5 @@
+import { clearInterval, setInterval, setTimeout } from 'node:timers';
+
 export interface WorkerStatus {
   running: boolean;
   runs: number;
@@ -58,8 +60,14 @@ export class WorkerSupervisor {
     this.started = true;
     for (const task of this.tasks) {
       void this.execute(task);
-      task.timer = setInterval(() => void this.execute(task), task.intervalMs);
-      task.timer.unref();
+      // The backend runs on Node, but transitive React Native DOM globals make
+      // TypeScript select the browser numeric overload for setInterval.
+      const timer = setInterval(
+        () => void this.execute(task),
+        task.intervalMs,
+      ) as unknown as NodeJS.Timeout;
+      timer.unref();
+      task.timer = timer;
     }
   }
 

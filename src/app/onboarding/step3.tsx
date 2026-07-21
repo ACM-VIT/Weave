@@ -1,5 +1,4 @@
 import { useState } from "react";
-import { useLocalSearchParams } from "expo-router";
 import { ScrollView, View, Text } from "react-native";
 import { useAuth } from "../../store/AuthContext";
 import { useOnboarding } from "../../store/OnboardingContext";
@@ -14,12 +13,9 @@ import StepHeader from "@/components/onboarding/StepHeader";
 import { INTEREST_CATEGORIES } from "@/constants/onboarding";
 
 export default function Step3() {
-  const { categories } = useLocalSearchParams();
-  const selectedCategoryIds = typeof categories === "string" ? categories.split(",") : [];
-
-  const [selectedInterests, setSelectedInterests] = useState<string[]>([]);
-
   const { data: onboardingData } = useOnboarding();
+  const selectedCategoryIds = onboardingData.skills ?? [];
+  const [selectedInterests, setSelectedInterests] = useState<string[]>(onboardingData.interests ?? []);
   const { user, checkOnboardingStatus, completeOnboardingPreview } = useAuth();
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState("");
@@ -50,7 +46,7 @@ export default function Step3() {
           username: onboardingData.username || "",
           full_name: onboardingData.full_name || "",
           interests: selectedInterests,
-          skills: selectedCategoryIds // Just putting the categories as skills for now as a placeholder for the multi-step flow
+          skills: selectedCategoryIds,
         });
         
         await checkOnboardingStatus();

@@ -1,5 +1,10 @@
 import { apiV2, apiV2Raw } from './client';
-import { sendBatchedActivity } from './activity';
+import {
+  prepareQueuedActivity,
+  toInteractionEventV2,
+  type ActivityInput,
+  type QueuedActivity,
+} from './activity';
 
 export type BoardRecord = {
   board_id: string;
@@ -36,10 +41,19 @@ export async function addRepoToBoardAtomic(
   repoId: string,
   token: string,
   attribution?: { serve_id?: string | null; position?: number | null },
+  preparedEvent?: QueuedActivity,
 ) {
+  const event = preparedEvent ?? prepareQueuedActivity({
+    repo_id: repoId,
+    action: 'save',
+    ...attribution,
+  } satisfies ActivityInput);
+  if (event.repo_id !== repoId || event.action !== 'save') {
+    throw new Error('The board save event does not match the repository request.');
+  }
   await apiV2Raw(`/boards/${encodeURIComponent(boardId)}/repositories/${encodeURIComponent(repoId)}`, {
     method: 'PUT',
+    body: JSON.stringify({ event: toInteractionEventV2(event) }),
   }, token);
-  await sendBatchedActivity([{ repo_id: repoId, action: 'save', ...attribution }], token);
   return { board_id: boardId, repo_id: repoId };
 }

@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -16,9 +17,13 @@ const databaseUrl = process.env.DATABASE_URL;
 if (!databaseUrl) throw new Error('DATABASE_URL is required.');
 
 const here = path.dirname(fileURLToPath(import.meta.url));
+const migrationsFolder = path.resolve(here, '../../database/migrations');
 const manifest = JSON.parse(
   fs.readFileSync(path.resolve(here, '../../database/audits/expected-v2-schema.json'), 'utf8'),
 ) as Manifest;
+const journal = JSON.parse(
+  fs.readFileSync(path.join(migrationsFolder, 'meta/_journal.json'), 'utf8'),
+) as { entries: Array<{ tag: string }> };
 const client = postgres(databaseUrl, { max: 1, prepare: false });
 const missing: string[] = [];
 
@@ -34,6 +39,36 @@ try {
   const tables = new Set(tableRows.map((row) => `${row.table_schema}.${row.table_name}`));
   for (const [schema, names] of Object.entries(manifest.tables)) {
     for (const name of names) if (!tables.has(`${schema}.${name}`)) missing.push(`table:${schema}.${name}`);
+  }
+
+  const columnRows = await client`
+    SELECT table_schema,table_name,column_name
+    FROM information_schema.columns
+    WHERE (table_schema='app' AND table_name IN ('users','oauth_codes'))
+  `;
+  const columns = new Set(columnRows.map(
+    (row) => `${row.table_schema}.${row.table_name}.${row.column_name}`,
+  ));
+  for (const requiredColumn of [
+    'app.users.interests',
+    'app.users.skills',
+    'app.users.tech_stack',
+    'app.oauth_codes.client_code_challenge',
+  ]) {
+    if (!columns.has(requiredColumn)) missing.push(`column:${requiredColumn}`);
+  }
+
+  const outboxConstraintRows = await client`
+    SELECT pg_get_constraintdef(constraint_row.oid) AS definition
+    FROM pg_constraint constraint_row
+    JOIN pg_class relation ON relation.oid=constraint_row.conrelid
+    JOIN pg_namespace namespace ON namespace.oid=relation.relnamespace
+    WHERE namespace.nspname='telemetry' AND relation.relname='ml_outbox'
+      AND constraint_row.conname='ml_outbox_status_check'
+  `;
+  const outboxStatusDefinition = String(outboxConstraintRows[0]?.definition ?? '');
+  if (!outboxStatusDefinition.includes('superseded')) {
+    missing.push('constraint:telemetry.ml_outbox.status:superseded');
   }
 
   const indexRows = await client`
@@ -86,6 +121,12 @@ try {
     SELECT hash, created_at FROM drizzle.__drizzle_migrations ORDER BY created_at
   `.catch(() => []);
   if (migrationRows.length === 0) missing.push('migration-history:empty');
+  const recordedHashes = new Set(migrationRows.map((row) => String(row.hash)));
+  for (const entry of journal.entries) {
+    const sql = fs.readFileSync(path.join(migrationsFolder, `${entry.tag}.sql`), 'utf8');
+    const expectedHash = crypto.createHash('sha256').update(sql).digest('hex');
+    if (!recordedHashes.has(expectedHash)) missing.push(`migration-hash:${entry.tag}`);
+  }
 
   if (missing.length > 0) {
     console.error('Schema audit failed:\n' + missing.map((item) => `- ${item}`).join('\n'));

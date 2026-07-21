@@ -44,7 +44,7 @@ function RootLayoutNav() {
       if (user.onboarding_completed === false && !inOnboardingGroup) {
         router.replace('/onboarding/create-profile');
       } else if (user.onboarding_completed === true && (inAuthGroup || inOnboardingGroup)) {
-        router.replace('/(tabs)/explore');
+        router.replace('/(tabs)/home');
       }
     }
   }, [user, isLoading, segments, router]);

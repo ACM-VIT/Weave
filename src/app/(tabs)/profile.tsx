@@ -1,19 +1,20 @@
 import React, { useState } from "react"
 import { ActivityIndicator, Modal, Pressable, ScrollView, Text, TextInput, View, useWindowDimensions } from "react-native"
-import { Bookmark, ChevronRight, LogOut, Pin, Square, SquarePen } from "lucide-react-native"
+import { Bookmark, LogOut, Square, SquarePen } from "lucide-react-native"
 import { Href, router } from "expo-router"
 import { useSafeAreaInsets } from "react-native-safe-area-context"
 import { useQuery } from "@tanstack/react-query"
 import { API_URL } from "@/api/config"
+import { apiV2 } from "@/api/client"
 import { getProfileContent } from "@/api/profile"
 import { useAuth } from "@/store/AuthContext"
 import { AUTH_BYPASS_ENABLED, AUTH_BYPASS_PROFILE_STORAGE_KEY } from "@/constants/auth"
 import { getStorageItem, setStorageItem } from "@/utils/storage"
 import { formatCompactCount } from "@/utils/format-count"
+import { isValidUsername, USERNAME_GUIDANCE } from "@/utils/username"
 
 type TabName = "Lists" | "Repositories"
 
-const DEFAULT_USERNAME = "user"
 const COLORS = { background: "#000000", card: "#151515", selected: "#68686B", white: "#F7F7F8", muted: "#77767C", green: "#63E08A", purple: "#9B4FE4" }
 const COLLECTION_COLORS = ["#A849D8", "#F04C70", "#38AAE1", "#2E9E6B"]
 
@@ -33,9 +34,9 @@ export default function ProfileScreen() {
   const [loggingOut, setLoggingOut] = useState(false)
   const [logoutError, setLogoutError] = useState("")
   const [savedProfile, setSavedProfile] = useState<{ name: string; job: string; username: string } | null>(null)
-  const name = savedProfile?.name ?? user?.full_name ?? "Weave user"
-  const job = savedProfile?.job ?? user?.bio ?? "Developer"
-  const username = savedProfile?.username ?? user?.username ?? DEFAULT_USERNAME
+  const name = savedProfile?.name ?? (typeof user?.full_name === "string" ? user.full_name : "")
+  const job = savedProfile?.job ?? (typeof user?.bio === "string" ? user.bio : "")
+  const username = savedProfile?.username ?? user?.username ?? ""
   const [draft, setDraft] = useState({ name, job, username })
   const [isSaving, setIsSaving] = useState(false)
   const [editError, setEditError] = useState("")
@@ -64,7 +65,7 @@ export default function ProfileScreen() {
     const next = { name: draft.name.trim(), job: draft.job.trim(), username: draft.username.trim() }
     if (!next.name) return setEditError("Name is required.")
     if (!next.job) return setEditError("Job role is required.")
-    if (!/^[a-zA-Z0-9_]+$/.test(next.username)) return setEditError("Username can only contain letters, numbers, or underscores.")
+    if (!isValidUsername(next.username)) return setEditError(USERNAME_GUIDANCE)
 
     setIsSaving(true)
     setEditError("")
@@ -84,18 +85,11 @@ export default function ProfileScreen() {
 
       const accessToken = await getStorageItem("access_token")
       if (!accessToken) throw new Error("Your session has expired. Please log in again.")
-      const response = await fetch(`${API_URL}/v2/users/me`, {
+      const updated = await apiV2<{ full_name: string; bio: string; username: string }>("/users/me", {
         method: "PATCH",
-        credentials: "include",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${accessToken}`,
-        },
         body: JSON.stringify({ username: next.username, full_name: next.name, bio: next.job }),
-      })
-      const payload = await response.json()
-      if (!response.ok) throw new Error(payload.error ?? "Unable to update your profile.")
-      const updatedProfile = { name: payload.data.full_name, job: payload.data.bio, username: payload.data.username }
+      }, accessToken)
+      const updatedProfile = { name: updated.full_name, job: updated.bio, username: updated.username }
       setSavedProfile(updatedProfile)
       setDraft(updatedProfile)
       await checkOnboardingStatus()
@@ -135,8 +129,8 @@ export default function ProfileScreen() {
   // Repositories is the taller tab (3 pinned + 4 regular rows). Reserving its
   // height for both tabs prevents the vertically-centered page from jumping.
   const tabContentHeight = (cardHeight * 7) + (contentGap * 5) + (sectionGap * 2) + sectionLabelHeight
-  const avatarLetter = username.trim().charAt(0).toUpperCase() || name.charAt(0).toUpperCase() || "U"
-  const usernameText = `@${username}`
+  const avatarLetter = username.trim().charAt(0).toUpperCase() || name.charAt(0).toUpperCase() || "?"
+  const usernameText = username ? `@${username}` : ""
   const horizontalPadding = isTablet ? 48 : 24
   const contentWidth = Math.min(Math.max(width - (horizontalPadding * 2), 0), isTablet ? 760 : 600)
   const avatarWidth = Math.min(contentWidth * (isTablet ? 0.31 : 0.25), 116)
@@ -179,7 +173,6 @@ export default function ProfileScreen() {
         <Square size={isCompact ? 15 : 18} color="#B8B7BD" />
         <Text numberOfLines={1} className="flex-1 text-white font-nata" style={{ fontSize: isCompact ? 13 : 16 }}>{item.name}</Text>
         <Text className="text-[#77767C] font-nata">{item.repo_count}</Text>
-        <Pin size={isCompact ? 14 : 17} color="#1EE15B" />
       </View>)}
       {boards.length === 0 ? <Text className="text-[#77767C] font-nata text-center py-5">No boards yet.</Text> : null}
     </View>
@@ -189,7 +182,6 @@ export default function ProfileScreen() {
         <View className="items-center justify-center" style={{ height: "70%", aspectRatio: 1, borderRadius: 9, backgroundColor: COLLECTION_COLORS[index % COLLECTION_COLORS.length], borderCurve: "continuous" }}><Bookmark size={isCompact ? 13 : 16} color="white" /></View>
         <Text numberOfLines={1} className="flex-1 text-white font-nata" style={{ fontSize: isCompact ? 13 : 16 }}>{item.name}</Text>
         <Text className="text-[#67666C] font-nata" style={{ fontVariant: ["tabular-nums"] }}>{item.board_count}</Text>
-        <ChevronRight size={isCompact ? 14 : 17} color="#4F4E54" />
       </View>)}
       {collections.length === 0 ? <Text className="text-[#77767C] font-nata text-center py-5">No collections yet.</Text> : null}
     </View>

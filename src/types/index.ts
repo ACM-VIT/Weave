@@ -14,7 +14,7 @@ export interface Repo {
   url?: string;
 }
 
-export type TabName = 'For you' | 'Trending';
+export type TabName = 'Latest' | 'Trending';
 export type NavItem = 'home' | 'explore' | 'profile';
 
 export type FilterPeriod = 'Today' | 'This week' | 'This month';

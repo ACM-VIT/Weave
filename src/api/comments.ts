@@ -8,6 +8,7 @@ export interface CommentRecord {
   parent_comment_id: string | null;
   comment: string;
   created_at: string | null;
+  author?: CommentAuthor;
 }
 
 export interface CommentAuthor {
@@ -44,6 +45,13 @@ function normalizeComment(value: unknown): CommentRecord | null {
     return null;
   }
 
+  const author = typeof value.username === 'string' ? {
+    user_id: userId,
+    username: value.username,
+    full_name: typeof value.full_name === 'string' ? value.full_name : null,
+    avatar_url: typeof value.avatar_url === 'string' ? value.avatar_url : null,
+  } : undefined;
+
   return {
     comment_id: commentId,
     user_id: userId,
@@ -52,6 +60,7 @@ function normalizeComment(value: unknown): CommentRecord | null {
       typeof value.parent_comment_id === 'string' ? value.parent_comment_id : null,
     comment: body,
     created_at: typeof value.created_at === 'string' ? value.created_at : null,
+    ...(author ? { author } : {}),
   };
 }
 
@@ -65,7 +74,7 @@ export async function getCommentsByRepo(
   const token = await getStorageItem('access_token');
   if (!token) throw new Error('Your session has expired.');
   const data = await apiV2<{ items: unknown[] }>(
-    `/repositories/${encodeURIComponent(normalizedRepoId)}/comments`, { signal }, token,
+    `/repositories/${encodeURIComponent(normalizedRepoId)}/comments?limit=100&offset=0`, { signal }, token,
   );
   if (!Array.isArray(data.items)) {
     throw new Error('Comments response was not a list');

@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { ActivityIndicator, FlatList, Pressable, Text, View, useWindowDimensions } from 'react-native';
 import { Image } from 'expo-image';
 import { router, useLocalSearchParams } from 'expo-router';
-import { ArrowLeft, Search, UserRound } from 'lucide-react-native';
+import { ArrowLeft, UserRound } from 'lucide-react-native';
 import { apiV2 } from '@/api/client';
 import { getStorageItem } from '@/utils/storage';
 
@@ -19,7 +19,7 @@ export default function ConnectionListScreen({ type }: { type: 'followers' | 'fo
   const { width } = useWindowDimensions();
   const { username, userId } = useLocalSearchParams<{ username?: string; userId?: string }>();
   const [people, setPeople] = useState<Person[]>([]);
-  const [loading, setLoading] = useState(Boolean(username));
+  const [loading, setLoading] = useState(Boolean(username && userId));
   const [error, setError] = useState('');
   const title = type === 'followers' ? 'Followers' : 'Following';
 
@@ -62,7 +62,7 @@ export default function ConnectionListScreen({ type }: { type: 'followers' | 'fo
           <View style={{ flexDirection: 'row', alignItems: 'center' }}>
             <Pressable accessibilityLabel="Go back" onPress={() => router.back()} hitSlop={12} style={{ width: '15%' }}><ArrowLeft color="#F7F7F8" size={27} /></Pressable>
             <Text style={{ flex: 1, color: '#F7F7F8', textAlign: 'center', fontFamily: 'NataSans-Bold', fontSize: width < 360 ? 22 : 26 }}>{title}</Text>
-            <View style={{ width: '15%', alignItems: 'flex-end' }}><Search color="#858489" size={23} /></View>
+            <View style={{ width: '15%' }} />
           </View>
           <Text selectable style={{ color: '#6F6E74', textAlign: 'center', fontFamily: 'NataSans-Regular' }}>@{username}</Text>
         </View>}
@@ -72,7 +72,6 @@ export default function ConnectionListScreen({ type }: { type: 'followers' | 'fo
         renderItem={({ item }) => <View style={{ minHeight: width < 360 ? 70 : 78, borderRadius: 20, borderCurve: 'continuous', backgroundColor: '#151515', paddingHorizontal: '4%', flexDirection: 'row', alignItems: 'center', gap: 14 }}>
           {item.avatar_url ? <Image source={item.avatar_url} contentFit="cover" style={{ width: '14%', maxWidth: 52, aspectRatio: 1, borderRadius: 999 }} /> : <View style={{ width: '14%', maxWidth: 52, aspectRatio: 1, borderRadius: 999, backgroundColor: '#984BE0', alignItems: 'center', justifyContent: 'center' }}><Text style={{ color: 'white', fontFamily: 'NataSans-Bold', fontSize: 16 }}>{(item.full_name || item.username).slice(0, 2).toUpperCase()}</Text></View>}
           <View style={{ flex: 1 }}><Text numberOfLines={1} style={{ color: '#F7F7F8', fontFamily: 'NataSans-SemiBold', fontSize: width < 360 ? 14 : 16 }}>{item.full_name || item.username}</Text><Text selectable numberOfLines={1} style={{ color: '#77767C', fontFamily: 'NataSans-Regular', fontSize: 13 }}>@{item.username}</Text></View>
-          <Pressable style={{ borderWidth: 1, borderColor: '#63E08A', borderRadius: 999, paddingHorizontal: '4%', paddingVertical: '2%' }}><Text style={{ color: '#63E08A', fontFamily: 'NataSans-SemiBold', fontSize: width < 360 ? 11 : 13 }}>{type === 'followers' ? 'View' : 'Following'}</Text></Pressable>
         </View>}
       />
     </View>

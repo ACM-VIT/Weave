@@ -3,6 +3,11 @@ import * as Linking from 'expo-linking';
 import { useState } from 'react';
 import { useAuth } from '@/store/AuthContext';
 import { getOAuthUrl, exchangeCode } from '@/api/auth';
+import {
+  clearOAuthClientVerifier,
+  createOAuthClientPkce,
+  persistOAuthClientVerifier,
+} from '@/services/oauthClientPkce';
 
 export function useOAuth() {
   const { setSession } = useAuth();
@@ -14,17 +19,21 @@ export function useOAuth() {
     setError(null);
 
     try {
+      const clientPkce = await createOAuthClientPkce();
+      await persistOAuthClientVerifier(clientPkce.verifier);
+
       // Build the callback first so the backend returns to this exact Expo runtime.
       const redirectUri = Linking.createURL('callback');
 
       // Get the OAuth URL from our backend, including the current runtime callback.
-      const oauthUrl = await getOAuthUrl(provider, redirectUri);
+      const oauthUrl = await getOAuthUrl(provider, redirectUri, clientPkce.challenge);
       
       // 3. Open the in-app browser — it will intercept the redirect automatically
       const result = await WebBrowser.openAuthSessionAsync(oauthUrl, redirectUri);
 
       if (result.type !== 'success') {
         // User cancelled or browser closed — not an error, just bail silently
+        await clearOAuthClientVerifier().catch(() => undefined);
         return;
       }
 
@@ -39,7 +48,8 @@ export function useOAuth() {
       }
 
       // 5. Exchange code for our custom JWT + refresh token
-      const data = await exchangeCode(code);
+      const data = await exchangeCode(code, clientPkce.verifier);
+      await clearOAuthClientVerifier().catch(() => undefined);
 
       // 6. Persist session — AuthContext fetches profile which includes onboarding_completed.
       //    _layout.tsx will then automatically redirect to onboarding or tabs.

@@ -230,6 +230,7 @@ export class MlV2Client implements RecommendationPort, OutboxTransportPort {
     payload: unknown,
     idempotencyKey: string,
     timeoutMs = this.config.timeoutMs,
+    responseFormat: 'required-json' | 'optional-json' = 'required-json',
   ): Promise<{ status: number; body: unknown; retryAfterMs?: number }> {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -249,7 +250,11 @@ export class MlV2Client implements RecommendationPort, OutboxTransportPort {
       if (Buffer.byteLength(text) > this.config.maxResponseBytes) throw new Error('ML response exceeded size limit.');
       let body: unknown = null;
       if (text) {
-        try { body = JSON.parse(text); } catch { throw new Error('ML returned invalid JSON.'); }
+        try { body = JSON.parse(text); }
+        catch {
+          if (responseFormat === 'required-json') throw new Error('ML returned invalid JSON.');
+          body = text;
+        }
       }
       const retryAfter = response.headers.get('retry-after');
       let retryAfterMs: number | undefined;
@@ -306,13 +311,15 @@ export class MlV2Client implements RecommendationPort, OutboxTransportPort {
         payload,
         idempotencyKey,
         this.config.deliveryTimeoutMs ?? this.config.timeoutMs,
+        'optional-json',
       );
       return {
         accepted: status >= 200 && status < 300,
         retryable: status === 408 || status === 425 || status === 429 || status >= 500,
         status_code: status,
         detail: typeof (body as { detail?: unknown } | null)?.detail === 'string'
-          ? (body as { detail: string }).detail : undefined,
+          ? (body as { detail: string }).detail
+          : typeof body === 'string' ? body.slice(0, 4_000) : undefined,
         ...(retryAfterMs ? { retry_after_ms: retryAfterMs } : {}),
       };
     } catch (error) {

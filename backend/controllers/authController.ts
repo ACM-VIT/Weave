@@ -1,15 +1,28 @@
 import crypto from "crypto";
-import { eq } from "drizzle-orm";
+import { and, eq, gt, sql } from "drizzle-orm";
 import type { CookieOptions, Request, Response } from "express";
 import jwt from "jsonwebtoken";
 import supabase, {
+  createOAuthSupabaseClient,
   createRecoverySupabaseClient,
   supabaseAdmin,
 } from "../config/supabase.js";
+import redisClient from "../config/redis.js";
 import { db } from "../db/index.js";
 import { appOauthCodes as oauthCodes, appRefreshTokens as refreshTokens, appUsers as users } from "../db/v2Schema.js";
-import { ensureIdentityProfile, fallbackUsername } from "../services/identityService.js";
+import {
+  ensureIdentityProfile,
+  fallbackUsername,
+  githubIdentityFromAuthUser,
+} from "../services/identityService.js";
 import { updatePasswordFromRecoverySession } from "../services/passwordRecoveryService.js";
+import {
+  OAuthPkceCoordinator,
+  RedisOAuthAttemptStore,
+  CLIENT_CODE_CHALLENGE_PATTERN,
+  clientCodeChallengeFromVerifier,
+  type ConsumedOAuthAttempt,
+} from "../services/oauthPkceService.js";
 import {
   sendControllerError,
   sendError,
@@ -17,9 +30,15 @@ import {
 } from "../utils/response.js";
 import { isValidUuid } from "../utils/validators.js";
 import { resolveClientRedirect } from "../security/originPolicy.js";
+import { normalizeUsername } from "../utils/username.js";
 
 const CLIENT_URL = process.env.CLIENT_URL;
 const BACKEND_URL = process.env.BACKEND_URL;
+const OAUTH_ATTEMPT_COOKIE = "oauth_attempt";
+const OAUTH_ATTEMPT_TTL_SECONDS = Number.parseInt(
+  process.env.OAUTH_ATTEMPT_TTL_SECONDS ?? "300",
+  10,
+);
 
 if (!CLIENT_URL)
   throw new Error("Missing required environment variable: CLIENT_URL");
@@ -35,6 +54,29 @@ if (!JWT_SECRET) {
     "FATAL ERROR: JWT_SECRET is not defined in environment variables.",
   );
 }
+
+const oauthPkce = new OAuthPkceCoordinator(
+  new RedisOAuthAttemptStore(redisClient),
+  createOAuthSupabaseClient,
+  {
+    attemptTtlSeconds: OAUTH_ATTEMPT_TTL_SECONDS,
+  },
+);
+
+const oauthAttemptCookieOptions = (): CookieOptions => ({
+  httpOnly: true,
+  secure: process.env.NODE_ENV === "production",
+  sameSite: "lax",
+  path: "/api/auth",
+  maxAge: OAUTH_ATTEMPT_TTL_SECONDS * 1_000,
+});
+
+const clearOAuthAttemptCookieOptions = (): CookieOptions => ({
+  httpOnly: true,
+  secure: process.env.NODE_ENV === "production",
+  sameSite: "lax",
+  path: "/api/auth",
+});
 
 // Helper: Hash the refresh token before storing it
 const hashToken = (token: string) => {
@@ -66,6 +108,25 @@ const getClientRedirect = (value: unknown): string => {
     configuredClientRedirects,
     process.env.NODE_ENV,
   );
+};
+
+const withClientRedirectParams = (
+  clientRedirect: string,
+  params: Record<string, string>,
+): string => {
+  const redirect = new URL(clientRedirect);
+  // Never preserve caller-supplied auth results from the allowed redirect URL.
+  // Keep unrelated routing parameters (for example `source=github`) intact.
+  redirect.searchParams.delete("code");
+  redirect.searchParams.delete("error");
+  for (const [key, value] of Object.entries(params)) {
+    redirect.searchParams.set(key, value);
+  }
+  return redirect.toString();
+};
+
+const queryString = (value: unknown): string | null => {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
 };
 
 const isPrivateDevelopmentHost = (hostname: string): boolean => {
@@ -127,22 +188,26 @@ const createAndStoreRefreshToken = async (userId: string, tx: any = db) => {
 
 // POST /api/auth/signup
 export async function signUp(req: Request, res: Response): Promise<void> {
-  let { email, password, username, full_name } = req.body;
-
-  if (!username || typeof username !== "string" || username.trim() === "") {
-    return sendError(res, 400, "Username is required");
+  const { email, password, full_name } = req.body;
+  const usernameInput = req.body?.username;
+  const explicitUsername = usernameInput === undefined || usernameInput === null
+    ? null
+    : normalizeUsername(usernameInput);
+  if (usernameInput !== undefined && usernameInput !== null && explicitUsername === null) {
+    return sendError(
+      res,
+      400,
+      "Username must be 1-50 characters using only letters, numbers, underscores, or hyphens",
+    );
   }
-
-  // Normalize username to prevent whitespace bypasses (" alice " vs "alice")
-  username = username.trim();
 
   try {
     // 0. Pre-emptively check if username is taken to avoid messy trigger constraint violations
-    if (username) {
+    if (explicitUsername) {
       const existingUser = await db
         .select()
         .from(users)
-        .where(eq(users.username, username));
+        .where(sql`lower(${users.username}) = lower(${explicitUsername})`);
       if (existingUser.length > 0) {
         return sendError(res, 409, "Username is already taken");
       }
@@ -153,7 +218,7 @@ export async function signUp(req: Request, res: Response): Promise<void> {
       password,
       email_confirm: true, // Bypass email verification so we can login immediately
       user_metadata: {
-        user_name: username,
+        ...(explicitUsername ? { user_name: explicitUsername } : {}),
         full_name: full_name,
       },
     });
@@ -161,9 +226,15 @@ export async function signUp(req: Request, res: Response): Promise<void> {
     if (error) return sendError(res, error.status || 400, error.message);
 
     const userId = data.user.id;
+    const profileUsername = explicitUsername
+      ?? fallbackUsername(userId, data.user.user_metadata);
 
     try {
-      await ensureIdentityProfile({ userId, username, fullName: full_name ?? null });
+      await ensureIdentityProfile({
+        userId,
+        username: profileUsername,
+        fullName: full_name ?? null,
+      });
     } catch (databaseError) {
       await supabaseAdmin.auth.admin.deleteUser(userId);
       throw databaseError;
@@ -417,13 +488,34 @@ export async function getOAuthUrl(req: Request, res: Response): Promise<void> {
 
   try {
     const clientRedirect = getClientRedirect(req.query.redirect_uri);
+    const clientCodeChallenge = queryString(req.query.code_challenge);
+    if (!clientCodeChallenge || !CLIENT_CODE_CHALLENGE_PATTERN.test(clientCodeChallenge)) {
+      return sendError(res, 400, "A valid S256 client code challenge is required.");
+    }
     const callbackUrl = getBackendCallbackUrl(req);
-    callbackUrl.searchParams.set("client_redirect", clientRedirect);
-    const url = new URL(`${process.env.SUPABASE_URL}/auth/v1/authorize`);
-    url.searchParams.set("provider", provider);
-    url.searchParams.set("redirect_to", callbackUrl.toString());
+    const authorization = await oauthPkce.begin(
+      provider,
+      clientRedirect,
+      callbackUrl,
+      clientCodeChallenge,
+    );
+    const continuationUrl = new URL("/api/auth/oauth/continue", callbackUrl);
+    continuationUrl.searchParams.set("oauth_attempt", authorization.state);
+    return sendSuccess(res, 200, { url: continuationUrl.toString() });
+  } catch (error) {
+    sendControllerError(res, error as Error);
+  }
+}
 
-    return sendSuccess(res, 200, { url: url.toString() });
+// GET /api/auth/oauth/continue
+export async function continueOAuth(req: Request, res: Response): Promise<void> {
+  try {
+    const authorization = await oauthPkce.resume(req.query.oauth_attempt);
+    if (!authorization) {
+      return sendError(res, 400, "Invalid or expired OAuth attempt.");
+    }
+    res.cookie(OAUTH_ATTEMPT_COOKIE, authorization.state, oauthAttemptCookieOptions());
+    res.redirect(302, authorization.url);
   } catch (error) {
     sendControllerError(res, error as Error);
   }
@@ -434,58 +526,81 @@ export async function handleOAuthCallback(
   req: Request,
   res: Response,
 ): Promise<void> {
-  const code = req.query.code as string;
-  const clientRedirect = getClientRedirect(req.query.client_redirect);
+  let attempt: ConsumedOAuthAttempt | null;
+  try {
+    const attemptState = req.cookies?.[OAUTH_ATTEMPT_COOKIE];
+    res.clearCookie(OAUTH_ATTEMPT_COOKIE, clearOAuthAttemptCookieOptions());
+    attempt = await oauthPkce.consume(attemptState);
+  } catch (error) {
+    console.error("OAuth state consume error:", error);
+    return res.redirect(withClientRedirectParams(CLIENT_URL, {
+      error: "oauth_temporarily_unavailable",
+    }));
+  }
 
-  if (!code) {
-    const reason = (req.query.error as string) || "no_code";
-    return res.redirect(
-      `${clientRedirect}?error=${encodeURIComponent(reason)}`,
-    );
+  if (!attempt) {
+    return res.redirect(withClientRedirectParams(CLIENT_URL, {
+      error: "invalid_or_expired_oauth_state",
+    }));
+  }
+
+  const clientRedirect = attempt.clientRedirect;
+  const code = queryString(req.query.code);
+  const providerError = queryString(req.query.error);
+  if (!code || providerError) {
+    return res.redirect(withClientRedirectParams(clientRedirect, {
+      error: providerError ? "oauth_provider_error" : "oauth_code_missing",
+    }));
   }
 
   try {
-    // 1. Exchange the provider code for a Supabase session using the Admin client
-    const { data, error } =
-      await supabaseAdmin.auth.exchangeCodeForSession(code);
+    // The attempt was atomically consumed above. Rehydrate its request-scoped
+    // PKCE client so this code can only be exchanged with the matching verifier.
+    const { data, error } = await oauthPkce.exchange(attempt, code);
 
     if (error || !data.user) {
       console.error("OAuth Exchange Error:", error);
-      return res.redirect(
-        `${clientRedirect}?error=Authentication failed`,
-      );
+      return res.redirect(withClientRedirectParams(clientRedirect, {
+        error: "oauth_exchange_failed",
+      }));
     }
 
     // 2. Ensure the v2 product profile exists before the one-time code references it.
     const expiresAt = new Date(Date.now() + 5 * 60 * 1000);
+    const githubIdentity = githubIdentityFromAuthUser(data.user);
     await ensureIdentityProfile({
       userId: data.user.id,
       username: fallbackUsername(data.user.id, data.user.user_metadata),
       fullName: typeof data.user.user_metadata?.full_name === "string" ? data.user.user_metadata.full_name : null,
-      githubId: typeof data.user.user_metadata?.provider_id === "string" ? data.user.user_metadata.provider_id : null,
-      githubHandle: typeof data.user.user_metadata?.user_name === "string" ? data.user.user_metadata.user_name : null,
+      githubId: githubIdentity.githubId,
+      githubHandle: githubIdentity.githubHandle,
       avatarUrl: typeof data.user.user_metadata?.avatar_url === "string" ? data.user.user_metadata.avatar_url : null,
     });
     const [codeData] = await db
       .insert(oauthCodes)
       .values({
         userId: data.user.id,
+        clientCodeChallenge: attempt.clientCodeChallenge,
         expiresAt,
       })
       .returning({ code: oauthCodes.code });
 
     if (!codeData) {
       console.error("OAuth Code Insert Error");
-      return res.redirect(
-        `${clientRedirect}?error=Failed to generate auth code`,
-      );
+      return res.redirect(withClientRedirectParams(clientRedirect, {
+        error: "oauth_code_generation_failed",
+      }));
     }
 
     // 4. Redirect to your frontend with the short-lived code.
-    res.redirect(`${clientRedirect}?code=${codeData.code}`);
+    res.redirect(withClientRedirectParams(clientRedirect, {
+      code: codeData.code,
+    }));
   } catch (error) {
     console.error("OAuth Callback Caught Error:", error);
-    res.redirect(`${clientRedirect}?error=Internal server error`);
+    res.redirect(withClientRedirectParams(clientRedirect, {
+      error: "oauth_internal_error",
+    }));
   }
 }
 
@@ -495,6 +610,7 @@ export async function exchangeAuthCode(
   res: Response,
 ): Promise<void> {
   const { code } = req.body;
+  const codeVerifier = queryString(req.body?.code_verifier);
 
   if (!code) {
     return sendError(res, 400, "Authorization code is required");
@@ -504,11 +620,22 @@ export async function exchangeAuthCode(
     return sendError(res, 400, "Invalid authorization code format");
   }
 
+  const clientCodeChallenge = codeVerifier
+    ? clientCodeChallengeFromVerifier(codeVerifier)
+    : null;
+  if (!clientCodeChallenge) {
+    return sendError(res, 400, "A valid OAuth code verifier is required");
+  }
+
   try {
     // 1 & 2. Atomically look up AND consume the code (DELETE ... RETURNING)
     const [codeData] = await db
       .delete(oauthCodes)
-      .where(eq(oauthCodes.code, code))
+      .where(and(
+        eq(oauthCodes.code, code),
+        eq(oauthCodes.clientCodeChallenge, clientCodeChallenge),
+        gt(oauthCodes.expiresAt, new Date()),
+      ))
       .returning({
         user_id: oauthCodes.userId,
         expires_at: oauthCodes.expiresAt,
@@ -520,11 +647,6 @@ export async function exchangeAuthCode(
         400,
         "Invalid or already consumed authorization code",
       );
-    }
-
-    // 3. Check expiration
-    if (new Date(codeData.expires_at) < new Date()) {
-      return sendError(res, 400, "Authorization code expired");
     }
 
     const userId = codeData.user_id;

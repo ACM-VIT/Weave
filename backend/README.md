@@ -250,9 +250,11 @@ Required production environment variables: `DATABASE_URL`, `SUPABASE_URL`, `SUPA
 
 The outbox launch script sets `--role=outbox` portably and fails startup when `ML_FEEDBACK_OUTBOX` is disabled. A hardened systemd template and install/acceptance procedure are in [the outbox worker runbook](../docs/runbooks/outbox-worker.md).
 
+The coordinated backend, ML, OAuth, corpus, device, and load gates for v2 are in [the Weave v2 release runbook](../docs/runbooks/weave-v2-release.md).
+
 Set `TRUST_PROXY=true` only when exactly one trusted ingress proxy is in front of the service. Authentication endpoints have a Redis-backed per-IP/path limit of 20 requests per minute; configure broader request and connection limits at the ingress as well.
 
-`GET /healthz` is process liveness. `GET /readyz` checks PostgreSQL, Redis, ML, and feature dependencies. Internal `GET /api/internal/v2/operations/status` adds outbox and metric state. `POST /api/internal/v2/operations/outbox/:outboxId/replay` retries a dead outbox row.
+`GET /healthz` is process liveness. `GET /readyz` checks PostgreSQL, Redis, ML, and feature dependencies. Internal `GET /api/internal/v2/operations/status` adds outbox and metric state. `POST /api/internal/v2/operations/outbox/:outboxId/replay` retries a dead outbox row. Identity-only version-1 onboarding jobs that are provably obsolete are classified, never replayed, with `POST /api/internal/v2/operations/outbox/:outboxId/supersede`; see the outbox worker runbook.
 
 ## Database deployment and clean ingestion
 
@@ -269,3 +271,8 @@ Set `TRUST_PROXY=true` only when exactly one trusted ingress proxy is in front o
 Databases with the known parent-journal history are upgraded directly: the migrator executes and records the retroactive `0004_add_likes_given` and `0005_add_is_saved` SQL before `0008`. Do not set `ADOPT_LEGACY_SCHEMA` for that normal upgrade. The one-time `ADOPT_LEGACY_SCHEMA=1` escape hatch is only for an audited legacy schema whose baseline Drizzle history is genuinely absent or incomplete; exercise it on a clone and run `schema:audit` before using it against the target.
 
 For verification use `npm run build`, `npm test`, database integration with `RUN_DATABASE_INTEGRATION=1`, parent-history migration integration with `RUN_MIGRATION_UPGRADE_INTEGRATION=1`, and HTTP integration with `RUN_HTTP_INTEGRATION=1`. The integration suite uses Redis database 14 by default and clears only that test database.
+
+For a strict ML collection rebuild, run `npm run reindex:ml -- --campaign=<id>`
+first as a dry run, then repeat with `--execute` only after reviewing the counts
+and confirming the ML target collection. The campaign is idempotent and only
+adds new outbox rows; see the outbox worker runbook.

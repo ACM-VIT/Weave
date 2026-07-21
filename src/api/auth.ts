@@ -1,4 +1,5 @@
 import { API_URL } from './config';
+import { isValidUsername, normalizeUsername } from '../utils/username';
 
 const readJson = async (response: Response) => {
   const text = await response.text();
@@ -11,7 +12,8 @@ const readJson = async (response: Response) => {
   }
 };
 
-export const register = async (email: string, password: string, fullName: string) => {
+export const register = async (email: string, password: string, fullName: string, username: string) => {
+  if (!isValidUsername(username)) throw new Error('Enter a valid username.');
   const response = await fetch(`${API_URL}/auth/signup`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -19,7 +21,7 @@ export const register = async (email: string, password: string, fullName: string
     body: JSON.stringify({ 
       email, 
       password, 
-      username: email.split('@')[0], // Generate a default username based on email
+      username: normalizeUsername(username),
       full_name: fullName 
     }),
   });
@@ -63,8 +65,12 @@ export const logout = async () => {
 export const getOAuthUrl = async (
   provider: 'github' | 'google',
   redirectUri: string,
+  codeChallenge: string,
 ): Promise<string> => {
-  const params = new URLSearchParams({ redirect_uri: redirectUri });
+  const params = new URLSearchParams({
+    redirect_uri: redirectUri,
+    code_challenge: codeChallenge,
+  });
   const response = await fetch(`${API_URL}/auth/oauth/${provider}?${params}`);
   const data = await readJson(response);
   if (!response.ok) {
@@ -73,18 +79,38 @@ export const getOAuthUrl = async (
   return data.data.url as string;
 };
 
-export const exchangeCode = async (code: string): Promise<{ accessToken: string; user: any }> => {
+type ExchangedSession = { accessToken: string; user: any };
+const codeExchangeRequests = new Map<string, Promise<ExchangedSession>>();
+
+const performCodeExchange = async (code: string, codeVerifier: string): Promise<ExchangedSession> => {
   const response = await fetch(`${API_URL}/auth/exchange`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     credentials: 'include',
-    body: JSON.stringify({ code }),
+    body: JSON.stringify({ code, code_verifier: codeVerifier }),
   });
   const data = await readJson(response);
   if (!response.ok) {
     throw new Error(data.error || 'Failed to exchange authorization code');
   }
-  return data.data as { accessToken: string; user: any };
+  return data.data as ExchangedSession;
+};
+
+export const exchangeCode = (code: string, codeVerifier: string): Promise<ExchangedSession> => {
+  const requestKey = `${code}:${codeVerifier}`;
+  const existing = codeExchangeRequests.get(requestKey);
+  if (existing) return existing;
+  const request = performCodeExchange(code, codeVerifier);
+  codeExchangeRequests.set(requestKey, request);
+  void request.then(() => {
+    setTimeout(() => {
+      if (codeExchangeRequests.get(requestKey) === request) codeExchangeRequests.delete(requestKey);
+    }, 60_000);
+  }).catch(() => undefined);
+  void request.catch(() => {
+    if (codeExchangeRequests.get(requestKey) === request) codeExchangeRequests.delete(requestKey);
+  });
+  return request;
 };
 
 export const requestPasswordReset = async (email: string): Promise<string> => {

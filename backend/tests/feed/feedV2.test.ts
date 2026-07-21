@@ -178,6 +178,44 @@ test('generation keeps reservation ownership and concurrent retries replay perso
   assert.equal(queue.committed, 1);
 });
 
+test('coalesced generation waits for the lock owner to populate the queue', async () => {
+  const persistence = new FakePersistence();
+  const queue = new FakeQueue();
+  let refillCalls = 0;
+  queue.reserve = async (_user, _version, requestId, _limit, token) => ({ requestId, token, items: [] });
+  queue.refill = async (_user, _version, requestId, _limit, token) => {
+    refillCalls++;
+    return {
+      requestId,
+      token,
+      items: refillCalls < 3 ? [] : [{
+        repo_id: repo.repo_id, score: 1, source: 'semantic', model_version: 'm1', summary_id: null,
+      }],
+    };
+  };
+  const service = new FeedV2Service(
+    persistence,
+    queue,
+    async () => 'coalesced',
+    true,
+    1_500,
+    1,
+    'unit-test-feed-cursor-secret',
+    100,
+  );
+  const response = await service.getFeed(
+    '00000000-0000-4000-8000-000000000030',
+    {
+      feed_request_id: '00000000-0000-4000-8000-000000000016',
+      session_id: '00000000-0000-4000-8000-000000000020', limit: 10, cursor: null,
+    },
+  );
+  assert.equal(response.source, 'personalized');
+  assert.equal(response.items[0].repo_id, repo.repo_id);
+  assert.equal(refillCalls, 3);
+  assert.equal(persistence.fallbackCalls, 0);
+});
+
 test('signed cursor consumes remaining queue pages and preserves global positions', async () => {
   const persistence = new FakePersistence();
   const queue = new FakeQueue();

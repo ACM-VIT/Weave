@@ -22,6 +22,7 @@ import PasswordRules from "@/components/Auth/PasswordRules";
 import PrimaryButton from "@/components/Auth/PrimaryButton";
 import SectionLabel from "@/components/Auth/SectionLabel";
 import SocialButton from "@/components/Auth/SocialButton";
+import { isValidUsername, normalizeUsername, USERNAME_GUIDANCE } from "@/utils/username";
 
 export default function SignUpEmail() {
   const router = useRouter();
@@ -29,6 +30,7 @@ export default function SignUpEmail() {
   const { signInWithProvider, isLoading: oauthLoading, error: oauthError } = useOAuth();
 
   const [fullName, setFullName] = useState("");
+  const [username, setUsername] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
 
@@ -43,8 +45,10 @@ export default function SignUpEmail() {
 
   const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
   const isEmailValid = emailRegex.test(email);
+  const normalizedUsername = normalizeUsername(username);
+  const isUsernameValid = isValidUsername(username);
 
-  const isFormValid = fullName.trim().length > 0 && isEmailValid && isPasswordValid && !isLoading;
+  const isFormValid = fullName.trim().length > 0 && isUsernameValid && isEmailValid && isPasswordValid && !isLoading;
 
   useEffect(() => {
     // Auto-scroll to bottom slowly on mount
@@ -58,7 +62,7 @@ export default function SignUpEmail() {
     setIsLoading(true);
     setErrorMsg("");
     try {
-      const data = await register(email, password, fullName);
+      const data = await register(email, password, fullName, normalizedUsername);
       await setSession(data.accessToken, data.user);
       // _layout.tsx will automatically redirect to onboarding
     } catch (err: any) {
@@ -145,6 +149,20 @@ export default function SignUpEmail() {
               value={fullName}
               onChangeText={setFullName}
             />
+
+            <SectionLabel title="Username" />
+            <AuthInput
+              placeholder="Choose your username"
+              icon="user"
+              value={username}
+              onChangeText={setUsername}
+              autoCapitalize="none"
+            />
+            {username.length > 0 && !isUsernameValid ? (
+              <Text className="text-[#FF453A] text-[13px] font-nata mt-1 ml-1">
+                {USERNAME_GUIDANCE}
+              </Text>
+            ) : null}
 
             <SectionLabel title="Email Address" />
             <AuthInput

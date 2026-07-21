@@ -1,6 +1,8 @@
 import React from 'react';
 import {
   Pressable,
+  Linking,
+  Platform,
   ScrollView,
   Share,
   StyleSheet,
@@ -20,9 +22,9 @@ import {
   Bookmark,
   CircleAlert,
   Eye,
+  ExternalLink,
   GitFork,
   MessageCircle,
-  Pin,
   Share as ShareIcon,
   Star,
   ThumbsDown,
@@ -35,6 +37,7 @@ import DescriptionCard from './DescriptionCard';
 import ReadmeCard from './ReadmeCard';
 import type { FeedbackAction } from '../../api/activity';
 import { FEEDBACK_ACTIONS } from '../../constants/feedbackActions';
+import { shareResultConfirmsCompletion } from '../../utils/share-feedback';
 
 type QueueActivity = (
   event: { repo_id: string; action: FeedbackAction; dwell_seconds?: number },
@@ -146,13 +149,9 @@ export function RepositoryScreen({
   const serverDisliked = repository.viewerReaction === 'dislike';
   const [liked, setLiked] = React.useState(serverLiked);
   const [disliked, setDisliked] = React.useState(serverDisliked);
-  const [starred, setStarred] = React.useState(false);
-  const [forked, setForked] = React.useState(false);
-  const [pinned, setPinned] = React.useState(false);
 
   const initialLikes = Number(repository.stats.likes || 0) || 0;
   const likeCount = Math.max(0, initialLikes + Number(liked) - Number(serverLiked));
-  const dislikeCount = disliked ? 1 : 0;
   const visibleCommentCount = (commentCount ?? Number(repository.stats.comments || 0)) || 0;
   const avatarIndex = [...repository.owner].reduce((sum, character) => sum + character.charCodeAt(0), 0) % AVATAR_GRADIENTS.length;
   const [avatarStart, avatarEnd] = AVATAR_GRADIENTS[avatarIndex];
@@ -200,14 +199,26 @@ export function RepositoryScreen({
   };
 
   const shareRepository = async () => {
-    onQueueActivity?.({ repo_id: repository.id, action: FEEDBACK_ACTIONS.share }, true);
     try {
-      await Share.share({
+      const result = await Share.share({
         title: `${repository.owner}/${repository.title}`,
-        message: `${repository.owner}/${repository.title}\n\n${repository.description}`,
+        message: `${repository.owner}/${repository.title}\n\n${repository.description}\n\n${repository.githubUrl ?? `https://github.com/${repository.owner}/${repository.title}`}`,
       });
+      if (shareResultConfirmsCompletion(Platform.OS, result.action, Share.sharedAction)) {
+        onQueueActivity?.({ repo_id: repository.id, action: FEEDBACK_ACTIONS.share }, true);
+      }
     } catch {
       // The native share sheet can be dismissed or unavailable without affecting the feed.
+    }
+  };
+
+  const openGithubRepository = async () => {
+    const url = repository.githubUrl ?? `https://github.com/${repository.owner}/${repository.title}`;
+    try {
+      await Linking.openURL(url);
+      onQueueActivity?.({ repo_id: repository.id, action: FEEDBACK_ACTIONS.githubOpen }, true);
+    } catch {
+      // Do not train on an open that the operating system rejected.
     }
   };
 
@@ -271,31 +282,21 @@ export function RepositoryScreen({
           </ScrollView>
 
           <View style={styles.repoStats}>
-            <Pressable
-              accessibilityLabel={starred ? 'Unstar repository' : 'Star repository'}
-              accessibilityRole="button"
-              onPress={() => setStarred((current) => !current)}
-              style={({ pressed }) => [styles.statButton, pressed && styles.statPressed]}
-            >
+            <View accessibilityLabel={`${formatCount(repository.stats.stars)} GitHub stars`} style={styles.statButton}>
               <Star
                 size={17}
-                color={starred ? REFERENCE_THEME.star : REFERENCE_THEME.text}
-                fill={starred ? REFERENCE_THEME.star : 'none'}
+                color={REFERENCE_THEME.text}
+                fill="none"
                 strokeWidth={1.9}
               />
-              <Text style={[styles.statText, starred && { color: REFERENCE_THEME.star }]}>
+              <Text style={styles.statText}>
                 {formatCount(repository.stats.stars)}
               </Text>
-            </Pressable>
-            <Pressable
-              accessibilityLabel="Fork repository"
-              accessibilityRole="button"
-              onPress={() => setForked(true)}
-              style={({ pressed }) => [styles.statButton, pressed && styles.statPressed]}
-            >
-              <GitFork size={16} color={forked ? REFERENCE_THEME.success : REFERENCE_THEME.text} strokeWidth={1.9} />
+            </View>
+            <View accessibilityLabel={`${formatCount(repository.stats.forks)} GitHub forks`} style={styles.statButton}>
+              <GitFork size={16} color={REFERENCE_THEME.text} strokeWidth={1.9} />
               <Text style={styles.statText}>{formatCount(repository.stats.forks)}</Text>
-            </Pressable>
+            </View>
             <View accessibilityLabel={`${formatCount(repository.stats.views)} views`} style={styles.statButton}>
               <Eye size={16} color={REFERENCE_THEME.text} strokeWidth={1.9} />
               <Text style={styles.statText}>{formatCount(repository.stats.views)}</Text>
@@ -331,7 +332,6 @@ export function RepositoryScreen({
           accessibilityLabel={disliked ? 'Remove dislike' : 'Dislike repository'}
           active={disliked}
           activeColor={REFERENCE_THEME.danger}
-          count={formatCount(String(dislikeCount))}
           dense={veryShort}
           icon={ThumbsDown}
           onPress={toggleDislike}
@@ -353,14 +353,12 @@ export function RepositoryScreen({
           onPress={onSavePress}
         />
         <ActionButton
-          accessibilityLabel={pinned ? 'Unpin repository' : 'Pin repository'}
-          active={pinned}
-          activeColor="#1EE15B"
+          accessibilityLabel="Open repository on GitHub"
           dense={veryShort}
-          icon={Pin}
+          icon={ExternalLink}
           iconSize={26}
-          label="Pin"
-          onPress={() => setPinned((current) => !current)}
+          label="GitHub"
+          onPress={openGithubRepository}
         />
         <ActionButton
           accessibilityLabel="Share repository"
@@ -482,9 +480,6 @@ const styles = StyleSheet.create({
     flexDirection: 'column',
     alignItems: 'center',
     gap: 2,
-  },
-  statPressed: {
-    transform: [{ scale: 0.94 }],
   },
   statText: {
     color: 'rgba(255,255,255,0.92)',

@@ -6,6 +6,7 @@ export type RepositoryData = {
   viewerSaved?: boolean;
   title: string;
   owner: string;
+  githubUrl?: string;
   description: string;
   readmeSummary: string;
   readmeFull: string;

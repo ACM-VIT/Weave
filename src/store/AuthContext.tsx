@@ -68,9 +68,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       if (status === 401 || status === 404) {
         await removeStorageItem('access_token').catch(() => undefined);
         setUser(null);
-        return;
       }
       console.error('Failed to fetch user profile', error);
+      throw error;
     }
   }, []);
 
@@ -93,7 +93,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   }, [fetchUserProfile, loadBypassUser]);
 
-  const checkOnboardingStatus = async () => {
+  const checkOnboardingStatus = useCallback(async () => {
     if (AUTH_BYPASS_ENABLED) {
       setUser(await loadBypassUser());
       return;
@@ -103,28 +103,22 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     if (token) {
       await fetchUserProfile(token);
     }
-  };
+  }, [fetchUserProfile, loadBypassUser]);
 
-  const setSession = async (token: string, authUser: any) => {
+  const setSession = async (token: string, _authUser: any) => {
     if (AUTH_BYPASS_ENABLED) {
       setUser(await loadBypassUser());
       return;
     }
 
     await setStorageItem('access_token', token);
-
-    // Let routing move a newly-created account into onboarding immediately,
-    // then replace this optimistic value with the canonical backend profile.
-    setUser({
-      ...authUser,
-      user_id: authUser?.user_id ?? authUser?.id,
-      username:
-        authUser?.username ??
-        authUser?.user_metadata?.user_name ??
-        'new-user',
-      onboarding_completed: false,
-    });
-    await fetchUserProfile(token);
+    setUser(null);
+    setIsLoading(true);
+    try {
+      await fetchUserProfile(token);
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   const enterOnboardingPreview = async () => {

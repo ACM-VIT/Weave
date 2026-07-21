@@ -29,6 +29,9 @@ export const appUsers = appSchema.table('users', {
   githubId: text('github_id'),
   githubHandle: text('github_handle'),
   avatarUrl: text('avatar_url'),
+  interests: jsonb('interests').$type<string[]>().notNull().default([]),
+  skills: jsonb('skills').$type<string[]>().notNull().default([]),
+  techStack: jsonb('tech_stack').$type<string[]>().notNull().default([]),
   status: text('status').notNull().default('active'),
   profileVersion: bigint('profile_version', { mode: 'bigint' }).notNull().default(1n),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
@@ -66,6 +69,7 @@ export const appRefreshTokens = appSchema.table('refresh_tokens', {
 export const appOauthCodes = appSchema.table('oauth_codes', {
   code: uuid('code').defaultRandom().primaryKey(),
   userId: uuid('user_id').notNull().references(() => appUsers.userId, { onDelete: 'cascade' }),
+  clientCodeChallenge: text('client_code_challenge'),
   expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 });

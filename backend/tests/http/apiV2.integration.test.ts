@@ -104,14 +104,34 @@ integration('registered v2 HTTP paths complete controlled integration flows', as
 
     const onboard = await fetch(`${base}/api/v2/onboarding`, {
       method: 'PUT', headers: authHeaders,
-      body: JSON.stringify({ bio: 'Integration profile', topics: ['typescript', 'machine-learning'] }),
+      body: JSON.stringify({
+        bio: 'Integration profile', interests: ['machine-learning'], skills: ['typescript'], tech_stack: ['postgresql'],
+      }),
     });
     assert.equal(onboard.status, 200);
-    assert.equal(Number((await sqlClient`SELECT count(*) count FROM app.user_topics WHERE user_id=${userId}::uuid`)[0].count), 2);
+    assert.equal(Number((await sqlClient`SELECT count(*) count FROM app.user_topics WHERE user_id=${userId}::uuid`)[0].count), 3);
     const onboardJob = (await sqlClient`SELECT payload FROM telemetry.ml_outbox WHERE job_type='onboard' ORDER BY created_at DESC LIMIT 1`)[0].payload as Record<string, unknown>;
     assert.match(String(onboardJob.job_id), /^[0-9a-f-]{36}$/);
     assert.equal(onboardJob.user_id, userId);
-    assert.equal(typeof onboardJob.profile, 'object');
+    assert.deepEqual((onboardJob.profile as Record<string, unknown>).interests, ['machine-learning']);
+    assert.deepEqual((onboardJob.profile as Record<string, unknown>).skills, ['typescript']);
+    assert.deepEqual((onboardJob.profile as Record<string, unknown>).tech_stack, ['postgresql']);
+
+    const invalidUsername = await fetch(`${base}/api/v2/users/me`, {
+      method: 'PATCH', headers: authHeaders, body: JSON.stringify({ username: 'invalid username!' }),
+    });
+    assert.equal(invalidUsername.status, 400);
+
+    const profilePatch = await fetch(`${base}/api/v2/users/me`, {
+      method: 'PATCH', headers: authHeaders, body: JSON.stringify({ bio: 'Updated integration profile' }),
+    });
+    assert.equal(profilePatch.status, 200);
+    const patchedJob = (await sqlClient`
+      SELECT payload FROM telemetry.ml_outbox WHERE job_type='onboard' ORDER BY created_at DESC LIMIT 1
+    `)[0].payload as Record<string, unknown>;
+    assert.deepEqual((patchedJob.profile as Record<string, unknown>).interests, ['machine-learning']);
+    assert.deepEqual((patchedJob.profile as Record<string, unknown>).skills, ['typescript']);
+    assert.deepEqual((patchedJob.profile as Record<string, unknown>).tech_stack, ['postgresql']);
 
     const comment = await fetch(`${base}/api/v2/repositories/${repoId}/comments`, {
       method: 'POST', headers: authHeaders, body: JSON.stringify({ body: 'Useful repository' }),
@@ -137,9 +157,18 @@ integration('registered v2 HTTP paths complete controlled integration flows', as
     });
     assert.equal(board.status, 201);
     const boardId = ((await board.json()) as { data: { board_id: string } }).data.board_id;
-    const addRepo = await fetch(`${base}/api/v2/boards/${boardId}/repositories/${repoId}`, { method: 'PUT', headers: authHeaders });
+    const saveEvent = {
+      event_id: crypto.randomUUID(), schema_version: 2, session_id: sessionId, serve_id: served.serve_id,
+      repo_id: repoId, position: 0, event_type: 'save', dwell_ms: null,
+      client_occurred_at: new Date().toISOString(), context: { client: 'http-integration' },
+    };
+    const addRepo = await fetch(`${base}/api/v2/boards/${boardId}/repositories/${repoId}`, {
+      method: 'PUT', headers: authHeaders, body: JSON.stringify({ event: saveEvent }),
+    });
     assert.equal(addRepo.status, 204);
-    const duplicateAdd = await fetch(`${base}/api/v2/boards/${boardId}/repositories/${repoId}`, { method: 'PUT', headers: authHeaders });
+    const duplicateAdd = await fetch(`${base}/api/v2/boards/${boardId}/repositories/${repoId}`, {
+      method: 'PUT', headers: authHeaders, body: JSON.stringify({ event: saveEvent }),
+    });
     assert.equal(duplicateAdd.status, 204);
     assert.equal(Number((await sqlClient`
       SELECT count(*) AS count FROM app.saves WHERE user_id=${userId}::uuid AND repo_id=${repoId}::uuid
@@ -150,6 +179,12 @@ integration('registered v2 HTTP paths complete controlled integration flows', as
     assert.equal(Number((await sqlClient`
       SELECT saved_repos_count FROM app.user_stats WHERE user_id=${userId}::uuid
     `)[0].saved_repos_count), 1);
+    assert.equal(Number((await sqlClient`
+      SELECT count(*) AS count FROM telemetry.interaction_events WHERE event_id=${saveEvent.event_id}::uuid
+    `)[0].count), 1);
+    assert.equal(Number((await sqlClient`
+      SELECT count(*) AS count FROM telemetry.ml_outbox WHERE idempotency_key=${`feedback:${saveEvent.event_id}`}
+    `)[0].count), 1);
     const boardRepos = await fetch(`${base}/api/v2/boards/${boardId}/repositories`, { headers: authHeaders });
     assert.equal(boardRepos.status, 200);
     assert.equal(((await boardRepos.json()) as { data: { items: unknown[] } }).data.items.length, 1);

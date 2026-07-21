@@ -3,7 +3,6 @@ import { apiV2 } from './client';
 export interface OnboardingData {
   username: string;
   full_name: string;
-  date_of_birth?: string;
   bio?: string;
   github_url?: string;
   github_handle?: string;
@@ -28,11 +27,21 @@ export async function setupOnboarding(token: string, data: OnboardingData) {
       avatar_url: data.avatar_url ?? null,
     }),
   }, token);
-  const topics = [...new Set([
-    ...(data.interests ?? []), ...(data.skills ?? []), ...(data.tech_stack ?? []),
-  ].map(slug).filter(Boolean))];
-  if (topics.length === 0) throw new Error('Choose at least one interest, skill, or technology.');
+  const normalize = (values: string[] | undefined) =>
+    [...new Set((values ?? []).map(slug).filter(Boolean))];
+  const interests = normalize(data.interests);
+  const skills = normalize(data.skills);
+  const techStack = normalize(data.tech_stack);
+  if (interests.length + skills.length + techStack.length === 0) {
+    throw new Error('Choose at least one interest, skill, or technology.');
+  }
   return apiV2('/onboarding', {
-    method: 'PUT', body: JSON.stringify({ topics, bio: data.bio ?? null }),
+    method: 'PUT',
+    body: JSON.stringify({
+      interests,
+      skills,
+      tech_stack: techStack,
+      bio: data.bio ?? null,
+    }),
   }, token);
 }
