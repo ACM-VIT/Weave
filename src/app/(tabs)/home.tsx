@@ -15,6 +15,7 @@ import {
 import { getResponsiveContentWidth } from '@/components/responsive-layout';
 import { REPOSITORIES, RepositoryData } from '@/data/repositories';
 import { RepositoryFeedItem } from '@/components/home/RepositoryFeedItem';
+import { FeedHeader } from '@/components/home/FeedHeader';
 import { REFERENCE_THEME } from '@/constants/theme';
 import { useInfiniteQuery } from '@tanstack/react-query';
 import * as SecureStore from '../../utils/storage';
@@ -324,6 +325,7 @@ export default function HomeScreen() {
           onViewableItemsChanged={onViewableItemsChanged}
           viewabilityConfig={VIEWABILITY_CONFIG}
         />
+        <FeedHeader pageWidth={pageWidth} />
       </View>
     </View>
   );

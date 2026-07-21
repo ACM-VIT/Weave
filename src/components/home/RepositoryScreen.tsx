@@ -1,5 +1,4 @@
 import React from 'react';
-import { Image } from 'expo-image';
 import {
   Pressable,
   ScrollView,
@@ -14,7 +13,6 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Svg, {
   Defs,
   LinearGradient,
-  RadialGradient,
   Rect,
   Stop,
 } from 'react-native-svg';
@@ -55,21 +53,12 @@ type ActionButtonProps = {
   onPress: () => void;
 };
 
-const LANGUAGE_GLOWS: Record<string, string> = {
-  Rust: 'rgba(222,165,132,0.13)',
-  Go: 'rgba(0,173,216,0.11)',
-  Python: 'rgba(53,114,165,0.15)',
-  TypeScript: 'rgba(49,120,198,0.14)',
-};
-
 const AVATAR_GRADIENTS = [
   ['#BF5AF2', '#8944AB'],
   ['#64D2FF', '#2A7FBF'],
   ['#FF6482', '#C93A56'],
   ['#63E6A9', '#2E9E6B'],
 ] as const;
-
-const WEAVE_LOGO = require('../../../assets/images/logo/weavelogo.png');
 
 function formatCount(value?: string) {
   if (!value) return '0';
@@ -114,7 +103,7 @@ function ActionButton({
         pressed && styles.actionPressed,
       ]}
     >
-      <View style={styles.iconShadow}>
+      <View style={[styles.iconShadow, dense && styles.iconShadowDense]}>
         <Icon color={colour} size={renderedIconSize} strokeWidth={1.9} />
       </View>
       <Text
@@ -134,7 +123,6 @@ export function RepositoryScreen({
   pageWidth,
   pageHeight,
   repository,
-  isActive,
   isSaved,
   commentCount,
   onReadFullPress,
@@ -145,7 +133,6 @@ export function RepositoryScreen({
   pageWidth: number;
   pageHeight: number;
   repository: RepositoryData;
-  isActive: boolean;
   isSaved?: boolean;
   commentCount?: number;
   onReadFullPress: () => void;
@@ -167,24 +154,21 @@ export function RepositoryScreen({
   const likeCount = Math.max(0, initialLikes + Number(liked) - Number(serverLiked));
   const dislikeCount = disliked ? 1 : 0;
   const visibleCommentCount = (commentCount ?? Number(repository.stats.comments || 0)) || 0;
-  const language = repository.techStack?.[0] || '';
-  const glow = LANGUAGE_GLOWS[language] ?? 'rgba(48,209,88,0.10)';
   const avatarIndex = [...repository.owner].reduce((sum, character) => sum + character.charCodeAt(0), 0) % AVATAR_GRADIENTS.length;
   const [avatarStart, avatarEnd] = AVATAR_GRADIENTS[avatarIndex];
   const veryNarrow = pageWidth < 330;
   const veryShort = pageHeight < 620;
   const bodyTop = veryShort
-    ? Math.max(68, insets.top + 42)
+    ? Math.max(80, insets.top + 52)
     : compact
-      ? Math.max(78, insets.top + 48)
-      : Math.max(96, insets.top + 52);
+      ? Math.max(96, insets.top + 62)
+      : Math.max(116, insets.top + 70);
   const actionRailBottom = 64 + Math.max(insets.bottom, 5);
-  const bodyLeft = veryNarrow ? 10 : compact ? 12 : 20;
-  const bodyRight = veryNarrow ? 52 : compact ? 58 : 78;
-  const bodyBottom = veryShort ? 84 : compact ? 94 : 112;
+  const outerGutter = veryNarrow ? 10 : 14;
+  const bodyLeft = outerGutter;
+  const bodyRight = veryNarrow ? 52 : compact ? 58 : 64;
+  const bodyBottom = veryShort ? 51 : compact ? 53 : 55;
   const availableCardWidth = Math.max(pageWidth - bodyLeft - bodyRight, 1);
-  const brandLogoSize = compact ? 26 : 30;
-  const brandLogoImageSize = brandLogoSize * 1.4;
   const bodyStyle: StyleProp<ViewStyle> = {
     paddingTop: bodyTop,
     paddingRight: bodyRight,
@@ -229,16 +213,6 @@ export function RepositoryScreen({
 
   return (
     <View style={[styles.screen, { width: pageWidth, height: pageHeight }]}>
-      <Svg pointerEvents="none" style={StyleSheet.absoluteFill} width={pageWidth} height={pageHeight}>
-        <Defs>
-          <RadialGradient id="repoGlow" cx="50%" cy="108%" rx="65%" ry="38%">
-            <Stop offset="0" stopColor={glow} stopOpacity="1" />
-            <Stop offset="0.62" stopColor={glow} stopOpacity="0" />
-          </RadialGradient>
-        </Defs>
-        <Rect x="0" y="0" width={pageWidth} height={pageHeight} fill="url(#repoGlow)" />
-      </Svg>
-
       <View style={[styles.body, bodyStyle]}>
         <DescriptionCard
           availableWidth={availableCardWidth}
@@ -246,9 +220,9 @@ export function RepositoryScreen({
           compact={compact}
         />
         <ReadmeCard
+          availableWidth={availableCardWidth}
           repository={repository}
           onReadFullPress={onReadFullPress}
-          isActive={isActive}
           compact={compact}
         />
 
@@ -341,7 +315,7 @@ export function RepositoryScreen({
           {
             bottom: actionRailBottom,
             gap: veryShort ? 6 : compact ? 12 : 19,
-            right: veryNarrow ? 8 : compact ? 10 : 14,
+            right: outerGutter,
           },
         ]}
       >
@@ -398,55 +372,6 @@ export function RepositoryScreen({
         />
       </View>
 
-      <Svg pointerEvents="none" style={styles.topGradient} width={pageWidth} height={150}>
-        <Defs>
-          <LinearGradient id="topFade" x1="0" y1="0" x2="0" y2="1">
-            <Stop offset="0.35" stopColor="#000000" stopOpacity="0.88" />
-            <Stop offset="1" stopColor="#000000" stopOpacity="0" />
-          </LinearGradient>
-        </Defs>
-        <Rect width={pageWidth} height="150" fill="url(#topFade)" />
-      </Svg>
-      <View
-        pointerEvents="none"
-        style={[
-          styles.topBar,
-          {
-            left: compact ? 12 : 20,
-            right: compact ? 12 : 20,
-            paddingTop: Math.max(insets.top + 6, 40),
-          },
-        ]}
-      >
-        <View style={styles.brandRow}>
-          <View
-            style={[
-              styles.brandLogoFrame,
-              {
-                width: brandLogoSize,
-                height: brandLogoSize,
-                borderRadius: brandLogoSize / 2,
-              },
-            ]}
-          >
-            <Image
-              accessible={false}
-              contentFit="contain"
-              source={WEAVE_LOGO}
-              style={{
-                position: 'absolute',
-                width: brandLogoImageSize,
-                height: brandLogoImageSize,
-                left: (brandLogoSize - brandLogoImageSize) / 2,
-                top: -brandLogoSize * 0.06,
-              }}
-            />
-          </View>
-          <Text style={[styles.brand, compact && styles.brandCompact]}>
-            Wea<Text style={styles.brandAccent}>v</Text>e
-          </Text>
-        </View>
-      </View>
     </View>
   );
 }
@@ -476,11 +401,9 @@ const styles = StyleSheet.create({
   repoDetails: {
     marginTop: 'auto',
     gap: 14,
-    transform: [{ translateY: -10 }],
   },
   repoDetailsCompact: {
     gap: 8,
-    transform: [{ translateY: -6 }],
   },
   avatar: {
     width: 37,
@@ -553,12 +476,12 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     columnGap: 14,
     rowGap: 4,
-    transform: [{ translateY: -8 }],
   },
   statButton: {
-    flexDirection: 'row',
+    minWidth: 34,
+    flexDirection: 'column',
     alignItems: 'center',
-    gap: 6,
+    gap: 2,
   },
   statPressed: {
     transform: [{ scale: 0.94 }],
@@ -593,13 +516,19 @@ const styles = StyleSheet.create({
     transform: [{ scale: 0.86 }],
   },
   iconShadow: {
+    width: 40,
+    alignItems: 'center',
     shadowColor: '#000000',
     shadowOffset: { width: 0, height: 1 },
     shadowOpacity: 0.55,
     shadowRadius: 8,
     elevation: 3,
   },
+  iconShadowDense: {
+    width: 34,
+  },
   actionLabel: {
+    width: 40,
     color: 'rgba(255,255,255,0.92)',
     fontFamily: 'NataSans-SemiBold',
     fontSize: 11.5,
@@ -607,43 +536,11 @@ const styles = StyleSheet.create({
     textShadowColor: 'rgba(0,0,0,0.6)',
     textShadowOffset: { width: 0, height: 1 },
     textShadowRadius: 4,
+    textAlign: 'center',
   },
   actionLabelDense: {
+    width: 34,
     fontSize: 9.5,
     lineHeight: 12,
-  },
-  topGradient: {
-    position: 'absolute',
-    left: 0,
-    top: 0,
-    right: 0,
-    zIndex: 6,
-  },
-  topBar: {
-    position: 'absolute',
-    top: 0,
-    zIndex: 7,
-  },
-  brandRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-  },
-  brandLogoFrame: {
-    overflow: 'hidden',
-  },
-  brand: {
-    color: REFERENCE_THEME.text,
-    fontFamily: 'NataSans-Bold',
-    fontSize: 28,
-    lineHeight: 34,
-    letterSpacing: -0.4,
-  },
-  brandCompact: {
-    fontSize: 26,
-    lineHeight: 32,
-  },
-  brandAccent: {
-    color: '#63E08A',
   },
 });
