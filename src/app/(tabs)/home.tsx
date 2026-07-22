@@ -62,6 +62,12 @@ function mapBackendToFrontend(backendItem: any): RepositoryData {
     viewerSaved: backendItem.viewer_saved === true,
     title,
     owner,
+    ownerUserId: typeof backendItem.owner_user_id === 'string'
+      ? backendItem.owner_user_id
+      : null,
+    viewerFollowsOwner: typeof backendItem.viewer_follows_owner === 'boolean'
+      ? backendItem.viewer_follows_owner
+      : null,
     description: backendItem.description || '',
     readmeSummary: backendItem.readme_summary || backendItem.summary || 'No summary available.',
     readmeFull: backendItem.readme_md || backendItem.readme || 'No readme available.',

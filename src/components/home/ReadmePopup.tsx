@@ -1,6 +1,6 @@
 "use no memo";
 
-import React, { useEffect, useMemo } from 'react';
+import React, { useEffect, useMemo, useRef } from 'react';
 import {
   Animated,
   Easing,
@@ -16,10 +16,12 @@ import {
 import { BookOpen, X } from 'lucide-react-native';
 import { BlurView } from 'expo-blur';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useReducedMotion } from 'react-native-reanimated';
 import RenderHtml, { defaultSystemFonts } from 'react-native-render-html';
 import { marked } from 'marked';
 
 import { REFERENCE_THEME } from '@/constants/theme';
+import { useTypewriterText } from '@/hooks/use-typewriter-text';
 import { prepareReadmeForDisplay } from '@/utils/readme';
 
 interface ReadmePopupProps {
@@ -28,6 +30,11 @@ interface ReadmePopupProps {
   title: string;
   readmeText: string;
 }
+
+const POPUP_OPEN_DURATION = 200;
+const CONTENT_REVEAL_DELAY = 35;
+const CONTENT_REVEAL_DURATION = 115;
+const POPUP_CLOSE_DURATION = 160;
 
 const markdownFonts = [
   ...defaultSystemFonts,
@@ -145,31 +152,122 @@ const markdownTagStyles = {
 export function ReadmePopup({ isVisible, onClose, title, readmeText }: ReadmePopupProps) {
   const { width, height } = useWindowDimensions();
   const insets = useSafeAreaInsets();
+  const reduceMotion = useReducedMotion();
   const opacity = useMemo(() => new Animated.Value(0), []);
-  const content = prepareReadmeForDisplay(readmeText);
+  const contentProgress = useMemo(() => new Animated.Value(0), []);
+  const closingRef = useRef(false);
+  const content = useMemo(() => prepareReadmeForDisplay(readmeText), [readmeText]);
+  const typedContent = useTypewriterText(content, {
+    delay: 110,
+    duration: 1_100,
+    enabled: isVisible,
+    maxAnimatedCharacters: 1_200,
+    reducedMotion: reduceMotion,
+  });
+  const animatedContent = typedContent.isTyping
+    ? `${typedContent.text}${typedContent.cursorVisible ? ' ▍' : '  '}`
+    : typedContent.text;
   const markdownHtml = useMemo(
-    () => marked.parse(content, { async: false, gfm: true }) as string,
-    [content],
+    () => marked.parse(animatedContent, { async: false, gfm: true }) as string,
+    [animatedContent],
   );
+  const cardAnimationStyle = useMemo(() => ({
+    opacity,
+    transform: [
+      {
+        translateY: opacity.interpolate({
+          inputRange: [0, 1],
+          outputRange: [16, 0],
+        }),
+      },
+      {
+        scale: opacity.interpolate({
+          inputRange: [0, 1],
+          outputRange: [0.97, 1],
+        }),
+      },
+    ],
+  }), [opacity]);
+  const contentAnimationStyle = useMemo(() => ({
+    opacity: contentProgress,
+    transform: [
+      {
+        translateY: contentProgress.interpolate({
+          inputRange: [0, 1],
+          outputRange: [6, 0],
+        }),
+      },
+    ],
+  }), [contentProgress]);
 
   useEffect(() => {
     if (!isVisible) return;
+
+    closingRef.current = false;
+    opacity.stopAnimation();
+    contentProgress.stopAnimation();
     opacity.setValue(0);
-    Animated.timing(opacity, {
-      toValue: 1,
-      duration: 220,
-      easing: Easing.out(Easing.cubic),
-      useNativeDriver: true,
-    }).start();
-  }, [isVisible, opacity]);
+    contentProgress.setValue(0);
+
+    if (reduceMotion) {
+      opacity.setValue(1);
+      contentProgress.setValue(1);
+      return;
+    }
+
+    Animated.parallel([
+      Animated.timing(opacity, {
+        toValue: 1,
+        duration: POPUP_OPEN_DURATION,
+        easing: Easing.out(Easing.cubic),
+        useNativeDriver: true,
+      }),
+      Animated.sequence([
+        Animated.delay(CONTENT_REVEAL_DELAY),
+        Animated.timing(contentProgress, {
+          toValue: 1,
+          duration: CONTENT_REVEAL_DURATION,
+          easing: Easing.out(Easing.cubic),
+          useNativeDriver: true,
+        }),
+      ]),
+    ]).start();
+
+    return () => {
+      opacity.stopAnimation();
+      contentProgress.stopAnimation();
+    };
+  }, [contentProgress, isVisible, opacity, reduceMotion]);
 
   const closeAnimated = () => {
-    Animated.timing(opacity, {
-      toValue: 0,
-      duration: 180,
-      easing: Easing.in(Easing.cubic),
-      useNativeDriver: true,
-    }).start(({ finished }) => {
+    if (closingRef.current) return;
+    closingRef.current = true;
+    opacity.stopAnimation();
+    contentProgress.stopAnimation();
+
+    if (reduceMotion) {
+      opacity.setValue(0);
+      contentProgress.setValue(0);
+      closingRef.current = false;
+      onClose();
+      return;
+    }
+
+    Animated.parallel([
+      Animated.timing(opacity, {
+        toValue: 0,
+        duration: POPUP_CLOSE_DURATION,
+        easing: Easing.in(Easing.cubic),
+        useNativeDriver: true,
+      }),
+      Animated.timing(contentProgress, {
+        toValue: 0,
+        duration: 80,
+        easing: Easing.in(Easing.quad),
+        useNativeDriver: true,
+      }),
+    ]).start(({ finished }) => {
+      closingRef.current = false;
       if (finished) onClose();
     });
   };
@@ -189,21 +287,27 @@ export function ReadmePopup({ isVisible, onClose, title, readmeText }: ReadmePop
       visible={isVisible}
     >
       <View style={styles.root}>
-        <Pressable accessibilityLabel="Close README" onPress={closeAnimated} style={StyleSheet.absoluteFill}>
+        <Pressable
+          accessibilityLabel="Close README"
+          accessibilityRole="button"
+          onPress={closeAnimated}
+          style={StyleSheet.absoluteFill}
+        >
           <Animated.View style={[styles.overlay, { opacity }]}>
             <BlurView intensity={12} tint="dark" style={StyleSheet.absoluteFill} />
           </Animated.View>
         </Pressable>
 
         <Animated.View
+          accessibilityViewIsModal
           style={[
             styles.card,
             {
               width: cardWidth,
               top,
               bottom,
-              opacity,
             },
+            cardAnimationStyle,
           ]}
         >
           <View style={styles.header}>
@@ -226,23 +330,25 @@ export function ReadmePopup({ isVisible, onClose, title, readmeText }: ReadmePop
             keyboardShouldPersistTaps="handled"
             showsVerticalScrollIndicator={false}
           >
-            <Text style={styles.repoTitle}>{title}</Text>
-            <RenderHtml
-              contentWidth={cardWidth - 44}
-              defaultTextProps={{ selectable: true }}
-              enableExperimentalMarginCollapsing
-              ignoredDomTags={['script', 'style', 'iframe', 'object', 'embed', 'form', 'input', 'button']}
-              renderersProps={{
-                a: {
-                  onPress: (_event, href) => {
-                    if (/^(https?:|mailto:)/i.test(href)) void Linking.openURL(href);
+            <Animated.View style={contentAnimationStyle}>
+              <Text style={styles.repoTitle}>{title}</Text>
+              <RenderHtml
+                contentWidth={cardWidth - 44}
+                defaultTextProps={{ selectable: true }}
+                enableExperimentalMarginCollapsing
+                ignoredDomTags={['script', 'style', 'iframe', 'object', 'embed', 'form', 'input', 'button']}
+                renderersProps={{
+                  a: {
+                    onPress: (_event, href) => {
+                      if (/^(https?:|mailto:)/i.test(href)) void Linking.openURL(href);
+                    },
                   },
-                },
-              }}
-              source={{ html: markdownHtml }}
-              systemFonts={markdownFonts}
-              tagsStyles={markdownTagStyles}
-            />
+                }}
+                source={{ html: markdownHtml }}
+                systemFonts={markdownFonts}
+                tagsStyles={markdownTagStyles}
+              />
+            </Animated.View>
           </ScrollView>
         </Animated.View>
       </View>

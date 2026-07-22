@@ -3,6 +3,7 @@ import { apiV2 } from './client';
 export type ProfileBoard = {
   board_id: string;
   name: string;
+  description: string | null;
   repo_count: number;
 };
 
