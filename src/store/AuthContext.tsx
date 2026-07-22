@@ -2,7 +2,9 @@ import React, { createContext, useCallback, useContext, useEffect, useState } fr
 import { getStorageItem, setStorageItem, removeStorageItem } from '../utils/storage';
 import { API_URL } from '../api/config';
 import { apiV2, refreshSession, setSessionExpiredHandler } from '../api/client';
+import { httpStatus } from '../api/session-errors';
 import { resolveOnboardingCompleted } from '../utils/auth-routing';
+import { restoreStartupSession } from './restore-session';
 
 interface User {
   user_id: string;
@@ -20,18 +22,32 @@ interface AuthContextType {
   checkOnboardingStatus: () => Promise<void>;
 }
 
+type UserProfileRequestPolicy = {
+  allowRefresh?: boolean;
+  clearUnauthorized?: boolean;
+  logErrors?: boolean;
+};
+
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [isLoading, setIsLoading] = useState(true);
 
-  const fetchUserProfile = useCallback(async (token: string) => {
+  const fetchUserProfile = useCallback(async (
+    token: string,
+    {
+      allowRefresh = true,
+      clearUnauthorized = true,
+      logErrors = true,
+    }: UserProfileRequestPolicy = {},
+  ) => {
     try {
-      const profile = await apiV2<Record<string, unknown>>('/users/me', {}, token);
+      const requestPolicy = { allowRefresh };
+      const profile = await apiV2<Record<string, unknown>>('/users/me', {}, token, requestPolicy);
       const completionStatus = typeof profile.onboarding_completed === 'boolean'
         ? profile.onboarding_completed
-        : (await apiV2<{ completed: boolean }>('/onboarding/status', {}, token)).completed;
+        : (await apiV2<{ completed: boolean }>('/onboarding/status', {}, token, requestPolicy)).completed;
       setUser({
         ...profile,
         user_id: String(profile.user_id),
@@ -39,25 +55,37 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         onboarding_completed: resolveOnboardingCompleted(profile, completionStatus),
       });
     } catch (error) {
-      const status = (error as { status?: number }).status;
+      const status = httpStatus(error);
+      const responseToken = typeof (error as { accessToken?: unknown })?.accessToken === 'string'
+        ? (error as { accessToken: string }).accessToken
+        : token;
       // A 404 means an older valid session predates its v2 product profile.
       // Clear it so the next login can run ensureIdentityProfile atomically.
-      if (status === 401 || status === 404) {
-        await removeStorageItem('access_token').catch(() => undefined);
-        setUser(null);
+      if (status === 404 || (status === 401 && clearUnauthorized)) {
+        const currentToken = await getStorageItem('access_token').catch(() => null);
+        if (currentToken === responseToken) {
+          await removeStorageItem('access_token').catch(() => undefined);
+          setUser(null);
+        }
       }
-      console.error('Failed to fetch user profile', error);
+      if (logErrors) console.error('Failed to fetch user profile', error);
       throw error;
     }
   }, []);
 
   const loadSession = useCallback(async () => {
     try {
-      let token = await getStorageItem('access_token');
-      if (!token) token = await refreshSession().catch(() => null);
-      if (token) {
-        await fetchUserProfile(token);
-      }
+      await restoreStartupSession({
+        getAccessToken: () => getStorageItem('access_token'),
+        refreshAccessToken: refreshSession,
+        // Startup recovery owns one bounded refresh cycle and reuses a token
+        // already rotated by another request before attempting another refresh.
+        loadUserProfile: (token, attempt) => fetchUserProfile(token, {
+          allowRefresh: false,
+          clearUnauthorized: attempt !== 'stored',
+          logErrors: false,
+        }),
+      });
     } catch (e) {
       console.error('Failed to load session', e);
     } finally {
