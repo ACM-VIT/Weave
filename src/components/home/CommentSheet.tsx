@@ -16,7 +16,7 @@ import {
   useWindowDimensions,
   View,
 } from 'react-native';
-import { ArrowUp, Heart, MessageCircle, RotateCcw, X } from 'lucide-react-native';
+import { ArrowUp, MessageCircle, RotateCcw, X } from 'lucide-react-native';
 import { BlurView } from 'expo-blur';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -133,7 +133,6 @@ export function CommentSheet({
 
   const [draft, setDraft] = useState('');
   const [composerError, setComposerError] = useState<string | null>(null);
-  const [likedCommentIds, setLikedCommentIds] = useState<Set<string>>(() => new Set());
   const [localCountFloorByRepo, setLocalCountFloorByRepo] = useState<Record<string, number>>({});
 
   const commentsQuery = useQuery({
@@ -147,7 +146,8 @@ export function CommentSheet({
   const authorIds = useMemo(
     () =>
       Array.from(new Set(comments.map((comment) => comment.user_id)))
-        .filter((userId) => userId !== user?.user_id)
+        .filter((userId) => userId !== user?.user_id
+          && !comments.some((comment) => comment.user_id === userId && comment.author))
         .sort(),
     [comments, user?.user_id],
   );
@@ -185,10 +185,15 @@ export function CommentSheet({
   }, [user]);
 
   const authorById = useMemo(() => {
-    const authors = { ...(authorsQuery.data ?? {}) };
+    const authors = Object.fromEntries(
+      comments
+        .filter((comment) => comment.author)
+        .map((comment) => [comment.user_id, comment.author]),
+    ) as Record<string, CommentAuthor | undefined>;
+    Object.assign(authors, authorsQuery.data ?? {});
     if (currentAuthor) authors[currentAuthor.user_id] = currentAuthor;
     return authors;
-  }, [authorsQuery.data, currentAuthor]);
+  }, [authorsQuery.data, comments, currentAuthor]);
 
   useEffect(() => {
     if (!isVisible) return;
@@ -268,8 +273,8 @@ export function CommentSheet({
       };
 
       queryClient.setQueryData<CommentRecord[]>(queryKey, [
-        optimisticComment,
         ...previousComments,
+        optimisticComment,
       ]);
       setLocalCountFloorByRepo((current) => ({
         ...current,
@@ -279,7 +284,7 @@ export function CommentSheet({
       setComposerError(null);
       onCommentCountChange?.(previousCount + 1);
       requestAnimationFrame(() => {
-        listRef.current?.scrollToOffset({ animated: true, offset: 0 });
+        listRef.current?.scrollToEnd({ animated: true });
       });
 
       return {
@@ -316,15 +321,6 @@ export function CommentSheet({
     createMutation.mutate(normalizedDraft);
   }, [createMutation, draft]);
 
-  const toggleLike = useCallback((commentId: string) => {
-    setLikedCommentIds((current) => {
-      const next = new Set(current);
-      if (next.has(commentId)) next.delete(commentId);
-      else next.add(commentId);
-      return next;
-    });
-  }, []);
-
   const displayedCount = Math.max(
     initialCommentCount,
     localCountFloorByRepo[repoId] ?? 0,
@@ -338,8 +334,6 @@ export function CommentSheet({
       const handle = author?.username
         ? `@${author.username.replace(/^@/, '')}`
         : fallbackHandle(item.user_id);
-      const isLiked = likedCommentIds.has(item.comment_id);
-
       return (
         <View style={styles.commentRow}>
           <CommentAvatar author={author} userId={item.user_id} />
@@ -351,26 +345,11 @@ export function CommentSheet({
               <Text style={styles.timestamp}>{formatRelativeTime(item.created_at)}</Text>
             </View>
             <Text style={styles.commentBody}>{item.comment}</Text>
-            <Text style={styles.reply}>Reply</Text>
           </View>
-          <Pressable
-            accessibilityLabel={isLiked ? 'Unlike comment' : 'Like comment'}
-            accessibilityRole="button"
-            hitSlop={8}
-            onPress={() => toggleLike(item.comment_id)}
-            style={({ pressed }) => [styles.heartButton, pressed && styles.pressed]}
-          >
-            <Heart
-              color={isLiked ? REFERENCE_THEME.heart : REFERENCE_THEME.textTertiary}
-              fill={isLiked ? REFERENCE_THEME.heart : 'transparent'}
-              size={15}
-              strokeWidth={1.8}
-            />
-          </Pressable>
         </View>
       );
     },
-    [authorById, likedCommentIds, toggleLike],
+    [authorById],
   );
 
   const emptyState = (() => {
@@ -679,21 +658,6 @@ const styles = StyleSheet.create({
     fontFamily: 'NataSans-Regular',
     fontSize: 13.5,
     lineHeight: 19.6,
-  },
-  reply: {
-    marginTop: 6,
-    color: REFERENCE_THEME.textTertiary,
-    fontFamily: 'NataSans-Medium',
-    fontSize: 12,
-    lineHeight: 16,
-  },
-  heartButton: {
-    width: 32,
-    height: 32,
-    marginLeft: 8,
-    marginTop: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
   },
   stateContainer: {
     flex: 1,

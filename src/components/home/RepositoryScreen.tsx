@@ -2,6 +2,7 @@ import React from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   Pressable,
+  Linking,
   ScrollView,
   StyleSheet,
   Text,
@@ -20,6 +21,7 @@ import {
   Bookmark,
   CircleAlert,
   Eye,
+  ExternalLink,
   GitFork,
   MessageCircle,
   Pin,
@@ -83,6 +85,39 @@ function getInitials(owner: string) {
     .slice(0, 2)
     .map((part) => part.charAt(0).toUpperCase())
     .join('') || '?';
+}
+
+function patchOwnerFollowState(
+  cachedFeed: unknown,
+  ownerUserId: string,
+  following: boolean,
+): unknown {
+  if (!cachedFeed || typeof cachedFeed !== 'object') return cachedFeed;
+  const feed = cachedFeed as Record<string, unknown>;
+  if (!Array.isArray(feed.pages)) return cachedFeed;
+
+  let feedChanged = false;
+  const pages = feed.pages.map((page) => {
+    if (!page || typeof page !== 'object') return page;
+    const pageRecord = page as Record<string, unknown>;
+    if (!Array.isArray(pageRecord.items)) return page;
+
+    let pageChanged = false;
+    const items = pageRecord.items.map((item) => {
+      if (!item || typeof item !== 'object') return item;
+      const repository = item as Record<string, unknown>;
+      if (repository.owner_user_id !== ownerUserId
+        || repository.viewer_follows_owner === following) return item;
+      pageChanged = true;
+      return { ...repository, viewer_follows_owner: following };
+    });
+
+    if (!pageChanged) return page;
+    feedChanged = true;
+    return { ...pageRecord, items };
+  });
+
+  return feedChanged ? { ...feed, pages } : cachedFeed;
 }
 
 function ActionButton({
@@ -182,7 +217,6 @@ export function RepositoryScreen({
 
   const initialLikes = Number(repository.stats.likes || 0) || 0;
   const likeCount = Math.max(0, initialLikes + Number(liked) - Number(serverLiked));
-  const dislikeCount = disliked ? 1 : 0;
   const visibleCommentCount = (commentCount ?? Number(repository.stats.comments || 0)) || 0;
   const avatarIndex = [...repository.owner].reduce((sum, character) => sum + character.charCodeAt(0), 0) % AVATAR_GRADIENTS.length;
   const [avatarStart, avatarEnd] = AVATAR_GRADIENTS[avatarIndex];
@@ -246,6 +280,28 @@ export function RepositoryScreen({
     });
   };
 
+  const handleOwnerFollowingChange = (following: boolean) => {
+    const viewerUserId = user?.user_id;
+    const ownerUserId = repository.ownerUserId;
+    if (!viewerUserId || !ownerUserId) return;
+
+    const feedQueryKey = ['feed', viewerUserId] as const;
+    queryClient.setQueryData(feedQueryKey, (cachedFeed) =>
+      patchOwnerFollowState(cachedFeed, ownerUserId, following)
+    );
+    void queryClient.invalidateQueries({ queryKey: feedQueryKey, exact: true });
+    void checkOnboardingStatus().catch(() => undefined);
+  };
+
+  const openGithubRepository = async () => {
+    const url = repository.githubUrl ?? `https://github.com/${repository.owner}/${repository.title}`;
+    try {
+      await Linking.openURL(url);
+      onQueueActivity?.({ repo_id: repository.id, action: FEEDBACK_ACTIONS.githubOpen }, true);
+    } catch {
+      // Do not train on an open that the operating system rejected.
+    }
+  };
   return (
     <View style={[styles.screen, { width: pageWidth, height: pageHeight }]}>
       <View style={[styles.body, bodyStyle]}>
@@ -281,10 +337,9 @@ export function RepositoryScreen({
               <FollowButton
                 compact={compact}
                 isFollowing={repository.viewerFollowsOwner === true}
-                localOnly={user?.isPreview === true}
                 neutral
-                onFollowingChange={() => void checkOnboardingStatus()}
-                stateKnown={ownerFollowStateKnown || user?.isPreview === true}
+                onFollowingChange={handleOwnerFollowingChange}
+                stateKnown={ownerFollowStateKnown}
                 targetUserId={repository.ownerUserId}
               />
             ) : null}
@@ -320,13 +375,14 @@ export function RepositoryScreen({
           <View style={styles.repoStats}>
             <View
               accessible
-              accessibilityLabel={`${formatCount(repository.stats.stars)} stars`}
+              accessibilityLabel={`${formatCount(repository.stats.stars)} GitHub stars`}
               accessibilityRole="text"
               style={styles.statButton}
             >
               <Star
                 size={17}
                 color={REFERENCE_THEME.text}
+                fill="none"
                 strokeWidth={1.9}
               />
               <Text style={styles.statText}>
@@ -335,7 +391,7 @@ export function RepositoryScreen({
             </View>
             <View
               accessible
-              accessibilityLabel={`${formatCount(repository.stats.forks)} forks`}
+              accessibilityLabel={`${formatCount(repository.stats.forks)} GitHub forks`}
               accessibilityRole="text"
               style={styles.statButton}
             >
@@ -377,7 +433,6 @@ export function RepositoryScreen({
           accessibilityLabel={disliked ? 'Remove dislike' : 'Dislike repository'}
           active={disliked}
           activeColor={REFERENCE_THEME.danger}
-          count={formatCount(String(dislikeCount))}
           dense={veryShort}
           icon={ThumbsDown}
           onPress={toggleDislike}
@@ -407,6 +462,14 @@ export function RepositoryScreen({
           iconSize={26}
           label="Pin"
           onPress={togglePinned}
+        />
+        <ActionButton
+          accessibilityLabel="Open repository on GitHub"
+          dense={veryShort}
+          icon={ExternalLink}
+          iconSize={26}
+          label="GitHub"
+          onPress={openGithubRepository}
         />
         <ActionButton
           accessibilityLabel="Share repository"

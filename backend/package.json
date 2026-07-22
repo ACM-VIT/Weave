@@ -17,6 +17,8 @@
     "backfill:v2": "tsx scripts/backfill-v2.ts",
     "db:reset:v2": "tsx scripts/reset-v2.ts",
     "qdrant:audit": "tsx scripts/qdrant-audit.ts",
+    "reindex:ml": "tsx scripts/reindex-active-repositories.ts",
+    "load:feed:v2": "node scripts/load-feed-v2.mjs",
     "test": "npm run typecheck:test && tsx --test tests/**/*.test.ts"
   },
   "dependencies": {

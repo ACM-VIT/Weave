@@ -35,6 +35,7 @@ import {
 } from '@/api/repository-actions';
 import { REFERENCE_THEME } from '@/constants/theme';
 import { useModalScrollLock } from '@/hooks/use-modal-scroll-lock';
+import { useAuth } from '@/store/AuthContext';
 import * as SecureStore from '@/utils/storage';
 
 type SavePopupProps = {
@@ -125,6 +126,7 @@ export function SavePopup({
 }: SavePopupProps) {
   const { height, width } = useWindowDimensions();
   const insets = useSafeAreaInsets();
+  const { checkOnboardingStatus } = useAuth();
   const queryClient = useQueryClient();
   const [translateY] = useState(() => new Animated.Value(height));
   const [overlayOpacity] = useState(() => new Animated.Value(0));
@@ -293,6 +295,7 @@ export function SavePopup({
         queryClient.invalidateQueries({ queryKey: ['feed'] }),
         queryClient.invalidateQueries({ queryKey: ['profile-content'] }),
       ]);
+      void checkOnboardingStatus().catch(() => undefined);
       setHasLocalChanges(false);
       closeTimer.current = setTimeout(closeAnimated, 900);
     },

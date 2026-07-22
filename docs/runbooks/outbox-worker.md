@@ -65,3 +65,56 @@ If pending age grows while ML is healthy, stop ingestion and inspect the worker
 journal. Stopping the worker is recoverable: jobs remain in PostgreSQL. Do not
 delete or reset outbox rows to recover delivery; use the authenticated replay
 endpoint for terminal rows after correcting the underlying fault.
+
+## Obsolete identity-only onboarding jobs
+
+Older API builds could enqueue profile-version-1 onboarding jobs before a user
+provided a bio, interests, skills, or technology stack. Those jobs cannot create
+a useful recommendation embedding and must not be replayed. After migration
+`0014_outbox_superseded.sql` and the matching API build are deployed, classify
+each verified row through the authenticated endpoint:
+
+```text
+POST /api/internal/v2/operations/outbox/:outboxId/supersede
+```
+
+The endpoint returns `202` only for a dead `onboard` job with
+`profile_version=1` and no semantic profile context. It returns `409` for every
+other row. It never accepts pending, claimed, delivered, contextual, or newer
+profile jobs. The operation-status response reports these rows separately as
+`superseded`; they no longer count as dead and cannot be replayed.
+
+Use a read-only database query to obtain candidates, call the endpoint once per
+candidate, and then require `pending=0`, `claimed=0`, and `dead=0`. A user who
+has not completed onboarding will receive a new versioned onboarding job when
+they submit a bio or categorized onboarding selections. Do not edit payloads or
+bulk-update outbox status directly in SQL.
+
+## Strict repository reindex campaign
+
+Historical delivered `repo_index` payloads predate the strict ML v2 source
+allowlist and must not be replayed into a new collection. The backend provides a
+campaign-scoped enqueue command that reads active canonical repositories,
+content, topics, and latest observed counts from PostgreSQL and rebuilds each
+payload through the same strict projection used by live ingestion.
+
+Run the report-only pass first:
+
+```text
+npm run reindex:ml -- --campaign=v2-strict-YYYYMMDD
+```
+
+Require `invalid=0`, `missing_content=0`, and `active=eligible`; inspect
+`would_queue` and `skipped`,
+and confirm the ML owner has selected the intended versioned target collection.
+Then enqueue in bounded transactions:
+
+```text
+npm run reindex:ml -- --campaign=v2-strict-YYYYMMDD --batch-size=100 --execute
+```
+
+Execution only inserts new durable outbox rows. It never deletes, resets, or
+rewrites historical rows and preserves each repository's current
+`content_version`. The idempotency key includes the campaign ID, so rerunning
+the same command is safe: completed batches report as `already_queued`. Use a
+new campaign ID only for an intentional new complete reindex.

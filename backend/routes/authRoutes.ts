@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import {
   confirmPasswordReset,
+  continueOAuth,
   exchangeAuthCode,
   getOAuthUrl,
   handleOAuthCallback,
@@ -16,6 +17,7 @@ const router: Router = Router();
 // Public routes
 router.post('/signup', signUp);
 router.post('/login', login);
+router.get('/oauth/continue', continueOAuth);
 router.get('/oauth/:provider', getOAuthUrl);
 router.post('/refresh', refreshToken);
 router.post('/logout', logout);

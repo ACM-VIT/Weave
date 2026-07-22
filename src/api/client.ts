@@ -1,12 +1,33 @@
 import { API_URL } from './config';
-import { getStorageItem, removeStorageItem, setStorageItem } from '../utils/storage';
-import { createSingleFlight } from '../utils/single-flight';
+import { getStorageItem } from '../utils/storage';
+import {
+  accessTokenOwner,
+  selectCurrentSessionToken,
+  tokensHaveSameOwner,
+} from './access-token-owner';
+import { isTerminalRefreshStatus } from './session-errors';
+import {
+  authSessionLifecycle,
+  SessionChangedError,
+  type SessionLease,
+} from './session-lifecycle';
+import {
+  isSessionRestoreBlocked,
+  retireSessionIfCurrent,
+  storeAccessTokenForLease,
+} from './session-transitions';
+import { retryUnauthorizedResponse, type TokenResponse } from './unauthorized-retry';
 
 type ApiEnvelope<T> = { success: true; data: T } | { success?: false; error?: string };
 
 type RefreshResponse = {
   accessToken?: string;
   token?: string;
+  user?: { id?: string };
+};
+
+type ApiV2RequestPolicy = {
+  allowRefresh?: boolean;
 };
 
 let sessionExpiredHandler: (() => void) | null = null;
@@ -22,41 +43,97 @@ async function readJson(response: Response): Promise<unknown> {
   catch { throw new Error(`Backend returned invalid JSON (${response.status}).`); }
 }
 
-const refreshAccessToken = createSingleFlight(async (): Promise<string> => {
-  try {
-    const response = await fetch(`${API_URL}/auth/refresh`, {
-      method: 'POST',
-      credentials: 'include',
-      headers: { Accept: 'application/json' },
-    });
-    const payload = await readJson(response) as ApiEnvelope<RefreshResponse> | null;
-    const token = payload && 'data' in payload
-      ? payload.data.accessToken ?? payload.data.token
-      : undefined;
-
-    if (!response.ok || !token) {
-      throw new Error('Your session has expired. Please log in again.');
-    }
-
-    await setStorageItem('access_token', token);
-    return token;
-  } catch (error) {
-    await removeStorageItem('access_token').catch(() => undefined);
-    sessionExpiredHandler?.();
-    throw error;
-  }
-});
-
-export function refreshSession(): Promise<string> {
-  return refreshAccessToken();
+async function expireStoredSession(lease: SessionLease): Promise<void> {
+  const retired = await retireSessionIfCurrent(lease.generation);
+  if (!retired) throw new SessionChangedError();
+  sessionExpiredHandler?.();
 }
 
-async function requestV2(
+const refreshAccessToken = (
+  expectedToken?: string | null,
+): Promise<string> => authSessionLifecycle.runRefresh(async (lease) => {
+  if (await isSessionRestoreBlocked()) throw new SessionChangedError();
+  lease.assertCurrent();
+
+  const response = await fetch(`${API_URL}/auth/refresh`, {
+    method: 'POST',
+    credentials: 'include',
+    headers: { Accept: 'application/json' },
+  });
+
+  let payload: ApiEnvelope<RefreshResponse> | null;
+  try {
+    payload = await readJson(response) as ApiEnvelope<RefreshResponse> | null;
+  } catch (error) {
+    if (isTerminalRefreshStatus(response.status)) {
+      await expireStoredSession(lease);
+      Object.assign(error as object, { status: response.status });
+    }
+    throw error;
+  }
+
+  const refreshData = payload
+    && typeof payload === 'object'
+    && 'data' in payload
+    && payload.data
+    && typeof payload.data === 'object'
+    ? payload.data as RefreshResponse
+    : null;
+  const token = refreshData?.accessToken ?? refreshData?.token;
+
+  if (!response.ok || !token) {
+    const isTerminal = isTerminalRefreshStatus(response.status);
+    const error = Object.assign(
+      new Error(isTerminal
+        ? 'Your session has expired. Please log in again.'
+        : 'Could not refresh your session. Please try again.'),
+      { status: response.status },
+    );
+    if (isTerminal) await expireStoredSession(lease);
+    throw error;
+  }
+
+  const returnedOwner = accessTokenOwner(token);
+  const responseOwner = refreshData?.user?.id;
+  const ownerChanged = expectedToken
+    ? !tokensHaveSameOwner(expectedToken, token)
+    : false;
+  const responseOwnerMismatch = typeof responseOwner === 'string'
+    && (returnedOwner === null || responseOwner !== returnedOwner);
+  if (ownerChanged || responseOwnerMismatch) {
+    await retireSessionIfCurrent(lease.generation);
+    throw new SessionChangedError();
+  }
+
+  await storeAccessTokenForLease(lease, token);
+  return token;
+});
+
+export function refreshSession(expectedToken?: string | null): Promise<string> {
+  return refreshAccessToken(expectedToken);
+}
+
+async function resolveRequestToken(
+  requestedToken: string | null | undefined,
+  generation: number,
+): Promise<string | null> {
+  if (await isSessionRestoreBlocked()) throw new SessionChangedError();
+  authSessionLifecycle.assertCurrent(generation);
+  if (!requestedToken) return null;
+
+  const currentToken = await getStorageItem('access_token');
+  authSessionLifecycle.assertCurrent(generation);
+  const sessionToken = selectCurrentSessionToken(requestedToken, currentToken);
+  if (!sessionToken) throw new SessionChangedError();
+  return sessionToken;
+}
+
+async function sendV2Request(
   path: string,
   options: RequestInit,
   token?: string | null,
-  allowRefresh = true,
-): Promise<Response> {
+  generation = authSessionLifecycle.currentGeneration(),
+): Promise<TokenResponse<Response>> {
   const headers = new Headers(options.headers);
   headers.set('Accept', 'application/json');
   if (options.body && !headers.has('Content-Type')) {
@@ -70,26 +147,51 @@ async function requestV2(
     headers,
   });
 
-  if (response.status !== 401 || !allowRefresh) return response;
+  return { response, token: token ?? null, generation };
+}
 
-  const storedToken = token ?? await getStorageItem('access_token');
-  if (!storedToken) return response;
+async function requestV2(
+  path: string,
+  options: RequestInit,
+  token?: string | null,
+  allowRefresh = true,
+): Promise<TokenResponse<Response>> {
+  const generation = authSessionLifecycle.currentGeneration();
+  const requestToken = await resolveRequestToken(token, generation);
+  authSessionLifecycle.assertCurrent(generation);
+  const result = await sendV2Request(path, options, requestToken, generation);
+  authSessionLifecycle.assertCurrent(generation);
 
-  const refreshedToken = await refreshAccessToken();
-  return requestV2(path, options, refreshedToken, false);
+  return retryUnauthorizedResponse({
+    result,
+    allowRefresh,
+    getAccessToken: () => getStorageItem('access_token'),
+    refreshAccessToken,
+    retry: (retryToken) => sendV2Request(path, options, retryToken, generation),
+    assertSessionCurrent: (requestGeneration) => {
+      authSessionLifecycle.assertCurrent(requestGeneration);
+    },
+  });
 }
 
 export async function apiV2<T>(
   path: string,
   options: RequestInit = {},
   token?: string | null,
+  policy: ApiV2RequestPolicy = {},
 ): Promise<T> {
-  const response = await requestV2(path, options, token);
+  const result = await requestV2(path, options, token, policy.allowRefresh ?? true);
+  const { response } = result;
   const payload = await readJson(response) as ApiEnvelope<T> | null;
+  authSessionLifecycle.assertCurrent(result.generation);
   if (!response.ok) {
     const error = new Error(payload && 'error' in payload && payload.error
       ? payload.error : `Backend request failed (${response.status}).`);
-    Object.assign(error, { status: response.status, retryAfter: response.headers.get('retry-after') });
+    Object.assign(error, {
+      status: response.status,
+      retryAfter: response.headers.get('retry-after'),
+      accessToken: result.token,
+    });
     throw error;
   }
   if (!payload || !('data' in payload)) throw new Error('Backend response did not contain data.');
@@ -101,12 +203,18 @@ export async function apiV2Raw<T>(
   options: RequestInit = {},
   token?: string | null,
 ): Promise<{ data: T; response: Response }> {
-  const response = await requestV2(path, options, token);
+  const result = await requestV2(path, options, token);
+  const { response } = result;
   const payload = await readJson(response) as T | { error?: string } | null;
+  authSessionLifecycle.assertCurrent(result.generation);
   if (!response.ok) {
     const error = new Error(payload && typeof payload === 'object' && 'error' in payload && payload.error
       ? String(payload.error) : `Backend request failed (${response.status}).`);
-    Object.assign(error, { status: response.status, retryAfter: response.headers.get('retry-after') });
+    Object.assign(error, {
+      status: response.status,
+      retryAfter: response.headers.get('retry-after'),
+      accessToken: result.token,
+    });
     throw error;
   }
   return { data: payload as T, response };

@@ -1,0 +1,29 @@
+# The backend image is built from the repository root because its migration and
+# schema-audit assets live in the top-level database directory. Keep every
+# unrelated frontend/native artifact and every local secret out of the context.
+**
+!backend/
+!backend/**
+!database/
+!database/**
+
+backend/.env
+backend/.env.*
+!backend/.env.example
+!backend/.env.production.example
+backend/.npmrc
+backend/**/*.key
+backend/**/*.pem
+backend/**/*.p12
+backend/**/*.pfx
+backend/coverage/
+backend/dist/
+backend/node_modules/
+backend/tests/
+
+# A local database backup must never enter a remote builder or an image layer.
+database/**/*.backup
+database/**/*.csv
+database/**/*.dump
+database/**/*.sql.gz
+database/**/*.tar

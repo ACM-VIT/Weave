@@ -2,10 +2,13 @@ import { apiV2, apiV2Raw } from './client';
 import type { FeedbackAction } from '../constants/feedbackActions';
 import { createUuid, getAppSessionId } from '../utils/uuid';
 
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 export type { FeedbackAction } from '../constants/feedbackActions';
 
 export type QueuedActivity = {
   event_id: string;
+  session_id: string;
   client_occurred_at: string;
   repo_id: string;
   action: FeedbackAction;
@@ -14,14 +17,64 @@ export type QueuedActivity = {
   position?: number | null;
 };
 
-export type ActivityInput = Omit<QueuedActivity, 'event_id' | 'client_occurred_at'>
-  & Partial<Pick<QueuedActivity, 'event_id' | 'client_occurred_at'>>;
+export type ActivityInput = Omit<QueuedActivity, 'event_id' | 'session_id' | 'client_occurred_at'>
+  & Partial<Pick<QueuedActivity, 'event_id' | 'session_id' | 'client_occurred_at'>>;
+
+export type InteractionEventV2 = {
+  event_id: string;
+  schema_version: 2;
+  session_id: string;
+  serve_id: string | null;
+  repo_id: string;
+  position: number | null;
+  event_type: FeedbackAction;
+  dwell_ms: number | null;
+  client_occurred_at: string;
+  context: { client: 'expo'; source: 'feed' | 'product' };
+};
+
+export type InteractionBatchResultV2 = {
+  accepted: number;
+  duplicates: number;
+  feed_version: string;
+  results: {
+    event_id: string;
+    status: 'accepted' | 'duplicate';
+    feedback_version?: string;
+  }[];
+};
 
 export function prepareQueuedActivity(event: ActivityInput): QueuedActivity {
+  if (!UUID_PATTERN.test(event.repo_id)) throw new Error('Activity repo_id must be a UUID.');
+  if (event.serve_id && !UUID_PATTERN.test(event.serve_id)) {
+    throw new Error('Activity serve_id must be a UUID.');
+  }
+  if (event.position !== undefined && event.position !== null
+    && (!Number.isInteger(event.position) || event.position < 0)) {
+    throw new Error('Activity position must be a non-negative integer.');
+  }
   return {
     ...event,
     event_id: event.event_id ?? createUuid(),
+    session_id: event.session_id ?? getAppSessionId(),
     client_occurred_at: event.client_occurred_at ?? new Date().toISOString(),
+  };
+}
+
+export function toInteractionEventV2(event: QueuedActivity): InteractionEventV2 {
+  return {
+    event_id: event.event_id,
+    schema_version: 2,
+    session_id: event.session_id,
+    serve_id: event.serve_id ?? null,
+    repo_id: event.repo_id,
+    position: event.position ?? null,
+    event_type: event.action,
+    dwell_ms: event.action === 'dwell'
+      ? Math.min(300_000, Math.max(3_000, Math.round((event.dwell_seconds ?? 3) * 1_000)))
+      : null,
+    client_occurred_at: event.client_occurred_at,
+    context: { client: 'expo', source: event.serve_id ? 'feed' : 'product' },
   };
 }
 
@@ -35,34 +88,11 @@ export async function getSavedRepos(_userId: string, token: string, limit = 20, 
   }));
 }
 
-export async function toggleSaveRepo(
-  _userId: string,
-  repoId: string,
-  token: string,
-  saved: boolean,
-) {
-  return sendBatchedActivity([
-    prepareQueuedActivity({ repo_id: repoId, action: saved ? 'unsave' : 'save' }),
-  ], token);
-}
-
 export async function sendBatchedActivity(events: ActivityInput[], token: string) {
   if (events.length === 0) return;
-  const payload = events.map(prepareQueuedActivity).map((event) => ({
-    event_id: event.event_id,
-    schema_version: 2 as const,
-    session_id: getAppSessionId(),
-    serve_id: event.serve_id ?? null,
-    repo_id: event.repo_id,
-    position: event.position ?? null,
-    event_type: event.action,
-    dwell_ms: event.action === 'dwell'
-      ? Math.min(300_000, Math.max(3_000, Math.round((event.dwell_seconds ?? 3) * 1_000)))
-      : null,
-    client_occurred_at: event.client_occurred_at,
-    context: { client: 'expo', source: event.serve_id ? 'feed' : 'product' },
-  }));
-  const { data } = await apiV2Raw('/interactions/batch', {
+  if (events.length > 50) throw new RangeError('Activity batches cannot contain more than 50 events.');
+  const payload = events.map(prepareQueuedActivity).map(toInteractionEventV2);
+  const { data } = await apiV2Raw<InteractionBatchResultV2>('/interactions/batch', {
     method: 'POST', body: JSON.stringify({ events: payload }),
   }, token);
   return data;

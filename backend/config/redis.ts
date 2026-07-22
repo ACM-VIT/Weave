@@ -1,6 +1,7 @@
 import { Redis } from 'ioredis';
+import { resolveRedisUrl } from './runtimeConfig.js';
 
-const REDIS_URL = process.env.REDIS_URL || 'redis://127.0.0.1:6379';
+const REDIS_URL = resolveRedisUrl(process.env.REDIS_URL, process.env.NODE_ENV);
 
 const redisClient = new Redis(REDIS_URL, {
   maxRetriesPerRequest: 3,

@@ -111,3 +111,41 @@ export interface GitHubUserProfile {
   followers: number;
   following: number;
 }
+
+export interface GitHubPublicRepository {
+  id: number;
+  name: string;
+  full_name: string;
+  fork: boolean;
+  private: boolean;
+  visibility?: string;
+  language: string | null;
+  topics: string[];
+  updated_at: string;
+  owner?: {
+    login: string;
+  };
+}
+
+export interface GitHubPublicPersonaSource {
+  profile: GitHubUserProfile;
+  repositories: GitHubPublicRepository[];
+}
+
+export const GITHUB_PERSONA_SKILL_IDS = [
+  'web',
+  'backend',
+  'data',
+  'devops',
+  'databases',
+  'mobile',
+  'systems',
+] as const;
+
+export type GitHubPersonaSkillId = typeof GITHUB_PERSONA_SKILL_IDS[number];
+
+export interface GitHubInferredPersona {
+  interests: string[];
+  skills: GitHubPersonaSkillId[];
+  tech_stack: string[];
+}

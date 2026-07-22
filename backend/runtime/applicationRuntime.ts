@@ -13,6 +13,8 @@ import { DataReconciliationWorker } from '../workers/dataReconciliationWorker.js
 import { RetentionWorker } from '../workers/retentionWorker.js';
 import { WorkerSupervisor } from './workerSupervisor.js';
 import { FeedShadowService } from '../services/feedShadowService.js';
+import { validateProductionIntegrations } from '../config/runtimeConfig.js';
+import { applyMlReadinessGate } from './mlReadiness.js';
 
 export class ApplicationRuntime {
   readonly flags = getV2FeatureFlags();
@@ -63,6 +65,7 @@ export class ApplicationRuntime {
   }
 
   start(): void {
+    validateProductionIntegrations();
     if (this.featureErrors.length > 0) {
       throw new Error(`Invalid v2 feature configuration: ${this.featureErrors.join(' ')}`);
     }
@@ -83,7 +86,7 @@ export class ApplicationRuntime {
       checks.redis = { healthy: false, error: error instanceof Error ? error.message : String(error) };
     }
     if (this.ml) {
-      try { checks.ml = await this.ml.health(); }
+      try { checks.ml = applyMlReadinessGate(await this.ml.health(), this.flags); }
       catch (error) { checks.ml = { healthy: false, error: error instanceof Error ? error.message : String(error) }; }
     } else {
       checks.ml = { healthy: true, disabled: true };

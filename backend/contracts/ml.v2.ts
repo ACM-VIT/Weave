@@ -50,18 +50,61 @@ export interface MlOnboardingJob {
   profile: Record<string, unknown>;
 }
 
+export interface MlRepositorySource {
+  github_id?: string | null;
+  full_name: string;
+  url?: string | null;
+  description: string;
+  primary_language: string;
+  languages: string[];
+  topics: string[];
+  readme?: string | null;
+  readme_length?: number;
+  star_count: number;
+  fork_count: number;
+  open_issues_count: number;
+  pushed_days_ago?: number;
+  delta_3d?: number;
+  delta_7d?: number;
+  delta_30d?: number;
+  mentionable_users_count?: number;
+  readme_to_codebase_ratio?: number;
+  recent_commits?: string[];
+  created_at?: string | null;
+  updated_at?: string | null;
+  pushed_at?: string | null;
+  discovery_category?: string | null;
+  discovery_band?: string | null;
+  content_hash?: string | null;
+}
+
 export interface MlRepositoryIndexJob {
   job_id: string;
   repo_id: string;
   content_version: number;
-  repository: Record<string, unknown>;
+  repository: MlRepositorySource;
+}
+
+export interface MlRepositoryFeaturePatch {
+  star_count?: number;
+  fork_count?: number;
+  open_issues_count?: number;
+  pushed_days_ago?: number;
+  delta_3d?: number;
+  delta_7d?: number;
+  delta_30d?: number;
+  mentionable_users_count?: number;
+  updated_at?: string | null;
+  pushed_at?: string | null;
+  discovery_category?: string | null;
+  discovery_band?: string | null;
 }
 
 export interface MlRepositoryRefreshJob {
   job_id: string;
   repo_id: string;
   feature_version: number;
-  features: Record<string, unknown>;
+  features: MlRepositoryFeaturePatch;
 }
 
 export interface DeliveryResult {

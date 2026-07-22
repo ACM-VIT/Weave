@@ -8,7 +8,7 @@ const withoutTrailingSlash = (url: string): string => url.replace(/\/+$/, '');
 
 export const getApiUrl = (): string => {
   // 1. Production / User-defined environment variable (Highest Priority)
-  // This is what will be used in GitHub/Vercel/EAS deployments
+  // Local Android release builds inject this explicitly through the artifact script.
   if (process.env.EXPO_PUBLIC_BACKEND_URL) {
     return withoutTrailingSlash(process.env.EXPO_PUBLIC_BACKEND_URL);
   }

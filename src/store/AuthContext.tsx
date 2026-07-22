@@ -1,12 +1,17 @@
 import React, { createContext, useCallback, useContext, useEffect, useState } from 'react';
-import { getStorageItem, setStorageItem, removeStorageItem } from '../utils/storage';
-import { API_URL } from '../api/config';
+import { getStorageItem } from '../utils/storage';
+import { logout as logoutRequest } from '../api/auth';
 import { apiV2, refreshSession, setSessionExpiredHandler } from '../api/client';
+import { httpStatus } from '../api/session-errors';
+import { authSessionLifecycle, SessionChangedError } from '../api/session-lifecycle';
 import {
-  AUTH_BYPASS_ENABLED,
-  AUTH_BYPASS_PROFILE_STORAGE_KEY,
-  AUTH_BYPASS_USER,
-} from '../constants/auth';
+  isSessionRestoreBlocked,
+  LogoutNotCompletedError,
+  retireSessionIfCurrent,
+  type AuthenticatedSession,
+} from '../api/session-transitions';
+import { resolveOnboardingCompleted } from '../utils/auth-routing';
+import { restoreStartupSession } from './restore-session';
 
 interface User {
   user_id: string;
@@ -19,161 +24,152 @@ interface User {
 interface AuthContextType {
   user: User | null;
   isLoading: boolean;
-  setSession: (token: string, user: any) => Promise<void>;
-  enterOnboardingPreview: () => Promise<void>;
-  completeOnboardingPreview: () => void;
+  setSession: (session: AuthenticatedSession<any>) => Promise<void>;
   signOut: () => Promise<void>;
   checkOnboardingStatus: () => Promise<void>;
 }
 
-const AuthContext = createContext<AuthContextType | undefined>(undefined);
+type UserProfileRequestPolicy = {
+  allowRefresh?: boolean;
+  clearUnauthorized?: boolean;
+  logErrors?: boolean;
+  sessionGeneration?: number;
+};
 
-export const isDemoModeEnabled =
-  __DEV__ && process.env.EXPO_PUBLIC_DEMO_MODE === 'true';
+const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [isLoading, setIsLoading] = useState(true);
 
-  const loadBypassUser = useCallback(async () => {
-    const savedProfile = await getStorageItem(AUTH_BYPASS_PROFILE_STORAGE_KEY);
-    if (!savedProfile) return AUTH_BYPASS_USER;
-
+  const fetchUserProfile = useCallback(async (
+    token: string,
+    {
+      allowRefresh = true,
+      clearUnauthorized = true,
+      logErrors = true,
+      sessionGeneration = authSessionLifecycle.currentGeneration(),
+    }: UserProfileRequestPolicy = {},
+  ) => {
     try {
-      const parsedProfile = JSON.parse(savedProfile);
-      return {
-        ...AUTH_BYPASS_USER,
-        ...(typeof parsedProfile.username === 'string' ? { username: parsedProfile.username } : {}),
-        ...(typeof parsedProfile.full_name === 'string' ? { full_name: parsedProfile.full_name } : {}),
-        ...(typeof parsedProfile.bio === 'string' ? { bio: parsedProfile.bio } : {}),
-      };
-    } catch {
-      return AUTH_BYPASS_USER;
-    }
-  }, []);
-
-  const fetchUserProfile = useCallback(async (token: string) => {
-    try {
-      const profile = await apiV2<Record<string, unknown> & { topics?: unknown[] }>('/users/me', {}, token);
+      authSessionLifecycle.assertCurrent(sessionGeneration);
+      const requestPolicy = { allowRefresh };
+      const profile = await apiV2<Record<string, unknown>>('/users/me', {}, token, requestPolicy);
+      authSessionLifecycle.assertCurrent(sessionGeneration);
+      const completionStatus = typeof profile.onboarding_completed === 'boolean'
+        ? profile.onboarding_completed
+        : (await apiV2<{ completed: boolean }>('/onboarding/status', {}, token, requestPolicy)).completed;
+      authSessionLifecycle.assertCurrent(sessionGeneration);
       setUser({
         ...profile,
         user_id: String(profile.user_id),
         username: String(profile.username),
-        onboarding_completed: Array.isArray(profile.topics) && profile.topics.length > 0,
+        onboarding_completed: resolveOnboardingCompleted(profile, completionStatus),
       });
     } catch (error) {
-      const status = (error as { status?: number }).status;
+      const status = httpStatus(error);
+      const responseToken = typeof (error as { accessToken?: unknown })?.accessToken === 'string'
+        ? (error as { accessToken: string }).accessToken
+        : token;
       // A 404 means an older valid session predates its v2 product profile.
       // Clear it so the next login can run ensureIdentityProfile atomically.
-      if (status === 401 || status === 404) {
-        await removeStorageItem('access_token').catch(() => undefined);
-        setUser(null);
-        return;
+      if (status === 404 || (status === 401 && clearUnauthorized)) {
+        const retired = await retireSessionIfCurrent(sessionGeneration, responseToken);
+        if (retired) {
+          setUser(null);
+        }
       }
-      console.error('Failed to fetch user profile', error);
+      if (logErrors && !(error instanceof SessionChangedError)) {
+        console.error('Failed to fetch user profile', error);
+      }
+      throw error;
     }
   }, []);
 
   const loadSession = useCallback(async () => {
+    const sessionGeneration = authSessionLifecycle.currentGeneration();
     try {
-      if (AUTH_BYPASS_ENABLED) {
-        setUser(await loadBypassUser());
+      const restoreBlocked = await isSessionRestoreBlocked();
+      authSessionLifecycle.assertCurrent(sessionGeneration);
+      if (restoreBlocked) {
+        // A previous logout or interrupted auth transition deliberately left a
+        // durable marker. Stay anonymous and retry server-side cookie cleanup;
+        // a later successful login is serialized after this request and wins.
+        setIsLoading(false);
+        void logoutRequest().catch((error) => {
+          console.error('Failed to retry server session revocation', error);
+        });
         return;
       }
 
-      let token = await getStorageItem('access_token');
-      if (!token) token = await refreshSession().catch(() => null);
-      if (token) {
-        await fetchUserProfile(token);
-      }
-    } catch (e) {
-      console.error('Failed to load session', e);
-    } finally {
-      setIsLoading(false);
-    }
-  }, [fetchUserProfile, loadBypassUser]);
-
-  const checkOnboardingStatus = async () => {
-    if (AUTH_BYPASS_ENABLED) {
-      setUser(await loadBypassUser());
-      return;
-    }
-
-    const token = await getStorageItem('access_token');
-    if (token) {
-      await fetchUserProfile(token);
-    }
-  };
-
-  const setSession = async (token: string, authUser: any) => {
-    if (AUTH_BYPASS_ENABLED) {
-      setUser(await loadBypassUser());
-      return;
-    }
-
-    await setStorageItem('access_token', token);
-
-    // Let routing move a newly-created account into onboarding immediately,
-    // then replace this optimistic value with the canonical backend profile.
-    setUser({
-      ...authUser,
-      user_id: authUser?.user_id ?? authUser?.id,
-      username:
-        authUser?.username ??
-        authUser?.user_metadata?.user_name ??
-        'new-user',
-      onboarding_completed: false,
-    });
-    await fetchUserProfile(token);
-  };
-
-  const enterOnboardingPreview = async () => {
-    if (!isDemoModeEnabled) return;
-
-    // This preview is intentionally local-only: no auth or backend request.
-    await removeStorageItem('access_token').catch(() => undefined);
-    setUser({
-      user_id: 'local-onboarding-preview',
-      username: 'preview_user',
-      full_name: 'Preview User',
-      onboarding_completed: false,
-      isPreview: true,
-    });
-  };
-
-  const completeOnboardingPreview = () => {
-    setUser((currentUser) =>
-      currentUser?.isPreview
-        ? { ...currentUser, onboarding_completed: true }
-        : currentUser,
-    );
-  };
-
-  const signOut = async () => {
-    if (AUTH_BYPASS_ENABLED) {
-      setUser(await loadBypassUser());
-      return;
-    }
-
-    try {
-      const token = await getStorageItem('access_token');
-      await fetch(`${API_URL}/auth/logout`, { 
-        method: 'POST',
-        credentials: 'include',
-        headers: token ? { 'Authorization': `Bearer ${token}` } : {}
+      await restoreStartupSession({
+        getAccessToken: () => getStorageItem('access_token'),
+        refreshAccessToken: refreshSession,
+        assertSessionCurrent: () => authSessionLifecycle.assertCurrent(sessionGeneration),
+        // Startup recovery owns one bounded refresh cycle and reuses a token
+        // already rotated by another request before attempting another refresh.
+        loadUserProfile: (token, attempt) => fetchUserProfile(token, {
+          allowRefresh: false,
+          clearUnauthorized: attempt !== 'stored',
+          logErrors: false,
+          sessionGeneration,
+        }),
       });
     } catch (e) {
-      console.error(e);
-    }
-    
-    try {
-      await removeStorageItem('access_token');
-    } catch (e) {
-      console.error('Failed to clear session storage', e);
+      if (!(e instanceof SessionChangedError)) console.error('Failed to load session', e);
     } finally {
-      setUser(null);
+      if (authSessionLifecycle.isCurrent(sessionGeneration)) setIsLoading(false);
     }
-  };
+  }, [fetchUserProfile]);
+
+  const checkOnboardingStatus = useCallback(async () => {
+    const sessionGeneration = authSessionLifecycle.currentGeneration();
+    const token = await getStorageItem('access_token');
+    authSessionLifecycle.assertCurrent(sessionGeneration);
+    if (token) {
+      await fetchUserProfile(token, { sessionGeneration });
+    }
+  }, [fetchUserProfile]);
+
+  const setSession = useCallback(async ({
+    accessToken,
+    sessionGeneration,
+  }: AuthenticatedSession<any>) => {
+    authSessionLifecycle.assertCurrent(sessionGeneration);
+    const storedToken = await getStorageItem('access_token');
+    authSessionLifecycle.assertCurrent(sessionGeneration);
+    if (storedToken !== accessToken) throw new SessionChangedError();
+
+    setUser(null);
+    setIsLoading(true);
+    try {
+      await fetchUserProfile(accessToken, { sessionGeneration });
+    } finally {
+      if (authSessionLifecycle.isCurrent(sessionGeneration)) setIsLoading(false);
+    }
+  }, [fetchUserProfile]);
+
+  const signOut = useCallback(async () => {
+    const previousUser = user;
+    const logout = logoutRequest();
+    setUser(null);
+    setIsLoading(false);
+
+    try {
+      await logout;
+    } catch (e) {
+      if (e instanceof LogoutNotCompletedError) {
+        setUser(previousUser);
+        throw e;
+      }
+      console.error('Failed to revoke server session', e);
+    }
+  }, [user]);
+
+  useEffect(() => authSessionLifecycle.subscribe(() => {
+    setUser(null);
+    setIsLoading(false);
+  }), []);
 
   useEffect(() => {
     setSessionExpiredHandler(() => setUser(null));
@@ -189,7 +185,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [loadSession]);
 
   return (
-    <AuthContext.Provider value={{ user, isLoading, setSession, enterOnboardingPreview, completeOnboardingPreview, signOut, checkOnboardingStatus }}>
+    <AuthContext.Provider value={{ user, isLoading, setSession, signOut, checkOnboardingStatus }}>
       {children}
     </AuthContext.Provider>
   );

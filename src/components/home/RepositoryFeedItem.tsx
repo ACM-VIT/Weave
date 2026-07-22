@@ -1,5 +1,6 @@
 import React, { useRef, useState } from 'react';
 import {
+  AppState,
   Platform,
   StyleSheet,
   View,
@@ -37,7 +38,13 @@ export function RepositoryFeedItem({
   pageHeight: number;
   isViewable?: boolean;
   onQueueActivity?: (
-    event: { repo_id: string; action: FeedbackAction; dwell_seconds?: number },
+    event: {
+      repo_id: string;
+      action: FeedbackAction;
+      dwell_seconds?: number;
+      serve_id?: string | null;
+      position?: number | null;
+    },
     flushNow?: boolean
   ) => void;
 }) {
@@ -45,6 +52,9 @@ export function RepositoryFeedItem({
   const [isShareVisible, setIsShareVisible] = useState(false);
   const [isReadmeVisible, setIsReadmeVisible] = useState(false);
   const [isCommentsVisible, setIsCommentsVisible] = useState(false);
+  const [isAppActive, setIsAppActive] = useState(
+    AppState.currentState !== 'background' && AppState.currentState !== 'inactive',
+  );
   const [isSaved, setIsSaved] = useState(repository.viewerSaved === true);
   const [commentCount, setCommentCount] = useState(
     Number(repository.stats.comments || 0) || 0
@@ -55,6 +65,30 @@ export function RepositoryFeedItem({
   const impressionSentRef = useRef(false);
   const touchStartRef = useRef({ x: 0, y: 0 });
   const saveSwipeRef = useRef(false);
+  const overlaysOpen = isSaveVisible || isShareVisible || isReadmeVisible || isCommentsVisible;
+  const measurementActive = isViewable && isAppActive && !overlaysOpen;
+  const queueRepositoryActivity = React.useCallback((
+    event: { repo_id: string; action: FeedbackAction; dwell_seconds?: number },
+    flushNow?: boolean,
+  ) => {
+    onQueueActivity?.({
+      ...event,
+      serve_id: repository.serveId ?? null,
+      position: repository.feedPosition ?? null,
+    }, flushNow);
+  }, [onQueueActivity, repository.feedPosition, repository.serveId]);
+
+  React.useEffect(() => {
+    const subscription = AppState.addEventListener('change', (state) => {
+      setIsAppActive(state === 'active');
+    });
+    return () => subscription.remove();
+  }, []);
+
+  React.useEffect(() => {
+    if (isViewable) return;
+    impressionSentRef.current = false;
+  }, [isViewable]);
 
   React.useEffect(() => {
     const finishVisibility = () => {
@@ -65,7 +99,7 @@ export function RepositoryFeedItem({
         impressionTimeoutRef.current = null;
       }
       if (dwellSeconds * 1000 >= DWELL_VISIBILITY_THRESHOLD_MS) {
-        onQueueActivity?.({
+        queueRepositoryActivity({
           repo_id: repository.id,
           action: FEEDBACK_ACTIONS.dwell,
           dwell_seconds: dwellSeconds,
@@ -74,22 +108,19 @@ export function RepositoryFeedItem({
       visibleStartTime.current = null;
     };
 
-    if (isViewable) {
+    if (measurementActive) {
       visibleStartTime.current = Date.now();
-      impressionSentRef.current = false;
       if (impressionTimeoutRef.current) clearTimeout(impressionTimeoutRef.current);
       impressionTimeoutRef.current = setTimeout(() => {
         if (visibleStartTime.current !== null && !impressionSentRef.current) {
           impressionSentRef.current = true;
-          onQueueActivity?.({ repo_id: repository.id, action: FEEDBACK_ACTIONS.impression });
+          queueRepositoryActivity({ repo_id: repository.id, action: FEEDBACK_ACTIONS.impression });
         }
       }, IMPRESSION_VISIBILITY_THRESHOLD_MS);
     } else finishVisibility();
 
     return finishVisibility;
-  }, [isViewable, onQueueActivity, repository.id]);
-
-  const overlaysOpen = isSaveVisible || isShareVisible || isReadmeVisible || isCommentsVisible;
+  }, [measurementActive, queueRepositoryActivity, repository.id]);
 
   const handleTouchStart = (event: GestureResponderEvent) => {
     if (overlaysOpen) return;
@@ -131,9 +162,9 @@ export function RepositoryFeedItem({
         isActive={isViewable}
         isSaved={isSaved}
         onCommentPress={() => setIsCommentsVisible(true)}
-        onQueueActivity={onQueueActivity}
+        onQueueActivity={queueRepositoryActivity}
         onReadFullPress={() => {
-          onQueueActivity?.(
+          queueRepositoryActivity(
             { repo_id: repository.id, action: FEEDBACK_ACTIONS.readmeOpen },
             true
           );

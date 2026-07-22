@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 
 import { sqlClient } from '../db/index.js';
+import { isObsoleteIdentityOnboardingJob } from './mlOnboardingService.js';
 
 export interface OutboxRow {
   outbox_id: string;
@@ -20,19 +21,28 @@ export function retryDelayMs(attempt: number, random = Math.random): number {
 }
 
 export class OutboxService {
-  async status(): Promise<{ pending: number; claimed: number; delivered: number; dead: number; oldest_pending_seconds: number }> {
+  async status(): Promise<{
+    pending: number;
+    claimed: number;
+    delivered: number;
+    dead: number;
+    superseded: number;
+    oldest_pending_seconds: number;
+  }> {
     const rows = await sqlClient`
       SELECT
         count(*) FILTER (WHERE status='pending')::int AS pending,
         count(*) FILTER (WHERE status='claimed')::int AS claimed,
         count(*) FILTER (WHERE status='delivered')::int AS delivered,
         count(*) FILTER (WHERE status='dead')::int AS dead,
+        count(*) FILTER (WHERE status='superseded')::int AS superseded,
         COALESCE(EXTRACT(EPOCH FROM now()-min(created_at) FILTER (WHERE status='pending')),0)::int AS oldest_pending_seconds
       FROM telemetry.ml_outbox
     `;
     return {
       pending: Number(rows[0].pending), claimed: Number(rows[0].claimed), delivered: Number(rows[0].delivered),
-      dead: Number(rows[0].dead), oldest_pending_seconds: Number(rows[0].oldest_pending_seconds),
+      dead: Number(rows[0].dead), superseded: Number(rows[0].superseded),
+      oldest_pending_seconds: Number(rows[0].oldest_pending_seconds),
     };
   }
 
@@ -40,20 +50,37 @@ export class OutboxService {
     const token = crypto.randomUUID();
     const rows = await sqlClient.begin(async (tx) => tx`
       WITH ready AS (
-        SELECT outbox_id FROM telemetry.ml_outbox
-        WHERE (status='pending' AND available_at<=now())
-           OR (status='claimed' AND claimed_at < now()-(${leaseMs}::text || ' milliseconds')::interval)
+        SELECT candidate.outbox_id FROM telemetry.ml_outbox candidate
+        WHERE (
+          (candidate.status='pending' AND candidate.available_at<=now())
+          OR (candidate.status='claimed' AND candidate.claimed_at < now()-(${leaseMs}::text || ' milliseconds')::interval)
+        )
+        AND (
+          candidate.job_type<>'feedback'
+          OR NOT EXISTS (
+            SELECT 1 FROM telemetry.ml_outbox predecessor
+            WHERE predecessor.job_type='feedback'
+              AND predecessor.aggregate_id=candidate.aggregate_id
+              AND predecessor.status<>'delivered'
+              AND predecessor.payload->>'feedback_version' ~ '^[0-9]+$'
+              AND candidate.payload->>'feedback_version' ~ '^[0-9]+$'
+              AND (predecessor.payload->>'feedback_version')::numeric
+                < (candidate.payload->>'feedback_version')::numeric
+          )
+        )
         ORDER BY
-          CASE job_type
+          CASE candidate.job_type
             WHEN 'onboard' THEN 0
             WHEN 'feedback' THEN 1
-            WHEN 'repo_refresh' THEN 2
+            WHEN 'repo_index' THEN 2
             ELSE 3
           END,
-          created_at,
-          CASE WHEN job_type='feedback' THEN aggregate_id END,
-          CASE WHEN job_type='feedback' THEN (payload->>'feedback_version')::bigint END,
-          outbox_id
+          candidate.created_at,
+          CASE WHEN candidate.job_type='feedback' THEN candidate.aggregate_id END,
+          CASE WHEN candidate.job_type='feedback'
+            AND candidate.payload->>'feedback_version' ~ '^[0-9]+$'
+            THEN (candidate.payload->>'feedback_version')::numeric END,
+          candidate.outbox_id
         FOR UPDATE SKIP LOCKED LIMIT ${limit}
       )
       UPDATE telemetry.ml_outbox outbox SET status='claimed',claimed_at=now(),claim_token=${token}::uuid,
@@ -92,5 +119,23 @@ export class OutboxService {
       WHERE outbox_id=${outboxId}::uuid AND status='dead' RETURNING outbox_id
     `;
     return rows.length === 1;
+  }
+
+  async supersedeObsoleteOnboarding(outboxId: string): Promise<boolean> {
+    return sqlClient.begin(async (tx) => {
+      const rows = await tx`
+        SELECT job_type,payload FROM telemetry.ml_outbox
+        WHERE outbox_id=${outboxId}::uuid AND status='dead' FOR UPDATE
+      `;
+      const row = rows[0];
+      if (!row || row.job_type !== 'onboard'
+        || !isObsoleteIdentityOnboardingJob(row.payload as Record<string, unknown>)) return false;
+      const updated = await tx`
+        UPDATE telemetry.ml_outbox SET status='superseded',claim_token=NULL,claimed_at=NULL,
+          last_error='Obsolete identity-only onboarding job superseded by embedding-context policy.'
+        WHERE outbox_id=${outboxId}::uuid AND status='dead' RETURNING outbox_id
+      `;
+      return updated.length === 1;
+    });
   }
 }
