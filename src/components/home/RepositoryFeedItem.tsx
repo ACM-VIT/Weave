@@ -194,6 +194,13 @@ export function RepositoryFeedItem({
           true,
         )}
         repositoryId={repository.id}
+        repositoryDetails={{
+          id: repository.id,
+          name: repository.title,
+          fullName: `${repository.owner}/${repository.title}`,
+          githubUrl: repository.githubUrl ?? `https://github.com/${repository.owner}/${repository.title}`,
+          description: repository.description,
+        }}
       />
       <CommentSheet
         initialCommentCount={commentCount}

@@ -35,7 +35,10 @@ import {
   X,
 } from 'lucide-react-native';
 
-import { getRepositoryShareDetails } from '@/api/repository-actions';
+import {
+  getRepositoryShareDetails,
+  type RepositoryShareDetails,
+} from '@/api/repository-actions';
 import { REFERENCE_THEME } from '@/constants/theme';
 import { useModalScrollLock } from '@/hooks/use-modal-scroll-lock';
 
@@ -44,6 +47,7 @@ type ShareRepositorySheetProps = {
   onClose: () => void;
   onShared?: () => void;
   repositoryId: string;
+  repositoryDetails?: RepositoryShareDetails;
 };
 
 type ShareActionId = 'copy' | 'system' | 'whatsapp' | 'telegram'
@@ -87,6 +91,7 @@ export function ShareRepositorySheet({
   onClose,
   onShared,
   repositoryId,
+  repositoryDetails,
 }: ShareRepositorySheetProps) {
   const { height, width } = useWindowDimensions();
   const insets = useSafeAreaInsets();
@@ -102,7 +107,7 @@ export function ShareRepositorySheet({
   const repositoryQuery = useQuery({
     queryKey: ['repository-share-details', repositoryId],
     queryFn: ({ signal }) => getRepositoryShareDetails(repositoryId, signal),
-    enabled: isVisible && Boolean(repositoryId),
+    enabled: isVisible && Boolean(repositoryId) && !repositoryDetails,
     staleTime: 0,
     refetchOnMount: 'always',
     retry: 1,
@@ -168,7 +173,7 @@ export function ShareRepositorySheet({
     if (toastTimer.current) clearTimeout(toastTimer.current);
   }, []);
 
-  const details = repositoryQuery.data;
+  const details = repositoryDetails ?? repositoryQuery.data;
   const shareUnavailable = !details;
   const linkLoading = !details && (repositoryQuery.isLoading || repositoryQuery.isFetching);
   const linkFailed = !details && repositoryQuery.isError;

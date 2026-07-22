@@ -16,7 +16,9 @@ import { getResponsiveContentWidth } from '@/components/responsive-layout';
 import type { RepositoryData } from '@/data/repositories';
 import { RepositoryFeedItem } from '@/components/home/RepositoryFeedItem';
 import { FeedHeader } from '@/components/home/FeedHeader';
+import { DEVELOPMENT_PREVIEW_ENABLED } from '@/config/development-preview';
 import { REFERENCE_THEME } from '@/constants/theme';
+import { DEVELOPMENT_REPOSITORIES } from '@/data/development-repositories';
 import { useInfiniteQuery, useQueryClient } from '@tanstack/react-query';
 import * as SecureStore from '../../utils/storage';
 import { fetchFeed } from '@/api/feed';
@@ -94,7 +96,9 @@ export default function HomeScreen() {
   const { user, checkOnboardingStatus } = useAuth();
   const queryClient = useQueryClient();
   const feedQueryKey = useMemo(() => ['feed', user?.user_id] as const, [user?.user_id]);
-  const activityOutbox = user?.user_id ? getActivityOutbox(user.user_id) : null;
+  const activityOutbox = user?.user_id && !DEVELOPMENT_PREVIEW_ENABLED
+    ? getActivityOutbox(user.user_id)
+    : null;
   const { width, height } = useWindowDimensions();
   const responsiveWidth = getResponsiveContentWidth(width) ?? width;
   const [viewport, setViewport] = useState({
@@ -130,19 +134,27 @@ export default function HomeScreen() {
   } = useInfiniteQuery({
     queryKey: feedQueryKey,
     queryFn: fetchFeedPage,
-    enabled: Boolean(user?.user_id),
+    enabled: Boolean(user?.user_id) && !DEVELOPMENT_PREVIEW_ENABLED,
     getNextPageParam: (lastPage) => lastPage.nextCursor ?? undefined,
     initialPageParam: null as string | null,
   });
 
-  const feedItems = useMemo(() => data?.pages
-    .flatMap((page) => page.items)
-    .map(mapBackendToFrontend)
-    .filter((repository): repository is RepositoryData => repository !== null)
-    .map((repository, index) => ({
-      feedId: `${repository.id}-${index}-${repository.viewerReaction ?? 'none'}-${repository.viewerSaved ? 'saved' : 'unsaved'}`,
-      repository,
-    })) || [], [data?.pages]);
+  const feedItems = useMemo(() => {
+    if (DEVELOPMENT_PREVIEW_ENABLED) {
+      return DEVELOPMENT_REPOSITORIES.map((repository, index) => ({
+        feedId: `development-${repository.id}-${index}`,
+        repository,
+      }));
+    }
+    return data?.pages
+      .flatMap((page) => page.items)
+      .map(mapBackendToFrontend)
+      .filter((repository): repository is RepositoryData => repository !== null)
+      .map((repository, index) => ({
+        feedId: `${repository.id}-${index}-${repository.viewerReaction ?? 'none'}-${repository.viewerSaved ? 'saved' : 'unsaved'}`,
+        repository,
+      })) || [];
+  }, [data?.pages]);
 
   const handleQueueActivity = useCallback((event: {
     repo_id: string;

@@ -1,5 +1,5 @@
 import { Href, useRouter } from "expo-router";
-import { useEffect, useRef, useState } from "react";
+import { useState } from "react";
 import { KeyboardAvoidingView, Platform, ScrollView, Text, View } from "react-native";
 import { useAuth } from "../../store/AuthContext";
 import { login } from "../../api/auth";
@@ -22,7 +22,6 @@ import {
 
 export default function LoginScreen() {
   const router = useRouter();
-  const scrollViewRef = useRef<ScrollView>(null);
   const { setSession } = useAuth();
   const { signInWithProvider, isLoading: oauthLoading, error: oauthError } = useOAuth();
 
@@ -32,12 +31,6 @@ export default function LoginScreen() {
   const [errorMsg, setErrorMsg] = useState("");
 
   const isFormValid = email.trim().length > 0 && password.length > 0 && !isLoading;
-
-  useEffect(() => {
-    setTimeout(() => {
-      scrollViewRef.current?.scrollToEnd({ animated: true });
-    }, 500);
-  }, []);
 
   const handleLogin = async () => {
     if (!isFormValid) return;
@@ -61,13 +54,12 @@ export default function LoginScreen() {
       keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 20}
     >
       <ScrollView
-        ref={scrollViewRef}
         className="flex-1 bg-[#000000]"
         showsVerticalScrollIndicator={false}
-        contentContainerStyle={{ paddingBottom: 40, flexGrow: 1, justifyContent: 'center' }}
+        contentContainerStyle={{ paddingTop: 24, paddingBottom: 40, flexGrow: 1, justifyContent: 'center' }}
         keyboardShouldPersistTaps="handled"
       >
-        <View className="px-8 pt-14 w-full" style={{ maxWidth: 450, alignSelf: 'center' }}>
+        <View className="px-8 w-full" style={{ maxWidth: 450, alignSelf: 'center' }}>
 
           {/* Logo */}
           <View className="items-center">
