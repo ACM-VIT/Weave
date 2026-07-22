@@ -3,7 +3,6 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   Pressable,
   ScrollView,
-  Share,
   StyleSheet,
   Text,
   View,
@@ -136,6 +135,7 @@ export function RepositoryScreen({
   commentCount,
   onReadFullPress,
   onSavePress,
+  onSharePress,
   onCommentPress,
   onQueueActivity,
 }: {
@@ -147,6 +147,7 @@ export function RepositoryScreen({
   commentCount?: number;
   onReadFullPress: () => void;
   onSavePress: () => void;
+  onSharePress: () => void;
   onCommentPress: () => void;
   onQueueActivity?: QueueActivity;
 }) {
@@ -243,18 +244,6 @@ export function RepositoryScreen({
     pinMutation.mutate(next, {
       onError: () => setLocalPinState({ key: pinStateKey, pinned: previous }),
     });
-  };
-
-  const shareRepository = async () => {
-    onQueueActivity?.({ repo_id: repository.id, action: FEEDBACK_ACTIONS.share }, true);
-    try {
-      await Share.share({
-        title: `${repository.owner}/${repository.title}`,
-        message: `${repository.owner}/${repository.title}\n\n${repository.description}`,
-      });
-    } catch {
-      // The native share sheet can be dismissed or unavailable without affecting the feed.
-    }
   };
 
   return (
@@ -425,7 +414,7 @@ export function RepositoryScreen({
           icon={ShareIcon}
           iconSize={28}
           label="Share"
-          onPress={shareRepository}
+          onPress={onSharePress}
         />
       </View>
 

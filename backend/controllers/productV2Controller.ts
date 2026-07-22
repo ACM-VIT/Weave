@@ -217,6 +217,19 @@ export async function getRepository(req: AuthRequest, res: Response): Promise<vo
   sendSuccess(res, 200, rows[0]);
 }
 
+export async function getRepositoryShare(req: AuthRequest, res: Response): Promise<void> {
+  const repo = idParam(req, res, 'repoId'); if (!repo) return;
+  try {
+    const rows = await sqlClient`
+      SELECT r.repo_id,r.name,r.full_name,r.url,c.description
+      FROM app.repos r JOIN app.repo_content c USING(repo_id)
+      WHERE r.repo_id=${repo}::uuid AND r.status='active'
+    `;
+    if (!rows[0]) return sendError(res, 404, 'Repository not found.');
+    sendSuccess(res, 200, rows[0]);
+  } catch (error) { sendControllerError(res, error); }
+}
+
 export async function listTrending(req: AuthRequest, res: Response): Promise<void> {
   const period = typeof req.query.period === 'string' ? req.query.period : 'daily';
   const rows = await sqlClient`SELECT i.position,i.score,i.features,r.repo_id,r.github_id,r.full_name,r.owner,r.name,r.url,
@@ -303,8 +316,28 @@ export async function deleteComment(req: AuthRequest, res: Response): Promise<vo
 type Resource = 'collection' | 'board';
 async function listOwned(req: AuthRequest, res: Response, resource: Resource): Promise<void> {
   const id = userId(req, res); if (!id) return;
+  const requestedRepo = typeof req.query.repository_id === 'string' ? req.query.repository_id : null;
+  if (requestedRepo && !isValidUuid(requestedRepo)) return sendError(res, 400, 'repository_id must be a UUID.');
   const rows = resource === 'collection'
-    ? await sqlClient`SELECT c.*,count(b.board_id)::int AS board_count FROM app.board_collections c LEFT JOIN app.boards b USING(collection_id) WHERE c.user_id=${id}::uuid GROUP BY c.collection_id ORDER BY c.created_at DESC`
+    ? requestedRepo
+      ? await sqlClient`
+          SELECT c.*,
+            (SELECT count(*)::int FROM app.boards b WHERE b.collection_id=c.collection_id) AS board_count,
+            (SELECT count(*)::int FROM app.collection_repos cr WHERE cr.collection_id=c.collection_id) AS repo_count,
+            EXISTS(SELECT 1 FROM app.collection_repos cr WHERE cr.collection_id=c.collection_id AND cr.repo_id=${requestedRepo}::uuid) AS selected,
+            (SELECT max(cr.added_at) FROM app.collection_repos cr WHERE cr.collection_id=c.collection_id) AS last_updated_at
+          FROM app.board_collections c WHERE c.user_id=${id}::uuid
+          ORDER BY c.updated_at DESC,c.created_at DESC
+        `
+      : await sqlClient`
+          SELECT c.*,
+            (SELECT count(*)::int FROM app.boards b WHERE b.collection_id=c.collection_id) AS board_count,
+            (SELECT count(*)::int FROM app.collection_repos cr WHERE cr.collection_id=c.collection_id) AS repo_count,
+            false AS selected,
+            (SELECT max(cr.added_at) FROM app.collection_repos cr WHERE cr.collection_id=c.collection_id) AS last_updated_at
+          FROM app.board_collections c WHERE c.user_id=${id}::uuid
+          ORDER BY c.updated_at DESC,c.created_at DESC
+        `
     : await sqlClient`SELECT b.*,count(br.repo_id)::int AS repo_count FROM app.boards b LEFT JOIN app.board_repos br USING(board_id) WHERE b.user_id=${id}::uuid GROUP BY b.board_id ORDER BY b.created_at DESC`;
   sendSuccess(res, 200, { items: rows });
 }
@@ -312,18 +345,93 @@ export const listCollections = (req: AuthRequest, res: Response) => listOwned(re
 export const listBoards = (req: AuthRequest, res: Response) => listOwned(req, res, 'board');
 
 export async function createCollection(req: AuthRequest, res: Response): Promise<void> {
-  const id = userId(req, res); if (!id) return; const name = text(req.body?.name, 100, true); const description = text(req.body?.description ?? null, 1_000);
-  if (name === undefined || description === undefined) return sendError(res, 400, 'Invalid collection.');
-  const rows = await sqlClient`INSERT INTO app.board_collections(user_id,name,description) VALUES(${id}::uuid,${name},${description}) RETURNING *`;
-  sendSuccess(res, 201, rows[0]);
+  const id = userId(req, res); if (!id) return;
+  const name = text(req.body?.name, 100, true);
+  const description = text(req.body?.description ?? null, 1_000);
+  const icon = text(req.body?.icon ?? null, 16);
+  const color = text(req.body?.color ?? null, 7);
+  if (name === undefined || description === undefined || icon === undefined || color === undefined
+    || (color !== null && !/^#[0-9A-Fa-f]{6}$/.test(color))) return sendError(res, 400, 'Invalid collection.');
+  try {
+    const rows = await sqlClient`
+      INSERT INTO app.board_collections(user_id,name,description,icon,color)
+      VALUES(${id}::uuid,${name},${description},${icon},${color}) RETURNING *
+    `;
+    sendSuccess(res, 201, { ...rows[0], board_count: 0, repo_count: 0, selected: false, last_updated_at: null });
+  } catch (error) { sendControllerError(res, error); }
+}
+
+export async function saveRepositoryCollections(req: AuthRequest, res: Response): Promise<void> {
+  const id = userId(req, res); if (!id) return;
+  const repositoryId = req.body?.repositoryId;
+  const rawCollectionIds = req.body?.collectionIds;
+  if (!isValidUuid(repositoryId) || !Array.isArray(rawCollectionIds) || rawCollectionIds.length > 100
+    || !rawCollectionIds.every((value) => isValidUuid(value))) {
+    return sendError(res, 400, 'repositoryId must be a UUID and collectionIds must contain at most 100 UUIDs.');
+  }
+  const collectionIds = [...new Set(rawCollectionIds as string[])];
+  try {
+    const result = await sqlClient.begin(async (tx) => {
+      const repository = await tx`SELECT 1 FROM app.repos WHERE repo_id=${repositoryId}::uuid AND status='active'`;
+      if (!repository.length) throw Object.assign(new Error('Repository not found.'), { statusCode: 404 });
+      await tx`SELECT pg_advisory_xact_lock(hashtextextended(${`${id}:${repositoryId}`}, 0))`;
+
+      if (collectionIds.length) {
+        const owned = await tx`SELECT collection_id FROM app.board_collections WHERE user_id=${id}::uuid AND collection_id = ANY(${collectionIds}::uuid[])`;
+        if (owned.length !== collectionIds.length) throw Object.assign(new Error('One or more collections were not found.'), { statusCode: 400 });
+      }
+
+      const changedCollections = await tx`
+        SELECT collection_id FROM app.collection_repos
+        WHERE repo_id=${repositoryId}::uuid AND collection_id IN (
+          SELECT collection_id FROM app.board_collections WHERE user_id=${id}::uuid
+        )
+      `;
+      await tx`
+        DELETE FROM app.collection_repos
+        WHERE repo_id=${repositoryId}::uuid AND collection_id IN (
+          SELECT collection_id FROM app.board_collections WHERE user_id=${id}::uuid
+        )
+      `;
+      for (const collectionId of collectionIds) {
+        await tx`
+          INSERT INTO app.collection_repos(collection_id,repo_id,added_by)
+          VALUES(${collectionId}::uuid,${repositoryId}::uuid,${id}::uuid)
+          ON CONFLICT (collection_id,repo_id) DO NOTHING
+        `;
+      }
+      const touchedIds = [...new Set([
+        ...collectionIds,
+        ...changedCollections.map((row) => String(row.collection_id)),
+      ])];
+      if (touchedIds.length) {
+        await tx`UPDATE app.board_collections SET updated_at=now() WHERE collection_id = ANY(${touchedIds}::uuid[])`;
+      }
+      const boardMembership = await tx`
+        SELECT 1 FROM app.board_repos br JOIN app.boards b USING(board_id)
+        WHERE br.repo_id=${repositoryId}::uuid AND b.user_id=${id}::uuid LIMIT 1
+      `;
+      const saved = collectionIds.length > 0 || boardMembership.length > 0;
+      const saveStateChanged = await setRepositorySaved(tx, id, repositoryId, saved);
+      return { repository_id: repositoryId, collection_ids: collectionIds, saved, save_state_changed: saveStateChanged };
+    });
+    sendSuccess(res, 200, result);
+  } catch (error) { sendControllerError(res, error); }
 }
 
 export async function updateCollection(req: AuthRequest, res: Response): Promise<void> {
   const id = userId(req, res); const collection = idParam(req, res, 'collectionId'); if (!id || !collection) return;
   const name = text(req.body?.name, 100, true); const description = text(req.body?.description ?? null, 1_000);
-  if (name === undefined || description === undefined) return sendError(res, 400, 'Invalid collection.');
-  const rows = await sqlClient`UPDATE app.board_collections SET name=${name},description=${description} WHERE collection_id=${collection}::uuid AND user_id=${id}::uuid RETURNING *`;
-  if (!rows[0]) return sendError(res, 404, 'Collection not found.'); sendSuccess(res, 200, rows[0]);
+  const icon = text(req.body?.icon ?? null, 16); const color = text(req.body?.color ?? null, 7);
+  if (name === undefined || description === undefined || icon === undefined || color === undefined
+    || (color !== null && !/^#[0-9A-Fa-f]{6}$/.test(color))) return sendError(res, 400, 'Invalid collection.');
+  try {
+    const rows = await sqlClient`
+      UPDATE app.board_collections SET name=${name},description=${description},icon=${icon},color=${color},updated_at=now()
+      WHERE collection_id=${collection}::uuid AND user_id=${id}::uuid RETURNING *
+    `;
+    if (!rows[0]) return sendError(res, 404, 'Collection not found.'); sendSuccess(res, 200, rows[0]);
+  } catch (error) { sendControllerError(res, error); }
 }
 
 export async function deleteCollection(req: AuthRequest, res: Response): Promise<void> {

@@ -18,6 +18,7 @@ import { CommentSheet } from './CommentSheet';
 import { ReadmePopup } from './ReadmePopup';
 import { RepositoryScreen } from './RepositoryScreen';
 import { SavePopup } from './save-popup';
+import { ShareRepositorySheet } from './share-repository-sheet';
 
 const WEB_FEED_ITEM_STYLE =
   Platform.OS === 'web'
@@ -41,6 +42,7 @@ export function RepositoryFeedItem({
   ) => void;
 }) {
   const [isSaveVisible, setIsSaveVisible] = useState(false);
+  const [isShareVisible, setIsShareVisible] = useState(false);
   const [isReadmeVisible, setIsReadmeVisible] = useState(false);
   const [isCommentsVisible, setIsCommentsVisible] = useState(false);
   const [isSaved, setIsSaved] = useState(repository.viewerSaved === true);
@@ -87,7 +89,7 @@ export function RepositoryFeedItem({
     return finishVisibility;
   }, [isViewable, onQueueActivity, repository.id]);
 
-  const overlaysOpen = isSaveVisible || isReadmeVisible || isCommentsVisible;
+  const overlaysOpen = isSaveVisible || isShareVisible || isReadmeVisible || isCommentsVisible;
 
   const handleTouchStart = (event: GestureResponderEvent) => {
     if (overlaysOpen) return;
@@ -138,6 +140,7 @@ export function RepositoryFeedItem({
           setIsReadmeVisible(true);
         }}
         onSavePress={() => setIsSaveVisible(true)}
+        onSharePress={() => setIsShareVisible(true)}
         pageHeight={pageHeight}
         pageWidth={pageWidth}
         repository={repository}
@@ -146,11 +149,20 @@ export function RepositoryFeedItem({
       <SavePopup
         isVisible={isSaveVisible}
         onClose={() => setIsSaveVisible(false)}
-        onSaved={() => setIsSaved(true)}
+        onSaved={setIsSaved}
         repoId={repository.id}
         repoName={repository.title}
         serveId={repository.serveId}
         position={repository.feedPosition}
+      />
+      <ShareRepositorySheet
+        isVisible={isShareVisible}
+        onClose={() => setIsShareVisible(false)}
+        onShared={() => onQueueActivity?.(
+          { repo_id: repository.id, action: FEEDBACK_ACTIONS.share },
+          true,
+        )}
+        repositoryId={repository.id}
       />
       <CommentSheet
         initialCommentCount={commentCount}

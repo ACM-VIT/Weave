@@ -17,6 +17,7 @@ import { REPOSITORIES, RepositoryData } from '@/data/repositories';
 import { RepositoryFeedItem } from '@/components/home/RepositoryFeedItem';
 import { FeedHeader } from '@/components/home/FeedHeader';
 import { REFERENCE_THEME } from '@/constants/theme';
+import { AUTH_BYPASS_ENABLED } from '@/constants/auth';
 import { useInfiniteQuery } from '@tanstack/react-query';
 import * as SecureStore from '../../utils/storage';
 import { fetchFeed } from '@/api/feed';
@@ -88,7 +89,7 @@ function mapBackendToFrontend(backendItem: any): RepositoryData {
 
 export default function HomeScreen() {
   const { user } = useAuth();
-  const isPreview = user?.isPreview === true;
+  const isPreview = user?.isPreview === true || AUTH_BYPASS_ENABLED;
   const { width, height } = useWindowDimensions();
   const responsiveWidth = getResponsiveContentWidth(width) ?? width;
   const [viewport, setViewport] = useState({

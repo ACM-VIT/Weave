@@ -67,6 +67,12 @@ integration('registered v2 HTTP paths complete controlled integration flows', as
   const base = `http://127.0.0.1:${address.port}`;
   const token = jwt.sign({ userId, email: 'test@example.com' }, process.env.JWT_SECRET!);
   try {
+    const publicShare = await fetch(`${base}/api/v2/repositories/${repoId}/share`);
+    assert.equal(publicShare.status, 200);
+    const publicShareData = (await publicShare.json()) as { data: { full_name: string; url: string } };
+    assert.equal(publicShareData.data.full_name, 'owner/http-repo');
+    assert.equal(publicShareData.data.url, 'https://github.com/owner/http-repo');
+
     const feedRequestId = crypto.randomUUID();
     const feed = await fetch(`${base}/api/v2/feed`, {
       method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json', 'x-request-id': 'http-integration' },
@@ -127,10 +133,27 @@ integration('registered v2 HTTP paths complete controlled integration flows', as
     assert.equal(commentItems.data.items[0].body, 'Useful repository');
 
     const collection = await fetch(`${base}/api/v2/collections`, {
-      method: 'POST', headers: authHeaders, body: JSON.stringify({ name: 'Research' }),
+      method: 'POST', headers: authHeaders, body: JSON.stringify({ name: 'Research', icon: '🔬', color: '#5E5CE6' }),
     });
     assert.equal(collection.status, 201);
-    const collectionId = ((await collection.json()) as { data: { collection_id: string } }).data.collection_id;
+    const collectionData = ((await collection.json()) as { data: { collection_id: string; icon: string; color: string } }).data;
+    const collectionId = collectionData.collection_id;
+    assert.equal(collectionData.icon, '🔬');
+    assert.equal(collectionData.color, '#5E5CE6');
+    const collectionSave = await fetch(`${base}/api/v2/collections/save`, {
+      method: 'POST', headers: authHeaders,
+      body: JSON.stringify({ repositoryId: repoId, collectionIds: [collectionId] }),
+    });
+    assert.equal(collectionSave.status, 200);
+    const collectionSaveData = (await collectionSave.json()) as { data: { saved: boolean; collection_ids: string[] } };
+    assert.equal(collectionSaveData.data.saved, true);
+    assert.deepEqual(collectionSaveData.data.collection_ids, [collectionId]);
+    const collectionsForRepo = await fetch(`${base}/api/v2/collections?repository_id=${repoId}`, { headers: authHeaders });
+    assert.equal(collectionsForRepo.status, 200);
+    const collectionItems = (await collectionsForRepo.json()) as { data: { items: Array<{ collection_id: string; repo_count: number; selected: boolean }> } };
+    assert.equal(collectionItems.data.items[0].collection_id, collectionId);
+    assert.equal(collectionItems.data.items[0].repo_count, 1);
+    assert.equal(collectionItems.data.items[0].selected, true);
     const board = await fetch(`${base}/api/v2/boards`, {
       method: 'POST', headers: authHeaders,
       body: JSON.stringify({ name: 'Read later', visibility: 'private', collection_id: collectionId }),
