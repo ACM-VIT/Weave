@@ -93,12 +93,12 @@ export default function ProfileScreen() {
     setLogoutError("")
     try {
       await signOut()
+      setLogoutVisible(false)
+      router.replace("/(auth)/login")
     } catch (error) {
       setLogoutError(error instanceof Error ? error.message : "Unable to log out.")
     } finally {
       setLoggingOut(false)
-      setLogoutVisible(false)
-      router.replace("/(auth)/login")
     }
   }
 

@@ -45,7 +45,7 @@ export default function LoginScreen() {
     setErrorMsg("");
     try {
       const data = await login(email, password);
-      await setSession(data.accessToken, data.user);
+      await setSession(data);
       // _layout.tsx will handle redirection
     } catch (err: any) {
       setErrorMsg(err.message || 'Login failed');

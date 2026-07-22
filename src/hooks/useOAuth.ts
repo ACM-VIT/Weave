@@ -68,7 +68,7 @@ export function useOAuth() {
 
       // 6. Persist session — AuthContext fetches profile which includes onboarding_completed.
       //    _layout.tsx will then automatically redirect to onboarding or tabs.
-      await setSession(data.accessToken, data.user);
+      await setSession(data);
 
     } catch (err: any) {
       await clearOAuthClientVerifier().catch(() => undefined);

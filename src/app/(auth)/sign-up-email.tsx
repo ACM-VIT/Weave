@@ -81,7 +81,7 @@ export default function SignUpEmail() {
     setErrorMsg("");
     try {
       const data = await register(email, password, fullName, normalizedUsername, dateOfBirth);
-      await setSession(data.accessToken, data.user);
+      await setSession(data);
       // _layout.tsx will automatically redirect to onboarding
     } catch (err: any) {
       setErrorMsg(err.message || 'Registration failed');

@@ -46,7 +46,7 @@ export default function OAuthCallbackScreen() {
       })
       .then(async (data) => {
         await clearOAuthClientVerifier().catch(() => undefined);
-        await setSession(data.accessToken, data.user);
+        await setSession(data);
       })
       .catch((err) => setExchangeError(err.message || 'Authentication failed'));
   }, [code, oauthError, setSession]);

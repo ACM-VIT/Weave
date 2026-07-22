@@ -1,6 +1,12 @@
 import { API_URL } from './config';
 import { isValidUsername, normalizeUsername } from '../utils/username';
 import { validateOAuthInitiationUrl } from '../utils/oauth-init-url';
+import {
+  establishSession,
+  revokeSession,
+  type AuthenticatedSession,
+  type RawAuthenticatedSession,
+} from './session-transitions';
 
 const readJson = async (response: Response) => {
   const text = await response.text();
@@ -21,27 +27,29 @@ export const register = async (
   dateOfBirth: string,
 ) => {
   if (!isValidUsername(username)) throw new Error('Enter a valid username.');
-  const response = await fetch(`${API_URL}/auth/signup`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    credentials: 'include',
-    body: JSON.stringify({ 
-      email, 
-      password, 
-      username: normalizeUsername(username),
-      full_name: fullName,
-      date_of_birth: dateOfBirth,
-    }),
-  });
+  return establishSession(async () => {
+    const response = await fetch(`${API_URL}/auth/signup`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({
+        email,
+        password,
+        username: normalizeUsername(username),
+        full_name: fullName,
+        date_of_birth: dateOfBirth,
+      }),
+    });
 
-  const data = await readJson(response);
-  if (!response.ok) {
-    throw new Error(data.error || 'Failed to register');
-  }
-  return data.data; // Expected { accessToken, user }
+    const data = await readJson(response);
+    if (!response.ok) {
+      throw new Error(data.error || 'Failed to register');
+    }
+    return data.data as RawAuthenticatedSession<any>;
+  });
 };
 
-export const login = async (email: string, password: string) => {
+export const login = async (email: string, password: string) => establishSession(async () => {
   const response = await fetch(`${API_URL}/auth/login`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -53,13 +61,16 @@ export const login = async (email: string, password: string) => {
   if (!response.ok) {
     throw new Error(data.error || 'Failed to login');
   }
-  return data.data; // Expected { accessToken, user }
-};
+  return data.data as RawAuthenticatedSession<any>;
+});
 
-export const logout = async () => {
+export const logout = async () => revokeSession(async (accessToken) => {
   const response = await fetch(`${API_URL}/auth/logout`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+    },
     credentials: 'include',
   });
 
@@ -68,7 +79,7 @@ export const logout = async () => {
     throw new Error(data.error || 'Failed to logout');
   }
   return data;
-};
+});
 
 export const getOAuthUrl = async (
   provider: 'github' | 'google',
@@ -92,10 +103,13 @@ export const getOAuthUrl = async (
   return validateOAuthInitiationUrl(authorizationUrl, API_URL);
 };
 
-type ExchangedSession = { accessToken: string; user: any };
+type ExchangedSession = AuthenticatedSession<any>;
 const codeExchangeRequests = new Map<string, Promise<ExchangedSession>>();
 
-const performCodeExchange = async (code: string, codeVerifier: string): Promise<ExchangedSession> => {
+const performCodeExchange = async (
+  code: string,
+  codeVerifier: string,
+): Promise<RawAuthenticatedSession<any>> => {
   const response = await fetch(`${API_URL}/auth/exchange`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -106,14 +120,14 @@ const performCodeExchange = async (code: string, codeVerifier: string): Promise<
   if (!response.ok) {
     throw new Error(data.error || 'Failed to exchange authorization code');
   }
-  return data.data as ExchangedSession;
+  return data.data as RawAuthenticatedSession<any>;
 };
 
 export const exchangeCode = (code: string, codeVerifier: string): Promise<ExchangedSession> => {
   const requestKey = `${code}:${codeVerifier}`;
   const existing = codeExchangeRequests.get(requestKey);
   if (existing) return existing;
-  const request = performCodeExchange(code, codeVerifier);
+  const request = establishSession(() => performCodeExchange(code, codeVerifier));
   codeExchangeRequests.set(requestKey, request);
   void request.then(() => {
     setTimeout(() => {

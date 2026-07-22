@@ -33,6 +33,11 @@ export async function getStorageItem(key: string): Promise<string | null> {
   }
 }
 
+export async function getStorageItemStrict(key: string): Promise<string | null> {
+  if (Platform.OS === 'web') return getWebStorage(key).getItem(key);
+  return SecureStore.getItemAsync(key);
+}
+
 export async function removeStorageItem(key: string): Promise<void> {
   if (Platform.OS === 'web') {
     try {

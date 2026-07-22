@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
+import { SessionChangedError } from '../src/api/session-lifecycle';
 import { restoreStartupSession } from '../src/store/restore-session';
 
 function httpError(status: number): Error & { status: number } {
@@ -30,13 +31,15 @@ test('startup keeps a valid stored access token without refreshing', async () =>
 
 test('startup refreshes an expired stored token and retries the profile once', async () => {
   const calls: string[] = [];
+  let refreshOwnerToken: string | null | undefined;
 
   const state = await restoreStartupSession({
     getAccessToken: async () => {
       calls.push('get:stored');
       return 'expired-token';
     },
-    refreshAccessToken: async () => {
+    refreshAccessToken: async (expectedToken) => {
+      refreshOwnerToken = expectedToken;
       calls.push('refresh');
       return 'fresh-token';
     },
@@ -54,6 +57,7 @@ test('startup refreshes an expired stored token and retries the profile once', a
     'refresh',
     'profile:refreshed:fresh-token',
   ]);
+  assert.equal(refreshOwnerToken, 'expired-token');
 });
 
 test('startup reuses a concurrently refreshed token instead of rotating again', async () => {
@@ -131,10 +135,12 @@ test('startup becomes anonymous when an expired token cannot be refreshed', asyn
 
 test('startup restores a cookie-backed session when no access token is stored', async () => {
   const calls: string[] = [];
+  let refreshOwnerToken: string | null | undefined = 'not-called';
 
   const state = await restoreStartupSession({
     getAccessToken: async () => null,
-    refreshAccessToken: async () => {
+    refreshAccessToken: async (expectedToken) => {
+      refreshOwnerToken = expectedToken;
       calls.push('refresh');
       return 'fresh-token';
     },
@@ -145,6 +151,7 @@ test('startup restores a cookie-backed session when no access token is stored', 
 
   assert.equal(state, 'authenticated');
   assert.deepEqual(calls, ['refresh', 'profile:refreshed:fresh-token']);
+  assert.equal(refreshOwnerToken, null);
 });
 
 test('startup preserves a retryable session when refresh has a transient failure', async () => {
@@ -200,4 +207,27 @@ test('startup does not refresh a valid legacy session whose product profile is m
   );
 
   assert.equal(refreshCalls, 0);
+});
+
+test('startup cannot authenticate after a newer login changes the session generation', async () => {
+  let sessionCurrent = true;
+  let releaseProfile!: () => void;
+  const profileResponse = new Promise<void>((resolve) => {
+    releaseProfile = resolve;
+  });
+
+  const restore = restoreStartupSession({
+    getAccessToken: async () => 'old-startup-token',
+    refreshAccessToken: async () => 'unexpected-token',
+    loadUserProfile: async () => profileResponse,
+    assertSessionCurrent: () => {
+      if (!sessionCurrent) throw new SessionChangedError();
+    },
+  });
+
+  await Promise.resolve();
+  sessionCurrent = false;
+  releaseProfile();
+
+  await assert.rejects(restore, SessionChangedError);
 });
