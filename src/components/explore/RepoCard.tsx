@@ -6,6 +6,7 @@ import { Repo } from '../../types';
 interface RepoCardProps {
   repo: Repo;
   onPress?: () => void;
+  showMetrics?: boolean;
 }
 
 function StarIcon(): React.JSX.Element {
@@ -61,9 +62,12 @@ function GradientAvatar({ repo }: { repo: Repo }): React.JSX.Element {
   );
 }
 
-export default function RepoCard({ repo, onPress }: RepoCardProps): React.JSX.Element {
+export default function RepoCard({ repo, onPress, showMetrics = true }: RepoCardProps): React.JSX.Element {
   return (
     <Pressable
+      accessibilityHint="Opens this repository"
+      accessibilityLabel={`Open ${repo.name} by ${repo.author}`}
+      accessibilityRole="link"
       onPress={onPress}
       style={{
         borderRadius: 16,
@@ -92,16 +96,18 @@ export default function RepoCard({ repo, onPress }: RepoCardProps): React.JSX.El
       >
         {repo.description}
       </Text>
-      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 11, marginTop: 8 }}>
-        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
-          <StarIcon />
-          <Text style={{ color: 'rgba(235, 235, 245, 0.55)', fontSize: 11.5, fontWeight: '500' }}>{repo.stars}</Text>
+      {showMetrics ? (
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 11, marginTop: 8 }}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+            <StarIcon />
+            <Text style={{ color: 'rgba(235, 235, 245, 0.55)', fontSize: 11.5, fontWeight: '500' }}>{repo.stars}</Text>
+          </View>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+            <ForkIcon />
+            <Text style={{ color: 'rgba(235, 235, 245, 0.55)', fontSize: 11.5, fontWeight: '500' }}>{repo.forks}</Text>
+          </View>
         </View>
-        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
-          <ForkIcon />
-          <Text style={{ color: 'rgba(235, 235, 245, 0.55)', fontSize: 11.5, fontWeight: '500' }}>{repo.forks}</Text>
-        </View>
-      </View>
+      ) : null}
       <View style={{ flexDirection: 'row', alignItems: 'center', gap: 7, marginTop: 11 }}>
         <GradientAvatar repo={repo} />
         <Text style={{ color: 'rgba(235, 235, 245, 0.6)', fontSize: 12, fontWeight: '500' }}>{repo.author}</Text>
