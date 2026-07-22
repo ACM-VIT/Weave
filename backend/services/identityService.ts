@@ -5,10 +5,12 @@ interface IdentityProfile {
   userId: string;
   username: string;
   fullName?: string | null;
+  dateOfBirth?: string | null;
   bio?: string | null;
   githubId?: string | null;
   githubHandle?: string | null;
   avatarUrl?: string | null;
+  onboardingCompleted?: boolean;
 }
 
 interface AuthIdentity {
@@ -19,9 +21,15 @@ interface AuthIdentity {
 
 export function githubIdentityFromAuthUser(user: {
   identities?: AuthIdentity[] | null;
-}): { githubId: string | null; githubHandle: string | null } {
+  user_metadata?: Record<string, unknown>;
+}, authenticatedProvider?: 'github' | 'google'): { githubId: string | null; githubHandle: string | null } {
   const identity = user.identities?.find((candidate) => candidate.provider === 'github');
-  const identityData = identity?.identity_data;
+  // Supabase normally returns linked identities, but a freshly-created OAuth
+  // user can arrive with only provider metadata. The attempted provider comes
+  // from our server-side OAuth state, so it is safe to use that metadata only
+  // for a GitHub attempt and never mistake Google's numeric subject for GitHub.
+  const identityData = identity?.identity_data
+    ?? (authenticatedProvider === 'github' ? user.user_metadata : undefined);
   const rawId = identityData?.provider_id ?? identityData?.sub ?? identity?.id;
   const githubId = (typeof rawId === 'string' || typeof rawId === 'number')
     && /^\d{1,30}$/.test(String(rawId).trim())
@@ -45,15 +53,21 @@ export async function ensureIdentityProfile(profile: IdentityProfile): Promise<v
   });
   await sqlClient.begin(async (tx) => {
     await tx`
-      INSERT INTO app.users (user_id,username,full_name,bio,github_id,github_handle,avatar_url)
-      VALUES (${profile.userId}::uuid,${profile.username},${profile.fullName ?? null},${profile.bio ?? null},
-        ${profile.githubId ?? null},${profile.githubHandle ?? null},${profile.avatarUrl ?? null})
+      INSERT INTO app.users (
+        user_id,username,full_name,date_of_birth,bio,github_id,github_handle,avatar_url,onboarding_completed
+      )
+      VALUES (${profile.userId}::uuid,${profile.username},${profile.fullName ?? null},${profile.dateOfBirth ?? null},
+        ${profile.bio ?? null},${profile.githubId ?? null},${profile.githubHandle ?? null},${profile.avatarUrl ?? null},
+        ${profile.onboardingCompleted === true})
       ON CONFLICT (user_id) DO UPDATE SET
         full_name=COALESCE(EXCLUDED.full_name,app.users.full_name),
+        date_of_birth=COALESCE(EXCLUDED.date_of_birth,app.users.date_of_birth),
         bio=COALESCE(EXCLUDED.bio,app.users.bio),
         github_id=COALESCE(EXCLUDED.github_id,app.users.github_id),
         github_handle=COALESCE(EXCLUDED.github_handle,app.users.github_handle),
-        avatar_url=COALESCE(EXCLUDED.avatar_url,app.users.avatar_url),updated_at=now()
+        avatar_url=COALESCE(EXCLUDED.avatar_url,app.users.avatar_url),
+        onboarding_completed=app.users.onboarding_completed OR EXCLUDED.onboarding_completed,
+        updated_at=now()
     `;
     await tx`INSERT INTO app.user_stats (user_id) VALUES (${profile.userId}::uuid) ON CONFLICT DO NOTHING`;
     await tx`INSERT INTO app.user_feed_state (user_id) VALUES (${profile.userId}::uuid) ON CONFLICT DO NOTHING`;

@@ -1,4 +1,5 @@
 import { Href, useRouter } from 'expo-router';
+import { useState } from 'react';
 import { ScrollView, Text, View } from 'react-native';
 import { useOAuth } from '../../hooks/useOAuth';
 
@@ -8,10 +9,15 @@ import { GithubIcon, GoogleIcon, MailIcon } from '@/components/Auth/icons';
 import LogoCircle from '@/components/Auth/LogoCircle';
 import OrDivider from '@/components/Auth/OrDivider';
 import SocialButton from '@/components/Auth/SocialButton';
+import DateOfBirthField from '@/components/Auth/date-of-birth-field';
+import SectionLabel from '@/components/Auth/SectionLabel';
+import { isValidDateOfBirth } from '@/utils/date-of-birth';
 
 export default function SignUpScreen() {
   const router = useRouter();
   const { signInWithProvider, isLoading: oauthLoading, error: oauthError } = useOAuth();
+  const [dateOfBirth, setDateOfBirth] = useState('');
+  const isDateOfBirthValid = isValidDateOfBirth(dateOfBirth);
 
   return (
     <View className="flex-1 bg-[#000000]">
@@ -39,6 +45,16 @@ export default function SignUpScreen() {
           </Text>
         </View>
 
+        <View className="mb-6">
+          <SectionLabel title="Date of Birth" />
+          <DateOfBirthField value={dateOfBirth} onChange={setDateOfBirth} />
+          {dateOfBirth.length > 0 && !isDateOfBirthValid ? (
+            <Text className="text-[#FF453A] text-[13px] font-nata mt-1 ml-1">
+              Select a valid date of birth.
+            </Text>
+          ) : null}
+        </View>
+
         <View className="gap-y-3">
           <SocialButton
             label={oauthLoading ? "Opening..." : "Continue with GitHub"}
@@ -49,15 +65,15 @@ export default function SignUpScreen() {
               />
             }
             showChevron
-            disabled={oauthLoading}
-            onPress={() => signInWithProvider('github')}
+            disabled={oauthLoading || !isDateOfBirthValid}
+            onPress={() => signInWithProvider('github', 'signup', dateOfBirth)}
           />
           <SocialButton
             label={oauthLoading ? "Opening..." : "Continue with Google"}
             icon={<GoogleIcon size={20} />}
             showChevron
-            disabled={oauthLoading}
-            onPress={() => signInWithProvider('google')}
+            disabled={oauthLoading || !isDateOfBirthValid}
+            onPress={() => signInWithProvider('google', 'signup', dateOfBirth)}
           />
           <SocialButton
             label="Continue with Email"

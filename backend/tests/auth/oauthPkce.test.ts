@@ -88,6 +88,8 @@ test('OAuth initiation creates an S256 challenge and binds redirect state to Red
   assert.equal(stored.clientCodeChallenge, CLIENT_CHALLENGE);
   assert.equal(stored.authorizationUrl, result.url);
   assert.equal(stored.provider, 'github');
+  assert.equal(stored.authIntent, 'login');
+  assert.equal(stored.dateOfBirth, null);
   assert.equal(stored.createdAt, 1_234);
 
   const verifierEntry = Object.entries(stored.pkceStorage)
@@ -215,6 +217,8 @@ test('Redis attempt store uses NX, expiry, and an atomic one-time consume', asyn
   const state = 'c'.repeat(43);
   const attempt: StoredOAuthAttempt = {
     provider: 'github',
+    authIntent: 'signup',
+    dateOfBirth: '2000-01-02',
     clientRedirect: 'ghsocial://callback',
     clientCodeChallenge: CLIENT_CHALLENGE,
     authorizationUrl: 'https://oauth-test.supabase.co/auth/v1/authorize?provider=github',

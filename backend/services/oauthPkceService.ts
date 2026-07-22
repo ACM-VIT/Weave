@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import type { SupabaseClient } from '@supabase/supabase-js';
 
 export type OAuthProvider = 'github' | 'google';
+export type OAuthIntent = 'login' | 'signup';
 
 export interface OAuthPkceStorageAdapter {
   getItem(key: string): string | null | Promise<string | null>;
@@ -35,6 +36,8 @@ export class OAuthPkceStorage implements OAuthPkceStorageAdapter {
 
 export interface StoredOAuthAttempt {
   provider: OAuthProvider;
+  authIntent: OAuthIntent;
+  dateOfBirth: string | null;
   clientRedirect: string;
   clientCodeChallenge: string;
   authorizationUrl: string;
@@ -85,6 +88,8 @@ function isStoredOAuthAttempt(value: unknown): value is StoredOAuthAttempt {
   if (!value || typeof value !== 'object') return false;
   const attempt = value as Partial<StoredOAuthAttempt>;
   if (attempt.provider !== 'github' && attempt.provider !== 'google') return false;
+  if (attempt.authIntent !== 'login' && attempt.authIntent !== 'signup') return false;
+  if (attempt.dateOfBirth !== null && typeof attempt.dateOfBirth !== 'string') return false;
   if (typeof attempt.clientRedirect !== 'string' || attempt.clientRedirect.length > 2_048) return false;
   if (typeof attempt.clientCodeChallenge !== 'string'
     || !CLIENT_CODE_CHALLENGE_PATTERN.test(attempt.clientCodeChallenge)) return false;
@@ -198,6 +203,8 @@ export class OAuthPkceCoordinator {
     clientRedirect: string,
     backendCallbackUrl: URL,
     clientCodeChallenge: string,
+    authIntent: OAuthIntent = 'login',
+    dateOfBirth: string | null = null,
   ): Promise<OAuthAuthorization> {
     if (!CLIENT_CODE_CHALLENGE_PATTERN.test(clientCodeChallenge)) {
       throw new Error('Invalid client OAuth code challenge.');
@@ -236,6 +243,8 @@ export class OAuthPkceCoordinator {
 
       const stored = await this.store.create(state, {
         provider,
+        authIntent,
+        dateOfBirth,
         clientRedirect,
         clientCodeChallenge,
         authorizationUrl: data.url,

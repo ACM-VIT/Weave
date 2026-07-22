@@ -1,5 +1,6 @@
 import { API_URL } from './config';
 import { isValidUsername, normalizeUsername } from '../utils/username';
+import { validateOAuthInitiationUrl } from '../utils/oauth-init-url';
 
 const readJson = async (response: Response) => {
   const text = await response.text();
@@ -12,7 +13,13 @@ const readJson = async (response: Response) => {
   }
 };
 
-export const register = async (email: string, password: string, fullName: string, username: string) => {
+export const register = async (
+  email: string,
+  password: string,
+  fullName: string,
+  username: string,
+  dateOfBirth: string,
+) => {
   if (!isValidUsername(username)) throw new Error('Enter a valid username.');
   const response = await fetch(`${API_URL}/auth/signup`, {
     method: 'POST',
@@ -22,7 +29,8 @@ export const register = async (email: string, password: string, fullName: string
       email, 
       password, 
       username: normalizeUsername(username),
-      full_name: fullName 
+      full_name: fullName,
+      date_of_birth: dateOfBirth,
     }),
   });
 
@@ -66,17 +74,22 @@ export const getOAuthUrl = async (
   provider: 'github' | 'google',
   redirectUri: string,
   codeChallenge: string,
+  authIntent: 'login' | 'signup',
+  dateOfBirth?: string,
 ): Promise<string> => {
   const params = new URLSearchParams({
     redirect_uri: redirectUri,
     code_challenge: codeChallenge,
+    auth_intent: authIntent,
   });
+  if (dateOfBirth) params.set('date_of_birth', dateOfBirth);
   const response = await fetch(`${API_URL}/auth/oauth/${provider}?${params}`);
   const data = await readJson(response);
   if (!response.ok) {
     throw new Error(data.error || `Failed to get ${provider} OAuth URL`);
   }
-  return data.data.url as string;
+  const authorizationUrl = data && typeof data === 'object' ? data.data?.url : undefined;
+  return validateOAuthInitiationUrl(authorizationUrl, API_URL);
 };
 
 type ExchangedSession = { accessToken: string; user: any };

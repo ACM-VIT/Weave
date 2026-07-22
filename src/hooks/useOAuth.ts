@@ -8,13 +8,18 @@ import {
   createOAuthClientPkce,
   persistOAuthClientVerifier,
 } from '@/services/oauthClientPkce';
+import { oauthErrorMessage } from '@/utils/oauth-errors';
 
 export function useOAuth() {
   const { setSession } = useAuth();
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const signInWithProvider = async (provider: 'github' | 'google') => {
+  const signInWithProvider = async (
+    provider: 'github' | 'google',
+    authIntent: 'login' | 'signup' = 'login',
+    dateOfBirth?: string,
+  ) => {
     setIsLoading(true);
     setError(null);
 
@@ -26,7 +31,13 @@ export function useOAuth() {
       const redirectUri = Linking.createURL('callback');
 
       // Get the OAuth URL from our backend, including the current runtime callback.
-      const oauthUrl = await getOAuthUrl(provider, redirectUri, clientPkce.challenge);
+      const oauthUrl = await getOAuthUrl(
+        provider,
+        redirectUri,
+        clientPkce.challenge,
+        authIntent,
+        dateOfBirth,
+      );
       
       // 3. Open the in-app browser — it will intercept the redirect automatically
       const result = await WebBrowser.openAuthSessionAsync(oauthUrl, redirectUri);
@@ -42,7 +53,11 @@ export function useOAuth() {
       const code = parsed.queryParams?.code as string | undefined;
 
       if (!code) {
-        const errMsg = (parsed.queryParams?.error as string) || 'OAuth failed: no code received';
+        const errorCode = parsed.queryParams?.error;
+        const errMsg = typeof errorCode === 'string'
+          ? oauthErrorMessage(errorCode)
+          : 'OAuth sign-in failed: no authorization code was received.';
+        await clearOAuthClientVerifier().catch(() => undefined);
         setError(errMsg);
         return;
       }
@@ -56,6 +71,7 @@ export function useOAuth() {
       await setSession(data.accessToken, data.user);
 
     } catch (err: any) {
+      await clearOAuthClientVerifier().catch(() => undefined);
       setError(err.message || 'OAuth sign-in failed');
     } finally {
       setIsLoading(false);

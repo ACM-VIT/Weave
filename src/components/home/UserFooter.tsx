@@ -1,7 +1,7 @@
 import React from 'react';
 import { View, Text, StyleSheet } from 'react-native';
 import { Star, Clock, Bug } from 'lucide-react-native';
-import { RepositoryData } from '../../data/repositories';
+import type { RepositoryData } from '../../data/repositories';
 import { EyeHomeIcon, GitForkHomeIcon } from './FeedIcons';
 
 export function HomeUserFooter({

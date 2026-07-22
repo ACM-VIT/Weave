@@ -3,9 +3,7 @@ import { ActivityIndicator, FlatList, Linking, Pressable, Text, View, useWindowD
 import { ArrowLeft, FolderGit2, GitFork, Heart, Star } from 'lucide-react-native';
 import { router, useLocalSearchParams } from 'expo-router';
 import { apiV2 } from '@/api/client';
-import { AUTH_BYPASS_ENABLED } from '@/constants/auth';
 import { FEEDBACK_ACTIONS } from '@/constants/feedbackActions';
-import { REPOSITORIES } from '@/data/repositories';
 import { getActivityOutbox } from '@/services/activityOutboxClient';
 import { useAuth } from '@/store/AuthContext';
 import { formatCompactCount } from '@/utils/format-count';
@@ -25,44 +23,20 @@ type LikedRepository = {
   forks_count: number | null;
 };
 
-const demoCounts = [
-  { likes: 412, stars: 1200, forks: 2000 },
-  { likes: 288, stars: 980, forks: 1500 },
-  { likes: 156, stars: 2100, forks: 3200 },
-];
-
-const bypassLikedRepositories: LikedRepository[] = REPOSITORIES.slice(0, 3).map((repository, index) => ({
-  repo_id: repository.id,
-  github_repo_url: `https://github.com/${repository.owner}/${repository.title}`,
-  owner_id: repository.owner,
-  repo_name: repository.title,
-  full_name: `${repository.owner}/${repository.title}`,
-  description: repository.description,
-  language_used: repository.techStack ?? [],
-  topics: [],
-  likes_count: demoCounts[index].likes,
-  star_count: demoCounts[index].stars,
-  forks_count: demoCounts[index].forks,
-}));
-
 export default function LikedRepositoriesScreen() {
   const { width } = useWindowDimensions();
   const { username, userId } = useLocalSearchParams<{ username?: string; userId?: string }>();
   const { user } = useAuth();
-  const activityOutbox = user?.user_id && !(__DEV__ && user.isPreview)
-    ? getActivityOutbox(user.user_id)
-    : null;
-  const [repositories, setRepositories] = useState<LikedRepository[]>(
-    AUTH_BYPASS_ENABLED ? bypassLikedRepositories : [],
-  );
-  const [loading, setLoading] = useState(Boolean(userId) && !AUTH_BYPASS_ENABLED);
+  const activityOutbox = user?.user_id ? getActivityOutbox(user.user_id) : null;
+  const [repositories, setRepositories] = useState<LikedRepository[]>([]);
+  const [loading, setLoading] = useState(Boolean(userId));
   const [error, setError] = useState('');
 
   useEffect(() => {
     const controller = new AbortController();
     let active = true;
 
-    if (!userId || AUTH_BYPASS_ENABLED) {
+    if (!userId) {
       return () => controller.abort();
     }
 

@@ -29,6 +29,29 @@ npm run build
 npm test
 ```
 
+The GitHub `production` environment is fail-closed: after verifying a
+restorable backup, set `PRODUCTION_DATABASE_BACKUP_VERIFIED_SHA` to the exact
+release commit. The deploy job builds from the repository root, verifies that
+the candidate image contains every journaled migration and the schema manifest,
+then runs `dist/scripts/migrate.js` and `dist/scripts/schema-audit.js` inside
+that candidate image. It changes the `current` image tag and restarts services
+only after both commands pass. Never put `ADOPT_LEGACY_SCHEMA`, reset flags, or
+the local auth stub flag in the shared production environment file; automated
+deployment rejects them.
+
+The host must keep migration credentials separate from runtime credentials.
+`/etc/gh-social/backend.env` contains the application environment and least-
+privilege runtime `DATABASE_URL`; root-owned `/etc/gh-social/migrator.env`
+contains `NODE_ENV=production` plus the dedicated migrator `DATABASE_URL`.
+Docker reads the migrator file last for the preflight, migration, and audit.
+The four long-running services never receive it. Both files must be owned by
+root with mode `400` or `600`; the remote deployment rejects broader modes.
+
+Migration `0018_auth_profile_integrity` must finish before the new API starts.
+It removes the legacy `auth.users -> public.users` signup trigger, adds DOB and
+the durable onboarding flag to `app.users`, and preserves existing accounts as
+completed. `schema:audit` fails while that trigger or either column remains.
+
 Required public/auth configuration:
 
 ```dotenv
@@ -92,6 +115,12 @@ Require `active=eligible`, `missing_content=0`, and `invalid=0`, then repeat wit
 - API and feedback worker on the same release SHA;
 - feedback heartbeat current, DLQ zero, v2 smoke non-empty, and v1 health 404.
 
+The candidate backend also fails `/readyz` with `503` whenever recommendations
+are enabled without an exact positive `eligible_repository_points` value, or
+while `ML_FEEDBACK_OUTBOX=true` and
+`feedback_consumer_release_mismatch` is missing or true. This runtime floor is
+not a substitute for the 500-repository release gate above.
+
 The acquisition repository must also update
 `acquisition/backend_client.repository_upsert_record()` to transmit its real
 computed pushed-age, 3/7/30-day deltas, contributor count, README/code ratio,
@@ -129,18 +158,21 @@ canary.
 
 ## 4. Mobile release
 
-There are three distinct Android artifacts:
+Android artifacts are built locally through the single supported command:
 
-- A local `./gradlew assembleRelease` APK uses the generated debug keystore in
-  this project. It is QA-only, must not be published, and is not an
-  upgrade-safe distribution artifact.
-- The EAS `release-apk` profile produces an Expo-credential-signed internal APK
-  for testers. It is shareable but is not a Play Store release.
-- The EAS `production` profile produces the signed store artifact (AAB). Do not
-  submit it until every live gate in this runbook passes.
+```sh
+npm run build:android:artifact
+```
 
-EAS production must define
-`EXPO_PUBLIC_BACKEND_URL=https://weave-backend.krishang.dev/api`. Configure
-`EXPO_PUBLIC_SENTRY_DSN` and valid Sentry organization/project/auth settings
-before a store release; disabling source-map upload is acceptable only for a
-local or EAS internal APK.
+The command embeds and verifies
+`EXPO_PUBLIC_BACKEND_URL=https://weave-backend.krishang.dev/api`, preflights the
+live GitHub and Google OAuth broker contract, and updates
+`artifacts/Weave-v2.0.0-internal-QA.apk`. It defaults to `arm64-v8a` and reuses
+native Gradle outputs across ordinary frontend changes. EAS is not part of the
+Weave release workflow.
+
+This internal-QA APK uses the generated debug keystore and must not be
+published. A store release requires a persistent externally managed Android
+keystore, a higher version code, an AAB built locally, and every live gate in
+this runbook to pass. Configure `EXPO_PUBLIC_SENTRY_DSN` and valid Sentry
+organization/project/auth settings before that store build.

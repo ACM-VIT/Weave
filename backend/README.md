@@ -46,14 +46,14 @@ All timestamps are ISO 8601 UTC. All IDs described as UUIDs must be valid UUID s
 
 | Method and path | Body | Result |
 |---|---|---|
-| `POST /api/auth/signup` | `{email,password,username,full_name?}` | Creates Supabase identity plus backend profile, returns `{accessToken,token,user}` |
+| `POST /api/auth/signup` | `{email,password,username,full_name?,date_of_birth}` | Creates Supabase identity plus backend profile, returns `{accessToken,token,user}` |
 | `POST /api/auth/login` | `{email,password}` | Returns access token and rotates refresh cookie |
 | `POST /api/auth/refresh` | none; refresh cookie required | Consumes old refresh token and returns a new access token/cookie |
 | `POST /api/auth/logout` | none | Revokes refresh token and clears cookie |
-| `GET /api/auth/github` | none | Returns the provider authorization URL |
-| `GET /api/auth/google` | none | Returns the provider authorization URL |
-| `GET /api/auth/callback` | provider redirect | Creates a five-minute one-time exchange code and redirects frontend |
-| `POST /api/auth/exchange` | `{code}` | Consumes OAuth code and returns access token/cookie |
+| `GET /api/auth/oauth/:provider` | `redirect_uri`, `code_challenge`, `auth_intent`, optional signup `date_of_birth` | Creates the server-side OAuth/PKCE attempt and returns the same-origin continuation URL |
+| `GET /api/auth/oauth/continue` | `oauth_attempt` | Starts the provider authorization using the stored one-time attempt |
+| `GET /api/auth/callback` | provider redirect | Consumes the provider attempt, creates a five-minute client exchange code, and redirects to the app |
+| `POST /api/auth/exchange` | `{code,code_verifier}` | Verifies client PKCE, consumes the code, and returns the application access token/cookie |
 
 Signup/profile creation and ML onboarding enqueue are one backend transaction. OAuth callback ensures the product profile exists before issuing a code. ML downtime never blocks authentication because onboarding delivery uses the outbox.
 
@@ -240,13 +240,34 @@ gh-social-maintenance.service
 
 Use one or more outbox workers; claiming is concurrency-safe. Run one feed and one maintenance worker initially. `WORKER_ROLE=all` is for local development only.
 
-CI builds and tests `backend/Dockerfile`, transfers the commit-SHA image, tags
-it as `gh-social-backend:current`, installs all four units, and rolls back to
-`gh-social-backend:previous` when `/readyz` fails. The host must provide Docker
-and a root-owned `/etc/gh-social/backend.env`; credentials are never copied into
-the image.
+CI builds `backend/Dockerfile` from the repository root so the immutable image
+contains `database/migrations` and `database/audits`. It validates those assets,
+transfers the commit-SHA image, and requires the protected production variable
+`PRODUCTION_DATABASE_BACKUP_VERIFIED_SHA` to equal the release commit after a
+restorable backup has been verified. On the host it runs the compiled migration
+and schema-audit commands from the candidate image before changing the
+`gh-social-backend:current` tag or restarting any service. A failed preflight,
+migration, or audit leaves the current containers untouched. After cutover it
+rolls back to `gh-social-backend:previous` when `/readyz` fails. The host must
+provide Docker, a root-owned `/etc/gh-social/backend.env` for runtime services,
+and a root-owned `/etc/gh-social/migrator.env` whose `DATABASE_URL` uses the
+dedicated migration role. The candidate migration and audit receive both files,
+with `migrator.env` taking precedence; runtime containers receive only
+`backend.env`. Both files must have mode `400` or `600`. Credentials are never
+copied into the image. Changes under `database/` also trigger this workflow, so
+a migration cannot merge without producing a candidate deployment.
 
-Required production environment variables: `DATABASE_URL`, `SUPABASE_URL`, `SUPABASE_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, `JWT_SECRET`, `CLIENT_URL`, `BACKEND_URL`, `REDIS_URL`, `ML_SERVICE_URL`, and `INTERNAL_API_SECRET`. Start from `.env.production.example`, set `FEED_V2_CANARY_PERCENT=100`, and keep `LEGACY_API_ENABLED=false`. Leave `ML_V2_RECOMMENDATIONS=false` until the ingestion canary proves non-empty canonical repository UUID results; `ML_FEEDBACK_OUTBOX=true` still allows onboarding and repository indexing jobs to drain. Rotate internal secrets only through the documented primary/previous overlap, not when adding another worker process.
+Build the production image with the repository root as its context:
+
+```sh
+docker build -f backend/Dockerfile -t gh-social-backend:local .
+docker run --rm --entrypoint node gh-social-backend:local dist/scripts/verify-deployment-assets.js
+```
+
+`docker build backend` is intentionally unsupported because Docker cannot read
+the top-level database assets from that context.
+
+Required production environment variables: `DATABASE_URL`, `SUPABASE_URL`, `SUPABASE_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, `JWT_SECRET`, `CLIENT_URL`, `BACKEND_URL`, `OAUTH_REDIRECT_ORIGINS`, `REDIS_URL`, `GITHUB_TOKEN`, `ML_SERVICE_URL`, and `INTERNAL_API_SECRET`. Start from `.env.production.example`, set `FEED_V2_CANARY_PERCENT=100`, and keep `LEGACY_API_ENABLED=false`. Leave `ML_V2_RECOMMENDATIONS=false` until the ingestion canary proves non-empty canonical repository UUID results; `ML_FEEDBACK_OUTBOX=true` still allows onboarding and repository indexing jobs to drain. Rotate internal secrets only through the documented primary/previous overlap, not when adding another worker process.
 
 The outbox launch script sets `--role=outbox` portably and fails startup when `ML_FEEDBACK_OUTBOX` is disabled. A hardened systemd template and install/acceptance procedure are in [the outbox worker runbook](../docs/runbooks/outbox-worker.md).
 
@@ -268,7 +289,7 @@ Set `TRUST_PROXY=true` only when exactly one trusted ingress proxy is in front o
 8. Wait for outbox drain and rebuild Qdrant from the new backend-issued mappings.
 9. Require `/readyz` healthy, outbox `dead=0`, integration tests passing, and ML health healthy before frontend release.
 
-Databases with the known parent-journal history are upgraded directly: the migrator executes and records the retroactive `0004_add_likes_given` and `0005_add_is_saved` SQL before `0008`. Do not set `ADOPT_LEGACY_SCHEMA` for that normal upgrade. The one-time `ADOPT_LEGACY_SCHEMA=1` escape hatch is only for an audited legacy schema whose baseline Drizzle history is genuinely absent or incomplete; exercise it on a clone and run `schema:audit` before using it against the target.
+Databases with the known parent-journal history are upgraded directly: the migrator executes and records the retroactive `0004_add_likes_given` and `0005_add_is_saved` SQL before `0008`. Do not set `ADOPT_LEGACY_SCHEMA` for that normal upgrade. The one-time `ADOPT_LEGACY_SCHEMA=1` escape hatch is only for an audited schema whose baseline Drizzle history is genuinely absent or incomplete. The migrator structurally verifies each legacy/v2 migration before recording its hash and refuses adoption when a required table, column, grant, view, or role is missing. Exercise it on a clone and run `schema:audit` before using it against the target.
 
 For verification use `npm run build`, `npm test`, database integration with `RUN_DATABASE_INTEGRATION=1`, parent-history migration integration with `RUN_MIGRATION_UPGRADE_INTEGRATION=1`, and HTTP integration with `RUN_HTTP_INTEGRATION=1`. The integration suite uses Redis database 14 by default and clears only that test database.
 

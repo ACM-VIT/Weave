@@ -17,3 +17,15 @@ export const RETROACTIVE_LEGACY_TAGS = [
   '0004_add_likes_given',
   '0005_add_is_saved',
 ] as const;
+
+// Some parent environments contain the full v2 structures but were created
+// before their exact SQL hashes entered the shared Drizzle journal. These may
+// be adopted only after migrate.ts verifies the corresponding structures.
+export const STRUCTURALLY_ADOPTABLE_V2_TAGS = [
+  '0008_interaction_events_and_saved_counts',
+  '0009_app_telemetry_baseline',
+  '0010_product_api_baseline',
+  '0011_interaction_feedback_grant',
+  '0012_remove_profile_length_limits',
+  '0013_feed_serve_cursor',
+] as const;

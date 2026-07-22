@@ -22,6 +22,7 @@ export default function ProfileTextArea({ value, onChangeText, ...rest }: Props)
         placeholderTextColor="rgba(235,235,245,0.3)"
         value={value}
         onChangeText={onChangeText}
+        maxLength={2000}
         className="bg-[#1C1C1E]
  border border-[rgba(255,255,255,0.14)]
  rounded-xl
@@ -33,6 +34,9 @@ export default function ProfileTextArea({ value, onChangeText, ...rest }: Props)
  font-nata outline-none"
         {...rest}
       />
+      <Text className="mt-1 text-right text-[12px] text-[rgba(235,235,245,0.45)] font-nata">
+        {value?.length ?? 0} / 2000 characters
+      </Text>
     </View>
   );
 }

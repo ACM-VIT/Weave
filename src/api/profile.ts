@@ -1,40 +1,25 @@
 import { apiV2 } from './client';
+import { settleProfileContent } from './profile-data';
+import type {
+  ProfileBoard,
+  ProfileCollection,
+  ProfileContent,
+  ProfileRepository,
+} from './profile-data';
 
-export type ProfileBoard = {
-  board_id: string;
-  name: string;
-  repo_count: number;
-};
+export type { ProfileBoard, ProfileCollection, ProfileContent, ProfileRepository } from './profile-data';
+export { settleProfileContent } from './profile-data';
 
-export type ProfileCollection = {
-  collection_id: string;
-  name: string;
-  board_count: number;
-};
+export async function getProfileContent(token: string, signal?: AbortSignal): Promise<ProfileContent> {
+  const content = await settleProfileContent({
+    boards: apiV2<{ items: ProfileBoard[] }>('/boards', { signal }, token),
+    collections: apiV2<{ items: ProfileCollection[] }>('/collections', { signal }, token),
+    repositories: apiV2<{ items: ProfileRepository[] }>('/repositories/saved?limit=100&offset=0', { signal }, token),
+  });
 
-export type ProfileRepository = {
-  repo_id: string;
-  name: string;
-  full_name: string;
-  star_count: number;
-};
+  if (signal?.aborted) {
+    throw signal.reason instanceof Error ? signal.reason : new Error('Profile request was cancelled.');
+  }
 
-export type ProfileContent = {
-  boards: ProfileBoard[];
-  collections: ProfileCollection[];
-  repositories: ProfileRepository[];
-};
-
-export async function getProfileContent(token: string): Promise<ProfileContent> {
-  const [boards, collections, repositories] = await Promise.all([
-    apiV2<{ items: ProfileBoard[] }>('/boards', {}, token),
-    apiV2<{ items: ProfileCollection[] }>('/collections', {}, token),
-    apiV2<{ items: ProfileRepository[] }>('/repositories/saved?limit=100&offset=0', {}, token),
-  ]);
-
-  return {
-    boards: boards.items,
-    collections: collections.items,
-    repositories: repositories.items,
-  };
+  return content;
 }

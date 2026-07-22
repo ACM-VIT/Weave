@@ -15,6 +15,7 @@ import {
   fallbackUsername,
   githubIdentityFromAuthUser,
 } from "../services/identityService.js";
+import { syncGitHubPersona } from "../services/githubPersonaService.js";
 import { updatePasswordFromRecoverySession } from "../services/passwordRecoveryService.js";
 import {
   OAuthPkceCoordinator,
@@ -29,8 +30,17 @@ import {
   sendSuccess,
 } from "../utils/response.js";
 import { isValidUuid } from "../utils/validators.js";
-import { resolveClientRedirect } from "../security/originPolicy.js";
+import {
+  resolveBackendCallbackUrl,
+  resolveClientRedirect,
+} from "../security/originPolicy.js";
 import { normalizeUsername } from "../utils/username.js";
+import { isValidDateOfBirth } from "../utils/dateOfBirth.js";
+import {
+  initialOAuthOnboardingCompleted,
+  oauthLoginNeedsSignup,
+  requiresGitHubPersona,
+} from "../services/oauthProfilePolicy.js";
 
 const CLIENT_URL = process.env.CLIENT_URL;
 const BACKEND_URL = process.env.BACKEND_URL;
@@ -129,44 +139,13 @@ const queryString = (value: unknown): string | null => {
   return typeof value === "string" && value.trim() ? value.trim() : null;
 };
 
-const isPrivateDevelopmentHost = (hostname: string): boolean => {
-  if (
-    hostname === "localhost" ||
-    hostname === "127.0.0.1" ||
-    hostname === "10.0.2.2"
-  ) {
-    return true;
-  }
-  if (hostname.startsWith("10.") || hostname.startsWith("192.168.")) {
-    return true;
-  }
-  const match = hostname.match(/^172\.(\d{1,2})\./);
-  return Boolean(
-    match && Number(match[1]) >= 16 && Number(match[1]) <= 31,
-  );
-};
-
 const getBackendCallbackUrl = (req: Request): URL => {
-  const configuredCallback = new URL("/api/auth/callback", BACKEND_URL);
-  if (process.env.NODE_ENV === "production") return configuredCallback;
-
-  const host = req.get("host");
-  if (!host) return configuredCallback;
-
-  try {
-    const requestOrigin = new URL(`http://${host}`);
-    if (
-      requestOrigin.protocol === "http:" &&
-      requestOrigin.port === "5000" &&
-      isPrivateDevelopmentHost(requestOrigin.hostname)
-    ) {
-      return new URL("/api/auth/callback", requestOrigin);
-    }
-  } catch {
-    // Fall back to the explicitly configured backend origin.
-  }
-
-  return configuredCallback;
+  return resolveBackendCallbackUrl(
+    req.get("host"),
+    BACKEND_URL,
+    process.env.PORT,
+    process.env.NODE_ENV,
+  );
 };
 
 // Helper: Create and store a refresh token securely
@@ -188,7 +167,7 @@ const createAndStoreRefreshToken = async (userId: string, tx: any = db) => {
 
 // POST /api/auth/signup
 export async function signUp(req: Request, res: Response): Promise<void> {
-  const { email, password, full_name } = req.body;
+  const { email, password, full_name, date_of_birth } = req.body;
   const usernameInput = req.body?.username;
   const explicitUsername = usernameInput === undefined || usernameInput === null
     ? null
@@ -199,6 +178,9 @@ export async function signUp(req: Request, res: Response): Promise<void> {
       400,
       "Username must be 1-50 characters using only letters, numbers, underscores, or hyphens",
     );
+  }
+  if (!isValidDateOfBirth(date_of_birth)) {
+    return sendError(res, 400, "Date of birth is required in YYYY-MM-DD format and cannot be in the future");
   }
 
   try {
@@ -220,6 +202,7 @@ export async function signUp(req: Request, res: Response): Promise<void> {
       user_metadata: {
         ...(explicitUsername ? { user_name: explicitUsername } : {}),
         full_name: full_name,
+        date_of_birth,
       },
     });
 
@@ -234,29 +217,28 @@ export async function signUp(req: Request, res: Response): Promise<void> {
         userId,
         username: profileUsername,
         fullName: full_name ?? null,
+        dateOfBirth: date_of_birth,
+        onboardingCompleted: false,
       });
-    } catch (databaseError) {
-      await supabaseAdmin.auth.admin.deleteUser(userId);
-      throw databaseError;
+      // Generate and persist both session credentials only after the product
+      // profile exists. Any failure rolls the new identity back below.
+      const accessToken = jwt.sign({ userId, email }, JWT_SECRET, {
+        expiresIn: "15m",
+      });
+      const refreshToken = await createAndStoreRefreshToken(userId);
+
+      res.cookie("refresh_token", refreshToken, refreshCookieOptions());
+      return sendSuccess(res, 201, {
+        message: "Signup successful",
+        accessToken,
+        token: accessToken,
+        user: data.user,
+      });
+    } catch (provisioningError) {
+      const { error: cleanupError } = await supabaseAdmin.auth.admin.deleteUser(userId);
+      if (cleanupError) console.error("Failed to roll back incomplete signup:", cleanupError.message);
+      throw provisioningError;
     }
-
-    // 1. Generate Custom JWT Access Token
-    const accessToken = jwt.sign({ userId, email }, JWT_SECRET, {
-      expiresIn: "15m",
-    });
-
-    // 2. Generate and store Refresh Token securely using Drizzle
-    const refreshToken = await createAndStoreRefreshToken(userId);
-
-    // 3. Set refresh token in HTTP-only cookie
-    res.cookie("refresh_token", refreshToken, refreshCookieOptions());
-
-    return sendSuccess(res, 201, {
-      message: "Signup successful",
-      accessToken,
-      token: accessToken, // Alias for backward compatibility
-      user: data.user,
-    });
   } catch (error) {
     sendControllerError(res, error as Error);
   }
@@ -280,7 +262,10 @@ export async function login(req: Request, res: Response): Promise<void> {
       userId,
       username: fallbackUsername(userId, data.user.user_metadata),
       fullName: typeof data.user.user_metadata?.full_name === "string" ? data.user.user_metadata.full_name : null,
+      dateOfBirth: typeof data.user.user_metadata?.date_of_birth === "string" ? data.user.user_metadata.date_of_birth : null,
       avatarUrl: typeof data.user.user_metadata?.avatar_url === "string" ? data.user.user_metadata.avatar_url : null,
+      // A deliberate login is an established-account flow, not signup.
+      onboardingCompleted: true,
     });
 
     const accessToken = jwt.sign({ userId, email }, JWT_SECRET, {
@@ -489,8 +474,16 @@ export async function getOAuthUrl(req: Request, res: Response): Promise<void> {
   try {
     const clientRedirect = getClientRedirect(req.query.redirect_uri);
     const clientCodeChallenge = queryString(req.query.code_challenge);
+    const authIntent = req.query.auth_intent;
     if (!clientCodeChallenge || !CLIENT_CODE_CHALLENGE_PATTERN.test(clientCodeChallenge)) {
       return sendError(res, 400, "A valid S256 client code challenge is required.");
+    }
+    if (authIntent !== "login" && authIntent !== "signup") {
+      return sendError(res, 400, "auth_intent must be login or signup.");
+    }
+    const dateOfBirth = authIntent === "signup" ? queryString(req.query.date_of_birth) : null;
+    if (authIntent === "signup" && !isValidDateOfBirth(dateOfBirth)) {
+      return sendError(res, 400, "Date of birth is required for signup.");
     }
     const callbackUrl = getBackendCallbackUrl(req);
     const authorization = await oauthPkce.begin(
@@ -498,6 +491,8 @@ export async function getOAuthUrl(req: Request, res: Response): Promise<void> {
       clientRedirect,
       callbackUrl,
       clientCodeChallenge,
+      authIntent,
+      dateOfBirth,
     );
     const continuationUrl = new URL("/api/auth/oauth/continue", callbackUrl);
     continuationUrl.searchParams.set("oauth_attempt", authorization.state);
@@ -567,15 +562,75 @@ export async function handleOAuthCallback(
 
     // 2. Ensure the v2 product profile exists before the one-time code references it.
     const expiresAt = new Date(Date.now() + 5 * 60 * 1000);
-    const githubIdentity = githubIdentityFromAuthUser(data.user);
+    const githubIdentity = githubIdentityFromAuthUser(data.user, attempt.provider);
+    const [existingProductProfile] = await db
+      .select({ onboardingCompleted: users.onboardingCompleted })
+      .from(users)
+      .where(eq(users.userId, data.user.id))
+      .limit(1);
+    // OAuth providers can create an identity even from a button labelled
+    // "Log in". Do not silently create a product account without the signup
+    // DOB/consent step; ask the user to use the actual signup entry point.
+    if (oauthLoginNeedsSignup(attempt.authIntent, Boolean(existingProductProfile))) {
+      return res.redirect(withClientRedirectParams(clientRedirect, {
+        error: "oauth_account_not_found",
+      }));
+    }
+    // GitHub can create an identity even when the user pressed "Log in". Any
+    // product profile that has never completed persona sync must fail closed;
+    // established GitHub accounts can still log in during a transient API
+    // outage because their durable persona already exists.
+    const githubPersonaRequired = requiresGitHubPersona(
+      attempt.provider,
+      existingProductProfile?.onboardingCompleted,
+    );
     await ensureIdentityProfile({
       userId: data.user.id,
       username: fallbackUsername(data.user.id, data.user.user_metadata),
       fullName: typeof data.user.user_metadata?.full_name === "string" ? data.user.user_metadata.full_name : null,
+      dateOfBirth: attempt.dateOfBirth
+        ?? (typeof data.user.user_metadata?.date_of_birth === "string" ? data.user.user_metadata.date_of_birth : null),
       githubId: githubIdentity.githubId,
       githubHandle: githubIdentity.githubHandle,
       avatarUrl: typeof data.user.user_metadata?.avatar_url === "string" ? data.user.user_metadata.avatar_url : null,
+      // Existing-account login always enters the app. A new GitHub account is
+      // completed only by syncGitHubPersona below; Google/email signups finish
+      // the explicit onboarding flow.
+      onboardingCompleted: initialOAuthOnboardingCompleted(
+        attempt.authIntent,
+        githubPersonaRequired,
+      ),
     });
+    if (attempt.provider === "github") {
+      if (!githubIdentity.githubHandle) {
+        console.error("GitHub OAuth response did not contain a GitHub handle.");
+        if (githubPersonaRequired) {
+          return res.redirect(withClientRedirectParams(clientRedirect, {
+            error: "github_identity_incomplete",
+          }));
+        }
+      }
+
+      if (githubIdentity.githubHandle) {
+        try {
+          await syncGitHubPersona(data.user.id, githubIdentity.githubHandle);
+        } catch (error) {
+          console.warn(
+            "GitHub persona sync failed:",
+            error instanceof Error ? error.message : "Unknown error",
+          );
+          // A GitHub signup promises to derive the persona from GitHub and skip
+          // manual onboarding. Do not issue an app session until that promise
+          // has actually been fulfilled. The incomplete profile is safe to
+          // retry on the next OAuth attempt.
+          if (githubPersonaRequired) {
+            return res.redirect(withClientRedirectParams(clientRedirect, {
+              error: "github_persona_sync_failed",
+            }));
+          }
+        }
+      }
+    }
     const [codeData] = await db
       .insert(oauthCodes)
       .values({

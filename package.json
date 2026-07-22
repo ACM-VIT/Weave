@@ -17,7 +17,6 @@
     "expo-file-system": "~56.0.8",
     "expo-font": "~56.0.7",
     "expo-glass-effect": "~56.0.4",
-    "expo-image": "~56.0.11",
     "expo-linking": "~56.0.15",
     "expo-router": "~56.2.15",
     "expo-secure-store": "~56.0.4",
@@ -64,7 +63,8 @@
     "typecheck": "tsc --noEmit",
     "test": "tsx --test tests/**/*.test.ts",
     "doctor": "expo-doctor",
-    "export:all": "expo export --platform all"
+    "export:all": "expo export --platform all",
+    "build:android:artifact": "node ./scripts/build-android-artifact.mjs"
   },
   "private": true,
   "allowScripts": {

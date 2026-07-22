@@ -44,7 +44,6 @@
       "expo-font",
       "@react-native-community/datetimepicker",
       "expo-secure-store",
-      "expo-image",
       [
         "expo-splash-screen",
         {
@@ -61,10 +60,7 @@
       "reactCompiler": true
     },
     "extra": {
-      "router": {},
-      "eas": {
-        "projectId": "1d965755-3317-49bf-920f-9a04f972e837"
-      }
+      "router": {}
     }
   }
 }

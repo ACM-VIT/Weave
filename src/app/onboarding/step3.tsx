@@ -16,7 +16,7 @@ export default function Step3() {
   const { data: onboardingData } = useOnboarding();
   const selectedCategoryIds = onboardingData.skills ?? [];
   const [selectedInterests, setSelectedInterests] = useState<string[]>(onboardingData.interests ?? []);
-  const { user, checkOnboardingStatus, completeOnboardingPreview } = useAuth();
+  const { checkOnboardingStatus } = useAuth();
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState("");
 
@@ -33,11 +33,6 @@ export default function Step3() {
       setIsSubmitting(true);
       setErrorMsg("");
       try {
-        if (user?.isPreview) {
-          completeOnboardingPreview();
-          return;
-        }
-
         const token = await SecureStore.getItemAsync('access_token');
         if (!token) throw new Error("No access token found");
         

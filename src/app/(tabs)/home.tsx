@@ -13,7 +13,7 @@ import {
   type ViewStyle,
 } from 'react-native';
 import { getResponsiveContentWidth } from '@/components/responsive-layout';
-import { REPOSITORIES, RepositoryData } from '@/data/repositories';
+import type { RepositoryData } from '@/data/repositories';
 import { RepositoryFeedItem } from '@/components/home/RepositoryFeedItem';
 import { FeedHeader } from '@/components/home/FeedHeader';
 import { REFERENCE_THEME } from '@/constants/theme';
@@ -86,10 +86,9 @@ function mapBackendToFrontend(backendItem: any): RepositoryData | null {
 
 export default function HomeScreen() {
   const { user, checkOnboardingStatus } = useAuth();
-  const isPreview = __DEV__ && user?.isPreview === true;
   const queryClient = useQueryClient();
   const feedQueryKey = useMemo(() => ['feed', user?.user_id] as const, [user?.user_id]);
-  const activityOutbox = !isPreview && user?.user_id ? getActivityOutbox(user.user_id) : null;
+  const activityOutbox = user?.user_id ? getActivityOutbox(user.user_id) : null;
   const { width, height } = useWindowDimensions();
   const responsiveWidth = getResponsiveContentWidth(width) ?? width;
   const [viewport, setViewport] = useState({
@@ -125,24 +124,19 @@ export default function HomeScreen() {
   } = useInfiniteQuery({
     queryKey: feedQueryKey,
     queryFn: fetchFeedPage,
-    enabled: Boolean(user?.user_id) && !isPreview,
+    enabled: Boolean(user?.user_id),
     getNextPageParam: (lastPage) => lastPage.nextCursor ?? undefined,
     initialPageParam: null as string | null,
   });
 
-  const feedItems = useMemo(() => isPreview
-    ? REPOSITORIES.map((repository, index) => ({
-        feedId: `preview-${repository.id}-${index}`,
-        repository,
-      }))
-    : data?.pages
-        .flatMap((page) => page.items)
-        .map(mapBackendToFrontend)
-        .filter((repository): repository is RepositoryData => repository !== null)
-        .map((repository, index) => ({
-          feedId: `${repository.id}-${index}-${repository.viewerReaction ?? 'none'}-${repository.viewerSaved ? 'saved' : 'unsaved'}`,
-          repository,
-        })) || [], [data?.pages, isPreview]);
+  const feedItems = useMemo(() => data?.pages
+    .flatMap((page) => page.items)
+    .map(mapBackendToFrontend)
+    .filter((repository): repository is RepositoryData => repository !== null)
+    .map((repository, index) => ({
+      feedId: `${repository.id}-${index}-${repository.viewerReaction ?? 'none'}-${repository.viewerSaved ? 'saved' : 'unsaved'}`,
+      repository,
+    })) || [], [data?.pages]);
 
   const handleQueueActivity = useCallback((event: {
     repo_id: string;

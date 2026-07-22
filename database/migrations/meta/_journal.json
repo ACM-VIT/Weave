@@ -140,6 +140,13 @@
       "when": 1784652272003,
       "tag": "0017_feedback_outbox_predecessor_index",
       "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1784738672000,
+      "tag": "0018_auth_profile_integrity",
+      "breakpoints": true
     }
   ]
 }

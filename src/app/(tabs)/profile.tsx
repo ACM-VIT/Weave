@@ -8,8 +8,7 @@ import { API_URL } from "@/api/config"
 import { apiV2 } from "@/api/client"
 import { getProfileContent } from "@/api/profile"
 import { useAuth } from "@/store/AuthContext"
-import { AUTH_BYPASS_ENABLED, AUTH_BYPASS_PROFILE_STORAGE_KEY } from "@/constants/auth"
-import { getStorageItem, setStorageItem } from "@/utils/storage"
+import { getStorageItem } from "@/utils/storage"
 import { formatCompactCount } from "@/utils/format-count"
 import { isValidUsername, USERNAME_GUIDANCE } from "@/utils/username"
 
@@ -43,17 +42,18 @@ export default function ProfileScreen() {
   const [activeTab, setActiveTab] = useState<TabName>("Lists")
   const profileContentQuery = useQuery({
     queryKey: ["profile-content", user?.user_id],
-    enabled: Boolean(user?.user_id) && !user?.isPreview && !AUTH_BYPASS_ENABLED,
-    queryFn: async () => {
+    enabled: Boolean(user?.user_id),
+    queryFn: async ({ signal }) => {
       const token = await getStorageItem("access_token")
       if (!token) throw new Error("Your session has expired. Please log in again.")
-      return getProfileContent(token)
+      return getProfileContent(token, signal)
     },
     staleTime: 60_000,
   })
   const boards = profileContentQuery.data?.boards ?? []
   const collections = profileContentQuery.data?.collections ?? []
   const repositories = profileContentQuery.data?.repositories ?? []
+  const contentErrors = profileContentQuery.data?.errors ?? {}
 
   const openEditor = () => {
     setDraft({ name, job, username })
@@ -70,19 +70,6 @@ export default function ProfileScreen() {
     setIsSaving(true)
     setEditError("")
     try {
-      if (AUTH_BYPASS_ENABLED) {
-        await setStorageItem(AUTH_BYPASS_PROFILE_STORAGE_KEY, JSON.stringify({
-          username: next.username,
-          full_name: next.name,
-          bio: next.job,
-        }))
-        setSavedProfile(next)
-        setDraft(next)
-        await checkOnboardingStatus()
-        setEditVisible(false)
-        return
-      }
-
       const accessToken = await getStorageItem("access_token")
       if (!accessToken) throw new Error("Your session has expired. Please log in again.")
       const updated = await apiV2<{ full_name: string; bio: string; username: string }>("/users/me", {
@@ -151,7 +138,7 @@ export default function ProfileScreen() {
   const jobFontSize = fitSingleLineText(job, isCompact ? 12 : 15, detailsWidth)
   const fullNameFontSize = fitSingleLineText(name, isCompact ? 11 : 14, detailsWidth)
 
-  const loadingContent = profileContentQuery.isLoading && !AUTH_BYPASS_ENABLED
+  const loadingContent = profileContentQuery.isLoading
   const contentError = profileContentQuery.isError
   const contentState = loadingContent ? (
     <View style={{ minHeight: tabContentHeight, alignItems: "center", justifyContent: "center", gap: 12 }}>
@@ -167,33 +154,42 @@ export default function ProfileScreen() {
     </View>
   ) : null
 
+  const sectionError = (message: string) => (
+    <View style={{ minHeight: cardHeight, alignItems: "center", justifyContent: "center", gap: 10, paddingVertical: 12 }}>
+      <Text className="text-[#FF6878] font-nata text-center">{message}</Text>
+      <Pressable onPress={() => void profileContentQuery.refetch()} className="rounded-[12px] bg-[#292929] px-5 py-3">
+        <Text className="text-white font-nataSemiBold">Retry</Text>
+      </Pressable>
+    </View>
+  )
+
   const listContent = contentState ?? (activeTab === "Lists" ? <View key="lists" style={{ minHeight: tabContentHeight, gap: sectionGap }}>
     <View style={{ gap: contentGap }}>
-      {boards.map((item) => <View key={item.board_id} className="w-full flex-row items-center bg-[#151515]" style={{ height: cardHeight, paddingHorizontal: "5%", borderRadius: 16, gap: "4%", borderCurve: "continuous" }}>
+      {contentErrors.boards ? sectionError("Unable to load your boards.") : boards.map((item) => <View key={item.board_id} className="w-full flex-row items-center bg-[#151515]" style={{ height: cardHeight, paddingHorizontal: "5%", borderRadius: 16, gap: "4%", borderCurve: "continuous" }}>
         <Square size={isCompact ? 15 : 18} color="#B8B7BD" />
         <Text numberOfLines={1} className="flex-1 text-white font-nata" style={{ fontSize: isCompact ? 13 : 16 }}>{item.name}</Text>
         <Text className="text-[#77767C] font-nata">{item.repo_count}</Text>
       </View>)}
-      {boards.length === 0 ? <Text className="text-[#77767C] font-nata text-center py-5">No boards yet.</Text> : null}
+      {!contentErrors.boards && boards.length === 0 ? <Text className="text-[#77767C] font-nata text-center py-5">No boards yet.</Text> : null}
     </View>
     <Text className="text-[#63E08A] font-nataMedium" style={{ fontSize: isCompact ? 13 : 16 }}>Saved Collections</Text>
     <View style={{ gap: contentGap }}>
-      {collections.map((item, index) => <View key={item.collection_id} className="w-full flex-row items-center bg-[#151515]" style={{ height: cardHeight, paddingHorizontal: "4%", borderRadius: 16, gap: "4%", borderCurve: "continuous" }}>
+      {contentErrors.collections ? sectionError("Unable to load your saved collections.") : collections.map((item, index) => <View key={item.collection_id} className="w-full flex-row items-center bg-[#151515]" style={{ height: cardHeight, paddingHorizontal: "4%", borderRadius: 16, gap: "4%", borderCurve: "continuous" }}>
         <View className="items-center justify-center" style={{ height: "70%", aspectRatio: 1, borderRadius: 9, backgroundColor: COLLECTION_COLORS[index % COLLECTION_COLORS.length], borderCurve: "continuous" }}><Bookmark size={isCompact ? 13 : 16} color="white" /></View>
         <Text numberOfLines={1} className="flex-1 text-white font-nata" style={{ fontSize: isCompact ? 13 : 16 }}>{item.name}</Text>
         <Text className="text-[#67666C] font-nata" style={{ fontVariant: ["tabular-nums"] }}>{item.board_count}</Text>
       </View>)}
-      {collections.length === 0 ? <Text className="text-[#77767C] font-nata text-center py-5">No collections yet.</Text> : null}
+      {!contentErrors.collections && collections.length === 0 ? <Text className="text-[#77767C] font-nata text-center py-5">No collections yet.</Text> : null}
     </View>
   </View> : <View key="repositories" style={{ minHeight: tabContentHeight, gap: sectionGap }}>
     <Text className="text-[#63E08A] font-nataMedium" style={{ fontSize: isCompact ? 13 : 16 }}>Saved Repositories</Text>
     <View style={{ gap: contentGap }}>
-      {repositories.map((item) => <View key={item.repo_id} className="w-full flex-row items-center bg-[#151515]" style={{ height: cardHeight, paddingHorizontal: "5%", borderRadius: 16, gap: "4%", borderCurve: "continuous" }}>
+      {contentErrors.repositories ? sectionError("Unable to load your saved repositories.") : repositories.map((item) => <View key={item.repo_id} className="w-full flex-row items-center bg-[#151515]" style={{ height: cardHeight, paddingHorizontal: "5%", borderRadius: 16, gap: "4%", borderCurve: "continuous" }}>
         <Square size={isCompact ? 15 : 18} color="#B8B7BD" />
         <Text numberOfLines={1} className="flex-1 text-white font-nata" style={{ fontSize: isCompact ? 13 : 16 }}>{item.full_name || item.name}</Text>
         <Text className="text-[#FFD600] font-nata" style={{ fontSize: isCompact ? 11 : 13 }}>★ <Text className="text-[#77767C]">{formatCompactCount(item.star_count)}</Text></Text>
       </View>)}
-      {repositories.length === 0 ? <Text className="text-[#77767C] font-nata text-center py-5">No saved repositories yet.</Text> : null}
+      {!contentErrors.repositories && repositories.length === 0 ? <Text className="text-[#77767C] font-nata text-center py-5">No saved repositories yet.</Text> : null}
     </View>
   </View>)
 

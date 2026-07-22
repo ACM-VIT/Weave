@@ -53,6 +53,8 @@ try {
     'app.users.interests',
     'app.users.skills',
     'app.users.tech_stack',
+    'app.users.date_of_birth',
+    'app.users.onboarding_completed',
     'app.oauth_codes.client_code_challenge',
   ]) {
     if (!columns.has(requiredColumn)) missing.push(`column:${requiredColumn}`);
@@ -69,6 +71,15 @@ try {
   const outboxStatusDefinition = String(outboxConstraintRows[0]?.definition ?? '');
   if (!outboxStatusDefinition.includes('superseded')) {
     missing.push('constraint:telemetry.ml_outbox.status:superseded');
+  }
+
+  const legacyAuthTriggerRows = await client`
+    SELECT 1 FROM information_schema.triggers
+    WHERE event_object_schema='auth' AND event_object_table='users'
+      AND trigger_name='on_auth_user_created'
+  `;
+  if (legacyAuthTriggerRows.length > 0) {
+    missing.push('prohibited-trigger:auth.users.on_auth_user_created');
   }
 
   const indexRows = await client`

@@ -25,3 +25,17 @@ test('Google-only and malformed GitHub identities cannot populate GitHub columns
     identities: [{ provider: 'github', id: 'not-numeric', identity_data: { user_name: 'invalid_' } }],
   }), { githubId: null, githubHandle: null });
 });
+
+test('a fresh GitHub OAuth user can fall back to provider metadata without classifying Google as GitHub', () => {
+  const metadataOnlyUser = {
+    user_metadata: { provider_id: '7654321', user_name: 'new-octocat' },
+  };
+  assert.deepEqual(
+    githubIdentityFromAuthUser(metadataOnlyUser, 'github'),
+    { githubId: '7654321', githubHandle: 'new-octocat' },
+  );
+  assert.deepEqual(
+    githubIdentityFromAuthUser(metadataOnlyUser, 'google'),
+    { githubId: null, githubHandle: null },
+  );
+});

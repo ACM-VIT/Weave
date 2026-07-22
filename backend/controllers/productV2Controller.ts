@@ -28,8 +28,16 @@ function text(value: unknown, max: number, required = false): string | null | un
 
 function slugArray(value: unknown): string[] | null {
   if (!Array.isArray(value) || value.length > 50
-    || !value.every((item) => typeof item === 'string' && /^[a-z0-9][a-z0-9-]{0,49}$/.test(item))) return null;
-  return [...new Set(value as string[])];
+    || !value.every((item) => typeof item === 'string' && item.trim().length <= 100)) return null;
+  const normalized = value.map((item) => String(item).trim().toLowerCase()
+    .replace(/&/g, ' and ')
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .replace(/-{2,}/g, '-')
+    .slice(0, 50)
+    .replace(/-+$/g, ''));
+  if (normalized.some((item) => !/^[a-z0-9][a-z0-9-]{0,49}$/.test(item))) return null;
+  return [...new Set(normalized)];
 }
 
 function userId(req: AuthRequest, res: Response): string | null {
@@ -45,18 +53,31 @@ function idParam(req: AuthRequest, res: Response, name: string): string | null {
   return isValidUuid(value) ? value : null;
 }
 
+export function hasCompletedOnboarding(
+  onboardingCompleted: unknown,
+): boolean {
+  // This explicit durable flag is the only routing authority. Inferring state
+  // from a linked provider or partial topics can incorrectly bypass onboarding.
+  return onboardingCompleted === true;
+}
+
 export async function getMe(req: AuthRequest, res: Response): Promise<void> {
   const id = userId(req, res); if (!id) return;
   const rows = await sqlClient`
-    SELECT u.user_id,u.username,u.full_name,u.bio,u.github_id,u.github_handle,u.avatar_url,u.status,
-      u.profile_version,u.created_at,u.updated_at,s.followers_count,s.following_count,s.likes_given_count,
+    SELECT u.user_id,u.username,u.full_name,u.date_of_birth,u.bio,u.github_id,u.github_handle,u.avatar_url,u.status,
+      u.onboarding_completed,
+      u.interests,u.skills,u.tech_stack,u.profile_version,u.created_at,u.updated_at,
+      s.followers_count,s.following_count,s.likes_given_count,
       s.saved_repos_count,f.feed_version,f.feedback_version,
       COALESCE((SELECT json_agg(t.slug ORDER BY t.slug) FROM app.user_topics ut JOIN app.topics t USING(topic_id)
         WHERE ut.user_id=u.user_id),'[]'::json) AS topics
     FROM app.users u JOIN app.user_stats s USING(user_id) JOIN app.user_feed_state f USING(user_id)
     WHERE u.user_id=${id}::uuid AND u.status<>'deleted'`;
   if (!rows[0]) return sendError(res, 404, 'User profile not found.');
-  sendSuccess(res, 200, rows[0]);
+  sendSuccess(res, 200, {
+    ...rows[0],
+    onboarding_completed: hasCompletedOnboarding(rows[0].onboarding_completed),
+  });
 }
 
 export async function getUser(req: AuthRequest, res: Response): Promise<void> {
@@ -123,10 +144,15 @@ export async function updateMe(req: AuthRequest, res: Response): Promise<void> {
 
 export async function onboardingStatus(req: AuthRequest, res: Response): Promise<void> {
   const id = userId(req, res); if (!id) return;
-  const rows = await sqlClient`SELECT EXISTS(SELECT 1 FROM app.user_topics WHERE user_id=${id}::uuid) AS completed,
-    profile_version FROM app.users WHERE user_id=${id}::uuid`;
+  const rows = await sqlClient`
+    SELECT u.onboarding_completed,u.profile_version
+    FROM app.users u WHERE u.user_id=${id}::uuid
+  `;
   if (!rows[0]) return sendError(res, 404, 'User profile not found.');
-  sendSuccess(res, 200, rows[0]);
+  sendSuccess(res, 200, {
+    completed: hasCompletedOnboarding(rows[0].onboarding_completed),
+    profile_version: rows[0].profile_version,
+  });
 }
 
 export async function completeOnboarding(req: AuthRequest, res: Response): Promise<void> {
@@ -137,9 +163,12 @@ export async function completeOnboarding(req: AuthRequest, res: Response): Promi
   const interests = structured ? slugArray(req.body?.interests ?? []) : legacyTopics;
   const skills = structured ? slugArray(req.body?.skills ?? []) : [];
   const techStack = structured ? slugArray(req.body?.tech_stack ?? []) : [];
-  if (bio === undefined || interests === null || skills === null || techStack === null
-    || interests.length + skills.length + techStack.length < 1) {
-    return sendError(res, 400, 'Provide 1-50 valid slugs in interests, skills, or tech_stack and a bio of at most 2000 characters.');
+  if (bio === undefined) return sendError(res, 400, 'Bio can contain at most 2000 characters.');
+  if (interests === null || skills === null || techStack === null) {
+    return sendError(res, 400, 'Each onboarding category can contain at most 50 valid selections.');
+  }
+  if (interests.length + skills.length + techStack.length < 1) {
+    return sendError(res, 400, 'Choose at least one interest, skill, or technology.');
   }
   const uniqueTopics = [...new Set([...interests, ...skills, ...techStack])];
   if (uniqueTopics.length > 100) return sendError(res, 400, 'The combined onboarding profile may contain at most 100 unique slugs.');
@@ -147,7 +176,8 @@ export async function completeOnboarding(req: AuthRequest, res: Response): Promi
     const result = await sqlClient.begin(async (tx) => {
       const updated = await tx`UPDATE app.users SET bio=COALESCE(${bio},bio),
         interests=${JSON.stringify(interests)}::jsonb,skills=${JSON.stringify(skills)}::jsonb,
-        tech_stack=${JSON.stringify(techStack)}::jsonb,profile_version=profile_version+1,updated_at=now()
+        tech_stack=${JSON.stringify(techStack)}::jsonb,onboarding_completed=true,
+        profile_version=profile_version+1,updated_at=now()
         WHERE user_id=${id}::uuid RETURNING profile_version,username,full_name,bio,github_handle,avatar_url`;
       if (!updated[0]) throw Object.assign(new Error('User profile not found.'), { statusCode: 404 });
       await tx`DELETE FROM app.user_topics WHERE user_id=${id}::uuid`;
