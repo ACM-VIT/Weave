@@ -35,11 +35,28 @@ export class FeedV2Service {
     private readonly reservationWaitMs = 1_500,
     private readonly reservationPollMs = 25,
     cursorSecret?: string,
+    private readonly generationWaitMs = 5_000,
   ) {
     this.cursorCodec = new FeedCursorCodec(cursorSecret);
   }
 
   private readonly cursorCodec: FeedCursorCodec;
+
+  private async waitForGeneratedReservation(
+    userId: string,
+    version: bigint,
+    requestId: string,
+    limit: number,
+    token: string,
+  ) {
+    const deadline = Date.now() + this.generationWaitMs;
+    let reservation = { requestId, token, items: [] as RecommendationEntry[] };
+    do {
+      reservation = await this.queue.refill(userId, version, requestId, limit, token);
+      if (reservation.items.length > 0 || Date.now() >= deadline) return reservation;
+      await new Promise((resolve) => setTimeout(resolve, Math.max(1, this.reservationPollMs)));
+    } while (true);
+  }
 
   private async waitForServe(userId: string, requestId: string): Promise<FeedResponseV2> {
     const deadline = Date.now() + this.reservationWaitMs;
@@ -87,10 +104,14 @@ export class FeedV2Service {
 
     if (queueAvailable && reservation.items.length === 0 && this.generateOnMiss) {
       try {
-        await this.generateOnMiss(userId, request.limit, []);
-        reservation = await this.queue.refill(
-          userId, version, request.feed_request_id, request.limit, token,
-        );
+        const outcome = await this.generateOnMiss(userId, request.limit, []);
+        reservation = outcome === 'coalesced'
+          ? await this.waitForGeneratedReservation(
+            userId, version, request.feed_request_id, request.limit, token,
+          )
+          : await this.queue.refill(
+            userId, version, request.feed_request_id, request.limit, token,
+          );
       } catch (error) {
         if (error instanceof ReservationOwnedError) {
           return this.waitForServe(userId, request.feed_request_id);

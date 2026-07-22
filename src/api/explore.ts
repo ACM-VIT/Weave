@@ -1,6 +1,11 @@
-import { Repo, TabName } from '../types';
+import type { TabName } from '../types';
 import { getStorageItem } from '../utils/storage';
 import { apiV2 } from './client';
+import { EXPLORE_PAGE_SIZE, getNextExploreOffset } from './explore-data';
+import type { ExploreRepoPage } from './explore-data';
+
+export { EXPLORE_PAGE_SIZE, mergeExplorePages } from './explore-data';
+export type { ExploreRepoPage } from './explore-data';
 
 type RepositoryV2 = {
   repo_id: string;
@@ -33,17 +38,18 @@ function getAvatarGradient(seed: string): readonly [string, string] {
 export async function fetchExploreRepos(
   tab: TabName,
   searchQuery: string,
+  offset = 0,
   signal?: AbortSignal,
-): Promise<Repo[]> {
+): Promise<ExploreRepoPage> {
   const token = await getStorageItem('access_token');
   if (!token) throw new Error('Your session has expired. Please log in again.');
   const query = searchQuery.trim();
   const path = tab === 'Trending'
     ? '/repositories/trending?period=daily'
-    : `/repositories?limit=24&offset=0${query ? `&q=${encodeURIComponent(query)}` : ''}`;
+    : `/repositories?limit=${EXPLORE_PAGE_SIZE}&offset=${offset}${query ? `&q=${encodeURIComponent(query)}` : ''}`;
   const data = await apiV2<{ items: RepositoryV2[] }>(path, { signal }, token);
 
-  return data.items.map((repo) => {
+  const items = data.items.map((repo) => {
     const gradient = getAvatarGradient(repo.owner);
     return {
       id: repo.repo_id,
@@ -59,4 +65,8 @@ export async function fetchExploreRepos(
       url: repo.url,
     };
   });
+
+  const nextOffset = getNextExploreOffset(tab, offset, items.length);
+
+  return { items, nextOffset };
 }

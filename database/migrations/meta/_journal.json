@@ -112,6 +112,48 @@
       "when": 1784251714001,
       "tag": "0013_feed_serve_cursor",
       "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "7",
+      "when": 1784652272000,
+      "tag": "0014_outbox_superseded",
+      "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1784652272001,
+      "tag": "0015_user_ml_profile_categories",
+      "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1784652272002,
+      "tag": "0016_oauth_client_pkce",
+      "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1784652272003,
+      "tag": "0017_feedback_outbox_predecessor_index",
+      "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1784738672000,
+      "tag": "0018_auth_profile_integrity",
+      "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1784738672001,
+      "tag": "0019_verified_github_identity",
+      "breakpoints": true
     }
   ]
 }

@@ -52,7 +52,9 @@ export default function ConnectionListScreen({ type }: { type: ConnectionType })
 
         <ConnectionList
           contentPaddingBottom={Math.max(insets.bottom, 24)}
-          onFollowingCountChange={() => void checkOnboardingStatus()}
+          onFollowingCountChange={() => {
+            void checkOnboardingStatus().catch(() => undefined);
+          }}
           type={type}
           userId={userId}
           username={username}

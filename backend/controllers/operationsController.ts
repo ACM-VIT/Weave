@@ -27,3 +27,10 @@ export async function replayOutbox(req: Request, res: Response): Promise<void> {
   const replayed = await outbox.replay(outboxId);
   res.status(replayed ? 202 : 409).json({ outbox_id: outboxId, replayed });
 }
+
+export async function supersedeOutbox(req: Request, res: Response): Promise<void> {
+  const outboxId = String(req.params.outboxId ?? '');
+  if (!isValidUuid(outboxId)) { res.status(400).json({ error: 'outboxId must be a UUID.' }); return; }
+  const superseded = await outbox.supersedeObsoleteOnboarding(outboxId);
+  res.status(superseded ? 202 : 409).json({ outbox_id: outboxId, superseded });
+}

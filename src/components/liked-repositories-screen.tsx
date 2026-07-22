@@ -1,10 +1,11 @@
 import { useEffect, useState } from 'react';
 import { ActivityIndicator, FlatList, Linking, Pressable, Text, View, useWindowDimensions } from 'react-native';
-import { ArrowLeft, FolderGit2, GitFork, Heart, Search, Star } from 'lucide-react-native';
+import { ArrowLeft, FolderGit2, GitFork, Heart, Star } from 'lucide-react-native';
 import { router, useLocalSearchParams } from 'expo-router';
 import { apiV2 } from '@/api/client';
-import { AUTH_BYPASS_ENABLED } from '@/constants/auth';
-import { REPOSITORIES } from '@/data/repositories';
+import { FEEDBACK_ACTIONS } from '@/constants/feedbackActions';
+import { getActivityOutbox } from '@/services/activityOutboxClient';
+import { useAuth } from '@/store/AuthContext';
 import { formatCompactCount } from '@/utils/format-count';
 import { getStorageItem } from '@/utils/storage';
 
@@ -22,40 +23,20 @@ type LikedRepository = {
   forks_count: number | null;
 };
 
-const demoCounts = [
-  { likes: 412, stars: 1200, forks: 2000 },
-  { likes: 288, stars: 980, forks: 1500 },
-  { likes: 156, stars: 2100, forks: 3200 },
-];
-
-const bypassLikedRepositories: LikedRepository[] = REPOSITORIES.slice(0, 3).map((repository, index) => ({
-  repo_id: repository.id,
-  github_repo_url: `https://github.com/${repository.owner}/${repository.title}`,
-  owner_id: repository.owner,
-  repo_name: repository.title,
-  full_name: `${repository.owner}/${repository.title}`,
-  description: repository.description,
-  language_used: repository.techStack ?? [],
-  topics: [],
-  likes_count: demoCounts[index].likes,
-  star_count: demoCounts[index].stars,
-  forks_count: demoCounts[index].forks,
-}));
-
 export default function LikedRepositoriesScreen() {
   const { width } = useWindowDimensions();
   const { username, userId } = useLocalSearchParams<{ username?: string; userId?: string }>();
-  const [repositories, setRepositories] = useState<LikedRepository[]>(
-    AUTH_BYPASS_ENABLED ? bypassLikedRepositories : [],
-  );
-  const [loading, setLoading] = useState(Boolean(userId) && !AUTH_BYPASS_ENABLED);
+  const { user } = useAuth();
+  const activityOutbox = user?.user_id ? getActivityOutbox(user.user_id) : null;
+  const [repositories, setRepositories] = useState<LikedRepository[]>([]);
+  const [loading, setLoading] = useState(Boolean(userId));
   const [error, setError] = useState('');
 
   useEffect(() => {
     const controller = new AbortController();
     let active = true;
 
-    if (!userId || AUTH_BYPASS_ENABLED) {
+    if (!userId) {
       return () => controller.abort();
     }
 
@@ -86,6 +67,27 @@ export default function LikedRepositoriesScreen() {
     };
   }, [userId]);
 
+  const openRepository = async (repository: LikedRepository) => {
+    try {
+      await Linking.openURL(repository.github_repo_url);
+    } catch {
+      // Do not train on an open that the operating system rejected.
+      return;
+    }
+
+    if (!activityOutbox) return;
+    try {
+      await activityOutbox.enqueue({
+        repo_id: repository.repo_id,
+        action: FEEDBACK_ACTIONS.githubOpen,
+      });
+      const token = await getStorageItem('access_token');
+      if (token) await activityOutbox.flush(token);
+    } catch {
+      // A successfully persisted event remains queued when delivery is offline or interrupted.
+    }
+  };
+
   return (
     <View style={{ flex: 1, backgroundColor: '#000000', alignItems: 'center' }}>
       <FlatList
@@ -101,7 +103,7 @@ export default function LikedRepositoriesScreen() {
               <ArrowLeft color="#F7F7F8" size={27} />
             </Pressable>
             <Text selectable style={{ flex: 1, color: '#F7F7F8', textAlign: 'center', fontFamily: 'NataSans-Bold', fontSize: width < 360 ? 22 : 26 }}>Likes Given</Text>
-            <View style={{ width: '15%', alignItems: 'flex-end' }}><Search color="#858489" size={23} /></View>
+            <View style={{ width: '15%' }} />
           </View>
           <Text selectable style={{ color: '#6F6E74', textAlign: 'center', fontFamily: 'NataSans-Regular' }}>@{username}</Text>
         </View>}
@@ -118,7 +120,7 @@ export default function LikedRepositoriesScreen() {
         renderItem={({ item }) => <Pressable
           accessibilityRole="link"
           accessibilityLabel={`Open ${item.full_name}`}
-          onPress={() => Linking.openURL(item.github_repo_url)}
+          onPress={() => { void openRepository(item); }}
           style={({ pressed }) => ({
             minHeight: width < 360 ? 92 : 104,
             borderRadius: 20,

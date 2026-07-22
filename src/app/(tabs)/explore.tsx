@@ -1,29 +1,42 @@
 import { useMemo, useState } from 'react';
-import { ActivityIndicator, Linking, ScrollView, StatusBar, Text, View } from 'react-native';
-import { useQuery } from '@tanstack/react-query';
+import { ActivityIndicator, Linking, Pressable, ScrollView, StatusBar, Text, View } from 'react-native';
+import { useInfiniteQuery } from '@tanstack/react-query';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { fetchExploreRepos } from '../../api/explore';
+import { fetchExploreRepos, mergeExplorePages } from '../../api/explore';
 import RepoCard from '../../components/explore/RepoCard';
 import SearchBar from '../../components/explore/SearchBar';
 import TabBar from '../../components/explore/TabBar';
 import TrendingRepoCard from '../../components/explore/TrendingRepoCard';
 import { Repo, TabName } from '../../types';
+import { useAuth } from '../../store/AuthContext';
+import { getStorageItem } from '../../utils/storage';
+import { getActivityOutbox } from '../../services/activityOutboxClient';
 
 export default function ExploreScreen() {
+  const { user } = useAuth();
+  const activityOutbox = user?.user_id ? getActivityOutbox(user.user_id) : null;
   const insets = useSafeAreaInsets();
-  const [activeTab, setActiveTab] = useState<TabName>('For you');
+  const [activeTab, setActiveTab] = useState<TabName>('Latest');
   const [searchQuery, setSearchQuery] = useState('');
   const trimmedSearchQuery = searchQuery.trim();
 
   const {
-    data: repos = [],
+    data,
+    fetchNextPage,
+    hasNextPage,
     isError,
+    isFetchingNextPage,
+    isFetchNextPageError,
     isLoading,
-  } = useQuery({
+  } = useInfiniteQuery({
     queryKey: ['exploreRepos', activeTab, trimmedSearchQuery],
-    queryFn: ({ signal }) => fetchExploreRepos(activeTab, trimmedSearchQuery, signal),
+    queryFn: ({ pageParam, signal }) => fetchExploreRepos(activeTab, trimmedSearchQuery, pageParam, signal),
+    initialPageParam: 0,
+    getNextPageParam: (lastPage) => lastPage.nextOffset,
     staleTime: 1000 * 60 * 5,
   });
+
+  const repos = useMemo(() => mergeExplorePages(data?.pages ?? []), [data?.pages]);
 
   const filteredRepos = useMemo(() => {
     const q = trimmedSearchQuery.toLowerCase();
@@ -47,12 +60,22 @@ export default function ExploreScreen() {
     setSearchQuery('');
   };
 
-  const handleRepoPress = (repo: Repo) => {
-    const url = repo.url ?? `https://github.com/${repo.author}/${repo.name}`;
-    Linking.openURL(url).catch(() => undefined);
+  const handleRepoPress = async (repo: Repo) => {
+    const fallbackUrl = `https://github.com/${repo.author}/${repo.name}`;
+    const url = repo.url?.startsWith('https://github.com/') ? repo.url : fallbackUrl;
+    try {
+      await Linking.openURL(url);
+      if (!activityOutbox) return;
+      await activityOutbox.enqueue({ repo_id: repo.id, action: 'github_open' });
+      const token = await getStorageItem('access_token');
+      if (!token) return;
+      await activityOutbox.flush(token);
+    } catch {
+      // The durable event remains queued when delivery is offline or interrupted.
+    }
   };
 
-  const feedbackMessage = isError
+  const feedbackMessage = isError && repos.length === 0
     ? 'Unable to load repositories right now.'
     : filteredRepos.length === 0
       ? 'No repositories found.'
@@ -102,18 +125,51 @@ export default function ExploreScreen() {
               {feedbackMessage}
             </Text>
           </View>
-        ) : activeTab === 'For you' ? (
-          <View style={{ flexDirection: 'row', gap: 10, paddingTop: 8, paddingHorizontal: 20 }}>
-            <View style={{ flex: 1, gap: 10 }}>
-              {leftColumn.map((repo) => (
-                <RepoCard key={repo.id} repo={repo} onPress={() => handleRepoPress(repo)} />
-              ))}
+        ) : activeTab === 'Latest' ? (
+          <View>
+            <View style={{ flexDirection: 'row', gap: 10, paddingTop: 8, paddingHorizontal: 20 }}>
+              <View style={{ flex: 1, gap: 10 }}>
+                {leftColumn.map((repo) => (
+                  <RepoCard key={repo.id} repo={repo} onPress={() => handleRepoPress(repo)} />
+                ))}
+              </View>
+              <View style={{ flex: 1, gap: 10, paddingTop: 30 }}>
+                {rightColumn.map((repo) => (
+                  <RepoCard key={repo.id} repo={repo} onPress={() => handleRepoPress(repo)} />
+                ))}
+              </View>
             </View>
-            <View style={{ flex: 1, gap: 10, paddingTop: 30 }}>
-              {rightColumn.map((repo) => (
-                <RepoCard key={repo.id} repo={repo} onPress={() => handleRepoPress(repo)} />
-              ))}
-            </View>
+            {hasNextPage || isFetchingNextPage || isFetchNextPageError ? (
+              <View style={{ alignItems: 'center', paddingHorizontal: 20, paddingTop: 24 }}>
+                {isFetchNextPageError ? (
+                  <Text style={{ color: '#FF6878', fontSize: 13, marginBottom: 10 }}>
+                    Unable to load more repositories.
+                  </Text>
+                ) : null}
+                <Pressable
+                  accessibilityRole="button"
+                  disabled={isFetchingNextPage}
+                  onPress={() => void fetchNextPage()}
+                  style={{
+                    minWidth: 150,
+                    minHeight: 46,
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    borderRadius: 14,
+                    backgroundColor: '#1D1D1F',
+                    opacity: isFetchingNextPage ? 0.7 : 1,
+                  }}
+                >
+                  {isFetchingNextPage ? (
+                    <ActivityIndicator color="#63E6A9" />
+                  ) : (
+                    <Text style={{ color: '#63E6A9', fontSize: 14, fontWeight: '600' }}>
+                      {isFetchNextPageError ? 'Try again' : 'Load more'}
+                    </Text>
+                  )}
+                </Pressable>
+              </View>
+            ) : null}
           </View>
         ) : (
           <View style={{ paddingTop: 12, paddingHorizontal: 9, gap: 10 }}>

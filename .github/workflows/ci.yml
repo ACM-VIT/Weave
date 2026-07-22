@@ -42,4 +42,6 @@ jobs:
       - run: npm test
       - name: Build production image
         working-directory: .
-        run: docker build -t gh-social-backend:${{ github.sha }} backend
+        run: |
+          docker build -f backend/Dockerfile -t gh-social-backend:${{ github.sha }} .
+          docker run --rm --entrypoint node gh-social-backend:${{ github.sha }} dist/scripts/verify-deployment-assets.js

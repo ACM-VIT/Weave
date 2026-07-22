@@ -1,25 +1,55 @@
 import crypto from "crypto";
-import { eq } from "drizzle-orm";
+import { and, eq, gt, sql } from "drizzle-orm";
 import type { CookieOptions, Request, Response } from "express";
 import jwt from "jsonwebtoken";
 import supabase, {
+  createOAuthSupabaseClient,
   createRecoverySupabaseClient,
   supabaseAdmin,
 } from "../config/supabase.js";
+import redisClient from "../config/redis.js";
 import { db } from "../db/index.js";
 import { appOauthCodes as oauthCodes, appRefreshTokens as refreshTokens, appUsers as users } from "../db/v2Schema.js";
-import { ensureIdentityProfile, fallbackUsername } from "../services/identityService.js";
+import {
+  ensureIdentityProfile,
+  fallbackUsername,
+  githubIdentityFromAuthUser,
+} from "../services/identityService.js";
+import { syncGitHubPersona } from "../services/githubPersonaService.js";
 import { updatePasswordFromRecoverySession } from "../services/passwordRecoveryService.js";
+import {
+  OAuthPkceCoordinator,
+  RedisOAuthAttemptStore,
+  CLIENT_CODE_CHALLENGE_PATTERN,
+  clientCodeChallengeFromVerifier,
+  type ConsumedOAuthAttempt,
+} from "../services/oauthPkceService.js";
 import {
   sendControllerError,
   sendError,
   sendSuccess,
 } from "../utils/response.js";
 import { isValidUuid } from "../utils/validators.js";
-import { resolveClientRedirect } from "../security/originPolicy.js";
+import {
+  resolveBackendCallbackUrl,
+  resolveClientRedirect,
+} from "../security/originPolicy.js";
+import { normalizeUsername } from "../utils/username.js";
+import { isValidDateOfBirth } from "../utils/dateOfBirth.js";
+import {
+  initialOAuthOnboardingCompleted,
+  loginOnboardingCompleted,
+  oauthLoginNeedsSignup,
+  requiresGitHubPersona,
+} from "../services/oauthProfilePolicy.js";
 
 const CLIENT_URL = process.env.CLIENT_URL;
 const BACKEND_URL = process.env.BACKEND_URL;
+const OAUTH_ATTEMPT_COOKIE = "oauth_attempt";
+const OAUTH_ATTEMPT_TTL_SECONDS = Number.parseInt(
+  process.env.OAUTH_ATTEMPT_TTL_SECONDS ?? "300",
+  10,
+);
 
 if (!CLIENT_URL)
   throw new Error("Missing required environment variable: CLIENT_URL");
@@ -35,6 +65,29 @@ if (!JWT_SECRET) {
     "FATAL ERROR: JWT_SECRET is not defined in environment variables.",
   );
 }
+
+const oauthPkce = new OAuthPkceCoordinator(
+  new RedisOAuthAttemptStore(redisClient),
+  createOAuthSupabaseClient,
+  {
+    attemptTtlSeconds: OAUTH_ATTEMPT_TTL_SECONDS,
+  },
+);
+
+const oauthAttemptCookieOptions = (): CookieOptions => ({
+  httpOnly: true,
+  secure: process.env.NODE_ENV === "production",
+  sameSite: "lax",
+  path: "/api/auth",
+  maxAge: OAUTH_ATTEMPT_TTL_SECONDS * 1_000,
+});
+
+const clearOAuthAttemptCookieOptions = (): CookieOptions => ({
+  httpOnly: true,
+  secure: process.env.NODE_ENV === "production",
+  sameSite: "lax",
+  path: "/api/auth",
+});
 
 // Helper: Hash the refresh token before storing it
 const hashToken = (token: string) => {
@@ -68,44 +121,32 @@ const getClientRedirect = (value: unknown): string => {
   );
 };
 
-const isPrivateDevelopmentHost = (hostname: string): boolean => {
-  if (
-    hostname === "localhost" ||
-    hostname === "127.0.0.1" ||
-    hostname === "10.0.2.2"
-  ) {
-    return true;
+const withClientRedirectParams = (
+  clientRedirect: string,
+  params: Record<string, string>,
+): string => {
+  const redirect = new URL(clientRedirect);
+  // Never preserve caller-supplied auth results from the allowed redirect URL.
+  // Keep unrelated routing parameters (for example `source=github`) intact.
+  redirect.searchParams.delete("code");
+  redirect.searchParams.delete("error");
+  for (const [key, value] of Object.entries(params)) {
+    redirect.searchParams.set(key, value);
   }
-  if (hostname.startsWith("10.") || hostname.startsWith("192.168.")) {
-    return true;
-  }
-  const match = hostname.match(/^172\.(\d{1,2})\./);
-  return Boolean(
-    match && Number(match[1]) >= 16 && Number(match[1]) <= 31,
-  );
+  return redirect.toString();
+};
+
+const queryString = (value: unknown): string | null => {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
 };
 
 const getBackendCallbackUrl = (req: Request): URL => {
-  const configuredCallback = new URL("/api/auth/callback", BACKEND_URL);
-  if (process.env.NODE_ENV === "production") return configuredCallback;
-
-  const host = req.get("host");
-  if (!host) return configuredCallback;
-
-  try {
-    const requestOrigin = new URL(`http://${host}`);
-    if (
-      requestOrigin.protocol === "http:" &&
-      requestOrigin.port === "5000" &&
-      isPrivateDevelopmentHost(requestOrigin.hostname)
-    ) {
-      return new URL("/api/auth/callback", requestOrigin);
-    }
-  } catch {
-    // Fall back to the explicitly configured backend origin.
-  }
-
-  return configuredCallback;
+  return resolveBackendCallbackUrl(
+    req.get("host"),
+    BACKEND_URL,
+    process.env.PORT,
+    process.env.NODE_ENV,
+  );
 };
 
 // Helper: Create and store a refresh token securely
@@ -127,22 +168,29 @@ const createAndStoreRefreshToken = async (userId: string, tx: any = db) => {
 
 // POST /api/auth/signup
 export async function signUp(req: Request, res: Response): Promise<void> {
-  let { email, password, username, full_name } = req.body;
-
-  if (!username || typeof username !== "string" || username.trim() === "") {
-    return sendError(res, 400, "Username is required");
+  const { email, password, full_name, date_of_birth } = req.body;
+  const usernameInput = req.body?.username;
+  const explicitUsername = usernameInput === undefined || usernameInput === null
+    ? null
+    : normalizeUsername(usernameInput);
+  if (usernameInput !== undefined && usernameInput !== null && explicitUsername === null) {
+    return sendError(
+      res,
+      400,
+      "Username must be 1-50 characters using only letters, numbers, underscores, or hyphens",
+    );
   }
-
-  // Normalize username to prevent whitespace bypasses (" alice " vs "alice")
-  username = username.trim();
+  if (!isValidDateOfBirth(date_of_birth)) {
+    return sendError(res, 400, "Date of birth is required in YYYY-MM-DD format and cannot be in the future");
+  }
 
   try {
     // 0. Pre-emptively check if username is taken to avoid messy trigger constraint violations
-    if (username) {
+    if (explicitUsername) {
       const existingUser = await db
         .select()
         .from(users)
-        .where(eq(users.username, username));
+        .where(sql`lower(${users.username}) = lower(${explicitUsername})`);
       if (existingUser.length > 0) {
         return sendError(res, 409, "Username is already taken");
       }
@@ -153,39 +201,45 @@ export async function signUp(req: Request, res: Response): Promise<void> {
       password,
       email_confirm: true, // Bypass email verification so we can login immediately
       user_metadata: {
-        user_name: username,
+        ...(explicitUsername ? { user_name: explicitUsername } : {}),
         full_name: full_name,
+        date_of_birth,
       },
     });
 
     if (error) return sendError(res, error.status || 400, error.message);
 
     const userId = data.user.id;
+    const profileUsername = explicitUsername
+      ?? fallbackUsername(userId, data.user.user_metadata);
 
     try {
-      await ensureIdentityProfile({ userId, username, fullName: full_name ?? null });
-    } catch (databaseError) {
-      await supabaseAdmin.auth.admin.deleteUser(userId);
-      throw databaseError;
+      await ensureIdentityProfile({
+        userId,
+        username: profileUsername,
+        fullName: full_name ?? null,
+        dateOfBirth: date_of_birth,
+        onboardingCompleted: false,
+      });
+      // Generate and persist both session credentials only after the product
+      // profile exists. Any failure rolls the new identity back below.
+      const accessToken = jwt.sign({ userId, email }, JWT_SECRET, {
+        expiresIn: "15m",
+      });
+      const refreshToken = await createAndStoreRefreshToken(userId);
+
+      res.cookie("refresh_token", refreshToken, refreshCookieOptions());
+      return sendSuccess(res, 201, {
+        message: "Signup successful",
+        accessToken,
+        token: accessToken,
+        user: data.user,
+      });
+    } catch (provisioningError) {
+      const { error: cleanupError } = await supabaseAdmin.auth.admin.deleteUser(userId);
+      if (cleanupError) console.error("Failed to roll back incomplete signup:", cleanupError.message);
+      throw provisioningError;
     }
-
-    // 1. Generate Custom JWT Access Token
-    const accessToken = jwt.sign({ userId, email }, JWT_SECRET, {
-      expiresIn: "15m",
-    });
-
-    // 2. Generate and store Refresh Token securely using Drizzle
-    const refreshToken = await createAndStoreRefreshToken(userId);
-
-    // 3. Set refresh token in HTTP-only cookie
-    res.cookie("refresh_token", refreshToken, refreshCookieOptions());
-
-    return sendSuccess(res, 201, {
-      message: "Signup successful",
-      accessToken,
-      token: accessToken, // Alias for backward compatibility
-      user: data.user,
-    });
   } catch (error) {
     sendControllerError(res, error as Error);
   }
@@ -204,12 +258,25 @@ export async function login(req: Request, res: Response): Promise<void> {
     if (error) return sendError(res, error.status || 401, error.message);
 
     const userId = data.user.id;
+    const githubIdentity = githubIdentityFromAuthUser(data.user);
+    const [existingProductProfile] = await db
+      .select({ onboardingCompleted: users.onboardingCompleted })
+      .from(users)
+      .where(eq(users.userId, userId))
+      .limit(1);
 
     await ensureIdentityProfile({
       userId,
       username: fallbackUsername(userId, data.user.user_metadata),
       fullName: typeof data.user.user_metadata?.full_name === "string" ? data.user.user_metadata.full_name : null,
+      dateOfBirth: typeof data.user.user_metadata?.date_of_birth === "string" ? data.user.user_metadata.date_of_birth : null,
+      githubId: githubIdentity.githubId,
+      githubHandle: githubIdentity.githubHandle,
+      githubIdentityVerified: Boolean(githubIdentity.githubId && githubIdentity.githubHandle),
       avatarUrl: typeof data.user.user_metadata?.avatar_url === "string" ? data.user.user_metadata.avatar_url : null,
+      onboardingCompleted: loginOnboardingCompleted(
+        existingProductProfile?.onboardingCompleted,
+      ),
     });
 
     const accessToken = jwt.sign({ userId, email }, JWT_SECRET, {
@@ -417,13 +484,44 @@ export async function getOAuthUrl(req: Request, res: Response): Promise<void> {
 
   try {
     const clientRedirect = getClientRedirect(req.query.redirect_uri);
+    const clientCodeChallenge = queryString(req.query.code_challenge);
+    const authIntent = req.query.auth_intent;
+    if (!clientCodeChallenge || !CLIENT_CODE_CHALLENGE_PATTERN.test(clientCodeChallenge)) {
+      return sendError(res, 400, "A valid S256 client code challenge is required.");
+    }
+    if (authIntent !== "login" && authIntent !== "signup") {
+      return sendError(res, 400, "auth_intent must be login or signup.");
+    }
+    const dateOfBirth = authIntent === "signup" ? queryString(req.query.date_of_birth) : null;
+    if (authIntent === "signup" && !isValidDateOfBirth(dateOfBirth)) {
+      return sendError(res, 400, "Date of birth is required for signup.");
+    }
     const callbackUrl = getBackendCallbackUrl(req);
-    callbackUrl.searchParams.set("client_redirect", clientRedirect);
-    const url = new URL(`${process.env.SUPABASE_URL}/auth/v1/authorize`);
-    url.searchParams.set("provider", provider);
-    url.searchParams.set("redirect_to", callbackUrl.toString());
+    const authorization = await oauthPkce.begin(
+      provider,
+      clientRedirect,
+      callbackUrl,
+      clientCodeChallenge,
+      authIntent,
+      dateOfBirth,
+    );
+    const continuationUrl = new URL("/api/auth/oauth/continue", callbackUrl);
+    continuationUrl.searchParams.set("oauth_attempt", authorization.state);
+    return sendSuccess(res, 200, { url: continuationUrl.toString() });
+  } catch (error) {
+    sendControllerError(res, error as Error);
+  }
+}
 
-    return sendSuccess(res, 200, { url: url.toString() });
+// GET /api/auth/oauth/continue
+export async function continueOAuth(req: Request, res: Response): Promise<void> {
+  try {
+    const authorization = await oauthPkce.resume(req.query.oauth_attempt);
+    if (!authorization) {
+      return sendError(res, 400, "Invalid or expired OAuth attempt.");
+    }
+    res.cookie(OAUTH_ATTEMPT_COOKIE, authorization.state, oauthAttemptCookieOptions());
+    res.redirect(302, authorization.url);
   } catch (error) {
     sendControllerError(res, error as Error);
   }
@@ -434,58 +532,143 @@ export async function handleOAuthCallback(
   req: Request,
   res: Response,
 ): Promise<void> {
-  const code = req.query.code as string;
-  const clientRedirect = getClientRedirect(req.query.client_redirect);
+  let attempt: ConsumedOAuthAttempt | null;
+  try {
+    const attemptState = req.cookies?.[OAUTH_ATTEMPT_COOKIE];
+    res.clearCookie(OAUTH_ATTEMPT_COOKIE, clearOAuthAttemptCookieOptions());
+    attempt = await oauthPkce.consume(attemptState);
+  } catch (error) {
+    console.error("OAuth state consume error:", error);
+    return res.redirect(withClientRedirectParams(CLIENT_URL, {
+      error: "oauth_temporarily_unavailable",
+    }));
+  }
 
-  if (!code) {
-    const reason = (req.query.error as string) || "no_code";
-    return res.redirect(
-      `${clientRedirect}?error=${encodeURIComponent(reason)}`,
-    );
+  if (!attempt) {
+    return res.redirect(withClientRedirectParams(CLIENT_URL, {
+      error: "invalid_or_expired_oauth_state",
+    }));
+  }
+
+  const clientRedirect = attempt.clientRedirect;
+  const code = queryString(req.query.code);
+  const providerError = queryString(req.query.error);
+  if (!code || providerError) {
+    return res.redirect(withClientRedirectParams(clientRedirect, {
+      error: providerError ? "oauth_provider_error" : "oauth_code_missing",
+    }));
   }
 
   try {
-    // 1. Exchange the provider code for a Supabase session using the Admin client
-    const { data, error } =
-      await supabaseAdmin.auth.exchangeCodeForSession(code);
+    // The attempt was atomically consumed above. Rehydrate its request-scoped
+    // PKCE client so this code can only be exchanged with the matching verifier.
+    const { data, error } = await oauthPkce.exchange(attempt, code);
 
     if (error || !data.user) {
       console.error("OAuth Exchange Error:", error);
-      return res.redirect(
-        `${clientRedirect}?error=Authentication failed`,
-      );
+      return res.redirect(withClientRedirectParams(clientRedirect, {
+        error: "oauth_exchange_failed",
+      }));
     }
 
     // 2. Ensure the v2 product profile exists before the one-time code references it.
     const expiresAt = new Date(Date.now() + 5 * 60 * 1000);
+    const githubIdentity = githubIdentityFromAuthUser(data.user, attempt.provider);
+    const [existingProductProfile] = await db
+      .select({ onboardingCompleted: users.onboardingCompleted })
+      .from(users)
+      .where(eq(users.userId, data.user.id))
+      .limit(1);
+    // OAuth providers can create an identity even from a button labelled
+    // "Log in". Do not silently create a product account without the signup
+    // DOB/consent step; ask the user to use the actual signup entry point.
+    if (oauthLoginNeedsSignup(attempt.authIntent, Boolean(existingProductProfile))) {
+      return res.redirect(withClientRedirectParams(clientRedirect, {
+        error: "oauth_account_not_found",
+      }));
+    }
+    // GitHub can create an identity even when the user pressed "Log in". Any
+    // product profile that has never completed persona sync must fail closed;
+    // established GitHub accounts can still log in during a transient API
+    // outage because their durable persona already exists.
+    const githubPersonaRequired = requiresGitHubPersona(
+      attempt.provider,
+      existingProductProfile?.onboardingCompleted,
+    );
     await ensureIdentityProfile({
       userId: data.user.id,
       username: fallbackUsername(data.user.id, data.user.user_metadata),
       fullName: typeof data.user.user_metadata?.full_name === "string" ? data.user.user_metadata.full_name : null,
-      githubId: typeof data.user.user_metadata?.provider_id === "string" ? data.user.user_metadata.provider_id : null,
-      githubHandle: typeof data.user.user_metadata?.user_name === "string" ? data.user.user_metadata.user_name : null,
+      dateOfBirth: attempt.dateOfBirth
+        ?? (typeof data.user.user_metadata?.date_of_birth === "string" ? data.user.user_metadata.date_of_birth : null),
+      githubId: githubIdentity.githubId,
+      githubHandle: githubIdentity.githubHandle,
+      githubIdentityVerified: Boolean(githubIdentity.githubId && githubIdentity.githubHandle),
       avatarUrl: typeof data.user.user_metadata?.avatar_url === "string" ? data.user.user_metadata.avatar_url : null,
+      // Existing accounts retain their durable completion state. A new GitHub
+      // account is completed only by syncGitHubPersona below; Google/email
+      // signups finish the explicit onboarding flow.
+      onboardingCompleted: initialOAuthOnboardingCompleted(
+        attempt.authIntent,
+        existingProductProfile?.onboardingCompleted,
+        githubPersonaRequired,
+      ),
     });
+    if (attempt.provider === "github") {
+      if (!githubIdentity.githubHandle) {
+        console.error("GitHub OAuth response did not contain a GitHub handle.");
+        if (githubPersonaRequired) {
+          return res.redirect(withClientRedirectParams(clientRedirect, {
+            error: "github_identity_incomplete",
+          }));
+        }
+      }
+
+      if (githubIdentity.githubHandle) {
+        try {
+          await syncGitHubPersona(data.user.id, githubIdentity.githubHandle);
+        } catch (error) {
+          console.warn(
+            "GitHub persona sync failed:",
+            error instanceof Error ? error.message : "Unknown error",
+          );
+          // A GitHub signup promises to derive the persona from GitHub and skip
+          // manual onboarding. Do not issue an app session until that promise
+          // has actually been fulfilled. The incomplete profile is safe to
+          // retry on the next OAuth attempt.
+          if (githubPersonaRequired) {
+            return res.redirect(withClientRedirectParams(clientRedirect, {
+              error: "github_persona_sync_failed",
+            }));
+          }
+        }
+      }
+    }
     const [codeData] = await db
       .insert(oauthCodes)
       .values({
         userId: data.user.id,
+        clientCodeChallenge: attempt.clientCodeChallenge,
         expiresAt,
       })
       .returning({ code: oauthCodes.code });
 
     if (!codeData) {
       console.error("OAuth Code Insert Error");
-      return res.redirect(
-        `${clientRedirect}?error=Failed to generate auth code`,
-      );
+      return res.redirect(withClientRedirectParams(clientRedirect, {
+        error: "oauth_code_generation_failed",
+      }));
     }
 
     // 4. Redirect to your frontend with the short-lived code.
-    res.redirect(`${clientRedirect}?code=${codeData.code}`);
+    res.redirect(withClientRedirectParams(clientRedirect, {
+      code: codeData.code,
+    }));
   } catch (error) {
     console.error("OAuth Callback Caught Error:", error);
-    res.redirect(`${clientRedirect}?error=Internal server error`);
+    res.redirect(withClientRedirectParams(clientRedirect, {
+      error: "oauth_internal_error",
+    }));
   }
 }
 
@@ -495,6 +678,7 @@ export async function exchangeAuthCode(
   res: Response,
 ): Promise<void> {
   const { code } = req.body;
+  const codeVerifier = queryString(req.body?.code_verifier);
 
   if (!code) {
     return sendError(res, 400, "Authorization code is required");
@@ -504,11 +688,22 @@ export async function exchangeAuthCode(
     return sendError(res, 400, "Invalid authorization code format");
   }
 
+  const clientCodeChallenge = codeVerifier
+    ? clientCodeChallengeFromVerifier(codeVerifier)
+    : null;
+  if (!clientCodeChallenge) {
+    return sendError(res, 400, "A valid OAuth code verifier is required");
+  }
+
   try {
     // 1 & 2. Atomically look up AND consume the code (DELETE ... RETURNING)
     const [codeData] = await db
       .delete(oauthCodes)
-      .where(eq(oauthCodes.code, code))
+      .where(and(
+        eq(oauthCodes.code, code),
+        eq(oauthCodes.clientCodeChallenge, clientCodeChallenge),
+        gt(oauthCodes.expiresAt, new Date()),
+      ))
       .returning({
         user_id: oauthCodes.userId,
         expires_at: oauthCodes.expiresAt,
@@ -520,11 +715,6 @@ export async function exchangeAuthCode(
         400,
         "Invalid or already consumed authorization code",
       );
-    }
-
-    // 3. Check expiration
-    if (new Date(codeData.expires_at) < new Date()) {
-      return sendError(res, 400, "Authorization code expired");
     }
 
     const userId = codeData.user_id;

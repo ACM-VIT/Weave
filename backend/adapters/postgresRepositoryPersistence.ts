@@ -8,15 +8,23 @@ import type {
 } from '../contracts/ingestion.v2.js';
 import { sqlClient } from '../db/index.js';
 import type { RepositoryPersistencePort } from '../ports/repositoryPersistencePort.js';
+import {
+  buildMlRepositoryFeaturePatch,
+  buildMlRepositorySource,
+} from '../services/mlRepositoryPayloadService.js';
 
 function contentHash(repo: RepositoryUpsert): string {
-  return crypto.createHash('sha256').update(JSON.stringify({
-    description: repo.description ?? null,
-    readme: repo.readme ?? null,
-    primary_language: repo.primary_language ?? null,
-    languages: [...(repo.languages ?? [])].sort(),
-    topics: [...(repo.topics ?? [])].map((topic) => topic.toLowerCase()).sort(),
-  })).digest('hex');
+  const hashable = { ...buildMlRepositorySource(repo, 'pending') } as Record<string, unknown>;
+  for (const key of [
+    'content_hash', 'star_count', 'fork_count', 'open_issues_count', 'pushed_days_ago',
+    'delta_3d', 'delta_7d', 'delta_30d', 'mentionable_users_count', 'updated_at',
+    'pushed_at', 'discovery_category', 'discovery_band',
+  ]) delete hashable[key];
+  if (Array.isArray(hashable.languages)) hashable.languages = [...hashable.languages].sort();
+  if (Array.isArray(hashable.topics)) {
+    hashable.topics = hashable.topics.map((topic) => String(topic).toLowerCase()).sort();
+  }
+  return crypto.createHash('sha256').update(JSON.stringify(hashable)).digest('hex');
 }
 
 export class PostgresRepositoryPersistence implements RepositoryPersistencePort {
@@ -24,6 +32,12 @@ export class PostgresRepositoryPersistence implements RepositoryPersistencePort 
     return sqlClient.begin(async (tx) => {
       const results: RepositoryUpsertResult[] = [];
       for (const repo of [...input].sort((a, b) => BigInt(a.github_id) < BigInt(b.github_id) ? -1 : 1)) {
+        // A repository row does not exist on its first ingestion, so a row lock
+        // alone cannot serialize concurrent creators. The transaction-scoped
+        // GitHub-ID lock keeps content versions and their outbox payload aligned.
+        // Inputs are sorted above so multi-repository batches acquire locks in a
+        // consistent order.
+        await tx`SELECT pg_advisory_xact_lock(${repo.github_id}::bigint)`;
         const hash = contentHash(repo);
         const previous = await tx`
           SELECT repo.repo_id,content.content_hash,content.content_version,
@@ -76,10 +90,22 @@ export class PostgresRepositoryPersistence implements RepositoryPersistencePort 
         }
         if (changed) {
           const payload = { job_id: crypto.randomUUID(), repo_id: repoId, content_version: version,
-            repository: { ...repo, repo_id: repoId, content_hash: hash } };
+            repository: buildMlRepositorySource(repo, hash) };
           await tx`
             INSERT INTO telemetry.ml_outbox (job_type,aggregate_id,idempotency_key,payload)
             VALUES ('repo_index',${repoId}::uuid,${`repo_index:${repoId}:${version}`},${JSON.stringify(payload)}::jsonb)
+            ON CONFLICT (idempotency_key) DO NOTHING
+          `;
+        } else {
+          const featureVersion = Date.parse(repo.observed_at);
+          const payload = {
+            job_id: crypto.randomUUID(), repo_id: repoId, feature_version: featureVersion,
+            features: buildMlRepositoryFeaturePatch(repo),
+          };
+          await tx`
+            INSERT INTO telemetry.ml_outbox (job_type,aggregate_id,idempotency_key,payload)
+            VALUES ('repo_refresh',${repoId}::uuid,
+              ${`repo_refresh:ingestion:${repoId}:${featureVersion}`},${JSON.stringify(payload)}::jsonb)
             ON CONFLICT (idempotency_key) DO NOTHING
           `;
         }
@@ -108,7 +134,7 @@ export class PostgresRepositoryPersistence implements RepositoryPersistencePort 
             ${JSON.stringify({ star_count: repo.star_count ?? 0, fork_count: repo.fork_count ?? 0 })}::jsonb)
         `;
         const payload = { job_id: crypto.randomUUID(), repo_id: mapping.repo_id,
-          feature_version: Date.parse(input.computed_at), features: { trending_rank: repo.rank, trending_score: repo.score ?? null } };
+          feature_version: Date.parse(input.computed_at), features: buildMlRepositoryFeaturePatch(repo) };
         await tx`
           INSERT INTO telemetry.ml_outbox (job_type,aggregate_id,idempotency_key,payload)
           VALUES ('repo_refresh',${mapping.repo_id}::uuid,${`repo_refresh:${input.snapshot_id}:${mapping.repo_id}`},${JSON.stringify(payload)}::jsonb)

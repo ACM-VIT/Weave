@@ -24,6 +24,7 @@ import { getUserBoards } from '../../api/boards';
 import { useOptimisticMutations } from '../../hooks/useOptimisticMutations';
 import { useAuth } from '../../store/AuthContext';
 import * as SecureStore from '../../utils/storage';
+import { prepareQueuedActivity, type QueuedActivity } from '../../api/activity';
 
 interface SavePopupProps {
   isVisible: boolean;
@@ -46,11 +47,12 @@ export function SavePopup({
 }: SavePopupProps) {
   const { height, width } = useWindowDimensions();
   const insets = useSafeAreaInsets();
-  const { user } = useAuth();
+  const { user, checkOnboardingStatus } = useAuth();
   const { createBoardMutation, addRepoToBoardMutation } = useOptimisticMutations(user?.user_id);
   const translateY = useMemo(() => new Animated.Value(0), []);
   const overlayOpacity = useMemo(() => new Animated.Value(0), []);
   const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingSaveEventRef = useRef<QueuedActivity | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
   const [isCreating, setIsCreating] = useState(false);
   const [newCollection, setNewCollection] = useState('');
@@ -102,6 +104,10 @@ export function SavePopup({
     if (closeTimer.current) clearTimeout(closeTimer.current);
   }, []);
 
+  useEffect(() => {
+    pendingSaveEventRef.current = null;
+  }, [repoId, serveId, position]);
+
   const closeAnimated = () => {
     Animated.parallel([
       Animated.timing(translateY, {
@@ -146,12 +152,24 @@ export function SavePopup({
   const saveRepository = () => {
     if (!effectiveSelected || !repoId || !repoName || addRepoToBoardMutation.isPending) return;
     setError('');
+    const existingEvent = pendingSaveEventRef.current;
+    const event = existingEvent?.repo_id === repoId
+      ? existingEvent
+      : prepareQueuedActivity({
+          repo_id: repoId,
+          action: 'save',
+          serve_id: serveId,
+          position,
+        });
+    pendingSaveEventRef.current = event;
     addRepoToBoardMutation.mutate(
-      { boardId: effectiveSelected, repoId, repoName, serveId, position },
+      { boardId: effectiveSelected, repoId, repoName, serveId, position, event },
       {
         onSuccess: () => {
+          pendingSaveEventRef.current = null;
           setStatus('saved');
           onSaved?.();
+          void checkOnboardingStatus();
           closeTimer.current = setTimeout(closeAnimated, 450);
         },
         onError: (mutationError: any) => {

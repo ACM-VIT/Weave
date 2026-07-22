@@ -1,7 +1,7 @@
 import { Href, useRouter } from "expo-router";
 import { useEffect, useRef, useState } from "react";
-import { KeyboardAvoidingView, Platform, ScrollView, Text, TouchableOpacity, View } from "react-native";
-import { isDemoModeEnabled, useAuth } from "../../store/AuthContext";
+import { KeyboardAvoidingView, Platform, ScrollView, Text, View } from "react-native";
+import { useAuth } from "../../store/AuthContext";
 import { login } from "../../api/auth";
 import { useOAuth } from "../../hooks/useOAuth";
 
@@ -23,7 +23,7 @@ import {
 export default function LoginScreen() {
   const router = useRouter();
   const scrollViewRef = useRef<ScrollView>(null);
-  const { setSession, enterOnboardingPreview } = useAuth();
+  const { setSession } = useAuth();
   const { signInWithProvider, isLoading: oauthLoading, error: oauthError } = useOAuth();
 
   const [email, setEmail] = useState("");
@@ -45,7 +45,7 @@ export default function LoginScreen() {
     setErrorMsg("");
     try {
       const data = await login(email, password);
-      await setSession(data.accessToken, data.user);
+      await setSession(data);
       // _layout.tsx will handle redirection
     } catch (err: any) {
       setErrorMsg(err.message || 'Login failed');
@@ -175,18 +175,6 @@ export default function LoginScreen() {
               disabled={!isFormValid}
             />
           </View>
-
-          {isDemoModeEnabled ? (
-            <TouchableOpacity
-              className="mt-4 h-[52px] items-center justify-center rounded-[9px] border border-[#63E08A]"
-              activeOpacity={0.8}
-              onPress={() => void enterOnboardingPreview()}
-            >
-              <Text className="font-nataSemiBold text-[16px] text-[#63E08A]">
-                Continue to onboarding (no login)
-              </Text>
-            </TouchableOpacity>
-          ) : null}
 
           {/* Footer */}
           <AuthFooter

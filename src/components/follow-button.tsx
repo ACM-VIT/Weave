@@ -19,7 +19,6 @@ export type FollowButtonProps = {
   stateKnown?: boolean;
   compact?: boolean;
   neutral?: boolean;
-  localOnly?: boolean;
   disabled?: boolean;
   onFollowingChange?: (following: boolean) => void;
   style?: StyleProp<ViewStyle>;
@@ -31,7 +30,6 @@ export function FollowButton({
   stateKnown = true,
   compact = false,
   neutral = false,
-  localOnly = false,
   disabled = false,
   onFollowingChange,
   style,
@@ -49,7 +47,6 @@ export function FollowButton({
 
   const mutation = useMutation<void, Error, boolean>({
     mutationFn: async (following) => {
-      if (localOnly) return;
       if (!targetUserId) throw new Error('This owner does not have a linked Weave profile.');
       const token = await getStorageItem('access_token');
       if (!token) throw new Error('Your session has expired. Please sign in again.');
@@ -57,11 +54,9 @@ export function FollowButton({
     },
   });
 
-  const targetAvailable = localOnly || (Boolean(targetUserId) && stateKnown);
+  const targetAvailable = Boolean(targetUserId) && stateKnown;
   const buttonDisabled = disabled || !targetAvailable || mutation.isPending;
-  const accessibilityHint = localOnly
-    ? 'Preview follow state is kept for this session.'
-    : !targetUserId
+  const accessibilityHint = !targetUserId
     ? 'This repository owner does not have a linked Weave profile.'
     : !stateKnown
       ? 'Follow status is unavailable for this repository owner.'
@@ -80,7 +75,7 @@ export function FollowButton({
         setLocalState({ key: stateKey, following: previous, failed: true });
       },
       onSuccess: () => {
-        if (!localOnly) onFollowingChange?.(next);
+        onFollowingChange?.(next);
       },
     });
   };

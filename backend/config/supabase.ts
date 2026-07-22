@@ -1,4 +1,5 @@
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
+import type { OAuthPkceStorageAdapter } from '../services/oauthPkceService.js';
 
 const supabaseUrl = process.env.SUPABASE_URL;
 const supabaseKey = process.env.SUPABASE_KEY;
@@ -17,6 +18,25 @@ export const createRecoverySupabaseClient = (): SupabaseClient => createClient(
       autoRefreshToken: false,
       detectSessionInUrl: false,
       persistSession: false,
+    },
+  },
+);
+
+export const createOAuthSupabaseClient = (
+  storage: OAuthPkceStorageAdapter,
+  storageKey: string,
+): SupabaseClient => createClient(
+  supabaseUrl,
+  supabaseKey,
+  {
+    auth: {
+      autoRefreshToken: false,
+      detectSessionInUrl: false,
+      flowType: 'pkce',
+      persistSession: true,
+      skipAutoInitialize: true,
+      storage,
+      storageKey,
     },
   },
 );

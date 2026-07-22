@@ -1,4 +1,12 @@
 import { API_URL } from './config';
+import { isValidUsername, normalizeUsername } from '../utils/username';
+import { validateOAuthInitiationUrl } from '../utils/oauth-init-url';
+import {
+  establishSession,
+  revokeSession,
+  type AuthenticatedSession,
+  type RawAuthenticatedSession,
+} from './session-transitions';
 
 const readJson = async (response: Response) => {
   const text = await response.text();
@@ -11,27 +19,37 @@ const readJson = async (response: Response) => {
   }
 };
 
-export const register = async (email: string, password: string, fullName: string) => {
-  const response = await fetch(`${API_URL}/auth/signup`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    credentials: 'include',
-    body: JSON.stringify({ 
-      email, 
-      password, 
-      username: email.split('@')[0], // Generate a default username based on email
-      full_name: fullName 
-    }),
-  });
+export const register = async (
+  email: string,
+  password: string,
+  fullName: string,
+  username: string,
+  dateOfBirth: string,
+) => {
+  if (!isValidUsername(username)) throw new Error('Enter a valid username.');
+  return establishSession(async () => {
+    const response = await fetch(`${API_URL}/auth/signup`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({
+        email,
+        password,
+        username: normalizeUsername(username),
+        full_name: fullName,
+        date_of_birth: dateOfBirth,
+      }),
+    });
 
-  const data = await readJson(response);
-  if (!response.ok) {
-    throw new Error(data.error || 'Failed to register');
-  }
-  return data.data; // Expected { accessToken, user }
+    const data = await readJson(response);
+    if (!response.ok) {
+      throw new Error(data.error || 'Failed to register');
+    }
+    return data.data as RawAuthenticatedSession<any>;
+  });
 };
 
-export const login = async (email: string, password: string) => {
+export const login = async (email: string, password: string) => establishSession(async () => {
   const response = await fetch(`${API_URL}/auth/login`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -43,13 +61,16 @@ export const login = async (email: string, password: string) => {
   if (!response.ok) {
     throw new Error(data.error || 'Failed to login');
   }
-  return data.data; // Expected { accessToken, user }
-};
+  return data.data as RawAuthenticatedSession<any>;
+});
 
-export const logout = async () => {
+export const logout = async () => revokeSession(async (accessToken) => {
   const response = await fetch(`${API_URL}/auth/logout`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+    },
     credentials: 'include',
   });
 
@@ -58,33 +79,65 @@ export const logout = async () => {
     throw new Error(data.error || 'Failed to logout');
   }
   return data;
-};
+});
 
 export const getOAuthUrl = async (
   provider: 'github' | 'google',
   redirectUri: string,
+  codeChallenge: string,
+  authIntent: 'login' | 'signup',
+  dateOfBirth?: string,
 ): Promise<string> => {
-  const params = new URLSearchParams({ redirect_uri: redirectUri });
+  const params = new URLSearchParams({
+    redirect_uri: redirectUri,
+    code_challenge: codeChallenge,
+    auth_intent: authIntent,
+  });
+  if (dateOfBirth) params.set('date_of_birth', dateOfBirth);
   const response = await fetch(`${API_URL}/auth/oauth/${provider}?${params}`);
   const data = await readJson(response);
   if (!response.ok) {
     throw new Error(data.error || `Failed to get ${provider} OAuth URL`);
   }
-  return data.data.url as string;
+  const authorizationUrl = data && typeof data === 'object' ? data.data?.url : undefined;
+  return validateOAuthInitiationUrl(authorizationUrl, API_URL);
 };
 
-export const exchangeCode = async (code: string): Promise<{ accessToken: string; user: any }> => {
+type ExchangedSession = AuthenticatedSession<any>;
+const codeExchangeRequests = new Map<string, Promise<ExchangedSession>>();
+
+const performCodeExchange = async (
+  code: string,
+  codeVerifier: string,
+): Promise<RawAuthenticatedSession<any>> => {
   const response = await fetch(`${API_URL}/auth/exchange`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     credentials: 'include',
-    body: JSON.stringify({ code }),
+    body: JSON.stringify({ code, code_verifier: codeVerifier }),
   });
   const data = await readJson(response);
   if (!response.ok) {
     throw new Error(data.error || 'Failed to exchange authorization code');
   }
-  return data.data as { accessToken: string; user: any };
+  return data.data as RawAuthenticatedSession<any>;
+};
+
+export const exchangeCode = (code: string, codeVerifier: string): Promise<ExchangedSession> => {
+  const requestKey = `${code}:${codeVerifier}`;
+  const existing = codeExchangeRequests.get(requestKey);
+  if (existing) return existing;
+  const request = establishSession(() => performCodeExchange(code, codeVerifier));
+  codeExchangeRequests.set(requestKey, request);
+  void request.then(() => {
+    setTimeout(() => {
+      if (codeExchangeRequests.get(requestKey) === request) codeExchangeRequests.delete(requestKey);
+    }, 60_000);
+  }).catch(() => undefined);
+  void request.catch(() => {
+    if (codeExchangeRequests.get(requestKey) === request) codeExchangeRequests.delete(requestKey);
+  });
+  return request;
 };
 
 export const requestPasswordReset = async (email: string): Promise<string> => {

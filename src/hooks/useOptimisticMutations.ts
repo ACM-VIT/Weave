@@ -1,7 +1,7 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import * as SecureStore from "../utils/storage";
 import { createBoard } from "../api/boards";
-import { toggleSaveRepo } from "../api/activity";
+import type { QueuedActivity } from "../api/activity";
 
 export function useOptimisticMutations(userId?: string) {
   const queryClient = useQueryClient();
@@ -27,7 +27,7 @@ export function useOptimisticMutations(userId?: string) {
           board_id: `temp-${Date.now()}`,
           board_name: newBoardName,
           user_id: userId,
-          visibility: "public",
+          visibility: "private",
           repos_count: 0,
         };
         
@@ -59,81 +59,30 @@ export function useOptimisticMutations(userId?: string) {
     },
   });
 
-  const toggleSaveMutation = useMutation({
-    mutationFn: async ({ repoId, repoName: _repoName, saved }: {
-      repoId: string;
-      repoName: string;
-      saved: boolean;
-    }) => {
-      if (!userId) throw new Error("No user id");
-      const token = await SecureStore.getItemAsync("access_token");
-      if (!token) throw new Error("No token");
-      return toggleSaveRepo(userId, repoId, token, saved);
-    },
-    onMutate: async ({ repoId, repoName, saved }) => {
-      await queryClient.cancelQueries({ queryKey: ["savedRepos", userId] });
-      const previousRepos = queryClient.getQueryData(["savedRepos", userId]);
-
-      queryClient.setQueryData(["savedRepos", userId], (old: any) => {
-        if (!old) return old;
-
-        let newPages = [...old.pages];
-
-        if (saved) {
-          // Optimistically remove
-          newPages = newPages.map((page) => page.filter((item: any) => item.repo_id !== repoId));
-        } else {
-          // Optimistically add
-          const newSavedItem = {
-            activity_id: `temp-${Date.now()}`,
-            user_id: userId,
-            repo_id: repoId,
-            is_saved: true,
-            repo: {
-              repo_id: repoId,
-              name: repoName,
-            }
-          };
-          if (newPages.length > 0) {
-            newPages[0] = [newSavedItem, ...newPages[0]];
-          } else {
-            newPages.push([newSavedItem]);
-          }
-        }
-
-        return { ...old, pages: newPages };
-      });
-
-      return { previousRepos };
-    },
-    onError: (err, variables, context) => {
-      if (context?.previousRepos) {
-        queryClient.setQueryData(["savedRepos", userId], context.previousRepos);
-      }
-    },
-    onSettled: () => {
-      queryClient.invalidateQueries({ queryKey: ["savedRepos", userId] });
-    },
-  });
-
   const addRepoToBoardMutation = useMutation({
-    mutationFn: async ({ boardId, repoId, repoName: _repoName, serveId, position }: {
+    mutationFn: async ({ boardId, repoId, repoName: _repoName, serveId, position, event }: {
       boardId: string;
       repoId: string;
       repoName: string;
       serveId?: string | null;
       position?: number | null;
+      event: QueuedActivity;
     }) => {
       if (!userId) throw new Error("No user id");
       const token = await SecureStore.getItemAsync("access_token");
       if (!token) throw new Error("No token");
       
-      // Since this is atomic and also saves the repo, we use the new board API method
-      // It handles both adding to the board and saving to the activity table
       const { addRepoToBoardAtomic } = await import("../api/boards");
-      return addRepoToBoardAtomic(userId, boardId, repoId, token, { serve_id: serveId, position });
+      return addRepoToBoardAtomic(
+        userId,
+        boardId,
+        repoId,
+        token,
+        { serve_id: serveId, position },
+        event,
+      );
     },
-    onMutate: async ({ boardId, repoId, repoName }) => {
+    onMutate: async ({ repoId, repoName }) => {
       // Optimistically update both the board's repos (if we had a query for it) and the savedRepos list
       await queryClient.cancelQueries({ queryKey: ["savedRepos", userId] });
       const previousRepos = queryClient.getQueryData(["savedRepos", userId]);
@@ -164,22 +113,24 @@ export function useOptimisticMutations(userId?: string) {
 
       return { previousRepos };
     },
-    onError: (err: any, variables, context) => {
-      alert(`Failed to save repository: ${err.message}`);
+    onError: (_error, _variables, context) => {
       if (context?.previousRepos) {
         queryClient.setQueryData(["savedRepos", userId], context.previousRepos);
       }
+    },
+    onSuccess: async () => {
+      await queryClient.resetQueries({ queryKey: ["feed", userId], exact: true });
     },
     onSettled: () => {
       // Invalidate both boards (their counts might have changed) and savedRepos
       queryClient.invalidateQueries({ queryKey: ["savedRepos", userId] });
       queryClient.invalidateQueries({ queryKey: ["boards", userId] });
+      queryClient.invalidateQueries({ queryKey: ["profile-content", userId] });
     },
   });
 
   return {
     createBoardMutation,
-    toggleSaveMutation,
     addRepoToBoardMutation,
   };
 }

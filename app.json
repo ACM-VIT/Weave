@@ -2,7 +2,7 @@
   "expo": {
     "name": "Weave",
     "slug": "gh-social",
-    "version": "1.0.0",
+    "version": "2.0.0",
     "description": "Discover open-source repositories and connect with developers.",
     "icon": "./assets/images/logo/weavelogo.png",
     "orientation": "portrait",
@@ -17,27 +17,18 @@
       }
     },
     "android": {
+      "versionCode": 4,
       "predictiveBackGestureEnabled": false,
       "package": "com.weave.app",
+      "blockedPermissions": [
+        "android.permission.SYSTEM_ALERT_WINDOW",
+        "android.permission.READ_EXTERNAL_STORAGE",
+        "android.permission.WRITE_EXTERNAL_STORAGE"
+      ],
       "adaptiveIcon": {
         "foregroundImage": "./assets/images/logo/weavelogo.png",
         "backgroundColor": "#151110"
-      },
-      "intentFilters": [
-        {
-          "action": "VIEW",
-          "autoVerify": true,
-          "data": [
-            {
-              "scheme": "ghsocial"
-            }
-          ],
-          "category": [
-            "BROWSABLE",
-            "DEFAULT"
-          ]
-        }
-      ]
+      }
     },
     "web": {
       "output": "static",
@@ -53,7 +44,6 @@
       "expo-font",
       "@react-native-community/datetimepicker",
       "expo-secure-store",
-      "expo-image",
       [
         "expo-splash-screen",
         {
@@ -70,10 +60,7 @@
       "reactCompiler": true
     },
     "extra": {
-      "router": {},
-      "eas": {
-        "projectId": "1d965755-3317-49bf-920f-9a04f972e837"
-      }
+      "router": {}
     }
   }
 }

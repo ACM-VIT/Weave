@@ -1,58 +1,91 @@
+import { File, Paths } from 'expo-file-system';
+import { Platform } from 'react-native';
+
 import type { RepositoryData } from '@/data/repositories';
-import { getStorageItem, setStorageItem } from '@/utils/storage';
+import {
+  parsePinnedRepositories,
+  serializePinnedRepositories,
+  type PinnedRepository,
+} from '@/services/pinnedRepositoryCodec';
+import { getStorageItem, removeStorageItem, setStorageItem } from '@/utils/storage';
 
-const STORAGE_VERSION = 1;
-
-export type PinnedRepository = {
-  key: string;
-  repositoryId: string;
-  name: string;
-  owner: string;
-  description: string;
-  primaryLanguage: string | null;
-  url: string;
-  pinnedAt: string;
-};
-
-type StoredPinnedRepositories = {
-  version: typeof STORAGE_VERSION;
-  repositories: PinnedRepository[];
-};
+export type { PinnedRepository } from '@/services/pinnedRepositoryCodec';
 
 const writeQueues = new Map<string, Promise<void>>();
+const migrationReads = new Map<string, Promise<string | null>>();
 
 function storageKey(userId: string) {
   return `weave.pinned-repositories.${userId}`;
+}
+
+function nativeFileName(userId: string) {
+  const encodedUserId = encodeURIComponent(userId).replace(/\./g, '%2E');
+  return `weave-pinned-repositories-v1-${encodedUserId}.json`;
+}
+
+function nativeFile(userId: string) {
+  return new File(Paths.document, nativeFileName(userId));
+}
+
+function assertUserId(userId: string) {
+  if (!userId.trim()) throw new Error('A user id is required to store pinned repositories.');
+}
+
+async function writeNativePayload(userId: string, payload: string): Promise<void> {
+  const destination = nativeFile(userId);
+  const temporary = new File(Paths.document, `${nativeFileName(userId)}.tmp`);
+  temporary.create({ overwrite: true });
+  temporary.write(payload);
+  await temporary.move(destination, { overwrite: true });
+}
+
+async function migrateLegacyNativePayload(userId: string): Promise<string | null> {
+  const legacyKey = storageKey(userId);
+  const legacyPayload = await getStorageItem(legacyKey);
+  if (legacyPayload === null) return null;
+
+  await writeNativePayload(userId, legacyPayload);
+  await removeStorageItem(legacyKey).catch(() => undefined);
+  return legacyPayload;
+}
+
+async function readNativePayload(userId: string): Promise<string | null> {
+  const file = nativeFile(userId);
+  if (file.exists) return file.text();
+
+  const existingMigration = migrationReads.get(userId);
+  if (existingMigration) return existingMigration;
+
+  const migration = migrateLegacyNativePayload(userId);
+  migrationReads.set(userId, migration);
+  try {
+    return await migration;
+  } finally {
+    if (migrationReads.get(userId) === migration) migrationReads.delete(userId);
+  }
+}
+
+async function readPayload(userId: string): Promise<string | null> {
+  assertUserId(userId);
+  if (Platform.OS === 'web') return getStorageItem(storageKey(userId));
+  return readNativePayload(userId);
+}
+
+async function writePayload(userId: string, payload: string): Promise<void> {
+  assertUserId(userId);
+  if (Platform.OS === 'web') {
+    await setStorageItem(storageKey(userId), payload);
+    return;
+  }
+  await writeNativePayload(userId, payload);
 }
 
 export function pinnedRepositoryKey(repository: Pick<RepositoryData, 'id' | 'owner' | 'title'>) {
   return `${repository.id}:${repository.owner}/${repository.title}`;
 }
 
-function isPinnedRepository(value: unknown): value is PinnedRepository {
-  if (!value || typeof value !== 'object') return false;
-  const repository = value as Partial<PinnedRepository>;
-  return typeof repository.key === 'string'
-    && typeof repository.repositoryId === 'string'
-    && typeof repository.name === 'string'
-    && typeof repository.owner === 'string'
-    && typeof repository.description === 'string'
-    && (repository.primaryLanguage === null || typeof repository.primaryLanguage === 'string')
-    && typeof repository.url === 'string'
-    && typeof repository.pinnedAt === 'string';
-}
-
 export async function loadPinnedRepositories(userId: string): Promise<PinnedRepository[]> {
-  const raw = await getStorageItem(storageKey(userId));
-  if (!raw) return [];
-
-  try {
-    const stored = JSON.parse(raw) as Partial<StoredPinnedRepositories>;
-    if (stored.version !== STORAGE_VERSION || !Array.isArray(stored.repositories)) return [];
-    return stored.repositories.filter(isPinnedRepository);
-  } catch {
-    return [];
-  }
+  return parsePinnedRepositories(await readPayload(userId));
 }
 
 export async function setRepositoryPinned(
@@ -73,16 +106,13 @@ export async function setRepositoryPinned(
           owner: repository.owner,
           description: repository.description || 'No description provided.',
           primaryLanguage: repository.techStack?.[0] ?? null,
-          url: `https://github.com/${encodeURIComponent(repository.owner)}/${encodeURIComponent(repository.title)}`,
+          url: repository.githubUrl
+            ?? `https://github.com/${encodeURIComponent(repository.owner)}/${encodeURIComponent(repository.title)}`,
           pinnedAt: new Date().toISOString(),
         }, ...withoutRepository]
       : withoutRepository;
 
-    const payload: StoredPinnedRepositories = {
-      version: STORAGE_VERSION,
-      repositories: nextRepositories,
-    };
-    await setStorageItem(storageKey(userId), JSON.stringify(payload));
+    await writePayload(userId, serializePinnedRepositories(nextRepositories));
   });
 
   writeQueues.set(userId, nextWrite);

@@ -1,8 +1,10 @@
-import crypto from 'node:crypto';
 import type { Response } from 'express';
 import { sqlClient } from '../db/index.js';
 import type { AuthRequest } from '../middlewares/authMiddleware.js';
-import { setRepositorySaved } from '../services/savedRepositoryService.js';
+import { processInteractionBatchV2InTransaction } from '../services/activityV2Service.js';
+import { buildMlOnboardingJob, hasMlEmbeddingContext } from '../services/mlOnboardingService.js';
+import { isInteractionEventV2 } from '../utils/interactionValidation.js';
+import { normalizeUsername } from '../utils/username.js';
 import { isValidUuid } from '../utils/validators.js';
 import { sendControllerError, sendError, sendSuccess } from '../utils/response.js';
 
@@ -24,6 +26,20 @@ function text(value: unknown, max: number, required = false): string | null | un
   return normalized;
 }
 
+function slugArray(value: unknown): string[] | null {
+  if (!Array.isArray(value) || value.length > 50
+    || !value.every((item) => typeof item === 'string' && item.trim().length <= 100)) return null;
+  const normalized = value.map((item) => String(item).trim().toLowerCase()
+    .replace(/&/g, ' and ')
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .replace(/-{2,}/g, '-')
+    .slice(0, 50)
+    .replace(/-+$/g, ''));
+  if (normalized.some((item) => !/^[a-z0-9][a-z0-9-]{0,49}$/.test(item))) return null;
+  return [...new Set(normalized)];
+}
+
 function userId(req: AuthRequest, res: Response): string | null {
   const id = req.user?.userId;
   if (!id) sendError(res, 401, 'Authentication required.');
@@ -37,18 +53,31 @@ function idParam(req: AuthRequest, res: Response, name: string): string | null {
   return isValidUuid(value) ? value : null;
 }
 
+export function hasCompletedOnboarding(
+  onboardingCompleted: unknown,
+): boolean {
+  // This explicit durable flag is the only routing authority. Inferring state
+  // from a linked provider or partial topics can incorrectly bypass onboarding.
+  return onboardingCompleted === true;
+}
+
 export async function getMe(req: AuthRequest, res: Response): Promise<void> {
   const id = userId(req, res); if (!id) return;
   const rows = await sqlClient`
-    SELECT u.user_id,u.username,u.full_name,u.bio,u.github_id,u.github_handle,u.avatar_url,u.status,
-      u.profile_version,u.created_at,u.updated_at,s.followers_count,s.following_count,s.likes_given_count,
+    SELECT u.user_id,u.username,u.full_name,u.date_of_birth,u.bio,u.github_id,u.github_handle,u.avatar_url,u.status,
+      u.onboarding_completed,
+      u.interests,u.skills,u.tech_stack,u.profile_version,u.created_at,u.updated_at,
+      s.followers_count,s.following_count,s.likes_given_count,
       s.saved_repos_count,f.feed_version,f.feedback_version,
       COALESCE((SELECT json_agg(t.slug ORDER BY t.slug) FROM app.user_topics ut JOIN app.topics t USING(topic_id)
         WHERE ut.user_id=u.user_id),'[]'::json) AS topics
     FROM app.users u JOIN app.user_stats s USING(user_id) JOIN app.user_feed_state f USING(user_id)
     WHERE u.user_id=${id}::uuid AND u.status<>'deleted'`;
   if (!rows[0]) return sendError(res, 404, 'User profile not found.');
-  sendSuccess(res, 200, rows[0]);
+  sendSuccess(res, 200, {
+    ...rows[0],
+    onboarding_completed: hasCompletedOnboarding(rows[0].onboarding_completed),
+  });
 }
 
 export async function getUser(req: AuthRequest, res: Response): Promise<void> {
@@ -66,50 +95,88 @@ export async function getUser(req: AuthRequest, res: Response): Promise<void> {
 
 export async function updateMe(req: AuthRequest, res: Response): Promise<void> {
   const id = userId(req, res); if (!id) return;
-  const allowed = ['username', 'full_name', 'bio', 'github_handle', 'avatar_url'];
+  const allowed = ['username', 'full_name', 'bio', 'avatar_url'];
   if (!req.body || Object.keys(req.body).some((key) => !allowed.includes(key))) return sendError(res, 400, 'Unsupported profile field.');
-  const username = req.body.username === undefined ? undefined : text(req.body.username, 50, true);
+  const usernameValue = req.body.username === undefined ? undefined : normalizeUsername(req.body.username) ?? undefined;
   const fullName = req.body.full_name === undefined ? undefined : text(req.body.full_name, 100);
   const bio = req.body.bio === undefined ? undefined : text(req.body.bio, 2_000);
-  const githubHandle = req.body.github_handle === undefined ? undefined : text(req.body.github_handle, 100);
   const avatarUrl = req.body.avatar_url === undefined ? undefined : text(req.body.avatar_url, 2_048);
-  if ([username, fullName, bio, githubHandle, avatarUrl].some((v, i) => Object.hasOwn(req.body, allowed[i]) && v === undefined)) {
+  if ([usernameValue, fullName, bio, avatarUrl]
+    .some((v, i) => Object.hasOwn(req.body, allowed[i]) && v === undefined)) {
     return sendError(res, 400, 'Invalid profile value.');
   }
   try {
-    const rows = await sqlClient`
-      UPDATE app.users SET username=COALESCE(${username ?? null},username),
-        full_name=CASE WHEN ${req.body.full_name !== undefined} THEN ${fullName ?? null} ELSE full_name END,
-        bio=CASE WHEN ${req.body.bio !== undefined} THEN ${bio ?? null} ELSE bio END,
-        github_handle=CASE WHEN ${req.body.github_handle !== undefined} THEN ${githubHandle ?? null} ELSE github_handle END,
-        avatar_url=CASE WHEN ${req.body.avatar_url !== undefined} THEN ${avatarUrl ?? null} ELSE avatar_url END,
-        profile_version=profile_version+1,updated_at=now()
-      WHERE user_id=${id}::uuid RETURNING user_id,username,full_name,bio,github_handle,avatar_url,profile_version,updated_at`;
-    sendSuccess(res, 200, rows[0]);
+    const updated = await sqlClient.begin(async (tx) => {
+      const rows = await tx`
+        UPDATE app.users SET username=COALESCE(${usernameValue ?? null},username),
+          full_name=CASE WHEN ${req.body.full_name !== undefined} THEN ${fullName ?? null} ELSE full_name END,
+          bio=CASE WHEN ${req.body.bio !== undefined} THEN ${bio ?? null} ELSE bio END,
+          avatar_url=CASE WHEN ${req.body.avatar_url !== undefined} THEN ${avatarUrl ?? null} ELSE avatar_url END,
+          profile_version=profile_version+1,updated_at=now()
+        WHERE user_id=${id}::uuid
+        RETURNING user_id,username,full_name,bio,github_handle,avatar_url,interests,skills,tech_stack,
+          profile_version,updated_at`;
+      if (!rows[0]) throw Object.assign(new Error('User profile not found.'), { statusCode: 404 });
+      const job = buildMlOnboardingJob(id, Number(rows[0].profile_version), {
+        username: String(rows[0].username),
+        fullName: rows[0].full_name == null ? null : String(rows[0].full_name),
+        bio: rows[0].bio == null ? null : String(rows[0].bio),
+        githubUsername: rows[0].github_handle == null ? null : String(rows[0].github_handle),
+        avatarUrl: rows[0].avatar_url == null ? null : String(rows[0].avatar_url),
+        interests: Array.isArray(rows[0].interests) ? rows[0].interests.map(String) : [],
+        skills: Array.isArray(rows[0].skills) ? rows[0].skills.map(String) : [],
+        techStack: Array.isArray(rows[0].tech_stack) ? rows[0].tech_stack.map(String) : [],
+      });
+      if (hasMlEmbeddingContext(job.profile)) {
+        await tx`
+          INSERT INTO telemetry.ml_outbox(job_type,aggregate_id,idempotency_key,payload)
+          VALUES('onboard',${id}::uuid,${`onboard:${id}:${rows[0].profile_version}`},${JSON.stringify(job)}::jsonb)
+          ON CONFLICT (idempotency_key) DO NOTHING
+        `;
+      }
+      return rows[0];
+    });
+    sendSuccess(res, 200, updated);
   } catch (error) { sendControllerError(res, error); }
 }
 
 export async function onboardingStatus(req: AuthRequest, res: Response): Promise<void> {
   const id = userId(req, res); if (!id) return;
-  const rows = await sqlClient`SELECT EXISTS(SELECT 1 FROM app.user_topics WHERE user_id=${id}::uuid) AS completed,
-    profile_version FROM app.users WHERE user_id=${id}::uuid`;
+  const rows = await sqlClient`
+    SELECT u.onboarding_completed,u.profile_version
+    FROM app.users u WHERE u.user_id=${id}::uuid
+  `;
   if (!rows[0]) return sendError(res, 404, 'User profile not found.');
-  sendSuccess(res, 200, rows[0]);
+  sendSuccess(res, 200, {
+    completed: hasCompletedOnboarding(rows[0].onboarding_completed),
+    profile_version: rows[0].profile_version,
+  });
 }
 
 export async function completeOnboarding(req: AuthRequest, res: Response): Promise<void> {
   const id = userId(req, res); if (!id) return;
-  const topics = req.body?.topics;
   const bio = req.body?.bio === undefined ? null : text(req.body.bio, 2_000);
-  if (!Array.isArray(topics) || topics.length < 1 || topics.length > 50
-    || !topics.every((item) => typeof item === 'string' && /^[a-z0-9][a-z0-9-]{0,49}$/.test(item)) || bio === undefined) {
-    return sendError(res, 400, 'topics must contain 1-50 unique slugs and bio must be at most 2000 characters.');
+  const structured = ['interests', 'skills', 'tech_stack'].some((key) => Object.hasOwn(req.body ?? {}, key));
+  const legacyTopics = structured ? [] : slugArray(req.body?.topics);
+  const interests = structured ? slugArray(req.body?.interests ?? []) : legacyTopics;
+  const skills = structured ? slugArray(req.body?.skills ?? []) : [];
+  const techStack = structured ? slugArray(req.body?.tech_stack ?? []) : [];
+  if (bio === undefined) return sendError(res, 400, 'Bio can contain at most 2000 characters.');
+  if (interests === null || skills === null || techStack === null) {
+    return sendError(res, 400, 'Each onboarding category can contain at most 50 valid selections.');
   }
-  const uniqueTopics = [...new Set(topics)];
+  if (interests.length + skills.length + techStack.length < 1) {
+    return sendError(res, 400, 'Choose at least one interest, skill, or technology.');
+  }
+  const uniqueTopics = [...new Set([...interests, ...skills, ...techStack])];
+  if (uniqueTopics.length > 100) return sendError(res, 400, 'The combined onboarding profile may contain at most 100 unique slugs.');
   try {
     const result = await sqlClient.begin(async (tx) => {
-      const updated = await tx`UPDATE app.users SET bio=COALESCE(${bio},bio),profile_version=profile_version+1,updated_at=now()
-        WHERE user_id=${id}::uuid RETURNING profile_version,username,full_name,bio`;
+      const updated = await tx`UPDATE app.users SET bio=COALESCE(${bio},bio),
+        interests=${JSON.stringify(interests)}::jsonb,skills=${JSON.stringify(skills)}::jsonb,
+        tech_stack=${JSON.stringify(techStack)}::jsonb,onboarding_completed=true,
+        profile_version=profile_version+1,updated_at=now()
+        WHERE user_id=${id}::uuid RETURNING profile_version,username,full_name,bio,github_handle,avatar_url`;
       if (!updated[0]) throw Object.assign(new Error('User profile not found.'), { statusCode: 404 });
       await tx`DELETE FROM app.user_topics WHERE user_id=${id}::uuid`;
       for (const slug of uniqueTopics) {
@@ -118,14 +185,20 @@ export async function completeOnboarding(req: AuthRequest, res: Response): Promi
         await tx`INSERT INTO app.user_topics(user_id,topic_id) VALUES (${id}::uuid,${topic[0].topic_id})`;
       }
       const version = String(updated[0].profile_version);
-      const payload = JSON.stringify({
-        job_id: crypto.randomUUID(), user_id: id, profile_version: Number(version),
-        profile: { username: updated[0].username, full_name: updated[0].full_name,
-          bio: updated[0].bio, interests: uniqueTopics, skills: [], tech_stack: [] },
+      const job = buildMlOnboardingJob(id, Number(version), {
+        username: String(updated[0].username),
+        fullName: updated[0].full_name == null ? null : String(updated[0].full_name),
+        bio: updated[0].bio == null ? null : String(updated[0].bio),
+        githubUsername: updated[0].github_handle == null ? null : String(updated[0].github_handle),
+        avatarUrl: updated[0].avatar_url == null ? null : String(updated[0].avatar_url),
+        interests,
+        skills,
+        techStack,
       });
       await tx`INSERT INTO telemetry.ml_outbox(job_type,aggregate_id,idempotency_key,payload)
-        VALUES('onboard',${id}::uuid,${`onboard:${id}:${version}`},${payload}::jsonb)`;
-      return { completed: true, profile_version: version, topics: uniqueTopics };
+        VALUES('onboard',${id}::uuid,${`onboard:${id}:${version}`},${JSON.stringify(job)}::jsonb)
+        ON CONFLICT (idempotency_key) DO NOTHING`;
+      return { completed: true, profile_version: version, topics: uniqueTopics, interests, skills, tech_stack: techStack };
     });
     sendSuccess(res, 200, result);
   } catch (error) { sendControllerError(res, error); }
@@ -141,6 +214,13 @@ export async function setFollow(req: AuthRequest, res: Response): Promise<void> 
       if (rows.length) {
         await tx`UPDATE app.user_stats SET following_count=following_count+1,updated_at=now() WHERE user_id=${id}::uuid`;
         await tx`UPDATE app.user_stats SET followers_count=followers_count+1,updated_at=now() WHERE user_id=${target}::uuid`;
+        await tx`
+          INSERT INTO app.user_feed_state (user_id,feed_version,updated_at)
+          VALUES (${id}::uuid,2,now())
+          ON CONFLICT (user_id) DO UPDATE SET
+            feed_version=app.user_feed_state.feed_version+1,
+            updated_at=now()
+        `;
       }
     });
     res.status(204).end();
@@ -154,6 +234,13 @@ export async function removeFollow(req: AuthRequest, res: Response): Promise<voi
     if (rows.length) {
       await tx`UPDATE app.user_stats SET following_count=GREATEST(0,following_count-1),updated_at=now() WHERE user_id=${id}::uuid`;
       await tx`UPDATE app.user_stats SET followers_count=GREATEST(0,followers_count-1),updated_at=now() WHERE user_id=${target}::uuid`;
+      await tx`
+        INSERT INTO app.user_feed_state (user_id,feed_version,updated_at)
+        VALUES (${id}::uuid,2,now())
+        ON CONFLICT (user_id) DO UPDATE SET
+          feed_version=app.user_feed_state.feed_version+1,
+          updated_at=now()
+      `;
     }
   });
   res.status(204).end();
@@ -367,16 +454,20 @@ export async function listBoardRepos(req: AuthRequest, res: Response): Promise<v
 
 export async function addBoardRepo(req: AuthRequest, res: Response): Promise<void> {
   const id = userId(req, res); const board = idParam(req, res, 'boardId'); const repo = idParam(req, res, 'repoId'); if (!id || !board || !repo) return;
+  const event = req.body?.event;
+  if (!isInteractionEventV2(event) || event.event_type !== 'save' || event.repo_id !== repo) {
+    return sendError(res, 400, 'A stable v2 save event matching repoId is required.');
+  }
   try {
     await sqlClient.begin(async (tx) => {
       const owned = await tx`SELECT 1 FROM app.boards WHERE board_id=${board}::uuid AND user_id=${id}::uuid`;
       if (!owned.length) throw Object.assign(new Error('Board not found.'), { statusCode: 404 });
+      await processInteractionBatchV2InTransaction(tx, id, [event]);
       await tx`
         INSERT INTO app.board_repos(board_id,repo_id,added_by)
         VALUES (${board}::uuid,${repo}::uuid,${id}::uuid)
         ON CONFLICT (board_id,repo_id) DO NOTHING
       `;
-      await setRepositorySaved(tx, id, repo, true);
     });
     res.status(204).end();
   } catch (error) { sendControllerError(res, error); }
