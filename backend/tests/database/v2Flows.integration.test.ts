@@ -11,6 +11,7 @@ import { PostgresFeedPersistence } from '../../adapters/postgresFeedPersistence.
 import { PostgresRepositoryPersistence } from '../../adapters/postgresRepositoryPersistence.js';
 import { RedisFeedQueue } from '../../redis/feedQueue.js';
 import { FeedV2Service } from '../../services/feedV2Service.js';
+import { ensureIdentityProfile } from '../../services/identityService.js';
 import type { InteractionEventV2 } from '../../contracts/interactions.v2.js';
 
 const integration = process.env.RUN_DATABASE_INTEGRATION === '1' ? test : test.skip;
@@ -70,6 +71,27 @@ async function seed(): Promise<void> {
 
 integration('v2 database, outbox, and Redis feed flows preserve invariants', async () => {
   await seed();
+
+  await ensureIdentityProfile({
+    userId,
+    username: 'v2_test',
+    onboardingCompleted: true,
+  });
+  assert.equal(Boolean((await sqlClient`
+    SELECT onboarding_completed FROM app.users WHERE user_id=${userId}::uuid
+  `)[0].onboarding_completed), false);
+
+  await sqlClient`
+    UPDATE app.users SET onboarding_completed=true WHERE user_id=${userId}::uuid
+  `;
+  await ensureIdentityProfile({
+    userId,
+    username: 'v2_test',
+    onboardingCompleted: false,
+  });
+  assert.equal(Boolean((await sqlClient`
+    SELECT onboarding_completed FROM app.users WHERE user_id=${userId}::uuid
+  `)[0].onboarding_completed), true);
 
   // UUID ordering intentionally opposes client ordering. The latest action
   // must win, and feedback versions must follow the submitted sequence.

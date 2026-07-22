@@ -66,7 +66,10 @@ export async function ensureIdentityProfile(profile: IdentityProfile): Promise<v
         github_id=COALESCE(EXCLUDED.github_id,app.users.github_id),
         github_handle=COALESCE(EXCLUDED.github_handle,app.users.github_handle),
         avatar_url=COALESCE(EXCLUDED.avatar_url,app.users.avatar_url),
-        onboarding_completed=app.users.onboarding_completed OR EXCLUDED.onboarding_completed,
+        -- Identity provisioning may insert the initial state, but it must not
+        -- mutate a durable onboarding decision on conflict. Only onboarding or
+        -- the GitHub persona sync is allowed to complete an existing profile.
+        onboarding_completed=app.users.onboarding_completed,
         updated_at=now()
     `;
     await tx`INSERT INTO app.user_stats (user_id) VALUES (${profile.userId}::uuid) ON CONFLICT DO NOTHING`;

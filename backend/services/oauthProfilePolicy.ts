@@ -15,9 +15,20 @@ export function requiresGitHubPersona(
   return provider === 'github' && existingOnboardingCompleted !== true;
 }
 
+export function loginOnboardingCompleted(
+  existingOnboardingCompleted: boolean | null | undefined,
+): boolean {
+  // Authentication must never complete onboarding. The migration is the
+  // authority that marks legacy accounts complete; a missing repair profile
+  // therefore starts incomplete.
+  return existingOnboardingCompleted === true;
+}
+
 export function initialOAuthOnboardingCompleted(
   authIntent: OAuthIntent,
+  existingOnboardingCompleted: boolean | null | undefined,
   githubPersonaRequired: boolean,
 ): boolean {
-  return authIntent === 'login' && !githubPersonaRequired;
+  if (authIntent !== 'login' || githubPersonaRequired) return false;
+  return loginOnboardingCompleted(existingOnboardingCompleted);
 }

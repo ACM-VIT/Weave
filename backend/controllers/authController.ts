@@ -38,6 +38,7 @@ import { normalizeUsername } from "../utils/username.js";
 import { isValidDateOfBirth } from "../utils/dateOfBirth.js";
 import {
   initialOAuthOnboardingCompleted,
+  loginOnboardingCompleted,
   oauthLoginNeedsSignup,
   requiresGitHubPersona,
 } from "../services/oauthProfilePolicy.js";
@@ -257,6 +258,11 @@ export async function login(req: Request, res: Response): Promise<void> {
     if (error) return sendError(res, error.status || 401, error.message);
 
     const userId = data.user.id;
+    const [existingProductProfile] = await db
+      .select({ onboardingCompleted: users.onboardingCompleted })
+      .from(users)
+      .where(eq(users.userId, userId))
+      .limit(1);
 
     await ensureIdentityProfile({
       userId,
@@ -264,8 +270,9 @@ export async function login(req: Request, res: Response): Promise<void> {
       fullName: typeof data.user.user_metadata?.full_name === "string" ? data.user.user_metadata.full_name : null,
       dateOfBirth: typeof data.user.user_metadata?.date_of_birth === "string" ? data.user.user_metadata.date_of_birth : null,
       avatarUrl: typeof data.user.user_metadata?.avatar_url === "string" ? data.user.user_metadata.avatar_url : null,
-      // A deliberate login is an established-account flow, not signup.
-      onboardingCompleted: true,
+      onboardingCompleted: loginOnboardingCompleted(
+        existingProductProfile?.onboardingCompleted,
+      ),
     });
 
     const accessToken = jwt.sign({ userId, email }, JWT_SECRET, {
@@ -593,11 +600,12 @@ export async function handleOAuthCallback(
       githubId: githubIdentity.githubId,
       githubHandle: githubIdentity.githubHandle,
       avatarUrl: typeof data.user.user_metadata?.avatar_url === "string" ? data.user.user_metadata.avatar_url : null,
-      // Existing-account login always enters the app. A new GitHub account is
-      // completed only by syncGitHubPersona below; Google/email signups finish
-      // the explicit onboarding flow.
+      // Existing accounts retain their durable completion state. A new GitHub
+      // account is completed only by syncGitHubPersona below; Google/email
+      // signups finish the explicit onboarding flow.
       onboardingCompleted: initialOAuthOnboardingCompleted(
         attempt.authIntent,
+        existingProductProfile?.onboardingCompleted,
         githubPersonaRequired,
       ),
     });
