@@ -30,6 +30,7 @@ export const appUsers = appSchema.table('users', {
   bio: text('bio'),
   githubId: text('github_id'),
   githubHandle: text('github_handle'),
+  githubIdentityVerifiedAt: timestamp('github_identity_verified_at', { withTimezone: true }),
   avatarUrl: text('avatar_url'),
   interests: jsonb('interests').$type<string[]>().notNull().default([]),
   skills: jsonb('skills').$type<string[]>().notNull().default([]),
@@ -41,6 +42,9 @@ export const appUsers = appSchema.table('users', {
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 }, (table) => [
   uniqueIndex('app_users_username_lower_uidx').on(sql`lower(${table.username})`),
+  uniqueIndex('app_users_verified_github_id_uidx')
+    .on(table.githubId)
+    .where(sql`${table.githubIdentityVerifiedAt} IS NOT NULL AND ${table.githubId} IS NOT NULL`),
   check('app_users_status_check', sql`${table.status} IN ('active','suspended','deleted')`),
 ]);
 

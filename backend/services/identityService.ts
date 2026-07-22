@@ -9,6 +9,7 @@ interface IdentityProfile {
   bio?: string | null;
   githubId?: string | null;
   githubHandle?: string | null;
+  githubIdentityVerified?: boolean;
   avatarUrl?: string | null;
   onboardingCompleted?: boolean;
 }
@@ -43,7 +44,19 @@ export function githubIdentityFromAuthUser(user: {
   return { githubId, githubHandle };
 }
 
+export function isVerifiedGitHubIdentity(
+  githubId: string | null | undefined,
+  githubHandle: string | null | undefined,
+): boolean {
+  return typeof githubId === 'string'
+    && /^\d{1,30}$/.test(githubId.trim())
+    && typeof githubHandle === 'string'
+    && /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/.test(githubHandle.trim());
+}
+
 export async function ensureIdentityProfile(profile: IdentityProfile): Promise<void> {
+  const githubIdentityVerified = profile.githubIdentityVerified === true
+    && isVerifiedGitHubIdentity(profile.githubId, profile.githubHandle);
   const onboardingJob = buildMlOnboardingJob(profile.userId, 1, {
     username: profile.username,
     fullName: profile.fullName,
@@ -54,10 +67,12 @@ export async function ensureIdentityProfile(profile: IdentityProfile): Promise<v
   await sqlClient.begin(async (tx) => {
     await tx`
       INSERT INTO app.users (
-        user_id,username,full_name,date_of_birth,bio,github_id,github_handle,avatar_url,onboarding_completed
+        user_id,username,full_name,date_of_birth,bio,github_id,github_handle,
+        github_identity_verified_at,avatar_url,onboarding_completed
       )
       VALUES (${profile.userId}::uuid,${profile.username},${profile.fullName ?? null},${profile.dateOfBirth ?? null},
-        ${profile.bio ?? null},${profile.githubId ?? null},${profile.githubHandle ?? null},${profile.avatarUrl ?? null},
+        ${profile.bio ?? null},${profile.githubId ?? null},${profile.githubHandle ?? null},
+        CASE WHEN ${githubIdentityVerified} THEN now() ELSE NULL END,${profile.avatarUrl ?? null},
         ${profile.onboardingCompleted === true})
       ON CONFLICT (user_id) DO UPDATE SET
         full_name=COALESCE(EXCLUDED.full_name,app.users.full_name),
@@ -65,6 +80,10 @@ export async function ensureIdentityProfile(profile: IdentityProfile): Promise<v
         bio=COALESCE(EXCLUDED.bio,app.users.bio),
         github_id=COALESCE(EXCLUDED.github_id,app.users.github_id),
         github_handle=COALESCE(EXCLUDED.github_handle,app.users.github_handle),
+        github_identity_verified_at=COALESCE(
+          EXCLUDED.github_identity_verified_at,
+          app.users.github_identity_verified_at
+        ),
         avatar_url=COALESCE(EXCLUDED.avatar_url,app.users.avatar_url),
         -- Identity provisioning may insert the initial state, but it must not
         -- mutate a durable onboarding decision on conflict. Only onboarding or

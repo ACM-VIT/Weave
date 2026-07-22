@@ -1,25 +1,33 @@
-import React, { useState } from "react"
+import React, { useMemo, useState } from "react"
 import { ActivityIndicator, Modal, Pressable, ScrollView, Text, TextInput, View, useWindowDimensions } from "react-native"
-import { Bookmark, LogOut, Square, SquarePen } from "lucide-react-native"
-import { Href, router } from "expo-router"
+import { FolderPlus, LogOut, Square, SquarePen } from "lucide-react-native"
+import { router, type Href } from "expo-router"
 import { useSafeAreaInsets } from "react-native-safe-area-context"
 import { useQuery } from "@tanstack/react-query"
 import { API_URL } from "@/api/config"
 import { apiV2 } from "@/api/client"
 import { getProfileContent } from "@/api/profile"
+import { BoardListCard } from "@/components/profile/BoardListCard"
+import { ConnectionSheet, type ProfileStatType } from "@/components/connection-sheet"
 import { useAuth } from "@/store/AuthContext"
 import { getStorageItem } from "@/utils/storage"
 import { formatCompactCount } from "@/utils/format-count"
 import { isValidUsername, USERNAME_GUIDANCE } from "@/utils/username"
+import { loadPinnedRepositories } from "@/services/pinnedRepositoryStorage"
 
 type TabName = "Lists" | "Repositories"
 
 const COLORS = { background: "#000000", card: "#151515", selected: "#68686B", white: "#F7F7F8", muted: "#77767C", green: "#63E08A", purple: "#9B4FE4" }
-const COLLECTION_COLORS = ["#A849D8", "#F04C70", "#38AAE1", "#2E9E6B"]
 
 function requestError(error: unknown, fallback: string) {
   if (error instanceof TypeError) return `Unable to connect to the local backend at ${API_URL}.`
   return error instanceof Error ? error.message : fallback
+}
+
+function boardHref(params: Record<string, string>): Href {
+  // The route is introduced by the incoming merge; Expo's ignored generated
+  // route declaration can remain stale until the next development server run.
+  return { pathname: "/board", params } as unknown as Href
 }
 
 export default function ProfileScreen() {
@@ -40,6 +48,7 @@ export default function ProfileScreen() {
   const [isSaving, setIsSaving] = useState(false)
   const [editError, setEditError] = useState("")
   const [activeTab, setActiveTab] = useState<TabName>("Lists")
+  const [statSheetType, setStatSheetType] = useState<ProfileStatType | null>(null)
   const profileContentQuery = useQuery({
     queryKey: ["profile-content", user?.user_id],
     enabled: Boolean(user?.user_id),
@@ -50,10 +59,21 @@ export default function ProfileScreen() {
     },
     staleTime: 60_000,
   })
-  const boards = profileContentQuery.data?.boards ?? []
-  const collections = profileContentQuery.data?.collections ?? []
+  const pinnedRepositoriesQuery = useQuery({
+    queryKey: ["pinned-repositories", user?.user_id],
+    enabled: Boolean(user?.user_id),
+    queryFn: () => loadPinnedRepositories(user!.user_id),
+    staleTime: Infinity,
+  })
   const repositories = profileContentQuery.data?.repositories ?? []
   const contentErrors = profileContentQuery.data?.errors ?? {}
+  const pinnedRepositories = pinnedRepositoriesQuery.data ?? []
+  const displayedBoards = useMemo(
+    () => [...(profileContentQuery.data?.boards ?? [])].sort((first, second) =>
+      first.name.localeCompare(second.name, undefined, { sensitivity: "base" })
+    ),
+    [profileContentQuery.data?.boards],
+  )
 
   const openEditor = () => {
     setDraft({ name, job, username })
@@ -103,19 +123,16 @@ export default function ProfileScreen() {
   }
 
   const stats = [
-    { value: formatCompactCount(user?.likes_given_count), label: "likes given", href: { pathname: "/likes-given", params: { username, userId: user?.user_id } } },
-    { value: String(user?.followers_count ?? 0), label: "followers", href: { pathname: "/followers", params: { username, userId: user?.user_id } } },
-    { value: String(user?.saved_repos_count ?? 0), label: "saved" },
-    { value: String(user?.following_count ?? 0), label: "following", href: { pathname: "/following", params: { username, userId: user?.user_id } } },
+    { value: formatCompactCount(user?.likes_given_count), label: "likes given", onPress: () => setStatSheetType("likes") },
+    { value: formatCompactCount(user?.saved_repos_count), label: "saved", onPress: () => setStatSheetType("saved") },
+    { value: formatCompactCount(user?.followers_count), label: "followers", onPress: () => setStatSheetType("followers") },
+    { value: formatCompactCount(user?.following_count), label: "following", onPress: () => setStatSheetType("following") },
   ]
 
   const cardHeight = isCompact ? 40 : isTablet ? 54 : 50
   const contentGap = isCompact ? 10 : isTablet ? 16 : 13
   const sectionGap = isCompact ? 10 : isTablet ? 14 : 12
-  const sectionLabelHeight = isCompact ? 17 : 21
-  // Repositories is the taller tab (3 pinned + 4 regular rows). Reserving its
-  // height for both tabs prevents the vertically-centered page from jumping.
-  const tabContentHeight = (cardHeight * 7) + (contentGap * 5) + (sectionGap * 2) + sectionLabelHeight
+  const tabContentHeight = isCompact ? 280 : isTablet ? 420 : 340
   const avatarLetter = username.trim().charAt(0).toUpperCase() || name.charAt(0).toUpperCase() || "?"
   const usernameText = username ? `@${username}` : ""
   const horizontalPadding = isTablet ? 48 : 24
@@ -138,7 +155,7 @@ export default function ProfileScreen() {
   const jobFontSize = fitSingleLineText(job, isCompact ? 12 : 15, detailsWidth)
   const fullNameFontSize = fitSingleLineText(name, isCompact ? 11 : 14, detailsWidth)
 
-  const loadingContent = profileContentQuery.isLoading
+  const loadingContent = profileContentQuery.isLoading || pinnedRepositoriesQuery.isLoading
   const contentError = profileContentQuery.isError
   const contentState = loadingContent ? (
     <View style={{ minHeight: tabContentHeight, alignItems: "center", justifyContent: "center", gap: 12 }}>
@@ -163,23 +180,39 @@ export default function ProfileScreen() {
     </View>
   )
 
-  const listContent = contentState ?? (activeTab === "Lists" ? <View key="lists" style={{ minHeight: tabContentHeight, gap: sectionGap }}>
+  const listContent = contentState ?? (activeTab === "Lists" ? <View key="lists" style={{ minHeight: tabContentHeight, gap: contentGap }}>
+    <BoardListCard
+      compact={isCompact}
+      name="Pinned"
+      onPress={() => router.push(boardHref({
+        boardName: "Pinned",
+        collectionType: "pinned",
+      }))}
+      repositoryCount={pinnedRepositories.length}
+      variant="pinned"
+    />
     <View style={{ gap: contentGap }}>
-      {contentErrors.boards ? sectionError("Unable to load your boards.") : boards.map((item) => <View key={item.board_id} className="w-full flex-row items-center bg-[#151515]" style={{ height: cardHeight, paddingHorizontal: "5%", borderRadius: 16, gap: "4%", borderCurve: "continuous" }}>
-        <Square size={isCompact ? 15 : 18} color="#B8B7BD" />
-        <Text numberOfLines={1} className="flex-1 text-white font-nata" style={{ fontSize: isCompact ? 13 : 16 }}>{item.name}</Text>
-        <Text className="text-[#77767C] font-nata">{item.repo_count}</Text>
-      </View>)}
-      {!contentErrors.boards && boards.length === 0 ? <Text className="text-[#77767C] font-nata text-center py-5">No boards yet.</Text> : null}
-    </View>
-    <Text className="text-[#63E08A] font-nataMedium" style={{ fontSize: isCompact ? 13 : 16 }}>Saved Collections</Text>
-    <View style={{ gap: contentGap }}>
-      {contentErrors.collections ? sectionError("Unable to load your saved collections.") : collections.map((item, index) => <View key={item.collection_id} className="w-full flex-row items-center bg-[#151515]" style={{ height: cardHeight, paddingHorizontal: "4%", borderRadius: 16, gap: "4%", borderCurve: "continuous" }}>
-        <View className="items-center justify-center" style={{ height: "70%", aspectRatio: 1, borderRadius: 9, backgroundColor: COLLECTION_COLORS[index % COLLECTION_COLORS.length], borderCurve: "continuous" }}><Bookmark size={isCompact ? 13 : 16} color="white" /></View>
-        <Text numberOfLines={1} className="flex-1 text-white font-nata" style={{ fontSize: isCompact ? 13 : 16 }}>{item.name}</Text>
-        <Text className="text-[#67666C] font-nata" style={{ fontVariant: ["tabular-nums"] }}>{item.board_count}</Text>
-      </View>)}
-      {!contentErrors.collections && collections.length === 0 ? <Text className="text-[#77767C] font-nata text-center py-5">No collections yet.</Text> : null}
+      {contentErrors.boards ? sectionError("Unable to load your boards.") : displayedBoards.map((item) => <BoardListCard
+        key={item.board_id}
+        compact={isCompact}
+        description={item.description}
+        name={item.name}
+        onPress={() => router.push(boardHref({
+          boardId: item.board_id,
+          boardName: item.name,
+          ...(item.description ? { boardDescription: item.description } : {}),
+        }))}
+        repositoryCount={item.repo_count}
+      />)}
+      {!contentErrors.boards && displayedBoards.length === 0 ? <View className="items-center justify-center py-9 px-6 gap-4">
+        <View className="w-[68px] h-[68px] rounded-[22px] bg-[#151515] border border-[#252525] items-center justify-center" style={{ borderCurve: "continuous" }}>
+          <FolderPlus size={29} color="#63E08A" strokeWidth={1.7} />
+        </View>
+        <View className="items-center gap-2" style={{ maxWidth: 330 }}>
+          <Text className="text-[#F7F7F8] font-nataSemiBold text-center" style={{ fontSize: isCompact ? 15 : 17 }}>Create your first list</Text>
+          <Text className="text-[#77767C] font-nata text-center" style={{ fontSize: isCompact ? 11 : 13, lineHeight: isCompact ? 17 : 19 }}>Lists you create while saving repositories will appear here.</Text>
+        </View>
+      </View> : null}
     </View>
   </View> : <View key="repositories" style={{ minHeight: tabContentHeight, gap: sectionGap }}>
     <Text className="text-[#63E08A] font-nataMedium" style={{ fontSize: isCompact ? 13 : 16 }}>Saved Repositories</Text>
@@ -217,11 +250,24 @@ export default function ProfileScreen() {
               <Pressable accessibilityLabel="Log out" onPress={() => { setLogoutError(""); setLogoutVisible(true) }} hitSlop={12} className="self-start items-center justify-center" style={{ paddingTop: "3%" }}><LogOut size={isCompact ? 21 : 26} color="#96959B" /></Pressable>
             </View>
 
-            <View className="w-full flex-row justify-between" style={{ paddingVertical: isTablet ? 14 : 10 }}>
-              {stats.map((stat) => <Pressable key={stat.label} disabled={!stat.href} onPress={() => stat.href && router.push(stat.href as Href)} className="items-center" style={{ width: "24%" }}>
+            <View
+              className="w-full flex-row self-center"
+              style={{
+                maxWidth: isTablet ? 560 : 480,
+                paddingVertical: isTablet ? 12 : 8,
+                gap: isCompact ? 2 : 4,
+              }}
+            >
+              {stats.slice(0, 2).map((stat) => <Pressable key={stat.label} accessibilityRole="button" onPress={stat.onPress} className="flex-1 items-center justify-center rounded-[10px]" style={({ pressed }) => ({ minWidth: 0, paddingVertical: 5, opacity: pressed ? 0.68 : 1, backgroundColor: pressed ? "#171717" : "transparent" })}>
                 <Text className="text-white font-nataBold" style={{ fontSize: isCompact ? 15 : 19, fontVariant: ["tabular-nums"] }}>{stat.value}</Text>
                 <Text numberOfLines={1} className="text-[#77767C] font-nata" style={{ fontSize: isCompact ? 9 : 12 }}>{stat.label}</Text>
               </Pressable>)}
+              <View className="flex-[2] flex-row">
+                {stats.slice(2).map((stat, index) => <Pressable key={stat.label} accessibilityRole="button" onPress={stat.onPress} className="flex-1 items-center justify-center rounded-[9px]" style={({ pressed }) => ({ minWidth: 0, paddingVertical: 4, opacity: pressed ? 0.68 : 1, backgroundColor: pressed ? "#202020" : "transparent", borderLeftWidth: index === 1 ? 0.5 : 0, borderLeftColor: "#292929" })}>
+                  <Text className="text-white font-nataBold" style={{ fontSize: isCompact ? 15 : 19, fontVariant: ["tabular-nums"] }}>{stat.value}</Text>
+                  <Text numberOfLines={1} className="text-[#77767C] font-nata" style={{ fontSize: isCompact ? 9 : 12 }}>{stat.label}</Text>
+                </Pressable>)}
+              </View>
             </View>
           </View>
 
@@ -233,6 +279,17 @@ export default function ProfileScreen() {
           </View>
         </View>
       </View>
+
+      <ConnectionSheet
+        onClose={() => setStatSheetType(null)}
+        onFollowingCountChange={() => {
+          void checkOnboardingStatus().catch(() => undefined)
+        }}
+        type={statSheetType ?? "followers"}
+        userId={user?.user_id}
+        username={username}
+        visible={statSheetType !== null}
+      />
 
       <Modal visible={editVisible} animationType="slide" presentationStyle="pageSheet" onRequestClose={() => setEditVisible(false)}>
         <ScrollView contentInsetAdjustmentBehavior="automatic" keyboardShouldPersistTaps="handled" className="bg-[#080808]" contentContainerStyle={{ flexGrow: 1, justifyContent: "center", paddingHorizontal: "8%", paddingVertical: "10%", gap: 16 }}>

@@ -1,13 +1,21 @@
 import { apiV2 } from './client';
 import { settleProfileContent } from './profile-data';
 import type {
-  ProfileBoard,
+  ProfileBoard as BaseProfileBoard,
   ProfileCollection,
-  ProfileContent,
+  ProfileContent as BaseProfileContent,
   ProfileRepository,
 } from './profile-data';
 
-export type { ProfileBoard, ProfileCollection, ProfileContent, ProfileRepository } from './profile-data';
+export type ProfileBoard = BaseProfileBoard & {
+  description: string | null;
+};
+
+export type ProfileContent = Omit<BaseProfileContent, 'boards'> & {
+  boards: ProfileBoard[];
+};
+
+export type { ProfileCollection, ProfileRepository } from './profile-data';
 export { settleProfileContent } from './profile-data';
 
 export async function getProfileContent(token: string, signal?: AbortSignal): Promise<ProfileContent> {
@@ -21,5 +29,5 @@ export async function getProfileContent(token: string, signal?: AbortSignal): Pr
     throw signal.reason instanceof Error ? signal.reason : new Error('Profile request was cancelled.');
   }
 
-  return content;
+  return content as ProfileContent;
 }

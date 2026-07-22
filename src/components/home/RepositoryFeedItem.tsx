@@ -157,6 +157,7 @@ export function RepositoryFeedItem({
     >
       <RepositoryScreen
         commentCount={commentCount}
+        isActive={isViewable}
         isSaved={isSaved}
         onCommentPress={() => setIsCommentsVisible(true)}
         onQueueActivity={queueRepositoryActivity}

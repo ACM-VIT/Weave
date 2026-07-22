@@ -9,6 +9,7 @@ import {
 export type BoardRecord = {
   board_id: string;
   name: string;
+  description: string | null;
   repo_count: number;
   [key: string]: unknown;
 };
@@ -18,6 +19,17 @@ export type FrontendBoard = BoardRecord & {
   repos_count: number;
 };
 
+export type BoardRepositoryRecord = {
+  added_at: string;
+  repo_id: string;
+  full_name: string;
+  owner: string;
+  name: string;
+  url: string;
+  description: string | null;
+  primary_language: string | null;
+};
+
 export async function getUserBoards(_userId: string, token: string, _limit = 20, _offset = 0) {
   const data = await apiV2<{ items: BoardRecord[] }>('/boards', {}, token);
   return data.items.map((board) => ({
@@ -25,6 +37,19 @@ export async function getUserBoards(_userId: string, token: string, _limit = 20,
     board_name: board.name,
     repos_count: board.repo_count,
   }));
+}
+
+export async function getBoardRepositories(
+  boardId: string,
+  token: string,
+  signal?: AbortSignal,
+): Promise<BoardRepositoryRecord[]> {
+  const data = await apiV2<{ items: BoardRepositoryRecord[] }>(
+    `/boards/${encodeURIComponent(boardId)}/repositories`,
+    { signal },
+    token,
+  );
+  return data.items;
 }
 
 export async function createBoard(_userId: string, boardName: string, token: string) {

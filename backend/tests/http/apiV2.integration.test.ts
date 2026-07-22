@@ -10,16 +10,29 @@ const integration = process.env.RUN_HTTP_INTEGRATION === '1' ? test : test.skip;
 const userId = '00000000-0000-4000-8000-000000000201';
 const repoId = '00000000-0000-4000-8000-000000000202';
 const sessionId = '00000000-0000-4000-8000-000000000203';
+const spoofOwnerUserId = '00000000-0000-4000-8000-000000000204';
+const ownerUserId = '00000000-0000-4000-8000-000000000205';
 
 async function seed(): Promise<void> {
   await sqlClient`
     TRUNCATE app.users,app.repos,app.trending_snapshots,telemetry.ml_outbox,telemetry.generation_attempts CASCADE
   `;
   await sqlClient`
-    INSERT INTO auth.users (id,raw_user_meta_data) VALUES (${userId}::uuid,'{}'::jsonb) ON CONFLICT DO NOTHING
+    INSERT INTO auth.users (id,raw_user_meta_data) VALUES
+      (${userId}::uuid,'{}'::jsonb),
+      (${spoofOwnerUserId}::uuid,'{}'::jsonb),
+      (${ownerUserId}::uuid,'{}'::jsonb)
+    ON CONFLICT DO NOTHING
   `;
-  await sqlClient`INSERT INTO app.users (user_id,username,status) VALUES (${userId}::uuid,'http_test','active')`;
-  await sqlClient`INSERT INTO app.user_stats (user_id) VALUES (${userId}::uuid)`;
+  await sqlClient`
+    INSERT INTO app.users (
+      user_id,username,github_id,github_handle,github_identity_verified_at,status
+    ) VALUES
+      (${userId}::uuid,'http_test',NULL,'http-viewer',NULL,'active'),
+      (${spoofOwnerUserId}::uuid,'http_spoof',NULL,'owner',NULL,'active'),
+      (${ownerUserId}::uuid,'http_owner','9001','owner',now(),'active')
+  `;
+  await sqlClient`INSERT INTO app.user_stats (user_id) VALUES (${userId}::uuid),(${ownerUserId}::uuid)`;
   await sqlClient`INSERT INTO app.user_feed_state (user_id) VALUES (${userId}::uuid)`;
   await sqlClient`
     INSERT INTO app.repos (repo_id,github_id,full_name,owner,name,url,status)
@@ -66,7 +79,13 @@ integration('registered v2 HTTP paths complete controlled integration flows', as
   if (!address || typeof address === 'string') throw new Error('HTTP integration server did not bind');
   const base = `http://127.0.0.1:${address.port}`;
   const token = jwt.sign({ userId, email: 'test@example.com' }, process.env.JWT_SECRET!);
+  const authHeaders = { authorization: `Bearer ${token}`, 'content-type': 'application/json' };
   try {
+    const spoofHandle = await fetch(`${base}/api/v2/users/me`, {
+      method: 'PATCH', headers: authHeaders, body: JSON.stringify({ github_handle: 'owner' }),
+    });
+    assert.equal(spoofHandle.status, 400);
+
     const feedRequestId = crypto.randomUUID();
     const feed = await fetch(`${base}/api/v2/feed`, {
       method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json', 'x-request-id': 'http-integration' },
@@ -74,9 +93,19 @@ integration('registered v2 HTTP paths complete controlled integration flows', as
     });
     assert.equal(feed.status, 200);
     assert.equal(feed.headers.get('x-request-id'), 'http-integration');
-    const served = await feed.json() as { serve_id: string; source: string; items: Array<{ repo_id: string }> };
+    const served = await feed.json() as {
+      serve_id: string;
+      source: string;
+      items: Array<{
+        repo_id: string;
+        owner_user_id: string | null;
+        viewer_follows_owner: boolean;
+      }>;
+    };
     assert.equal(served.source, 'fallback');
     assert.deepEqual(served.items.map((item) => item.repo_id), [repoId]);
+    assert.equal(served.items[0].owner_user_id, ownerUserId);
+    assert.equal(served.items[0].viewer_follows_owner, false);
 
     const interaction = await fetch(`${base}/api/v2/interactions/batch`, {
       method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
@@ -89,6 +118,48 @@ integration('registered v2 HTTP paths complete controlled integration flows', as
     assert.equal(interaction.status, 202);
     assert.equal(Number((await sqlClient`SELECT count(*) AS count FROM telemetry.ml_outbox`)[0].count), 1);
 
+    const feedVersionBeforeFollow = BigInt((await sqlClient`
+      SELECT feed_version FROM app.user_feed_state WHERE user_id=${userId}::uuid
+    `)[0].feed_version);
+    const follow = await fetch(`${base}/api/v2/users/${ownerUserId}/follow`, {
+      method: 'PUT', headers: authHeaders,
+    });
+    assert.equal(follow.status, 204);
+    const duplicateFollow = await fetch(`${base}/api/v2/users/${ownerUserId}/follow`, {
+      method: 'PUT', headers: authHeaders,
+    });
+    assert.equal(duplicateFollow.status, 204);
+    const feedVersionAfterFollow = BigInt((await sqlClient`
+      SELECT feed_version FROM app.user_feed_state WHERE user_id=${userId}::uuid
+    `)[0].feed_version);
+    assert.equal(feedVersionAfterFollow, feedVersionBeforeFollow + 1n);
+
+    const followedFeed = await fetch(`${base}/api/v2/feed`, {
+      method: 'POST', headers: authHeaders,
+      body: JSON.stringify({
+        feed_request_id: crypto.randomUUID(), session_id: sessionId, limit: 10, cursor: null,
+      }),
+    });
+    assert.equal(followedFeed.status, 200);
+    const followedItems = (await followedFeed.json()) as {
+      items: Array<{ repo_id: string; owner_user_id: string | null; viewer_follows_owner: boolean }>;
+    };
+    assert.equal(followedItems.items[0].owner_user_id, ownerUserId);
+    assert.equal(followedItems.items[0].viewer_follows_owner, true);
+
+    const unfollow = await fetch(`${base}/api/v2/users/${ownerUserId}/follow`, {
+      method: 'DELETE', headers: authHeaders,
+    });
+    assert.equal(unfollow.status, 204);
+    const duplicateUnfollow = await fetch(`${base}/api/v2/users/${ownerUserId}/follow`, {
+      method: 'DELETE', headers: authHeaders,
+    });
+    assert.equal(duplicateUnfollow.status, 204);
+    const feedVersionAfterUnfollow = BigInt((await sqlClient`
+      SELECT feed_version FROM app.user_feed_state WHERE user_id=${userId}::uuid
+    `)[0].feed_version);
+    assert.equal(feedVersionAfterUnfollow, feedVersionAfterFollow + 1n);
+
     const likesGiven = await fetch(`${base}/api/v2/users/${userId}/likes-given?limit=100&offset=0`, {
       headers: { authorization: `Bearer ${token}` },
     });
@@ -97,7 +168,6 @@ integration('registered v2 HTTP paths complete controlled integration flows', as
     assert.deepEqual(likedItems.data.items.map((item) => item.repo_id), [repoId]);
     assert.equal(likedItems.data.items[0].repo_name, 'http-repo');
 
-    const authHeaders = { authorization: `Bearer ${token}`, 'content-type': 'application/json' };
     const me = await fetch(`${base}/api/v2/users/me`, { headers: authHeaders });
     assert.equal(me.status, 200);
     assert.equal(((await me.json()) as { data: { user_id: string } }).data.user_id, userId);

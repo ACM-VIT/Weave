@@ -258,6 +258,7 @@ export async function login(req: Request, res: Response): Promise<void> {
     if (error) return sendError(res, error.status || 401, error.message);
 
     const userId = data.user.id;
+    const githubIdentity = githubIdentityFromAuthUser(data.user);
     const [existingProductProfile] = await db
       .select({ onboardingCompleted: users.onboardingCompleted })
       .from(users)
@@ -269,6 +270,9 @@ export async function login(req: Request, res: Response): Promise<void> {
       username: fallbackUsername(userId, data.user.user_metadata),
       fullName: typeof data.user.user_metadata?.full_name === "string" ? data.user.user_metadata.full_name : null,
       dateOfBirth: typeof data.user.user_metadata?.date_of_birth === "string" ? data.user.user_metadata.date_of_birth : null,
+      githubId: githubIdentity.githubId,
+      githubHandle: githubIdentity.githubHandle,
+      githubIdentityVerified: Boolean(githubIdentity.githubId && githubIdentity.githubHandle),
       avatarUrl: typeof data.user.user_metadata?.avatar_url === "string" ? data.user.user_metadata.avatar_url : null,
       onboardingCompleted: loginOnboardingCompleted(
         existingProductProfile?.onboardingCompleted,
@@ -599,6 +603,7 @@ export async function handleOAuthCallback(
         ?? (typeof data.user.user_metadata?.date_of_birth === "string" ? data.user.user_metadata.date_of_birth : null),
       githubId: githubIdentity.githubId,
       githubHandle: githubIdentity.githubHandle,
+      githubIdentityVerified: Boolean(githubIdentity.githubId && githubIdentity.githubHandle),
       avatarUrl: typeof data.user.user_metadata?.avatar_url === "string" ? data.user.user_metadata.avatar_url : null,
       // Existing accounts retain their durable completion state. A new GitHub
       // account is completed only by syncGitHubPersona below; Google/email

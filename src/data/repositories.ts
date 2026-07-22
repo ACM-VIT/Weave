@@ -7,6 +7,8 @@ export type RepositoryData = {
   title: string;
   owner: string;
   githubUrl?: string;
+  ownerUserId?: string | null;
+  viewerFollowsOwner?: boolean | null;
   description: string;
   readmeSummary: string;
   readmeFull: string;

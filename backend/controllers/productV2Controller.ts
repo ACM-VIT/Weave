@@ -95,14 +95,13 @@ export async function getUser(req: AuthRequest, res: Response): Promise<void> {
 
 export async function updateMe(req: AuthRequest, res: Response): Promise<void> {
   const id = userId(req, res); if (!id) return;
-  const allowed = ['username', 'full_name', 'bio', 'github_handle', 'avatar_url'];
+  const allowed = ['username', 'full_name', 'bio', 'avatar_url'];
   if (!req.body || Object.keys(req.body).some((key) => !allowed.includes(key))) return sendError(res, 400, 'Unsupported profile field.');
   const usernameValue = req.body.username === undefined ? undefined : normalizeUsername(req.body.username) ?? undefined;
   const fullName = req.body.full_name === undefined ? undefined : text(req.body.full_name, 100);
   const bio = req.body.bio === undefined ? undefined : text(req.body.bio, 2_000);
-  const githubHandle = req.body.github_handle === undefined ? undefined : text(req.body.github_handle, 100);
   const avatarUrl = req.body.avatar_url === undefined ? undefined : text(req.body.avatar_url, 2_048);
-  if ([usernameValue, fullName, bio, githubHandle, avatarUrl]
+  if ([usernameValue, fullName, bio, avatarUrl]
     .some((v, i) => Object.hasOwn(req.body, allowed[i]) && v === undefined)) {
     return sendError(res, 400, 'Invalid profile value.');
   }
@@ -112,7 +111,6 @@ export async function updateMe(req: AuthRequest, res: Response): Promise<void> {
         UPDATE app.users SET username=COALESCE(${usernameValue ?? null},username),
           full_name=CASE WHEN ${req.body.full_name !== undefined} THEN ${fullName ?? null} ELSE full_name END,
           bio=CASE WHEN ${req.body.bio !== undefined} THEN ${bio ?? null} ELSE bio END,
-          github_handle=CASE WHEN ${req.body.github_handle !== undefined} THEN ${githubHandle ?? null} ELSE github_handle END,
           avatar_url=CASE WHEN ${req.body.avatar_url !== undefined} THEN ${avatarUrl ?? null} ELSE avatar_url END,
           profile_version=profile_version+1,updated_at=now()
         WHERE user_id=${id}::uuid
@@ -216,6 +214,13 @@ export async function setFollow(req: AuthRequest, res: Response): Promise<void> 
       if (rows.length) {
         await tx`UPDATE app.user_stats SET following_count=following_count+1,updated_at=now() WHERE user_id=${id}::uuid`;
         await tx`UPDATE app.user_stats SET followers_count=followers_count+1,updated_at=now() WHERE user_id=${target}::uuid`;
+        await tx`
+          INSERT INTO app.user_feed_state (user_id,feed_version,updated_at)
+          VALUES (${id}::uuid,2,now())
+          ON CONFLICT (user_id) DO UPDATE SET
+            feed_version=app.user_feed_state.feed_version+1,
+            updated_at=now()
+        `;
       }
     });
     res.status(204).end();
@@ -229,6 +234,13 @@ export async function removeFollow(req: AuthRequest, res: Response): Promise<voi
     if (rows.length) {
       await tx`UPDATE app.user_stats SET following_count=GREATEST(0,following_count-1),updated_at=now() WHERE user_id=${id}::uuid`;
       await tx`UPDATE app.user_stats SET followers_count=GREATEST(0,followers_count-1),updated_at=now() WHERE user_id=${target}::uuid`;
+      await tx`
+        INSERT INTO app.user_feed_state (user_id,feed_version,updated_at)
+        VALUES (${id}::uuid,2,now())
+        ON CONFLICT (user_id) DO UPDATE SET
+          feed_version=app.user_feed_state.feed_version+1,
+          updated_at=now()
+      `;
     }
   });
   res.status(204).end();

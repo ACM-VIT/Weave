@@ -147,6 +147,13 @@
       "when": 1784738672000,
       "tag": "0018_auth_profile_integrity",
       "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1784738672001,
+      "tag": "0019_verified_github_identity",
+      "breakpoints": true
     }
   ]
 }

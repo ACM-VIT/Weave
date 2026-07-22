@@ -62,7 +62,7 @@ Signup/profile creation and ML onboarding enqueue are one backend transaction. O
 | Method and path | Body/query | Result |
 |---|---|---|
 | `GET /api/v2/users/me` | none | Private profile, stats, topic slugs, feed and feedback versions |
-| `PATCH /api/v2/users/me` | Any subset of `{username,full_name,bio,github_handle,avatar_url}` | Updated profile; unknown fields are rejected |
+| `PATCH /api/v2/users/me` | Any subset of `{username,full_name,bio,avatar_url}` | Updated profile; unknown fields are rejected. GitHub identity fields are provider-managed and immutable through this endpoint. |
 | `GET /api/v2/users/:userId` | none | Public active profile and stats |
 | `PUT /api/v2/users/:userId/follow` | none | Idempotently follows; `204` |
 | `DELETE /api/v2/users/:userId/follow` | none | Idempotently unfollows; `204` |

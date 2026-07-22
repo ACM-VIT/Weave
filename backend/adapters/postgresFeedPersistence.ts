@@ -11,6 +11,7 @@ function projection(row: Record<string, unknown>): RepositoryProjection {
   return {
     repo_id: String(row.repo_id),
     full_name: String(row.full_name),
+    owner_user_id: row.owner_user_id == null ? null : String(row.owner_user_id),
     description: row.description == null ? null : String(row.description),
     primary_language: row.primary_language == null ? null : String(row.primary_language),
     languages: Array.isArray(row.languages) ? row.languages.map(String) : [],
@@ -28,6 +29,7 @@ function projection(row: Record<string, unknown>): RepositoryProjection {
     viewer_reaction: row.viewer_reaction === 'like' || row.viewer_reaction === 'dislike'
       ? row.viewer_reaction : null,
     viewer_saved: Boolean(row.viewer_saved),
+    viewer_follows_owner: Boolean(row.viewer_follows_owner),
     status: row.status as RepositoryProjection['status'],
   };
 }
@@ -67,9 +69,26 @@ export class PostgresFeedPersistence implements FeedPersistencePort {
              stats.star_count, stats.fork_count, stats.open_issues_count,
              engagement.likes_count, engagement.comments_count, engagement.views_count,
              summary.summary, reaction.reaction AS viewer_reaction,
-             (saved.repo_id IS NOT NULL) AS viewer_saved, repo.status
+             (saved.repo_id IS NOT NULL) AS viewer_saved,
+             owner_profile.user_id AS owner_user_id,
+             (viewer_follow.following_id IS NOT NULL) AS viewer_follows_owner,
+             repo.status
       FROM telemetry.feed_serve_items item
       JOIN app.repos repo ON repo.repo_id = item.repo_id
+      LEFT JOIN LATERAL (
+        SELECT owner_user.user_id
+        FROM app.users owner_user
+        WHERE owner_user.status='active'
+          AND owner_user.github_identity_verified_at IS NOT NULL
+          AND owner_user.github_id IS NOT NULL
+          AND owner_user.github_handle IS NOT NULL
+          AND lower(owner_user.github_handle)=lower(repo.owner)
+        ORDER BY owner_user.github_identity_verified_at DESC,owner_user.user_id ASC
+        LIMIT 1
+      ) owner_profile ON true
+      LEFT JOIN app.follows viewer_follow
+        ON viewer_follow.follower_id=${String(serve.user_id)}::uuid
+       AND viewer_follow.following_id=owner_profile.user_id
       LEFT JOIN app.repo_content content ON content.repo_id = repo.repo_id
       LEFT JOIN LATERAL (
         SELECT jsonb_agg(topic.slug ORDER BY topic.slug) AS topics
@@ -137,8 +156,24 @@ export class PostgresFeedPersistence implements FeedPersistencePort {
              COALESCE(stats.star_count, 0) AS star_count, COALESCE(stats.fork_count, 0) AS fork_count, COALESCE(stats.open_issues_count, 0) AS open_issues_count,
              COALESCE(engagement.likes_count, 0) AS likes_count, COALESCE(engagement.comments_count, 0) AS comments_count, COALESCE(engagement.views_count, 0) AS views_count,
              summary.summary_id, summary.summary, reaction.reaction AS viewer_reaction,
-             (saved.repo_id IS NOT NULL) AS viewer_saved
+             (saved.repo_id IS NOT NULL) AS viewer_saved,
+             owner_profile.user_id AS owner_user_id,
+             (viewer_follow.following_id IS NOT NULL) AS viewer_follows_owner
       FROM app.repos repo
+      LEFT JOIN LATERAL (
+        SELECT owner_user.user_id
+        FROM app.users owner_user
+        WHERE owner_user.status='active'
+          AND owner_user.github_identity_verified_at IS NOT NULL
+          AND owner_user.github_id IS NOT NULL
+          AND owner_user.github_handle IS NOT NULL
+          AND lower(owner_user.github_handle)=lower(repo.owner)
+        ORDER BY owner_user.github_identity_verified_at DESC,owner_user.user_id ASC
+        LIMIT 1
+      ) owner_profile ON true
+      LEFT JOIN app.follows viewer_follow
+        ON viewer_follow.follower_id=${viewerUserId ?? null}::uuid
+       AND viewer_follow.following_id=owner_profile.user_id
       LEFT JOIN app.repo_content content ON content.repo_id=repo.repo_id
       LEFT JOIN LATERAL (
         SELECT jsonb_agg(topic.slug ORDER BY topic.slug) AS topics

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { githubIdentityFromAuthUser } from '../../services/identityService.js';
+import { githubIdentityFromAuthUser, isVerifiedGitHubIdentity } from '../../services/identityService.js';
 
 test('linked GitHub identity is extracted instead of first-provider user metadata', () => {
   const identity = githubIdentityFromAuthUser({
@@ -38,4 +38,12 @@ test('a fresh GitHub OAuth user can fall back to provider metadata without class
     githubIdentityFromAuthUser(metadataOnlyUser, 'google'),
     { githubId: null, githubHandle: null },
   );
+});
+
+test('only complete provider-shaped GitHub values pass identity validation', () => {
+  assert.equal(isVerifiedGitHubIdentity('1234567', 'octo-user'), true);
+  assert.equal(isVerifiedGitHubIdentity(null, 'octo-user'), false);
+  assert.equal(isVerifiedGitHubIdentity('1234567', null), false);
+  assert.equal(isVerifiedGitHubIdentity('not-numeric', 'octo-user'), false);
+  assert.equal(isVerifiedGitHubIdentity('1234567', 'spoofed_handle'), false);
 });

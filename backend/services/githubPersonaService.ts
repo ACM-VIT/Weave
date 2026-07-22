@@ -269,7 +269,7 @@ class PostgresGitHubPersonaTransactionStore implements GitHubPersonaTransactionS
     const rows = await this.tx`
       UPDATE app.users SET
         full_name=${update.fullName},bio=${update.bio},github_id=${update.githubId},
-        github_handle=${update.githubHandle},avatar_url=${update.avatarUrl},
+        github_handle=${update.githubHandle},github_identity_verified_at=now(),avatar_url=${update.avatarUrl},
         interests=${JSON.stringify(update.interests)}::jsonb,
         skills=${JSON.stringify(update.skills)}::jsonb,
         tech_stack=${JSON.stringify(update.techStack)}::jsonb,
