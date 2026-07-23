@@ -64,6 +64,46 @@ export const userFeedState = appSchema.table('user_feed_state', {
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 });
 
+export const socialProfiles = appSchema.table('social_profiles', {
+  profileId: uuid('profile_id').defaultRandom().primaryKey(),
+  provider: text('provider').notNull().default('github'),
+  providerSubject: text('provider_subject'),
+  handle: text('handle').notNull(),
+  displayName: text('display_name'),
+  avatarUrl: text('avatar_url'),
+  profileKind: text('profile_kind').notNull().default('unknown'),
+  claimedByUserId: uuid('claimed_by_user_id').references(() => appUsers.userId, { onDelete: 'set null' }),
+  status: text('status').notNull().default('active'),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  uniqueIndex('social_profiles_provider_subject_uidx')
+    .on(table.provider, table.providerSubject)
+    .where(sql`${table.providerSubject} IS NOT NULL`),
+  uniqueIndex('social_profiles_provider_handle_uidx').on(table.provider, sql`lower(${table.handle})`),
+  uniqueIndex('social_profiles_claimed_user_uidx')
+    .on(table.claimedByUserId)
+    .where(sql`${table.claimedByUserId} IS NOT NULL`),
+  index('social_profiles_active_handle_idx')
+    .on(sql`lower(${table.handle})`)
+    .where(sql`${table.status}='active'`),
+  check('social_profiles_provider_check', sql`${table.provider} IN ('github')`),
+  check('social_profiles_subject_check', sql`${table.providerSubject} IS NULL OR ${table.providerSubject} ~ '^[0-9]{1,30}$'`),
+  check('social_profiles_handle_check', sql`${table.handle} ~ '^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$'`),
+  check('social_profiles_kind_check', sql`${table.profileKind} IN ('user','organization','unknown')`),
+  check('social_profiles_status_check', sql`${table.status} IN ('active','blocked','deleted')`),
+]);
+
+export const socialProfileFollows = appSchema.table('social_profile_follows', {
+  followerId: uuid('follower_id').notNull().references(() => appUsers.userId, { onDelete: 'cascade' }),
+  profileId: uuid('profile_id').notNull().references(() => socialProfiles.profileId, { onDelete: 'cascade' }),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  primaryKey({ columns: [table.followerId, table.profileId] }),
+  index('social_profile_follows_profile_idx').on(table.profileId, table.createdAt.desc()),
+  index('social_profile_follows_follower_idx').on(table.followerId, table.createdAt.desc()),
+]);
+
 export const appRefreshTokens = appSchema.table('refresh_tokens', {
   tokenId: uuid('token_id').defaultRandom().primaryKey(),
   userId: uuid('user_id').notNull().references(() => appUsers.userId, { onDelete: 'cascade' }),
@@ -179,7 +219,9 @@ export const appFollows = appSchema.table('follows', {
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 }, (table) => [
   primaryKey({ columns: [table.followerId, table.followingId] }),
-  check('app_follows_no_self', sql`${table.followerId} <> ${table.followingId}`),
+  index('app_follows_follower_idx').on(table.followerId, table.createdAt.desc()),
+  index('app_follows_following_idx').on(table.followingId, table.createdAt.desc()),
+  check('follows_no_self', sql`${table.followerId} <> ${table.followingId}`),
 ]);
 
 export const appComments = appSchema.table('comments', {

@@ -18,6 +18,8 @@ const integration = process.env.RUN_DATABASE_INTEGRATION === '1' ? test : test.s
 const userId = '00000000-0000-4000-8000-000000000101';
 const repoId = '00000000-0000-4000-8000-000000000102';
 const sessionId = '00000000-0000-4000-8000-000000000103';
+const claimantId = '00000000-0000-4000-8000-000000000105';
+const externalProfileId = '00000000-0000-4000-8000-000000000106';
 
 test.after(async () => {
   if (process.env.RUN_DATABASE_INTEGRATION === '1') await sqlClient.end({ timeout: 1 });
@@ -33,18 +35,36 @@ function event(eventType: InteractionEventV2['event_type'], eventId = crypto.ran
 
 async function seed(): Promise<void> {
   await sqlClient`
-    TRUNCATE app.users,app.repos,app.trending_snapshots,telemetry.ml_outbox,telemetry.generation_attempts CASCADE
+    TRUNCATE app.social_profiles,app.users,app.repos,app.trending_snapshots,
+      telemetry.ml_outbox,telemetry.generation_attempts CASCADE
   `;
   await sqlClient`
-    INSERT INTO auth.users (id,raw_user_meta_data) VALUES (
-      ${userId}::uuid,${JSON.stringify({ user_name: 'v2_test', full_name: 'V2 Test' })}::jsonb
-    ) ON CONFLICT (id) DO NOTHING
+    INSERT INTO auth.users (id,raw_user_meta_data) VALUES
+      (${userId}::uuid,${JSON.stringify({ user_name: 'v2_test', full_name: 'V2 Test' })}::jsonb),
+      (${claimantId}::uuid,${JSON.stringify({ user_name: 'owner', full_name: 'Owner' })}::jsonb)
+    ON CONFLICT (id) DO NOTHING
   `;
   await sqlClient`
-    INSERT INTO app.users (user_id,username,status) VALUES (${userId}::uuid,'v2_test','active')
+    INSERT INTO app.users (user_id,username,status) VALUES
+      (${userId}::uuid,'v2_test','active'),
+      (${claimantId}::uuid,'owner_user','active')
   `;
-  await sqlClient`INSERT INTO app.user_stats (user_id) VALUES (${userId}::uuid)`;
-  await sqlClient`INSERT INTO app.user_feed_state (user_id) VALUES (${userId}::uuid)`;
+  await sqlClient`
+    INSERT INTO app.user_stats (user_id,following_count) VALUES
+      (${userId}::uuid,1),
+      (${claimantId}::uuid,0)
+  `;
+  await sqlClient`
+    INSERT INTO app.user_feed_state (user_id) VALUES (${userId}::uuid),(${claimantId}::uuid)
+  `;
+  await sqlClient`
+    INSERT INTO app.social_profiles(profile_id,provider,handle,profile_kind)
+    VALUES (${externalProfileId}::uuid,'github','owner','unknown')
+  `;
+  await sqlClient`
+    INSERT INTO app.social_profile_follows(follower_id,profile_id)
+    VALUES (${userId}::uuid,${externalProfileId}::uuid)
+  `;
   await sqlClient`
     INSERT INTO app.repos (repo_id,github_id,full_name,owner,name,url,status)
     VALUES (${repoId}::uuid,101,'owner/repo','owner','repo','https://github.com/owner/repo','active')
@@ -92,6 +112,32 @@ integration('v2 database, outbox, and Redis feed flows preserve invariants', asy
   assert.equal(Boolean((await sqlClient`
     SELECT onboarding_completed FROM app.users WHERE user_id=${userId}::uuid
   `)[0].onboarding_completed), true);
+
+  await ensureIdentityProfile({
+    userId: claimantId,
+    username: 'owner_user',
+    githubId: '424242',
+    githubHandle: 'owner',
+    githubIdentityVerified: true,
+  });
+  assert.equal(String((await sqlClient`
+    SELECT claimed_by_user_id FROM app.social_profiles
+    WHERE profile_id=${externalProfileId}::uuid
+  `)[0].claimed_by_user_id), claimantId);
+  assert.equal(Number((await sqlClient`
+    SELECT count(*) AS count FROM app.social_profile_follows
+    WHERE profile_id=${externalProfileId}::uuid
+  `)[0].count), 0);
+  assert.equal(Number((await sqlClient`
+    SELECT count(*) AS count FROM app.follows
+    WHERE follower_id=${userId}::uuid AND following_id=${claimantId}::uuid
+  `)[0].count), 1);
+  assert.equal(Number((await sqlClient`
+    SELECT following_count FROM app.user_stats WHERE user_id=${userId}::uuid
+  `)[0].following_count), 1);
+  assert.equal(Number((await sqlClient`
+    SELECT followers_count FROM app.user_stats WHERE user_id=${claimantId}::uuid
+  `)[0].followers_count), 1);
 
   // UUID ordering intentionally opposes client ordering. The latest action
   // must win, and feedback versions must follow the submitted sequence.

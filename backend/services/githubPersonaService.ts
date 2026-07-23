@@ -10,6 +10,7 @@ import type {
 import { GITHUB_PERSONA_SKILL_IDS } from '../types/github.js';
 import { fetchGitHubPublicPersona } from './githubService.js';
 import { buildMlOnboardingJob, hasMlEmbeddingContext } from './mlOnboardingService.js';
+import { claimVerifiedGithubProfile } from './socialProfileService.js';
 
 const MAX_INTERESTS = 50;
 const MAX_TECH_STACK = 25;
@@ -277,6 +278,13 @@ class PostgresGitHubPersonaTransactionStore implements GitHubPersonaTransactionS
       WHERE user_id=${userId}::uuid RETURNING profile_version
     `;
     if (!rows[0]) throw Object.assign(new Error('User profile not found.'), { statusCode: 404 });
+    await claimVerifiedGithubProfile(this.tx, {
+      userId,
+      githubId: update.githubId,
+      githubHandle: update.githubHandle,
+      displayName: update.fullName,
+      avatarUrl: update.avatarUrl,
+    });
     return BigInt(String(rows[0].profile_version));
   }
 

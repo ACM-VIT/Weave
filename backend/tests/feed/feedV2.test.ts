@@ -9,7 +9,8 @@ import { FeedRequestInProgressError, FeedV2Service } from '../../services/feedV2
 
 const repo: RepositoryProjection = {
   repo_id: '00000000-0000-4000-8000-000000000001', full_name: 'owner/repo', description: null,
-  owner_user_id: null, viewer_follows_owner: false,
+  owner_user_id: null, owner_profile_id: null, owner_profile_claimed_user_id: null,
+  owner_bio: null, viewer_follows_owner: false,
   primary_language: 'TypeScript', languages: ['TypeScript'], topics: [], star_count: 1, fork_count: 0,
   likes_count: 0, comments_count: 0, views_count: 0, open_issues_count: 0,
   summary_id: null, summary: null, readme_md: null, updated_at: null, status: 'active',
@@ -21,13 +22,18 @@ class FakePersistence implements FeedPersistencePort {
   version = 3n;
   missesBeforeServe = 0;
   fallbackCalls = 0;
+  fallbackViewerId: string | undefined;
   async getFeedVersion() { return this.version; }
   async getServeByRequest(_userId?: string, requestId?: string) {
     if (this.missesBeforeServe > 0) { this.missesBeforeServe--; return null; }
     return this.serve?.feed_request_id === requestId ? this.serve : null;
   }
   async listActiveRepositories(repoIds: string[]) { return repoIds.map((repoId) => ({ ...repo, repo_id: repoId })); }
-  async getTrendingFallback() { this.fallbackCalls++; return [repo]; }
+  async getTrendingFallback(_limit: number, _exclude: string[], viewerUserId?: string) {
+    this.fallbackCalls++;
+    this.fallbackViewerId = viewerUserId;
+    return [repo];
+  }
   async createServe(input: CreateServeInput) {
     this.serve = {
       ...input, serve_id: '00000000-0000-4000-8000-000000000099', created_at: new Date(0).toISOString(),
@@ -81,6 +87,7 @@ test('v2 feed persists trending fallback when Redis is unavailable', async () =>
   );
   assert.equal(response.source, 'fallback');
   assert.equal(response.items[0].repo_id, repo.repo_id);
+  assert.equal(persistence.fallbackViewerId, '00000000-0000-4000-8000-000000000030');
   assert.equal(queue.committed, 0);
 });
 

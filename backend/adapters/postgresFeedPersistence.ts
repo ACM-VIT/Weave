@@ -12,6 +12,10 @@ function projection(row: Record<string, unknown>): RepositoryProjection {
     repo_id: String(row.repo_id),
     full_name: String(row.full_name),
     owner_user_id: row.owner_user_id == null ? null : String(row.owner_user_id),
+    owner_profile_id: row.owner_profile_id == null ? null : String(row.owner_profile_id),
+    owner_profile_claimed_user_id: row.owner_profile_claimed_user_id == null
+      ? null : String(row.owner_profile_claimed_user_id),
+    owner_bio: row.owner_bio == null ? null : String(row.owner_bio),
     description: row.description == null ? null : String(row.description),
     primary_language: row.primary_language == null ? null : String(row.primary_language),
     languages: Array.isArray(row.languages) ? row.languages.map(String) : [],
@@ -70,25 +74,33 @@ export class PostgresFeedPersistence implements FeedPersistencePort {
              engagement.likes_count, engagement.comments_count, engagement.views_count,
              summary.summary, reaction.reaction AS viewer_reaction,
              (saved.repo_id IS NOT NULL) AS viewer_saved,
-             owner_profile.user_id AS owner_user_id,
-             (viewer_follow.following_id IS NOT NULL) AS viewer_follows_owner,
+             social_profile.claimed_by_user_id AS owner_user_id,
+             social_profile.profile_id AS owner_profile_id,
+             social_profile.claimed_by_user_id AS owner_profile_claimed_user_id,
+             owner_user.bio AS owner_bio,
+             CASE WHEN social_profile.claimed_by_user_id IS NOT NULL
+               THEN viewer_follow.following_id IS NOT NULL
+               ELSE external_follow.profile_id IS NOT NULL
+             END AS viewer_follows_owner,
              repo.status
       FROM telemetry.feed_serve_items item
       JOIN app.repos repo ON repo.repo_id = item.repo_id
       LEFT JOIN LATERAL (
-        SELECT owner_user.user_id
-        FROM app.users owner_user
-        WHERE owner_user.status='active'
-          AND owner_user.github_identity_verified_at IS NOT NULL
-          AND owner_user.github_id IS NOT NULL
-          AND owner_user.github_handle IS NOT NULL
-          AND lower(owner_user.github_handle)=lower(repo.owner)
-        ORDER BY owner_user.github_identity_verified_at DESC,owner_user.user_id ASC
+        SELECT profile.profile_id,profile.claimed_by_user_id
+        FROM app.social_profiles profile
+        WHERE profile.provider='github' AND profile.status='active'
+          AND lower(profile.handle)=lower(repo.owner)
+        ORDER BY (profile.claimed_by_user_id IS NOT NULL) DESC,profile.created_at ASC
         LIMIT 1
-      ) owner_profile ON true
+      ) social_profile ON true
+      LEFT JOIN app.users owner_user ON owner_user.user_id=social_profile.claimed_by_user_id
       LEFT JOIN app.follows viewer_follow
         ON viewer_follow.follower_id=${String(serve.user_id)}::uuid
-       AND viewer_follow.following_id=owner_profile.user_id
+       AND viewer_follow.following_id=social_profile.claimed_by_user_id
+      LEFT JOIN app.social_profile_follows external_follow
+        ON external_follow.follower_id=${String(serve.user_id)}::uuid
+       AND external_follow.profile_id=social_profile.profile_id
+       AND social_profile.claimed_by_user_id IS NULL
       LEFT JOIN app.repo_content content ON content.repo_id = repo.repo_id
       LEFT JOIN LATERAL (
         SELECT jsonb_agg(topic.slug ORDER BY topic.slug) AS topics
@@ -157,23 +169,31 @@ export class PostgresFeedPersistence implements FeedPersistencePort {
              COALESCE(engagement.likes_count, 0) AS likes_count, COALESCE(engagement.comments_count, 0) AS comments_count, COALESCE(engagement.views_count, 0) AS views_count,
              summary.summary_id, summary.summary, reaction.reaction AS viewer_reaction,
              (saved.repo_id IS NOT NULL) AS viewer_saved,
-             owner_profile.user_id AS owner_user_id,
-             (viewer_follow.following_id IS NOT NULL) AS viewer_follows_owner
+             social_profile.claimed_by_user_id AS owner_user_id,
+             social_profile.profile_id AS owner_profile_id,
+             social_profile.claimed_by_user_id AS owner_profile_claimed_user_id,
+             owner_user.bio AS owner_bio,
+             CASE WHEN social_profile.claimed_by_user_id IS NOT NULL
+               THEN viewer_follow.following_id IS NOT NULL
+               ELSE external_follow.profile_id IS NOT NULL
+             END AS viewer_follows_owner
       FROM app.repos repo
       LEFT JOIN LATERAL (
-        SELECT owner_user.user_id
-        FROM app.users owner_user
-        WHERE owner_user.status='active'
-          AND owner_user.github_identity_verified_at IS NOT NULL
-          AND owner_user.github_id IS NOT NULL
-          AND owner_user.github_handle IS NOT NULL
-          AND lower(owner_user.github_handle)=lower(repo.owner)
-        ORDER BY owner_user.github_identity_verified_at DESC,owner_user.user_id ASC
+        SELECT profile.profile_id,profile.claimed_by_user_id
+        FROM app.social_profiles profile
+        WHERE profile.provider='github' AND profile.status='active'
+          AND lower(profile.handle)=lower(repo.owner)
+        ORDER BY (profile.claimed_by_user_id IS NOT NULL) DESC,profile.created_at ASC
         LIMIT 1
-      ) owner_profile ON true
+      ) social_profile ON true
+      LEFT JOIN app.users owner_user ON owner_user.user_id=social_profile.claimed_by_user_id
       LEFT JOIN app.follows viewer_follow
         ON viewer_follow.follower_id=${viewerUserId ?? null}::uuid
-       AND viewer_follow.following_id=owner_profile.user_id
+       AND viewer_follow.following_id=social_profile.claimed_by_user_id
+      LEFT JOIN app.social_profile_follows external_follow
+        ON external_follow.follower_id=${viewerUserId ?? null}::uuid
+       AND external_follow.profile_id=social_profile.profile_id
+       AND social_profile.claimed_by_user_id IS NULL
       LEFT JOIN app.repo_content content ON content.repo_id=repo.repo_id
       LEFT JOIN LATERAL (
         SELECT jsonb_agg(topic.slug ORDER BY topic.slug) AS topics
@@ -192,7 +212,11 @@ export class PostgresFeedPersistence implements FeedPersistencePort {
     return rows.map((row) => projection(row));
   }
 
-  async getTrendingFallback(limit: number, excludeRepoIds: string[]): Promise<RepositoryProjection[]> {
+  async getTrendingFallback(
+    limit: number,
+    excludeRepoIds: string[],
+    viewerUserId?: string,
+  ): Promise<RepositoryProjection[]> {
     const rows = await sqlClient`
       SELECT item.repo_id FROM app.trending_snapshot_items item
       JOIN app.trending_snapshots snapshot ON snapshot.snapshot_id=item.snapshot_id
@@ -202,7 +226,7 @@ export class PostgresFeedPersistence implements FeedPersistencePort {
       ORDER BY snapshot.activated_at DESC, item.position ASC LIMIT ${limit}
     `;
     const ids = rows.map((row) => String(row.repo_id));
-    const projections = await this.listActiveRepositories(ids);
+    const projections = await this.listActiveRepositories(ids, viewerUserId);
     const byId = new Map(projections.map((repo) => [repo.repo_id, repo]));
     return ids.flatMap((id) => byId.has(id) ? [byId.get(id)!] : []);
   }

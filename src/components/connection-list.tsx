@@ -12,10 +12,10 @@ import {
 } from 'react-native';
 import {
   useInfiniteQuery,
-  useQuery,
   useQueryClient,
   type InfiniteData,
 } from '@tanstack/react-query';
+import { router } from 'expo-router';
 import {
   RotateCcw,
   Search,
@@ -36,8 +36,8 @@ import {
 import { REFERENCE_THEME } from '@/constants/theme';
 import { useAuth } from '@/store/AuthContext';
 import {
-  collectConnectionIds,
-  FOLLOWING_LOOKUP_PAGE_SIZE,
+  connectionFollowState,
+  connectionIdentity,
   mergeConnectionPages,
 } from '@/utils/connection-pagination';
 import { getStorageItem } from '@/utils/storage';
@@ -117,42 +117,71 @@ const ConnectionRow = memo(function ConnectionRow({
     [onFollowingChange, person],
   );
   const avatarSize = compact ? 42 : 48;
+  const identity = connectionIdentity(person);
+  const openProfile = useCallback(() => {
+    router.push({
+      pathname: '/user/[username]',
+      params: {
+        username: person.username,
+        ...(person.user_id ? { userId: person.user_id } : {}),
+        ...(person.profile_id ? { profileId: person.profile_id } : {}),
+        displayName: person.full_name ?? person.username,
+        avatarUrl: person.avatar_url ?? '',
+        isFollowing: String(following),
+        followStateKnown: 'true',
+      },
+    });
+  }, [
+    following,
+    person.avatar_url,
+    person.full_name,
+    person.profile_id,
+    person.user_id,
+    person.username,
+  ]);
 
   return (
     <View style={[styles.row, compact && styles.rowCompact]}>
-      {person.avatar_url ? (
-        <Image
-          accessibilityLabel={`${person.username}'s avatar`}
-          resizeMode="cover"
-          source={{ uri: person.avatar_url }}
-          style={{ width: avatarSize, height: avatarSize, borderRadius: avatarSize / 2 }}
-        />
-      ) : (
-        <View
-          style={[
-            styles.avatarFallback,
-            {
-              width: avatarSize,
-              height: avatarSize,
-              borderRadius: avatarSize / 2,
-              backgroundColor: avatarColor(person.user_id),
-            },
-          ]}
-        >
-          <Text style={[styles.avatarText, compact && styles.avatarTextCompact]}>
-            {initials(person)}
+      <Pressable
+        accessibilityLabel={`Open ${person.username}'s profile`}
+        accessibilityRole="button"
+        onPress={openProfile}
+        style={({ pressed }) => [styles.profileLink, pressed && styles.pressed]}
+      >
+        {person.avatar_url ? (
+          <Image
+            accessibilityLabel={`${person.username}'s avatar`}
+            resizeMode="cover"
+            source={{ uri: person.avatar_url }}
+            style={{ width: avatarSize, height: avatarSize, borderRadius: avatarSize / 2 }}
+          />
+        ) : (
+          <View
+            style={[
+              styles.avatarFallback,
+              {
+                width: avatarSize,
+                height: avatarSize,
+                borderRadius: avatarSize / 2,
+                backgroundColor: avatarColor(identity ?? person.username),
+              },
+            ]}
+          >
+            <Text style={[styles.avatarText, compact && styles.avatarTextCompact]}>
+              {initials(person)}
+            </Text>
+          </View>
+        )}
+
+        <View style={styles.personText}>
+          <Text numberOfLines={1} style={[styles.displayName, compact && styles.displayNameCompact]}>
+            {person.full_name || person.username}
+          </Text>
+          <Text numberOfLines={1} style={styles.username}>
+            @{person.username.replace(/^@/, '')}
           </Text>
         </View>
-      )}
-
-      <View style={styles.personText}>
-        <Text numberOfLines={1} style={[styles.displayName, compact && styles.displayNameCompact]}>
-          {person.full_name || person.username}
-        </Text>
-        <Text numberOfLines={1} selectable style={styles.username}>
-          @{person.username.replace(/^@/, '')}
-        </Text>
-      </View>
+      </Pressable>
 
       {!isSelf ? (
         <FollowButton
@@ -161,6 +190,7 @@ const ConnectionRow = memo(function ConnectionRow({
           isFollowing={following}
           onFollowingChange={handleFollowingChange}
           stateKnown={stateKnown}
+          targetProfileId={person.profile_id}
           targetUserId={person.user_id}
         />
       ) : null}
@@ -240,38 +270,12 @@ export function ConnectionList({
     staleTime: QUERY_STALE_TIME,
   });
 
-  const viewerFollowingQueryKey = useMemo(
-    () => ['connection-following-ids', viewerId] as const,
-    [viewerId],
-  );
   const sameAsViewerFollowing = type === 'following' && userId === viewerId;
-  const viewerFollowingQuery = useQuery({
-    queryKey: viewerFollowingQueryKey,
-    queryFn: async ({ signal }) => {
-      const token = await getStorageItem('access_token');
-      if (!token) throw new Error('Your session has expired. Please sign in again.');
-      return collectConnectionIds((offset, limit) => getUserConnections(
-        viewerId!,
-        'following',
-        token,
-        { limit, offset, signal },
-      ), FOLLOWING_LOOKUP_PAGE_SIZE);
-    },
-    enabled: active && Boolean(viewerId) && !sameAsViewerFollowing,
-    staleTime: QUERY_STALE_TIME,
-  });
 
   const people = useMemo(
     () => mergeConnectionPages(peopleQuery.data?.pages ?? []),
     [peopleQuery.data?.pages],
   );
-  const serverFollowingIds = useMemo(
-    () => new Set(viewerFollowingQuery.data ?? []),
-    [viewerFollowingQuery.data],
-  );
-  const allFollowingLoaded = sameAsViewerFollowing
-    || (Boolean(viewerId) && viewerFollowingQuery.isSuccess);
-
   const filteredPeople = useMemo(() => {
     const query = search.trim().toLocaleLowerCase();
     if (!query) return people;
@@ -283,35 +287,55 @@ export function ConnectionList({
   }, [people, search]);
 
   const handleFollowingChange = useCallback((person: ConnectionUser, following: boolean) => {
+    const identity = connectionIdentity(person);
+    if (!identity) return;
     setFollowOverrideState((current) => {
       const next = current.key === stateKey
         ? new Map(current.values)
         : new Map<string, boolean>();
-      next.set(person.user_id, following);
+      next.set(identity, following);
       return { key: stateKey, values: next };
     });
 
     if (viewerId) {
       const followingKey = connectionQueryKey(viewerId, 'following');
-      queryClient.setQueryData<string[]>(viewerFollowingQueryKey, (current) => {
-        const next = new Set(current ?? viewerFollowingQuery.data ?? []);
-        if (following) next.add(person.user_id);
-        else next.delete(person.user_id);
-        return [...next];
-      });
+      queryClient.setQueriesData<InfiniteData<ConnectionPage>>(
+        { queryKey: ['connections'] },
+        (current) => current ? {
+          ...current,
+          pages: current.pages.map((page) => ({
+            ...page,
+            items: page.items.map((item) => {
+              if (connectionIdentity(item) !== identity) return item;
+              return item.profile_id
+                ? { ...item, viewer_follows_profile: following }
+                : { ...item, viewer_follows_user: following };
+            }),
+          })),
+        } : current,
+      );
       if (sameAsViewerFollowing && !following) {
         queryClient.setQueryData<InfiniteData<ConnectionPage>>(followingKey, (current) => (
           current ? {
             ...current,
             pages: current.pages.map((page) => ({
               ...page,
-              items: page.items.filter((item) => item.user_id !== person.user_id),
+              items: page.items.filter((item) => connectionIdentity(item) !== identity),
             })),
           } : current
         ));
       }
-      void queryClient.invalidateQueries({ queryKey: viewerFollowingQueryKey, exact: true });
       void queryClient.invalidateQueries({ queryKey: followingKey });
+      if (person.user_id) {
+        void queryClient.invalidateQueries({
+          queryKey: ['public-user-profile', 'user', person.user_id],
+        });
+      }
+      if (person.profile_id) {
+        void queryClient.invalidateQueries({
+          queryKey: ['public-user-profile', 'profile', person.profile_id],
+        });
+      }
     }
 
     onFollowingCountChange?.(following ? 1 : -1);
@@ -320,33 +344,32 @@ export function ConnectionList({
     queryClient,
     sameAsViewerFollowing,
     stateKey,
-    viewerFollowingQuery.data,
-    viewerFollowingQueryKey,
     viewerId,
   ]);
 
   const renderPerson = useCallback(({ item }: { item: ConnectionUser }) => {
-    const override = followOverrides.get(item.user_id);
-    const serverFollowing = sameAsViewerFollowing || serverFollowingIds.has(item.user_id);
-    const following = override ?? serverFollowing;
-    const stateKnown = override !== undefined || serverFollowing || allFollowingLoaded;
+    const identity = connectionIdentity(item);
+    const override = identity ? followOverrides.get(identity) : undefined;
+    const { following, stateKnown } = connectionFollowState(
+      item,
+      sameAsViewerFollowing,
+      override,
+    );
     return (
       <ConnectionRow
         compact={compact}
         following={following}
-        isSelf={item.user_id === viewerId}
+        isSelf={Boolean(item.user_id) && item.user_id === viewerId}
         onFollowingChange={handleFollowingChange}
         person={item}
         stateKnown={stateKnown}
       />
     );
   }, [
-    allFollowingLoaded,
     compact,
     followOverrides,
     handleFollowingChange,
     sameAsViewerFollowing,
-    serverFollowingIds,
     viewerId,
   ]);
 
@@ -400,7 +423,7 @@ export function ConnectionList({
     return (
       <StateView
         icon={<UserPlus color={REFERENCE_THEME.textTertiary} size={29} strokeWidth={1.5} />}
-        message="People followed from Weave will appear here."
+        message="People and GitHub profiles you follow will appear here."
         title="Not following anyone yet"
       />
     );
@@ -449,19 +472,6 @@ export function ConnectionList({
         ) : null}
       </View>
 
-      {viewerFollowingQuery.isError && people.length > 0 ? (
-        <View style={styles.statusError}>
-          <Text style={styles.statusErrorText}>Follow status is unavailable.</Text>
-          <Pressable
-            accessibilityRole="button"
-            hitSlop={8}
-            onPress={() => void viewerFollowingQuery.refetch()}
-          >
-            <Text style={styles.statusRetryText}>Retry</Text>
-          </Pressable>
-        </View>
-      ) : null}
-
       <FlatList
         contentContainerStyle={[
           styles.listContent,
@@ -473,7 +483,7 @@ export function ConnectionList({
         ItemSeparatorComponent={() => <View style={{ height: ROW_GAP }} />}
         keyboardDismissMode="on-drag"
         keyboardShouldPersistTaps="handled"
-        keyExtractor={(item) => item.user_id}
+        keyExtractor={(item) => connectionIdentity(item) ?? `unknown:${item.username}`}
         ListEmptyComponent={emptyState}
         ListFooterComponent={listFooter}
         maxToRenderPerBatch={12}
@@ -481,9 +491,8 @@ export function ConnectionList({
         onEndReachedThreshold={0.55}
         onRefresh={userId ? () => {
           void peopleQuery.refetch();
-          if (viewerId && !sameAsViewerFollowing) void viewerFollowingQuery.refetch();
         } : undefined}
-        refreshing={peopleQuery.isRefetching || viewerFollowingQuery.isRefetching}
+        refreshing={peopleQuery.isRefetching}
         renderItem={renderPerson}
         showsVerticalScrollIndicator={false}
         style={styles.list}
@@ -593,6 +602,13 @@ const styles = StyleSheet.create({
     height: 68,
     paddingHorizontal: 10,
     gap: 9,
+  },
+  profileLink: {
+    flex: 1,
+    minWidth: 0,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
   },
   avatarFallback: {
     flexShrink: 0,

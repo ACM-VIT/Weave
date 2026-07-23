@@ -12,10 +12,13 @@ const repoId = '00000000-0000-4000-8000-000000000202';
 const sessionId = '00000000-0000-4000-8000-000000000203';
 const spoofOwnerUserId = '00000000-0000-4000-8000-000000000204';
 const ownerUserId = '00000000-0000-4000-8000-000000000205';
+const ownerProfileId = '00000000-0000-4000-8000-000000000206';
+const externalProfileId = '00000000-0000-4000-8000-000000000207';
 
 async function seed(): Promise<void> {
   await sqlClient`
-    TRUNCATE app.users,app.repos,app.trending_snapshots,telemetry.ml_outbox,telemetry.generation_attempts CASCADE
+    TRUNCATE app.social_profiles,app.users,app.repos,app.trending_snapshots,
+      telemetry.ml_outbox,telemetry.generation_attempts CASCADE
   `;
   await sqlClient`
     INSERT INTO auth.users (id,raw_user_meta_data) VALUES
@@ -34,6 +37,13 @@ async function seed(): Promise<void> {
   `;
   await sqlClient`INSERT INTO app.user_stats (user_id) VALUES (${userId}::uuid),(${ownerUserId}::uuid)`;
   await sqlClient`INSERT INTO app.user_feed_state (user_id) VALUES (${userId}::uuid)`;
+  await sqlClient`
+    INSERT INTO app.social_profiles(
+      profile_id,provider,provider_subject,handle,profile_kind,claimed_by_user_id
+    ) VALUES
+      (${ownerProfileId}::uuid,'github','9001','owner','user',${ownerUserId}::uuid),
+      (${externalProfileId}::uuid,'github',NULL,'external-owner','organization',NULL)
+  `;
   await sqlClient`
     INSERT INTO app.repos (repo_id,github_id,full_name,owner,name,url,status)
     VALUES (${repoId}::uuid,202,'owner/http-repo','owner','http-repo','https://github.com/owner/http-repo','active')
@@ -105,12 +115,14 @@ integration('registered v2 HTTP paths complete controlled integration flows', as
       items: Array<{
         repo_id: string;
         owner_user_id: string | null;
+        owner_profile_id: string | null;
         viewer_follows_owner: boolean;
       }>;
     };
     assert.equal(served.source, 'fallback');
     assert.deepEqual(served.items.map((item) => item.repo_id), [repoId]);
     assert.equal(served.items[0].owner_user_id, ownerUserId);
+    assert.equal(served.items[0].owner_profile_id, ownerProfileId);
     assert.equal(served.items[0].viewer_follows_owner, false);
 
     const interaction = await fetch(`${base}/api/v2/interactions/batch`, {
@@ -140,6 +152,45 @@ integration('registered v2 HTTP paths complete controlled integration flows', as
     `)[0].feed_version);
     assert.equal(feedVersionAfterFollow, feedVersionBeforeFollow + 1n);
 
+    const ownerProfile = await fetch(`${base}/api/v2/users/${ownerUserId}`, {
+      headers: authHeaders,
+    });
+    assert.equal(ownerProfile.status, 200);
+    const ownerProfileData = (await ownerProfile.json()) as {
+      data: {
+        user_id: string;
+        is_self: boolean;
+        viewer_follows_user: boolean;
+        followers_count: number;
+      };
+    };
+    assert.equal(ownerProfileData.data.user_id, ownerUserId);
+    assert.equal(ownerProfileData.data.is_self, false);
+    assert.equal(ownerProfileData.data.viewer_follows_user, true);
+    assert.equal(Number(ownerProfileData.data.followers_count), 1);
+
+    const followingList = await fetch(
+      `${base}/api/v2/users/${userId}/following?limit=25&offset=0`,
+      { headers: authHeaders },
+    );
+    assert.equal(followingList.status, 200);
+    const followingListData = (await followingList.json()) as {
+      data: { items: Array<{ user_id: string; viewer_follows_user: boolean }> };
+    };
+    assert.equal(followingListData.data.items.length, 1);
+    assert.equal(followingListData.data.items[0].user_id, ownerUserId);
+    assert.equal(followingListData.data.items[0].viewer_follows_user, true);
+
+    const selfFollow = await fetch(`${base}/api/v2/users/${userId}/follow`, {
+      method: 'PUT', headers: authHeaders,
+    });
+    assert.equal(selfFollow.status, 400);
+    const unknownFollow = await fetch(
+      `${base}/api/v2/users/00000000-0000-4000-8000-000000000299/follow`,
+      { method: 'PUT', headers: authHeaders },
+    );
+    assert.equal(unknownFollow.status, 404);
+
     const followedFeed = await fetch(`${base}/api/v2/feed`, {
       method: 'POST', headers: authHeaders,
       body: JSON.stringify({
@@ -165,6 +216,94 @@ integration('registered v2 HTTP paths complete controlled integration flows', as
       SELECT feed_version FROM app.user_feed_state WHERE user_id=${userId}::uuid
     `)[0].feed_version);
     assert.equal(feedVersionAfterUnfollow, feedVersionAfterFollow + 1n);
+    const countersAfterUnfollow = await sqlClient`
+      SELECT user_id,followers_count,following_count
+      FROM app.user_stats
+      WHERE user_id IN (${userId}::uuid,${ownerUserId}::uuid)
+      ORDER BY user_id
+    `;
+    assert.equal(
+      countersAfterUnfollow.find((row) => String(row.user_id) === userId)?.following_count,
+      0,
+    );
+    assert.equal(
+      countersAfterUnfollow.find((row) => String(row.user_id) === ownerUserId)?.followers_count,
+      0,
+    );
+
+    const externalFollow = await fetch(`${base}/api/v2/profiles/${externalProfileId}/follow`, {
+      method: 'PUT', headers: authHeaders,
+    });
+    assert.equal(externalFollow.status, 204);
+    const duplicateExternalFollow = await fetch(
+      `${base}/api/v2/profiles/${externalProfileId}/follow`,
+      { method: 'PUT', headers: authHeaders },
+    );
+    assert.equal(duplicateExternalFollow.status, 204);
+    const externalProfile = await fetch(`${base}/api/v2/profiles/${externalProfileId}`, {
+      headers: authHeaders,
+    });
+    assert.equal(externalProfile.status, 200);
+    const externalProfileData = (await externalProfile.json()) as {
+      data: {
+        profile_id: string;
+        followers_count: number;
+        viewer_follows_profile: boolean;
+      };
+    };
+    assert.equal(externalProfileData.data.profile_id, externalProfileId);
+    assert.equal(Number(externalProfileData.data.followers_count), 1);
+    assert.equal(externalProfileData.data.viewer_follows_profile, true);
+    assert.equal(Number((await sqlClient`
+      SELECT following_count FROM app.user_stats WHERE user_id=${userId}::uuid
+    `)[0].following_count), 1);
+    const followingWithExternal = await fetch(
+      `${base}/api/v2/users/${userId}/following?limit=25&offset=0`,
+      { headers: authHeaders },
+    );
+    assert.equal(followingWithExternal.status, 200);
+    const followingWithExternalData = (await followingWithExternal.json()) as {
+      data: {
+        items: Array<{
+          user_id: string | null;
+          profile_id: string | null;
+          viewer_follows_profile: boolean;
+        }>;
+      };
+    };
+    assert.deepEqual(
+      followingWithExternalData.data.items.map((item) => item.profile_id),
+      [externalProfileId],
+    );
+    assert.equal(followingWithExternalData.data.items[0].user_id, null);
+    assert.equal(followingWithExternalData.data.items[0].viewer_follows_profile, true);
+
+    const externalUnfollow = await fetch(`${base}/api/v2/profiles/${externalProfileId}/follow`, {
+      method: 'DELETE', headers: authHeaders,
+    });
+    assert.equal(externalUnfollow.status, 204);
+    const duplicateExternalUnfollow = await fetch(
+      `${base}/api/v2/profiles/${externalProfileId}/follow`,
+      { method: 'DELETE', headers: authHeaders },
+    );
+    assert.equal(duplicateExternalUnfollow.status, 204);
+    assert.equal(Number((await sqlClient`
+      SELECT following_count FROM app.user_stats WHERE user_id=${userId}::uuid
+    `)[0].following_count), 0);
+
+    const claimedProfileFollow = await fetch(`${base}/api/v2/profiles/${ownerProfileId}/follow`, {
+      method: 'PUT', headers: authHeaders,
+    });
+    assert.equal(claimedProfileFollow.status, 204);
+    assert.equal(Number((await sqlClient`
+      SELECT count(*) AS count FROM app.follows
+      WHERE follower_id=${userId}::uuid AND following_id=${ownerUserId}::uuid
+    `)[0].count), 1);
+    const claimedProfileUnfollow = await fetch(
+      `${base}/api/v2/profiles/${ownerProfileId}/follow`,
+      { method: 'DELETE', headers: authHeaders },
+    );
+    assert.equal(claimedProfileUnfollow.status, 204);
 
     const likesGiven = await fetch(`${base}/api/v2/users/${userId}/likes-given?limit=100&offset=0`, {
       headers: { authorization: `Bearer ${token}` },
@@ -294,8 +433,8 @@ integration('registered v2 HTTP paths complete controlled integration flows', as
     const ingestion = await fetch(`${base}/api/internal/v2/ingestion/repositories/upsert`, {
       method: 'POST', headers: { 'x-internal-secret': process.env.INTERNAL_API_SECRET!, 'content-type': 'application/json' },
       body: JSON.stringify({ repositories: [{
-        github_id: '303', full_name: 'owner/ingested', owner: 'owner', name: 'ingested',
-        url: 'https://github.com/owner/ingested', description: 'ingested', languages: [], topics: [],
+        github_id: '303', full_name: 'new-owner/ingested', owner: 'new-owner', name: 'ingested',
+        url: 'https://github.com/new-owner/ingested', description: 'ingested', languages: [], topics: [],
         star_count: 1, fork_count: 0, observed_at: new Date().toISOString(),
       }] }),
     });
@@ -303,6 +442,10 @@ integration('registered v2 HTTP paths complete controlled integration flows', as
     const ingested = await ingestion.json() as { mappings: Array<{ github_id: number; repo_id: string }> };
     assert.equal(ingested.mappings[0].github_id, '303');
     assert.match(ingested.mappings[0].repo_id, /^[0-9a-f-]{36}$/);
+    assert.equal(Number((await sqlClient`
+      SELECT count(*) AS count FROM app.social_profiles
+      WHERE provider='github' AND lower(handle)='new-owner'
+    `)[0].count), 1);
 
     const status = await fetch(`${base}/api/internal/v2/operations/status`, {
       headers: { 'x-internal-secret': process.env.INTERNAL_API_SECRET! },

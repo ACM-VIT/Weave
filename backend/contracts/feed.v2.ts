@@ -15,6 +15,9 @@ export interface RepositoryProjection {
   repo_id: string;
   full_name: string;
   owner_user_id: string | null;
+  owner_profile_id: string | null;
+  owner_profile_claimed_user_id: string | null;
+  owner_bio: string | null;
   description: string | null;
   primary_language: string | null;
   languages: string[];

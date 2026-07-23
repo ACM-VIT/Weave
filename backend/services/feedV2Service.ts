@@ -127,7 +127,11 @@ export class FeedV2Service {
     if (entries.length === 0) {
       if (request.cursor === null) {
         if (!this.fallbackEnabled) throw new Error('Feed queue is empty and trending fallback is disabled.');
-        const fallback = await this.persistence.getTrendingFallback(request.limit, []);
+        const fallback = await this.persistence.getTrendingFallback(
+          request.limit,
+          [],
+          userId,
+        );
         entries = fallback.map((repo) => ({
           repo_id: repo.repo_id, score: 0, source: 'fallback', model_version: 'backend-fallback', summary_id: repo.summary_id,
         }));

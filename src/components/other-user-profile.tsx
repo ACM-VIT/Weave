@@ -25,10 +25,12 @@ import { formatCompactCount } from '@/utils/format-count';
 
 export type OtherUserProfileData = {
   userId?: string;
+  profileId?: string;
   username: string;
   displayName: string;
   bio?: string | null;
   avatarUrl?: string | null;
+  isSelf?: boolean;
   isFollowing: boolean;
   followStateKnown?: boolean;
   stats: {
@@ -49,8 +51,10 @@ type OtherUserProfileProps = {
   profile: OtherUserProfileData;
   loading?: boolean;
   onBack: () => void;
-  onFollowersPress: () => void;
-  onFollowingPress: () => void;
+  onFollowersPress?: () => void;
+  onFollowingPress?: () => void;
+  onFollowError?: (error: Error) => void;
+  onFollowingChange?: (following: boolean) => void;
   onListPress: (listId: string) => void;
   onRepositoryPress: (repository: Repo) => void;
 };
@@ -69,6 +73,8 @@ export function OtherUserProfile({
   onBack,
   onFollowersPress,
   onFollowingPress,
+  onFollowError,
+  onFollowingChange,
   onListPress,
   onRepositoryPress,
 }: OtherUserProfileProps) {
@@ -80,7 +86,7 @@ export function OtherUserProfile({
   const [showAllPinned, setShowAllPinned] = useState(false);
   const headerProgress = useMemo(() => new Animated.Value(0), []);
   const pinnedProgress = useMemo(() => new Animated.Value(0), []);
-  const profileIdentifier = profile.userId || profile.username;
+  const profileIdentifier = profile.profileId || profile.userId || profile.username;
   const avatarColor = useMemo(
     () => getAvatarColor(profileIdentifier),
     [profileIdentifier],
@@ -201,15 +207,20 @@ export function OtherUserProfile({
                   >
                     @{profile.username.replace(/^@/, '')}
                   </Text>
-                  <FollowButton
-                    accentColor={APP_THEME.primary}
-                    compact={compact}
-                    identityKey={profile.username}
-                    isFollowing={profile.isFollowing}
-                    localOnly={DEVELOPMENT_PREVIEW_ENABLED}
-                    stateKnown={profile.followStateKnown ?? Boolean(profile.userId)}
-                    targetUserId={profile.userId}
-                  />
+                  {!profile.isSelf ? (
+                    <FollowButton
+                      accentColor={APP_THEME.primary}
+                      compact={compact}
+                      identityKey={profile.username}
+                      isFollowing={profile.isFollowing}
+                      localOnly={DEVELOPMENT_PREVIEW_ENABLED}
+                      onError={onFollowError}
+                      onFollowingChange={onFollowingChange}
+                      stateKnown={profile.followStateKnown ?? Boolean(profile.userId || profile.profileId)}
+                      targetProfileId={profile.profileId}
+                      targetUserId={profile.userId}
+                    />
+                  ) : null}
                 </View>
                 {profile.bio ? (
                   <Text

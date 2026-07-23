@@ -77,6 +77,12 @@ function mapBackendToFrontend(backendItem: any): RepositoryData | null {
       : typeof backendItem.owner_profile?.bio === 'string'
         ? backendItem.owner_profile.bio
         : null,
+    ownerProfileId: typeof backendItem.owner_profile_id === 'string'
+      ? backendItem.owner_profile_id
+      : null,
+    ownerProfileClaimedUserId: typeof backendItem.owner_profile_claimed_user_id === 'string'
+      ? backendItem.owner_profile_claimed_user_id
+      : null,
     viewerFollowsOwner: typeof backendItem.viewer_follows_owner === 'boolean'
       ? backendItem.viewer_follows_owner
       : null,
@@ -183,8 +189,9 @@ export default function HomeScreen() {
     const viewerGithubHandle = typeof user?.github_handle === 'string'
       ? user.github_handle.trim().toLocaleLowerCase()
       : '';
-    const isViewerOwner = repository.ownerUserId === user?.user_id
-      || (!repository.ownerUserId && Boolean(viewerGithubHandle) && normalizedOwner === viewerGithubHandle);
+    const claimedOwnerUserId = repository.ownerProfileClaimedUserId ?? repository.ownerUserId;
+    const isViewerOwner = claimedOwnerUserId === user?.user_id
+      || (!claimedOwnerUserId && Boolean(viewerGithubHandle) && normalizedOwner === viewerGithubHandle);
 
     if (isViewerOwner) {
       router.push('/(tabs)/profile');
@@ -196,6 +203,7 @@ export default function HomeScreen() {
       params: {
         username: repository.owner,
         ...(repository.ownerUserId ? { userId: repository.ownerUserId } : {}),
+        ...(repository.ownerProfileId ? { profileId: repository.ownerProfileId } : {}),
         ...(repository.ownerBio ? { bio: repository.ownerBio } : {}),
         isFollowing: String(repository.viewerFollowsOwner === true),
         followStateKnown: String(typeof repository.viewerFollowsOwner === 'boolean'),
