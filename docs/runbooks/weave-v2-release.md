@@ -1,18 +1,19 @@
 # Weave v2 release gates
 
-Do not enable personalized ML traffic until every gate below has evidence. The
+Do not expose personalized traffic until every gate below has evidence. The
 July 21 audit found 578 active repositories, 15 obsolete dead identity-only
 onboarding rows, and an ML v2 readiness failure. Recalculate counts at release
 time rather than treating those values as constants.
 
 ## 1. Backend owner
 
-Keep the rollout dark while deploying:
+Use the strict V2 configuration; readiness and load-balancer activation keep
+the rollout dark until every dependency is healthy:
 
 ```dotenv
-ML_V2_RECOMMENDATIONS=false
-FEED_V2_CANARY_PERCENT=0
-TRENDING_FALLBACK=true
+ML_V2_RECOMMENDATIONS=true
+FEED_V2_CANARY_PERCENT=100
+TRENDING_FALLBACK=false
 ML_FEEDBACK_OUTBOX=true
 ```
 
@@ -90,13 +91,14 @@ rollback prerequisites pass. Use external production configuration:
 
 ```dotenv
 APP_ENV=production
-LEGACY_ML_API_ENABLED=false
 V2_FEEDBACK_CONSUMER_REQUIRED=true
 QDRANT_COLLECTION_NAME=osiris_research_corpus_v2_20260721
 MIN_ELIGIBLE_REPOSITORIES=500
-V2_HEAVY_RANKER_ENABLED=false
-V2_HEAVY_RANKER_REQUIRED=false
-V2_HEAVY_RANKER_TRAFFIC_PERCENT=0
+V2_USER_COLLECTION_REQUIRED=true
+V2_HEAVY_RANKER_ENABLED=true
+V2_HEAVY_RANKER_REQUIRED=true
+V2_HEAVY_RANKER_TRAFFIC_PERCENT=100
+V2_ALLOW_UNQUALIFIED_HEAVY_RANKER=false
 ```
 
 Take and verify a Qdrant snapshot, create the new versioned collection, and run
@@ -113,7 +115,8 @@ Require `active=eligible`, `missing_content=0`, and `invalid=0`, then repeat wit
 - every current active PostgreSQL repository ID present in Qdrant;
 - zero missing, unexpected, legacy, or duplicate repository identities;
 - API and feedback worker on the same release SHA;
-- feedback heartbeat current, DLQ zero, v2 smoke non-empty, and v1 health 404.
+- feedback heartbeat current, DLQ zero, V2 heavy smoke non-empty, and removed
+  V1 routes returning 404.
 
 The candidate backend also fails `/readyz` with `503` whenever recommendations
 are enabled without an exact positive `eligible_repository_points` value, or

@@ -10,11 +10,17 @@ export class FeedShadowService {
     private readonly recommendations: RecommendationPort,
   ) {}
 
-  async run(userId: string, legacyRepoIds: string[], limit = 45): Promise<void> {
+  async run(userId: string, baselineRepoIds: string[], limit = 45): Promise<void> {
     const generationId = crypto.randomUUID();
     const feedVersion = await this.persistence.getFeedVersion(userId);
     const started = Date.now();
     try {
+      let socialRepoIds: string[] = [];
+      try {
+        socialRepoIds = await this.persistence.listFollowedRepositoryIds(userId, 500);
+      } catch (error) {
+        console.error('[FeedShadowService] Failed to load followed-owner repositories:', error);
+      }
       const response = await this.recommendations.generate({
         schema_version: 2,
         generation_id: generationId,
@@ -22,12 +28,13 @@ export class FeedShadowService {
         feed_version: Number(feedVersion),
         limit,
         exclude_repo_ids: [],
+        social_repo_ids: socialRepoIds,
         context: { cold_start: false },
       });
       const projections = await this.persistence.listActiveRepositories(response.items.map((item) => item.repo_id));
       if (projections.length !== response.items.length) throw new Error('unknown_repository_id');
-      const legacy = new Set(legacyRepoIds);
-      const overlap = response.items.filter((item) => legacy.has(item.repo_id)).length;
+      const baseline = new Set(baselineRepoIds);
+      const overlap = response.items.filter((item) => baseline.has(item.repo_id)).length;
       await sqlClient`
         INSERT INTO telemetry.generation_attempts (
           generation_id,user_id,feed_version,mode,status,latency_ms,result_count
@@ -38,7 +45,7 @@ export class FeedShadowService {
       `;
       console.info(JSON.stringify({
         event: 'feed_v2_shadow', generation_id: generationId, user_id: userId,
-        result_count: response.items.length, legacy_count: legacy.size, overlap,
+        result_count: response.items.length, baseline_count: baseline.size, overlap,
         model_version: response.model_version, embedding_version: response.embedding_version,
         latency_ms: Date.now() - started,
       }));

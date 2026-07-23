@@ -23,6 +23,7 @@ test('campaign reindex preserves canonical identity/version and builds a fresh s
   const job = buildCampaignRepositoryJob({
     repo_id: '00000000-0000-4000-8000-000000000001',
     github_id: '123',
+    owner_github_id: '456',
     full_name: 'owner/repository',
     url: 'https://github.com/owner/repository',
     description: null,

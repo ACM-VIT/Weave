@@ -17,7 +17,7 @@ class FakeRepoPersistence implements RepositoryPersistencePort {
 
 test('ingestion returns canonical mappings keyed by GitHub numeric ID', async () => {
   const service = new IngestionService(new FakeRepoPersistence());
-  const results = await service.bulkUpsert([{ github_id: '123', full_name: 'old/name', owner: 'old', name: 'name',
+  const results = await service.bulkUpsert([{ github_id: '123', owner_github_id: '456', full_name: 'old/name', owner: 'old', name: 'name',
     url: 'https://github.com/old/name', observed_at: new Date(0).toISOString() }]);
   assert.equal(results[0].github_id, '123');
   assert.match(results[0].repo_id, /^[0-9a-f-]{36}$/);
@@ -25,7 +25,7 @@ test('ingestion returns canonical mappings keyed by GitHub numeric ID', async ()
 
 test('ingestion rejects optional values that would deterministically fail DB or strict ML validation', () => {
   const valid = {
-    github_id: '123', full_name: 'owner/name', owner: 'owner', name: 'name',
+    github_id: '123', owner_github_id: '456', full_name: 'owner/name', owner: 'owner', name: 'name',
     url: 'https://github.com/owner/name', observed_at: '2026-07-21T00:00:00.000Z',
     description: null, readme: null, primary_language: null,
     languages: ['TypeScript'], topics: ['recommendations'],
@@ -33,6 +33,9 @@ test('ingestion rejects optional values that would deterministically fail DB or 
     pushed_at: '2026-07-20T00:00:00+05:30', recent_commits: ['2026-07-19T00:00:00Z'],
   };
   assert.equal(isRepositoryUpsert(valid), true);
+  assert.equal(isRepositoryUpsert({ ...valid, owner_github_id: undefined }), false);
+  assert.equal(isRepositoryUpsert({ ...valid, owner_github_id: '0' }), false);
+  assert.equal(isRepositoryUpsert({ ...valid, owner_github_id: 'owner' }), false);
   assert.equal(isRepositoryUpsert({ ...valid, star_count: -1 }), false);
   assert.equal(isRepositoryUpsert({ ...valid, topics: [''] }), false);
   assert.equal(isRepositoryUpsert({ ...valid, pushed_at: 'not-a-date' }), false);

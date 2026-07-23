@@ -127,6 +127,13 @@ integration('v2 database, outbox, and Redis feed flows preserve invariants', asy
   assert.equal(accepted.accepted, 1);
   assert.equal((await processInteractionBatchV2(userId, [first])).duplicates, 1);
 
+  const impression = event('impression');
+  await processInteractionBatchV2(userId, [impression]);
+  await processInteractionBatchV2(userId, [impression]);
+  assert.equal(Number((await sqlClient`
+    SELECT views_count FROM app.repo_engagement WHERE repo_id=${repoId}::uuid
+  `)[0].views_count), 1);
+
   await assert.rejects(processInteractionBatchV2(userId, [{ ...first, event_type: 'dislike' }]), /different content/);
   await Promise.all([
     processInteractionBatchV2(userId, [event('dislike')]),
@@ -222,9 +229,36 @@ integration('v2 database, outbox, and Redis feed flows preserve invariants', asy
   `)[0].status), 'superseded');
   assert.equal(await firstWorker.replay(obsoleteId), false);
 
+  const historicalRepositoryJobId = crypto.randomUUID();
+  const successorRepositoryJobId = crypto.randomUUID();
+  const unresolvedRepositoryJobId = crypto.randomUUID();
+  await sqlClient`
+    INSERT INTO telemetry.ml_outbox (
+      outbox_id,job_type,aggregate_id,idempotency_key,payload,status,created_at,delivered_at
+    ) VALUES
+      (${historicalRepositoryJobId}::uuid,'repo_index',${repoId}::uuid,
+        ${`integration:historical-repository:${historicalRepositoryJobId}`},'{}'::jsonb,'dead',now()-interval '2 minutes',NULL),
+      (${successorRepositoryJobId}::uuid,'repo_index',${repoId}::uuid,
+        ${`integration:repository-successor:${successorRepositoryJobId}`},'{}'::jsonb,'delivered',now()-interval '1 minute',now()),
+      (${unresolvedRepositoryJobId}::uuid,'repo_refresh',${repoId}::uuid,
+        ${`integration:unresolved-repository:${unresolvedRepositoryJobId}`},'{}'::jsonb,'dead',now(),NULL)
+  `;
+  assert.equal(
+    await firstWorker.supersedeRepositoryJobDeliveredBySuccessor(historicalRepositoryJobId),
+    true,
+  );
+  assert.equal(
+    await firstWorker.supersedeRepositoryJobDeliveredBySuccessor(unresolvedRepositoryJobId),
+    false,
+  );
+  assert.equal(String((await sqlClient`
+    SELECT status FROM telemetry.ml_outbox WHERE outbox_id=${historicalRepositoryJobId}::uuid
+  `)[0].status), 'superseded');
+
   const concurrentPersistence = new PostgresRepositoryPersistence();
   const concurrentBase = {
     github_id: '202',
+    owner_github_id: '9001',
     full_name: 'owner/concurrent',
     owner: 'owner',
     name: 'concurrent',

@@ -5,6 +5,7 @@ import test from 'node:test';
 import jwt from 'jsonwebtoken';
 
 import { sqlClient } from '../../db/index.js';
+import { PostgresFeedPersistence } from '../../adapters/postgresFeedPersistence.js';
 
 const integration = process.env.RUN_HTTP_INTEGRATION === '1' ? test : test.skip;
 const userId = '00000000-0000-4000-8000-000000000201';
@@ -35,8 +36,8 @@ async function seed(): Promise<void> {
   await sqlClient`INSERT INTO app.user_stats (user_id) VALUES (${userId}::uuid),(${ownerUserId}::uuid)`;
   await sqlClient`INSERT INTO app.user_feed_state (user_id) VALUES (${userId}::uuid)`;
   await sqlClient`
-    INSERT INTO app.repos (repo_id,github_id,full_name,owner,name,url,status)
-    VALUES (${repoId}::uuid,202,'owner/http-repo','owner','http-repo','https://github.com/owner/http-repo','active')
+    INSERT INTO app.repos (repo_id,github_id,owner_github_id,full_name,owner,name,url,status)
+    VALUES (${repoId}::uuid,202,9001,'owner/http-repo','owner','http-repo','https://github.com/owner/http-repo','active')
   `;
   await sqlClient`
     INSERT INTO app.repo_content (repo_id,content_hash,description,languages)
@@ -59,19 +60,31 @@ integration('registered v2 HTTP paths complete controlled integration flows', as
     DB_SCHEMA_V2_WRITES: 'true',
     FEED_V2: 'true',
     FEED_RESERVATIONS: 'true',
-    FEED_V2_CANARY_PERCENT: '100',
     ML_V2_RECOMMENDATIONS: 'false',
     // The HTTP suite verifies durable outbox writes, not live ML delivery/health.
     ML_FEEDBACK_OUTBOX: 'false',
     ML_QDRANT_ONLY: 'true',
     TRENDING_FALLBACK: 'true',
-    LEGACY_API_ENABLED: 'false',
   });
   const [{ default: app }, { default: redisClient }, { getApplicationRuntime }] = await Promise.all([
     import('../../app.js'), import('../../config/redis.js'), import('../../runtime/applicationRuntime.js'),
   ]);
   await seed();
   await redisClient.flushdb();
+  const feedPersistence = new PostgresFeedPersistence();
+  await sqlClient`
+    INSERT INTO app.follows (follower_id,following_id)
+    VALUES (${userId}::uuid,${spoofOwnerUserId}::uuid)
+  `;
+  assert.deepEqual(
+    await feedPersistence.listFollowedRepositoryIds(userId, 10),
+    [],
+    'an unverified application profile must never impersonate a GitHub repository owner',
+  );
+  await sqlClient`
+    DELETE FROM app.follows
+    WHERE follower_id=${userId}::uuid AND following_id=${spoofOwnerUserId}::uuid
+  `;
   const server: Server = await new Promise((resolve) => {
     const instance = app.listen(0, '127.0.0.1', () => resolve(instance));
   });
@@ -104,14 +117,16 @@ integration('registered v2 HTTP paths complete controlled integration flows', as
       source: string;
       items: Array<{
         repo_id: string;
-        owner_user_id: string | null;
-        viewer_follows_owner: boolean;
+        repository: {
+          owner_user_id: string | null;
+          viewer_follows_owner: boolean;
+        };
       }>;
     };
     assert.equal(served.source, 'fallback');
     assert.deepEqual(served.items.map((item) => item.repo_id), [repoId]);
-    assert.equal(served.items[0].owner_user_id, ownerUserId);
-    assert.equal(served.items[0].viewer_follows_owner, false);
+    assert.equal(served.items[0].repository.owner_user_id, ownerUserId);
+    assert.equal(served.items[0].repository.viewer_follows_owner, false);
 
     const interaction = await fetch(`${base}/api/v2/interactions/batch`, {
       method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
@@ -139,6 +154,13 @@ integration('registered v2 HTTP paths complete controlled integration flows', as
       SELECT feed_version FROM app.user_feed_state WHERE user_id=${userId}::uuid
     `)[0].feed_version);
     assert.equal(feedVersionAfterFollow, feedVersionBeforeFollow + 1n);
+    await sqlClient`
+      UPDATE app.users SET github_handle='renamed-owner' WHERE user_id=${ownerUserId}::uuid
+    `;
+    await sqlClient`
+      UPDATE app.users SET github_id='9002',github_handle='owner',github_identity_verified_at=now()
+      WHERE user_id=${spoofOwnerUserId}::uuid
+    `;
 
     const followedFeed = await fetch(`${base}/api/v2/feed`, {
       method: 'POST', headers: authHeaders,
@@ -148,10 +170,17 @@ integration('registered v2 HTTP paths complete controlled integration flows', as
     });
     assert.equal(followedFeed.status, 200);
     const followedItems = (await followedFeed.json()) as {
-      items: Array<{ repo_id: string; owner_user_id: string | null; viewer_follows_owner: boolean }>;
+      items: Array<{
+        repo_id: string;
+        repository: {
+          owner_user_id: string | null;
+          viewer_follows_owner: boolean;
+        };
+      }>;
     };
-    assert.equal(followedItems.items[0].owner_user_id, ownerUserId);
-    assert.equal(followedItems.items[0].viewer_follows_owner, true);
+    assert.equal(followedItems.items[0].repository.owner_user_id, ownerUserId);
+    assert.equal(followedItems.items[0].repository.viewer_follows_owner, true);
+    assert.deepEqual(await feedPersistence.listFollowedRepositoryIds(userId, 10), [repoId]);
 
     const unfollow = await fetch(`${base}/api/v2/users/${ownerUserId}/follow`, {
       method: 'DELETE', headers: authHeaders,
@@ -294,7 +323,7 @@ integration('registered v2 HTTP paths complete controlled integration flows', as
     const ingestion = await fetch(`${base}/api/internal/v2/ingestion/repositories/upsert`, {
       method: 'POST', headers: { 'x-internal-secret': process.env.INTERNAL_API_SECRET!, 'content-type': 'application/json' },
       body: JSON.stringify({ repositories: [{
-        github_id: '303', full_name: 'owner/ingested', owner: 'owner', name: 'ingested',
+        github_id: '303', owner_github_id: '9001', full_name: 'owner/ingested', owner: 'owner', name: 'ingested',
         url: 'https://github.com/owner/ingested', description: 'ingested', languages: [], topics: [],
         star_count: 1, fork_count: 0, observed_at: new Date().toISOString(),
       }] }),
