@@ -2,7 +2,7 @@
   "schemas": ["app", "telemetry"],
   "tables": {
     "app": [
-      "board_collections", "board_repos", "boards", "comments", "follows",
+      "board_collections", "board_repos", "boards", "collection_repos", "comments", "follows",
       "reactions", "repo_card_summaries", "repo_content", "repo_engagement",
       "repo_stat_snapshots", "repo_topics", "repos", "saves", "topics",
       "oauth_codes", "refresh_tokens", "trending_snapshot_items", "trending_snapshots", "user_feed_state",
@@ -20,6 +20,7 @@
     "app_comments_repo_idx", "app_comments_user_idx", "app_boards_user_idx",
     "app_board_collections_user_idx", "app_saves_user_idx", "app_repo_stats_latest_idx",
     "app_follows_following_idx", "app_follows_follower_idx",
+    "app_collection_repos_repo_idx", "app_collection_repos_added_idx",
     "repo_card_summaries_one_active_uidx", "repos_full_name_key",
     "repos_github_id_key", "trending_one_active_period_uidx"
   ],

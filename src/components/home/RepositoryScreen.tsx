@@ -3,9 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   Pressable,
   Linking,
-  Platform,
   ScrollView,
-  Share,
   StyleSheet,
   Text,
   View,
@@ -40,7 +38,6 @@ import DescriptionCard from './DescriptionCard';
 import ReadmeCard from './ReadmeCard';
 import type { FeedbackAction } from '../../api/activity';
 import { FEEDBACK_ACTIONS } from '../../constants/feedbackActions';
-import { shareResultConfirmsCompletion } from '../../utils/share-feedback';
 import { FollowButton } from '../follow-button';
 import {
   loadPinnedRepositories,
@@ -173,6 +170,7 @@ export function RepositoryScreen({
   commentCount,
   onReadFullPress,
   onSavePress,
+  onSharePress,
   onCommentPress,
   onQueueActivity,
 }: {
@@ -184,6 +182,7 @@ export function RepositoryScreen({
   commentCount?: number;
   onReadFullPress: () => void;
   onSavePress: () => void;
+  onSharePress: () => void;
   onCommentPress: () => void;
   onQueueActivity?: QueueActivity;
 }) {
@@ -294,20 +293,6 @@ export function RepositoryScreen({
     void checkOnboardingStatus().catch(() => undefined);
   };
 
-  const shareRepository = async () => {
-    try {
-      const result = await Share.share({
-        title: `${repository.owner}/${repository.title}`,
-        message: `${repository.owner}/${repository.title}\n\n${repository.description}\n\n${repository.githubUrl ?? `https://github.com/${repository.owner}/${repository.title}`}`,
-      });
-      if (shareResultConfirmsCompletion(Platform.OS, result.action, Share.sharedAction)) {
-        onQueueActivity?.({ repo_id: repository.id, action: FEEDBACK_ACTIONS.share }, true);
-      }
-    } catch {
-      // The native share sheet can be dismissed or unavailable without affecting the feed.
-    }
-  };
-
   const openGithubRepository = async () => {
     const url = repository.githubUrl ?? `https://github.com/${repository.owner}/${repository.title}`;
     try {
@@ -317,7 +302,6 @@ export function RepositoryScreen({
       // Do not train on an open that the operating system rejected.
     }
   };
-
   return (
     <View style={[styles.screen, { width: pageWidth, height: pageHeight }]}>
       <View style={[styles.body, bodyStyle]}>
@@ -493,7 +477,7 @@ export function RepositoryScreen({
           icon={ShareIcon}
           iconSize={28}
           label="Share"
-          onPress={shareRepository}
+          onPress={onSharePress}
         />
       </View>
 

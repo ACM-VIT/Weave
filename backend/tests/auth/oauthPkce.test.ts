@@ -126,7 +126,7 @@ test('OAuth state is consumed once and restores only its matching PKCE verifier'
         storageKey,
       },
       global: {
-        fetch: async (_input: RequestInfo | URL, init?: RequestInit) => {
+        fetch: async (_input: string | URL | Request, init?: RequestInit) => {
           assert.equal(init?.method, 'POST');
           assert.equal(typeof init?.body, 'string');
           exchangeCapture.body = JSON.parse(init.body as string) as Record<string, unknown>;

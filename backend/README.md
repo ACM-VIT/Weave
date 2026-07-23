@@ -80,6 +80,7 @@ Topic slugs are lowercase letters/numbers/hyphens, 1-50 characters. Onboarding a
 |---|---|---|
 | `GET /api/v2/repositories` | `q?`, `limit`, `offset` | Active repository cards with latest stats and active ML summary |
 | `GET /api/v2/repositories/:repoId` | none | Repository detail including README and topics |
+| `GET /api/v2/repositories/:repoId/share` | none | Public minimal repository metadata for sharing |
 | `GET /api/v2/repositories/trending` | `period` default `daily` | Active complete trending snapshot, ordered by position |
 | `GET /api/v2/repositories/saved` | `limit`, `offset` | Current user's saved repositories |
 
@@ -138,9 +139,10 @@ Comment bodies are 1-5000 trimmed characters.
 
 | Method and path | Body | Result |
 |---|---|---|
-| `GET /api/v2/collections` | none | Current user's collections and board counts |
-| `POST /api/v2/collections` | `{name,description?}` | Creates collection |
-| `PUT /api/v2/collections/:collectionId` | `{name,description?}` | Replaces mutable fields |
+| `GET /api/v2/collections` | `repository_id?` | Current user's collections, repository counts, timestamps, and optional membership state |
+| `POST /api/v2/collections` | `{name,description?,icon?,color?}` | Creates collection |
+| `POST /api/v2/collections/save` | `{repositoryId,collectionIds[]}` | Atomically synchronizes a repository across owned collections |
+| `PUT /api/v2/collections/:collectionId` | `{name,description?,icon?,color?}` | Replaces mutable fields |
 | `DELETE /api/v2/collections/:collectionId` | none | Deletes collection; boards become ungrouped |
 | `GET /api/v2/boards` | none | Current user's boards and repo counts |
 | `POST /api/v2/boards` | `{name,description?,visibility,collection_id?}` | Creates board |

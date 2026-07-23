@@ -36,7 +36,7 @@ export class GitHubApiError extends Error {
   }
 }
 
-function buildGitHubHeaders(): HeadersInit {
+function buildGitHubHeaders(): Record<string, string> {
   if (!process.env.GITHUB_TOKEN) {
     throw new ServerConfigError('Missing GITHUB_TOKEN in environment.');
   }

@@ -10,6 +10,10 @@ import {
   retireSessionIfCurrent,
   type AuthenticatedSession,
 } from '../api/session-transitions';
+import {
+  DEVELOPMENT_PREVIEW_ENABLED,
+  DEVELOPMENT_PREVIEW_USER,
+} from '../config/development-preview';
 import { resolveOnboardingCompleted } from '../utils/auth-routing';
 import { restoreStartupSession } from './restore-session';
 
@@ -39,8 +43,10 @@ type UserProfileRequestPolicy = {
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
-  const [user, setUser] = useState<User | null>(null);
-  const [isLoading, setIsLoading] = useState(true);
+  const [user, setUser] = useState<User | null>(() => (
+    DEVELOPMENT_PREVIEW_ENABLED ? DEVELOPMENT_PREVIEW_USER : null
+  ));
+  const [isLoading, setIsLoading] = useState(!DEVELOPMENT_PREVIEW_ENABLED);
 
   const fetchUserProfile = useCallback(async (
     token: string,
@@ -87,6 +93,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const loadSession = useCallback(async () => {
+    if (DEVELOPMENT_PREVIEW_ENABLED) {
+      setUser(DEVELOPMENT_PREVIEW_USER);
+      setIsLoading(false);
+      return;
+    }
     const sessionGeneration = authSessionLifecycle.currentGeneration();
     try {
       const restoreBlocked = await isSessionRestoreBlocked();
@@ -123,6 +134,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [fetchUserProfile]);
 
   const checkOnboardingStatus = useCallback(async () => {
+    if (DEVELOPMENT_PREVIEW_ENABLED) return;
     const sessionGeneration = authSessionLifecycle.currentGeneration();
     const token = await getStorageItem('access_token');
     authSessionLifecycle.assertCurrent(sessionGeneration);
@@ -150,6 +162,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [fetchUserProfile]);
 
   const signOut = useCallback(async () => {
+    if (DEVELOPMENT_PREVIEW_ENABLED) {
+      setUser(DEVELOPMENT_PREVIEW_USER);
+      setIsLoading(false);
+      return;
+    }
     const previousUser = user;
     const logout = logoutRequest();
     setUser(null);

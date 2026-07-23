@@ -197,8 +197,18 @@ export const boardCollections = appSchema.table('board_collections', {
   userId: uuid('user_id').notNull().references(() => appUsers.userId, { onDelete: 'cascade' }),
   name: text('name').notNull(),
   description: text('description'),
+  icon: text('icon'),
+  color: varchar('color', { length: 7 }),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 });
+
+export const collectionRepos = appSchema.table('collection_repos', {
+  collectionId: uuid('collection_id').notNull().references(() => boardCollections.collectionId, { onDelete: 'cascade' }),
+  repoId: uuid('repo_id').notNull().references(() => appRepos.repoId, { onDelete: 'cascade' }),
+  addedBy: uuid('added_by').references(() => appUsers.userId, { onDelete: 'set null' }),
+  addedAt: timestamp('added_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [primaryKey({ columns: [table.collectionId, table.repoId] })]);
 
 export const appBoards = appSchema.table('boards', {
   boardId: uuid('board_id').defaultRandom().primaryKey(),
