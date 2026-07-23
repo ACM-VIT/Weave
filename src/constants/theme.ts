@@ -96,6 +96,8 @@ export const REFERENCE_THEME = {
 
 export const APP_THEME = {
   background: '#0A0C09',
+  primary: '#63E08A',
+  primaryForeground: '#071009',
   activeAccent: '#F7F7F8',
   inactiveAccent: '#77767C',
   borderDark: '#242524',

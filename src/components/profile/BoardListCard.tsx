@@ -2,6 +2,8 @@ import { ChevronRight, FolderOpen, Pin } from 'lucide-react-native';
 import { useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 
+import { APP_THEME, REFERENCE_THEME } from '@/constants/theme';
+
 export type BoardListCardProps = {
   name: string;
   description?: string | null;
@@ -40,9 +42,9 @@ export function BoardListCard({
     >
       <View style={[styles.cover, compact && styles.coverCompact]}>
         {variant === 'pinned' ? (
-          <Pin color="#63E08A" size={compact ? 18 : 22} strokeWidth={1.9} />
+          <Pin color={APP_THEME.primary} size={compact ? 18 : 22} strokeWidth={1.9} />
         ) : (
-          <FolderOpen color="#63E08A" size={compact ? 19 : 23} strokeWidth={1.8} />
+          <FolderOpen color={APP_THEME.primary} size={compact ? 19 : 23} strokeWidth={1.8} />
         )}
       </View>
 
@@ -98,8 +100,8 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     borderRadius: 14,
     borderCurve: 'continuous',
-    backgroundColor: '#222622',
-    borderColor: '#2D392F',
+    backgroundColor: '#242426',
+    borderColor: REFERENCE_THEME.border,
     borderWidth: StyleSheet.hairlineWidth,
   },
   coverCompact: {
@@ -133,7 +135,7 @@ const styles = StyleSheet.create({
     lineHeight: 15,
   },
   count: {
-    color: '#63E08A',
+    color: APP_THEME.primary,
     fontFamily: 'NataSans-Medium',
     fontSize: 11,
     lineHeight: 15,

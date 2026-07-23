@@ -18,6 +18,7 @@ import { RepositoryFeedItem } from '@/components/home/RepositoryFeedItem';
 import { FeedHeader } from '@/components/home/FeedHeader';
 import { DEVELOPMENT_PREVIEW_ENABLED } from '@/config/development-preview';
 import { REFERENCE_THEME } from '@/constants/theme';
+import { router, type Href } from 'expo-router';
 import { DEVELOPMENT_REPOSITORIES } from '@/data/development-repositories';
 import { useInfiniteQuery, useQueryClient } from '@tanstack/react-query';
 import * as SecureStore from '../../utils/storage';
@@ -71,6 +72,11 @@ function mapBackendToFrontend(backendItem: any): RepositoryData | null {
     ownerUserId: typeof backendItem.owner_user_id === 'string'
       ? backendItem.owner_user_id
       : null,
+    ownerBio: typeof backendItem.owner_bio === 'string'
+      ? backendItem.owner_bio
+      : typeof backendItem.owner_profile?.bio === 'string'
+        ? backendItem.owner_profile.bio
+        : null,
     viewerFollowsOwner: typeof backendItem.viewer_follows_owner === 'boolean'
       ? backendItem.viewer_follows_owner
       : null,
@@ -172,6 +178,31 @@ export default function HomeScreen() {
     }).catch(() => undefined);
   }, [activityOutbox, flushActivityBatch]);
 
+  const openOwnerProfile = useCallback((repository: RepositoryData) => {
+    const normalizedOwner = repository.owner.trim().toLocaleLowerCase();
+    const viewerGithubHandle = typeof user?.github_handle === 'string'
+      ? user.github_handle.trim().toLocaleLowerCase()
+      : '';
+    const isViewerOwner = repository.ownerUserId === user?.user_id
+      || (!repository.ownerUserId && Boolean(viewerGithubHandle) && normalizedOwner === viewerGithubHandle);
+
+    if (isViewerOwner) {
+      router.push('/(tabs)/profile');
+      return;
+    }
+
+    router.push({
+      pathname: '/user/[username]',
+      params: {
+        username: repository.owner,
+        ...(repository.ownerUserId ? { userId: repository.ownerUserId } : {}),
+        ...(repository.ownerBio ? { bio: repository.ownerBio } : {}),
+        isFollowing: String(repository.viewerFollowsOwner === true),
+        followStateKnown: String(typeof repository.viewerFollowsOwner === 'boolean'),
+      },
+    } as unknown as Href);
+  }, [user]);
+
   useEffect(() => {
     if (!activityOutbox) return;
     const unsubscribe = activityOutbox.subscribe(async ({ invalidatedFeed }) => {
@@ -263,6 +294,7 @@ export default function HomeScreen() {
               pageWidth={pageWidth}
               pageHeight={pageHeight}
               onQueueActivity={handleQueueActivity}
+              onOwnerPress={() => openOwnerProfile(item.repository)}
               isViewable={viewableItems.includes(item.feedId)}
             />
           )}
