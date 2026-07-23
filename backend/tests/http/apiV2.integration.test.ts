@@ -5,6 +5,7 @@ import test from 'node:test';
 import jwt from 'jsonwebtoken';
 
 import { sqlClient } from '../../db/index.js';
+import { PostgresFeedPersistence } from '../../adapters/postgresFeedPersistence.js';
 
 const integration = process.env.RUN_HTTP_INTEGRATION === '1' ? test : test.skip;
 const userId = '00000000-0000-4000-8000-000000000201';
@@ -70,6 +71,20 @@ integration('registered v2 HTTP paths complete controlled integration flows', as
   ]);
   await seed();
   await redisClient.flushdb();
+  const feedPersistence = new PostgresFeedPersistence();
+  await sqlClient`
+    INSERT INTO app.follows (follower_id,following_id)
+    VALUES (${userId}::uuid,${spoofOwnerUserId}::uuid)
+  `;
+  assert.deepEqual(
+    await feedPersistence.listFollowedRepositoryIds(userId, 10),
+    [],
+    'an unverified application profile must never impersonate a GitHub repository owner',
+  );
+  await sqlClient`
+    DELETE FROM app.follows
+    WHERE follower_id=${userId}::uuid AND following_id=${spoofOwnerUserId}::uuid
+  `;
   const server: Server = await new Promise((resolve) => {
     const instance = app.listen(0, '127.0.0.1', () => resolve(instance));
   });
@@ -158,6 +173,7 @@ integration('registered v2 HTTP paths complete controlled integration flows', as
     };
     assert.equal(followedItems.items[0].repository.owner_user_id, ownerUserId);
     assert.equal(followedItems.items[0].repository.viewer_follows_owner, true);
+    assert.deepEqual(await feedPersistence.listFollowedRepositoryIds(userId, 10), [repoId]);
 
     const unfollow = await fetch(`${base}/api/v2/users/${ownerUserId}/follow`, {
       method: 'DELETE', headers: authHeaders,

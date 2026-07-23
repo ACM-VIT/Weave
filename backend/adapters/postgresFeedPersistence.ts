@@ -63,11 +63,12 @@ export class PostgresFeedPersistence implements FeedPersistencePort {
       SELECT DISTINCT repo.repo_id, f.created_at AS followed_at, repo.updated_at
       FROM app.follows f
       JOIN app.users followed ON followed.user_id = f.following_id
-      JOIN app.repos repo ON lower(repo.owner) = lower(
-        ltrim(COALESCE(NULLIF(followed.github_handle, ''), followed.username), '@')
-      )
+      JOIN app.repos repo ON lower(repo.owner) = lower(ltrim(followed.github_handle, '@'))
       WHERE f.follower_id = ${userId}::uuid
         AND followed.status = 'active'
+        AND followed.github_identity_verified_at IS NOT NULL
+        AND followed.github_id IS NOT NULL
+        AND NULLIF(ltrim(followed.github_handle, '@'), '') IS NOT NULL
         AND repo.status = 'active'
       ORDER BY f.created_at DESC, repo.updated_at DESC, repo.repo_id
       LIMIT ${boundedLimit}
