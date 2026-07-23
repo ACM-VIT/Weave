@@ -10,6 +10,7 @@ import {
 const ingestionRecord: RepositoryUpsert = {
   github_id: '123456789',
   github_node_id: 'R_backend_only',
+  owner_github_id: '987654321',
   full_name: 'weave/repository',
   owner: 'weave',
   name: 'repository',
@@ -77,6 +78,7 @@ test('repository-index projection emits only the strict ML v2 source keys', () =
   assert.equal(projected.discovery_category, 'trending');
   assert.equal(projected.discovery_band, 'daily');
   assert.equal(Object.hasOwn(projected, 'github_node_id'), false);
+  assert.equal(Object.hasOwn(projected, 'owner_github_id'), false);
   assert.equal(Object.hasOwn(projected, 'owner'), false);
   assert.equal(Object.hasOwn(projected, 'name'), false);
   assert.equal(Object.hasOwn(projected, 'observed_at'), false);

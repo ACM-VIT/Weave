@@ -51,10 +51,11 @@ export class PostgresRepositoryPersistence implements RepositoryPersistencePort 
           WHERE repo.github_id=${repo.github_id}::bigint FOR UPDATE OF repo
         `;
         const rows = await tx`
-          INSERT INTO app.repos (github_id,github_node_id,full_name,owner,name,url)
-          VALUES (${repo.github_id}::bigint,${repo.github_node_id ?? null},${repo.full_name},${repo.owner},${repo.name},${repo.url})
+          INSERT INTO app.repos (github_id,github_node_id,owner_github_id,full_name,owner,name,url)
+          VALUES (${repo.github_id}::bigint,${repo.github_node_id ?? null},${repo.owner_github_id}::bigint,${repo.full_name},${repo.owner},${repo.name},${repo.url})
           ON CONFLICT (github_id) DO UPDATE SET github_node_id=EXCLUDED.github_node_id,
-            full_name=EXCLUDED.full_name,owner=EXCLUDED.owner,name=EXCLUDED.name,url=EXCLUDED.url,updated_at=now()
+            owner_github_id=EXCLUDED.owner_github_id,full_name=EXCLUDED.full_name,owner=EXCLUDED.owner,
+            name=EXCLUDED.name,url=EXCLUDED.url,updated_at=now()
           RETURNING repo_id
         `;
         const repoId = String(rows[0].repo_id);

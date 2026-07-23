@@ -97,6 +97,7 @@ export const appRepos = appSchema.table('repos', {
   repoId: uuid('repo_id').defaultRandom().primaryKey(),
   githubId: bigint('github_id', { mode: 'bigint' }).notNull().unique(),
   githubNodeId: text('github_node_id'),
+  ownerGithubId: bigint('owner_github_id', { mode: 'bigint' }),
   fullName: text('full_name').notNull(),
   owner: text('owner').notNull(),
   name: text('name').notNull(),
@@ -107,7 +108,9 @@ export const appRepos = appSchema.table('repos', {
 }, (table) => [
   uniqueIndex('app_repos_full_name_lower_uidx').on(sql`lower(${table.fullName})`),
   uniqueIndex('app_repos_github_node_id_uidx').on(table.githubNodeId),
+  index('app_repos_owner_github_id_idx').on(table.ownerGithubId),
   check('app_repos_github_id_positive', sql`${table.githubId} > 0`),
+  check('app_repos_owner_github_id_positive', sql`${table.ownerGithubId} IS NULL OR ${table.ownerGithubId} > 0`),
   check('app_repos_status_check', sql`${table.status} IN ('active','archived','deleted','blocked')`),
 ]);
 

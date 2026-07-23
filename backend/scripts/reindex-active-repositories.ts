@@ -17,6 +17,7 @@ export interface ReindexOptions {
 interface ReindexRow {
   repo_id: string;
   github_id: string;
+  owner_github_id: string | null;
   full_name: string;
   url: string;
   description: string | null;
@@ -73,6 +74,7 @@ export function buildCampaignRepositoryJob(
   const [owner, ...nameParts] = row.full_name.split('/');
   const repository: RepositoryUpsert = {
     github_id: String(row.github_id),
+    owner_github_id: String(row.owner_github_id ?? ''),
     full_name: row.full_name,
     owner,
     name: nameParts.join('/'),
@@ -127,7 +129,8 @@ export async function runReindex(options: ReindexOptions, databaseUrl: string): 
     do {
       const batch = await client.begin(async (tx) => {
         const rows = await tx`
-          SELECT repo.repo_id,repo.github_id::text AS github_id,repo.full_name,repo.url,
+          SELECT repo.repo_id,repo.github_id::text AS github_id,repo.owner_github_id::text AS owner_github_id,
+            repo.full_name,repo.url,
             content.description,content.readme,content.primary_language,content.languages,
             content.content_hash,content.content_version,content.source_updated_at,
             stat.star_count,stat.fork_count,stat.open_issues_count,

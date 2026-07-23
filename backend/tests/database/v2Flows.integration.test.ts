@@ -258,6 +258,7 @@ integration('v2 database, outbox, and Redis feed flows preserve invariants', asy
   const concurrentPersistence = new PostgresRepositoryPersistence();
   const concurrentBase = {
     github_id: '202',
+    owner_github_id: '9001',
     full_name: 'owner/concurrent',
     owner: 'owner',
     name: 'concurrent',

@@ -26,8 +26,11 @@ export function isRepositoryUpsert(value: unknown): value is RepositoryUpsert {
   if (!value || typeof value !== 'object') return false;
   const item = value as Record<string, unknown>;
   if (typeof item.github_id !== 'string' || !/^[0-9]{1,32}$/.test(item.github_id)) return false;
+  if (typeof item.owner_github_id !== 'string' || !/^[0-9]{1,32}$/.test(item.owner_github_id)) return false;
   const githubId = BigInt(item.github_id);
+  const ownerGithubId = BigInt(item.owner_github_id);
   return githubId > 0n && githubId <= POSTGRES_BIGINT_MAX
+    && ownerGithubId > 0n && ownerGithubId <= POSTGRES_BIGINT_MAX
     && typeof item.full_name === 'string' && item.full_name.length >= 3 && item.full_name.length <= 256
     && /^[^/\s]+\/[^/\s]+$/.test(item.full_name)
     && typeof item.owner === 'string' && item.owner.trim().length >= 1 && item.owner.length <= 256

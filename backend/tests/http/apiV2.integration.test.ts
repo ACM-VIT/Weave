@@ -36,8 +36,8 @@ async function seed(): Promise<void> {
   await sqlClient`INSERT INTO app.user_stats (user_id) VALUES (${userId}::uuid),(${ownerUserId}::uuid)`;
   await sqlClient`INSERT INTO app.user_feed_state (user_id) VALUES (${userId}::uuid)`;
   await sqlClient`
-    INSERT INTO app.repos (repo_id,github_id,full_name,owner,name,url,status)
-    VALUES (${repoId}::uuid,202,'owner/http-repo','owner','http-repo','https://github.com/owner/http-repo','active')
+    INSERT INTO app.repos (repo_id,github_id,owner_github_id,full_name,owner,name,url,status)
+    VALUES (${repoId}::uuid,202,9001,'owner/http-repo','owner','http-repo','https://github.com/owner/http-repo','active')
   `;
   await sqlClient`
     INSERT INTO app.repo_content (repo_id,content_hash,description,languages)
@@ -154,6 +154,13 @@ integration('registered v2 HTTP paths complete controlled integration flows', as
       SELECT feed_version FROM app.user_feed_state WHERE user_id=${userId}::uuid
     `)[0].feed_version);
     assert.equal(feedVersionAfterFollow, feedVersionBeforeFollow + 1n);
+    await sqlClient`
+      UPDATE app.users SET github_handle='renamed-owner' WHERE user_id=${ownerUserId}::uuid
+    `;
+    await sqlClient`
+      UPDATE app.users SET github_id='9002',github_handle='owner',github_identity_verified_at=now()
+      WHERE user_id=${spoofOwnerUserId}::uuid
+    `;
 
     const followedFeed = await fetch(`${base}/api/v2/feed`, {
       method: 'POST', headers: authHeaders,
@@ -316,7 +323,7 @@ integration('registered v2 HTTP paths complete controlled integration flows', as
     const ingestion = await fetch(`${base}/api/internal/v2/ingestion/repositories/upsert`, {
       method: 'POST', headers: { 'x-internal-secret': process.env.INTERNAL_API_SECRET!, 'content-type': 'application/json' },
       body: JSON.stringify({ repositories: [{
-        github_id: '303', full_name: 'owner/ingested', owner: 'owner', name: 'ingested',
+        github_id: '303', owner_github_id: '9001', full_name: 'owner/ingested', owner: 'owner', name: 'ingested',
         url: 'https://github.com/owner/ingested', description: 'ingested', languages: [], topics: [],
         star_count: 1, fork_count: 0, observed_at: new Date().toISOString(),
       }] }),

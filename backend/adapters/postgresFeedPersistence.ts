@@ -63,12 +63,14 @@ export class PostgresFeedPersistence implements FeedPersistencePort {
       SELECT DISTINCT repo.repo_id, f.created_at AS followed_at, repo.updated_at
       FROM app.follows f
       JOIN app.users followed ON followed.user_id = f.following_id
-      JOIN app.repos repo ON lower(repo.owner) = lower(ltrim(followed.github_handle, '@'))
+      JOIN app.repos repo ON repo.owner_github_id = CASE
+        WHEN followed.github_id ~ '^[1-9][0-9]*$' THEN followed.github_id::bigint
+        ELSE NULL
+      END
       WHERE f.follower_id = ${userId}::uuid
         AND followed.status = 'active'
         AND followed.github_identity_verified_at IS NOT NULL
         AND followed.github_id IS NOT NULL
-        AND NULLIF(ltrim(followed.github_handle, '@'), '') IS NOT NULL
         AND repo.status = 'active'
       ORDER BY f.created_at DESC, repo.updated_at DESC, repo.repo_id
       LIMIT ${boundedLimit}
@@ -102,8 +104,10 @@ export class PostgresFeedPersistence implements FeedPersistencePort {
         WHERE owner_user.status='active'
           AND owner_user.github_identity_verified_at IS NOT NULL
           AND owner_user.github_id IS NOT NULL
-          AND owner_user.github_handle IS NOT NULL
-          AND lower(owner_user.github_handle)=lower(repo.owner)
+          AND repo.owner_github_id = CASE
+            WHEN owner_user.github_id ~ '^[1-9][0-9]*$' THEN owner_user.github_id::bigint
+            ELSE NULL
+          END
         ORDER BY owner_user.github_identity_verified_at DESC,owner_user.user_id ASC
         LIMIT 1
       ) owner_profile ON true
@@ -187,8 +191,10 @@ export class PostgresFeedPersistence implements FeedPersistencePort {
         WHERE owner_user.status='active'
           AND owner_user.github_identity_verified_at IS NOT NULL
           AND owner_user.github_id IS NOT NULL
-          AND owner_user.github_handle IS NOT NULL
-          AND lower(owner_user.github_handle)=lower(repo.owner)
+          AND repo.owner_github_id = CASE
+            WHEN owner_user.github_id ~ '^[1-9][0-9]*$' THEN owner_user.github_id::bigint
+            ELSE NULL
+          END
         ORDER BY owner_user.github_identity_verified_at DESC,owner_user.user_id ASC
         LIMIT 1
       ) owner_profile ON true

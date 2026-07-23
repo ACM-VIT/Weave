@@ -19,6 +19,7 @@ Supabase Auth owns credentials and provider identities. `app.users.user_id` equa
 - `user_id`: UUID created by Supabase Auth and registered transactionally in `app.users`.
 - `repo_id`: UUID created only by `POST /api/internal/v2/ingestion/repositories/upsert`.
 - `github_id`: immutable numeric GitHub repository ID, represented as a decimal string over HTTP.
+- `owner_github_id`: immutable numeric GitHub user or organization ID, represented as a decimal string over HTTP. This is required for owner/follower ranking; do not derive ownership from mutable logins.
 - ML and Qdrant must use `repo_id` as the canonical key. Qdrant points may use another point ID only if payload field `repo_id` is present and uniquely identifies the backend repository.
 - Names, URLs, GitHub handles, and `full_name` are attributes, never identifiers.
 
@@ -166,6 +167,7 @@ Only a trusted ingestion process calls these endpoints.
 {
   "repositories": [{
     "github_id": "123456789",
+    "owner_github_id": "987654321",
     "github_node_id": "R_kg...",
     "full_name": "owner/repository",
     "owner": "owner",
