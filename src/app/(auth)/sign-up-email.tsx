@@ -1,5 +1,5 @@
 import { useRouter } from "expo-router";
-import { useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import {
     KeyboardAvoidingView,
     Platform,
@@ -22,6 +22,9 @@ import PasswordRules from "@/components/Auth/PasswordRules";
 import PrimaryButton from "@/components/Auth/PrimaryButton";
 import SectionLabel from "@/components/Auth/SectionLabel";
 import SocialButton from "@/components/Auth/SocialButton";
+import DateOfBirthField from "@/components/Auth/date-of-birth-field";
+import { isValidDateOfBirth } from "@/utils/date-of-birth";
+import { isValidUsername, normalizeUsername, USERNAME_GUIDANCE } from "@/utils/username";
 
 export default function SignUpEmail() {
   const router = useRouter();
@@ -29,8 +32,10 @@ export default function SignUpEmail() {
   const { signInWithProvider, isLoading: oauthLoading, error: oauthError } = useOAuth();
 
   const [fullName, setFullName] = useState("");
+  const [username, setUsername] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [dateOfBirth, setDateOfBirth] = useState("");
 
   const { setSession } = useAuth();
   const [isLoading, setIsLoading] = useState(false);
@@ -43,29 +48,55 @@ export default function SignUpEmail() {
 
   const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
   const isEmailValid = emailRegex.test(email);
+  const normalizedUsername = normalizeUsername(username);
+  const isUsernameValid = isValidUsername(username);
+  const isDateOfBirthValid = isValidDateOfBirth(dateOfBirth);
 
-  const isFormValid = fullName.trim().length > 0 && isEmailValid && isPasswordValid && !isLoading;
+  const isFormValid = fullName.trim().length > 0
+    && isUsernameValid
+    && isDateOfBirthValid
+    && isEmailValid
+    && isPasswordValid
+    && !isLoading;
 
-  useEffect(() => {
-    // Auto-scroll to bottom slowly on mount
-    setTimeout(() => {
-      scrollViewRef.current?.scrollToEnd({ animated: true });
-    }, 500);
-  }, []);
+  const getValidationMessage = () => {
+    if (!isDateOfBirthValid) return 'Select your date of birth above.';
+    if (!fullName.trim()) return 'Enter your name.';
+    if (!isUsernameValid) return USERNAME_GUIDANCE;
+    if (!isEmailValid) return 'Enter a valid email address.';
+    if (!isPasswordValid) return 'Your password must satisfy all three rules.';
+    return '';
+  };
 
   const handleRegister = async () => {
-    if (!isFormValid) return;
+    if (!isFormValid) {
+      const validationMessage = getValidationMessage();
+      setErrorMsg(validationMessage);
+      if (!isDateOfBirthValid) {
+        scrollViewRef.current?.scrollTo({ y: 0, animated: true });
+      }
+      return;
+    }
     setIsLoading(true);
     setErrorMsg("");
     try {
-      const data = await register(email, password, fullName);
-      await setSession(data.accessToken, data.user);
+      const data = await register(email, password, fullName, normalizedUsername, dateOfBirth);
+      await setSession(data);
       // _layout.tsx will automatically redirect to onboarding
     } catch (err: any) {
       setErrorMsg(err.message || 'Registration failed');
     } finally {
       setIsLoading(false);
     }
+  };
+
+  const handleOAuth = (provider: 'github' | 'google') => {
+    if (!isDateOfBirthValid) {
+      setErrorMsg('Select your date of birth before continuing.');
+      scrollViewRef.current?.scrollTo({ y: 0, animated: true });
+      return;
+    }
+    void signInWithProvider(provider, 'signup', dateOfBirth);
   };
 
   return (
@@ -100,6 +131,18 @@ export default function SignUpEmail() {
             </Text>
           </View>
 
+          <View className="mt-8">
+            <SectionLabel title="Date of Birth" />
+            <DateOfBirthField value={dateOfBirth} onChange={setDateOfBirth} />
+            {!isDateOfBirthValid ? (
+              <Text className="text-[#FF453A] text-[13px] font-nata mt-1 ml-1">
+                {dateOfBirth.length > 0
+                  ? 'Select a valid date of birth.'
+                  : 'Required to create an account or continue with a provider.'}
+              </Text>
+            ) : null}
+          </View>
+
           <View className="mt-10 gap-y-5">
               <SocialButton
                   label={oauthLoading ? "Opening..." : "Continue with GitHub"}
@@ -110,7 +153,7 @@ export default function SignUpEmail() {
                   }
                   showChevron
                   disabled={oauthLoading}
-                  onPress={() => signInWithProvider('github')}
+                  onPress={() => handleOAuth('github')}
               />
 
               <SocialButton
@@ -118,7 +161,7 @@ export default function SignUpEmail() {
                   icon={<GoogleIcon />}
                   showChevron
                   disabled={oauthLoading}
-                  onPress={() => signInWithProvider('google')}
+                  onPress={() => handleOAuth('google')}
               />
           </View>
 
@@ -145,6 +188,20 @@ export default function SignUpEmail() {
               value={fullName}
               onChangeText={setFullName}
             />
+
+            <SectionLabel title="Username" />
+            <AuthInput
+              placeholder="Choose your username"
+              icon="user"
+              value={username}
+              onChangeText={setUsername}
+              autoCapitalize="none"
+            />
+            {username.length > 0 && !isUsernameValid ? (
+              <Text className="text-[#FF453A] text-[13px] font-nata mt-1 ml-1">
+                {USERNAME_GUIDANCE}
+              </Text>
+            ) : null}
 
             <SectionLabel title="Email Address" />
             <AuthInput
@@ -182,7 +239,7 @@ export default function SignUpEmail() {
               <PrimaryButton
                 label={isLoading ? "Creating..." : "Create Account"}
                 onPress={handleRegister}
-                disabled={!isFormValid}
+                disabled={isLoading}
               />
             </View>
 

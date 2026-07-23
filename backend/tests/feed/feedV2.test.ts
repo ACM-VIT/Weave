@@ -9,6 +9,7 @@ import { FeedRequestInProgressError, FeedV2Service } from '../../services/feedV2
 
 const repo: RepositoryProjection = {
   repo_id: '00000000-0000-4000-8000-000000000001', full_name: 'owner/repo', description: null,
+  owner_user_id: null, viewer_follows_owner: false,
   primary_language: 'TypeScript', languages: ['TypeScript'], topics: [], star_count: 1, fork_count: 0,
   likes_count: 0, comments_count: 0, views_count: 0, open_issues_count: 0,
   summary_id: null, summary: null, readme_md: null, updated_at: null, status: 'active',
@@ -176,6 +177,44 @@ test('generation keeps reservation ownership and concurrent retries replay perso
   assert.equal(persistence.fallbackCalls, 0);
   assert.equal(queue.released, 0);
   assert.equal(queue.committed, 1);
+});
+
+test('coalesced generation waits for the lock owner to populate the queue', async () => {
+  const persistence = new FakePersistence();
+  const queue = new FakeQueue();
+  let refillCalls = 0;
+  queue.reserve = async (_user, _version, requestId, _limit, token) => ({ requestId, token, items: [] });
+  queue.refill = async (_user, _version, requestId, _limit, token) => {
+    refillCalls++;
+    return {
+      requestId,
+      token,
+      items: refillCalls < 3 ? [] : [{
+        repo_id: repo.repo_id, score: 1, source: 'semantic', model_version: 'm1', summary_id: null,
+      }],
+    };
+  };
+  const service = new FeedV2Service(
+    persistence,
+    queue,
+    async () => 'coalesced',
+    true,
+    1_500,
+    1,
+    'unit-test-feed-cursor-secret',
+    100,
+  );
+  const response = await service.getFeed(
+    '00000000-0000-4000-8000-000000000030',
+    {
+      feed_request_id: '00000000-0000-4000-8000-000000000016',
+      session_id: '00000000-0000-4000-8000-000000000020', limit: 10, cursor: null,
+    },
+  );
+  assert.equal(response.source, 'personalized');
+  assert.equal(response.items[0].repo_id, repo.repo_id);
+  assert.equal(refillCalls, 3);
+  assert.equal(persistence.fallbackCalls, 0);
 });
 
 test('signed cursor consumes remaining queue pages and preserves global positions', async () => {

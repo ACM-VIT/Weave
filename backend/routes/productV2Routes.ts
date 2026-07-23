@@ -3,6 +3,7 @@ import { requireAuth } from '../middlewares/authMiddleware.js';
 import * as product from '../controllers/productV2Controller.js';
 
 const router = Router();
+router.get('/repositories/:repoId/share', product.getRepositoryShare);
 router.use(requireAuth);
 router.get('/users/me', product.getMe);
 router.patch('/users/me', product.updateMe);
@@ -24,6 +25,7 @@ router.patch('/comments/:commentId', product.updateComment);
 router.delete('/comments/:commentId', product.deleteComment);
 router.get('/collections', product.listCollections);
 router.post('/collections', product.createCollection);
+router.post('/collections/save', product.saveRepositoryCollections);
 router.put('/collections/:collectionId', product.updateCollection);
 router.delete('/collections/:collectionId', product.deleteCollection);
 router.get('/boards', product.listBoards);

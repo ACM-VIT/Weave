@@ -2,6 +2,7 @@ import React, { memo, useCallback, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   FlatList,
+  Image,
   Pressable,
   StyleSheet,
   Text,
@@ -9,9 +10,9 @@ import {
   View,
   useWindowDimensions,
 } from 'react-native';
-import { Image } from 'expo-image';
 import {
   useInfiniteQuery,
+  useQuery,
   useQueryClient,
   type InfiniteData,
 } from '@tanstack/react-query';
@@ -32,9 +33,13 @@ import {
   type ConnectionType,
   type ConnectionUser,
 } from '@/api/connections';
-import { AUTH_BYPASS_ENABLED } from '@/constants/auth';
 import { REFERENCE_THEME } from '@/constants/theme';
 import { useAuth } from '@/store/AuthContext';
+import {
+  collectConnectionIds,
+  FOLLOWING_LOOKUP_PAGE_SIZE,
+  mergeConnectionPages,
+} from '@/utils/connection-pagination';
 import { getStorageItem } from '@/utils/storage';
 import { FollowButton } from './follow-button';
 
@@ -61,9 +66,6 @@ async function loadConnections(
   offset: number,
   signal?: AbortSignal,
 ): Promise<ConnectionPage> {
-  if (AUTH_BYPASS_ENABLED) {
-    return { items: [], limit: CONNECTION_PAGE_SIZE, offset };
-  }
   const token = await getStorageItem('access_token');
   if (!token) throw new Error('Your session has expired. Please sign in again.');
   return getUserConnections(userId, type, token, {
@@ -99,12 +101,14 @@ const ConnectionRow = memo(function ConnectionRow({
   person,
   compact,
   following,
+  isSelf,
   stateKnown,
   onFollowingChange,
 }: {
   person: ConnectionUser;
   compact: boolean;
   following: boolean;
+  isSelf: boolean;
   stateKnown: boolean;
   onFollowingChange: (person: ConnectionUser, following: boolean) => void;
 }) {
@@ -119,10 +123,9 @@ const ConnectionRow = memo(function ConnectionRow({
       {person.avatar_url ? (
         <Image
           accessibilityLabel={`${person.username}'s avatar`}
-          contentFit="cover"
-          source={person.avatar_url}
+          resizeMode="cover"
+          source={{ uri: person.avatar_url }}
           style={{ width: avatarSize, height: avatarSize, borderRadius: avatarSize / 2 }}
-          transition={120}
         />
       ) : (
         <View
@@ -151,14 +154,16 @@ const ConnectionRow = memo(function ConnectionRow({
         </Text>
       </View>
 
-      <FollowButton
-        compact={compact}
-        disabled={!stateKnown}
-        isFollowing={following}
-        onFollowingChange={handleFollowingChange}
-        stateKnown={stateKnown}
-        targetUserId={person.user_id}
-      />
+      {!isSelf ? (
+        <FollowButton
+          compact={compact}
+          disabled={!stateKnown}
+          isFollowing={following}
+          onFollowingChange={handleFollowingChange}
+          stateKnown={stateKnown}
+          targetUserId={person.user_id}
+        />
+      ) : null}
     </View>
   );
 });
@@ -235,36 +240,37 @@ export function ConnectionList({
     staleTime: QUERY_STALE_TIME,
   });
 
-  const viewerFollowingQuery = useInfiniteQuery({
-    queryKey: connectionQueryKey(viewerId, 'following'),
-    queryFn: ({ pageParam, signal }) => loadConnections(
-      viewerId!,
-      'following',
-      pageParam,
-      signal,
-    ),
-    enabled: active && Boolean(viewerId),
-    getNextPageParam: nextConnectionOffset,
-    initialPageParam: 0,
+  const viewerFollowingQueryKey = useMemo(
+    () => ['connection-following-ids', viewerId] as const,
+    [viewerId],
+  );
+  const sameAsViewerFollowing = type === 'following' && userId === viewerId;
+  const viewerFollowingQuery = useQuery({
+    queryKey: viewerFollowingQueryKey,
+    queryFn: async ({ signal }) => {
+      const token = await getStorageItem('access_token');
+      if (!token) throw new Error('Your session has expired. Please sign in again.');
+      return collectConnectionIds((offset, limit) => getUserConnections(
+        viewerId!,
+        'following',
+        token,
+        { limit, offset, signal },
+      ), FOLLOWING_LOOKUP_PAGE_SIZE);
+    },
+    enabled: active && Boolean(viewerId) && !sameAsViewerFollowing,
     staleTime: QUERY_STALE_TIME,
   });
 
   const people = useMemo(
-    () => peopleQuery.data?.pages.flatMap((page) => page.items ?? []) ?? [],
+    () => mergeConnectionPages(peopleQuery.data?.pages ?? []),
     [peopleQuery.data?.pages],
   );
-  const loadedFollowing = useMemo(
-    () => viewerFollowingQuery.data?.pages.flatMap((page) => page.items ?? []) ?? [],
-    [viewerFollowingQuery.data?.pages],
-  );
   const serverFollowingIds = useMemo(
-    () => new Set(loadedFollowing.map((person) => person.user_id)),
-    [loadedFollowing],
+    () => new Set(viewerFollowingQuery.data ?? []),
+    [viewerFollowingQuery.data],
   );
-  const allFollowingLoaded = Boolean(viewerId)
-    && !viewerFollowingQuery.isLoading
-    && !viewerFollowingQuery.isError
-    && !viewerFollowingQuery.hasNextPage;
+  const allFollowingLoaded = sameAsViewerFollowing
+    || (Boolean(viewerId) && viewerFollowingQuery.isSuccess);
 
   const filteredPeople = useMemo(() => {
     const query = search.trim().toLocaleLowerCase();
@@ -287,38 +293,62 @@ export function ConnectionList({
 
     if (viewerId) {
       const followingKey = connectionQueryKey(viewerId, 'following');
-      queryClient.setQueryData<InfiniteData<ConnectionPage>>(followingKey, (current) => {
-        if (!current) return current;
-        if (following) return current;
-        return {
-          ...current,
-          pages: current.pages.map((page) => ({
-            ...page,
-            items: page.items.filter((item) => item.user_id !== person.user_id),
-          })),
-        };
+      queryClient.setQueryData<string[]>(viewerFollowingQueryKey, (current) => {
+        const next = new Set(current ?? viewerFollowingQuery.data ?? []);
+        if (following) next.add(person.user_id);
+        else next.delete(person.user_id);
+        return [...next];
       });
+      if (sameAsViewerFollowing && !following) {
+        queryClient.setQueryData<InfiniteData<ConnectionPage>>(followingKey, (current) => (
+          current ? {
+            ...current,
+            pages: current.pages.map((page) => ({
+              ...page,
+              items: page.items.filter((item) => item.user_id !== person.user_id),
+            })),
+          } : current
+        ));
+      }
+      void queryClient.invalidateQueries({ queryKey: viewerFollowingQueryKey, exact: true });
       void queryClient.invalidateQueries({ queryKey: followingKey });
     }
 
     onFollowingCountChange?.(following ? 1 : -1);
-  }, [onFollowingCountChange, queryClient, stateKey, viewerId]);
+  }, [
+    onFollowingCountChange,
+    queryClient,
+    sameAsViewerFollowing,
+    stateKey,
+    viewerFollowingQuery.data,
+    viewerFollowingQueryKey,
+    viewerId,
+  ]);
 
   const renderPerson = useCallback(({ item }: { item: ConnectionUser }) => {
     const override = followOverrides.get(item.user_id);
-    const serverFollowing = serverFollowingIds.has(item.user_id);
+    const serverFollowing = sameAsViewerFollowing || serverFollowingIds.has(item.user_id);
     const following = override ?? serverFollowing;
     const stateKnown = override !== undefined || serverFollowing || allFollowingLoaded;
     return (
       <ConnectionRow
         compact={compact}
         following={following}
+        isSelf={item.user_id === viewerId}
         onFollowingChange={handleFollowingChange}
         person={item}
         stateKnown={stateKnown}
       />
     );
-  }, [allFollowingLoaded, compact, followOverrides, handleFollowingChange, serverFollowingIds]);
+  }, [
+    allFollowingLoaded,
+    compact,
+    followOverrides,
+    handleFollowingChange,
+    sameAsViewerFollowing,
+    serverFollowingIds,
+    viewerId,
+  ]);
 
   const emptyState = (() => {
     if (!userId) {
@@ -376,21 +406,13 @@ export function ConnectionList({
     );
   })();
 
-  const sameAsViewerFollowing = type === 'following' && userId === viewerId;
   const handleEndReached = useCallback(() => {
     if (peopleQuery.hasNextPage && !peopleQuery.isFetchingNextPage) {
       void peopleQuery.fetchNextPage();
     }
-    if (
-      !sameAsViewerFollowing
-      && viewerFollowingQuery.hasNextPage
-      && !viewerFollowingQuery.isFetchingNextPage
-    ) {
-      void viewerFollowingQuery.fetchNextPage();
-    }
-  }, [peopleQuery, sameAsViewerFollowing, viewerFollowingQuery]);
+  }, [peopleQuery]);
 
-  const listFooter = peopleQuery.isFetchingNextPage || viewerFollowingQuery.isFetchingNextPage
+  const listFooter = peopleQuery.isFetchingNextPage
     ? (
       <View style={styles.listFooter}>
         <ActivityIndicator color={REFERENCE_THEME.accent} size="small" />
@@ -459,7 +481,7 @@ export function ConnectionList({
         onEndReachedThreshold={0.55}
         onRefresh={userId ? () => {
           void peopleQuery.refetch();
-          if (viewerId) void viewerFollowingQuery.refetch();
+          if (viewerId && !sameAsViewerFollowing) void viewerFollowingQuery.refetch();
         } : undefined}
         refreshing={peopleQuery.isRefetching || viewerFollowingQuery.isRefetching}
         renderItem={renderPerson}

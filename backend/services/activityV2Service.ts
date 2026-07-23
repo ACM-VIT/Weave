@@ -7,6 +7,8 @@ import {
 } from '../contracts/interactions.v2.js';
 import { FEEDBACK_WEIGHTS } from '../config/feedback.js';
 import { sqlClient } from '../db/index.js';
+import type postgres from 'postgres';
+import { buildMlFeedbackEvent } from './mlFeedbackPayloadService.js';
 import { setRepositorySaved } from './savedRepositoryService.js';
 
 export type ReactionState = 'like' | 'dislike' | null;
@@ -27,11 +29,11 @@ function scoreFor(event: InteractionEventV2): number {
   return FEEDBACK_WEIGHTS[event.event_type as keyof typeof FEEDBACK_WEIGHTS] ?? 0;
 }
 
-export async function processInteractionBatchV2(
+export async function processInteractionBatchV2InTransaction(
+  tx: postgres.TransactionSql,
   userId: string,
   events: InteractionEventV2[],
 ): Promise<InteractionBatchResultV2> {
-  return sqlClient.begin(async (tx) => {
     await tx`
       INSERT INTO app.user_feed_state (user_id) VALUES (${userId}::uuid)
       ON CONFLICT (user_id) DO NOTHING
@@ -163,11 +165,7 @@ export async function processInteractionBatchV2(
         await tx`
           UPDATE telemetry.interaction_events SET feedback_version=${assigned}::bigint WHERE event_id=${event.event_id}::uuid
         `;
-        const payload = {
-          event_id: event.event_id, user_id: userId, repo_id: event.repo_id,
-          feedback_version: assigned, event_type: event.event_type, dwell_ms: event.dwell_ms,
-          occurred_at: event.client_occurred_at,
-        };
+        const payload = buildMlFeedbackEvent(userId, event, assigned);
         await tx`
           INSERT INTO telemetry.ml_outbox (job_type,aggregate_id,idempotency_key,payload)
           VALUES ('feedback',${userId}::uuid,${`feedback:${event.event_id}`},${JSON.stringify(payload)}::jsonb)
@@ -190,5 +188,11 @@ export async function processInteractionBatchV2(
       feed_version: feedVersion.toString(),
       results: ordered,
     };
-  });
+}
+
+export async function processInteractionBatchV2(
+  userId: string,
+  events: InteractionEventV2[],
+): Promise<InteractionBatchResultV2> {
+  return sqlClient.begin((tx) => processInteractionBatchV2InTransaction(tx, userId, events));
 }

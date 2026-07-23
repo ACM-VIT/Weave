@@ -7,11 +7,25 @@ on:
       - master
     paths:
       - 'backend/**'
+      - 'database/**'
+      - '.dockerignore'
       - '.github/workflows/deploy.yml'
+
+permissions:
+  contents: read
+
+# Never allow two production migrations or image activations to race on the
+# same database and host. A newer run may wait, but it must not cancel a deploy
+# after that deploy has started mutating production state.
+concurrency:
+  group: gh-social-production-backend
+  cancel-in-progress: false
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 45
 
     steps:
       - name: Check out source
@@ -33,8 +47,19 @@ jobs:
 
       - name: Verify backend container
         run: |
-          docker build -t gh-social-backend:${{ github.sha }} backend
+          docker build -f backend/Dockerfile -t gh-social-backend:${{ github.sha }} .
+          docker run --rm --entrypoint node gh-social-backend:${{ github.sha }} dist/scripts/verify-deployment-assets.js
           docker save gh-social-backend:${{ github.sha }} | gzip > gh-social-backend.tar.gz
+
+      - name: Require backup approval for this release
+        env:
+          APPROVED_SHA: ${{ vars.PRODUCTION_DATABASE_BACKUP_VERIFIED_SHA }}
+          RELEASE_SHA: ${{ github.sha }}
+        run: |
+          if [ "$APPROVED_SHA" != "$RELEASE_SHA" ]; then
+            echo "::error::Set the production environment variable PRODUCTION_DATABASE_BACKUP_VERIFIED_SHA to $RELEASE_SHA only after verifying a restorable database backup."
+            exit 1
+          fi
 
       - name: Upload immutable image and service units
         uses: appleboy/scp-action@v1.0.0
@@ -53,37 +78,85 @@ jobs:
           key: ${{ secrets.AWS_PRIVATE_KEY }}
           script: |
             set -e
-            test -f /etc/gh-social/backend.env
+            for deployment_env in /etc/gh-social/backend.env /etc/gh-social/migrator.env; do
+              sudo test -f "$deployment_env"
+              test "$(sudo stat -c '%U' "$deployment_env")" = "root"
+              deployment_env_mode="$(sudo stat -c '%a' "$deployment_env")"
+              if [ "$deployment_env_mode" != "400" ] && [ "$deployment_env_mode" != "600" ]; then
+                echo "Deployment environment files must be root-owned with mode 400 or 600."
+                exit 1
+              fi
+            done
+            sudo docker load -i /tmp/gh-social-backend-deploy/gh-social-backend.tar.gz
+            sudo docker run --rm --network host --env-file /etc/gh-social/backend.env --env-file /etc/gh-social/migrator.env gh-social-backend:${{ github.sha }} node dist/scripts/deployment-environment-preflight.js
+            sudo docker run --rm --network host --env-file /etc/gh-social/backend.env --env-file /etc/gh-social/migrator.env gh-social-backend:${{ github.sha }} node dist/scripts/migrate.js
+            sudo docker run --rm --network host --env-file /etc/gh-social/backend.env --env-file /etc/gh-social/migrator.env gh-social-backend:${{ github.sha }} node dist/scripts/schema-audit.js
+            deployment_services="gh-social-api gh-social-outbox gh-social-feed gh-social-maintenance"
+            deployment_units="gh-social-api.service gh-social-outbox.service gh-social-feed.service gh-social-maintenance.service"
+            unit_backup_directory="$(mktemp -d /tmp/gh-social-systemd-backup.XXXXXX)"
+            for deployment_unit in $deployment_units; do
+              if sudo test -f "/etc/systemd/system/$deployment_unit"; then
+                sudo cp "/etc/systemd/system/$deployment_unit" "$unit_backup_directory/$deployment_unit"
+              else
+                touch "$unit_backup_directory/$deployment_unit.missing"
+              fi
+            done
+            restore_unit_files() {
+              for deployment_unit in $deployment_units; do
+                if sudo test -f "$unit_backup_directory/$deployment_unit"; then
+                  sudo install -o root -g root -m 0644 "$unit_backup_directory/$deployment_unit" "/etc/systemd/system/$deployment_unit" || return 1
+                else
+                  sudo rm -f "/etc/systemd/system/$deployment_unit" || return 1
+                fi
+              done
+              sudo systemctl daemon-reload
+            }
+            previous_available=false
             if sudo docker image inspect gh-social-backend:current >/dev/null 2>&1; then
               sudo docker tag gh-social-backend:current gh-social-backend:previous
+              previous_available=true
             fi
-            sudo docker load -i /tmp/gh-social-backend-deploy/gh-social-backend.tar.gz
-            sudo docker tag gh-social-backend:${{ github.sha }} gh-social-backend:current
-            sudo cp /tmp/gh-social-backend-deploy/backend/deploy/systemd/gh-social-api.service /etc/systemd/system/gh-social-api.service
-            sudo cp /tmp/gh-social-backend-deploy/backend/deploy/systemd/gh-social-outbox.service /etc/systemd/system/gh-social-outbox.service
-            sudo cp /tmp/gh-social-backend-deploy/backend/deploy/systemd/gh-social-feed.service /etc/systemd/system/gh-social-feed.service
-            sudo cp /tmp/gh-social-backend-deploy/backend/deploy/systemd/gh-social-maintenance.service /etc/systemd/system/gh-social-maintenance.service
-            sudo systemctl daemon-reload
-            sudo systemctl enable gh-social-api
-            sudo systemctl enable gh-social-outbox
-            sudo systemctl enable gh-social-feed
-            sudo systemctl enable gh-social-maintenance
-            sudo systemctl restart gh-social-api
-            sudo systemctl restart gh-social-outbox
-            sudo systemctl restart gh-social-feed
-            sudo systemctl restart gh-social-maintenance
+            rollback_release() {
+              echo "Release activation failed; restoring the previous image."
+              if [ "$previous_available" = "true" ]; then
+                sudo docker tag gh-social-backend:previous gh-social-backend:current || true
+                restore_unit_files || true
+                sudo systemctl restart $deployment_services || true
+              else
+                sudo systemctl stop $deployment_services || true
+                restore_unit_files || true
+                sudo docker image rm gh-social-backend:current || true
+              fi
+            }
+            activate_release() {
+              sudo docker tag gh-social-backend:${{ github.sha }} gh-social-backend:current &&
+              sudo install -o root -g root -m 0644 /tmp/gh-social-backend-deploy/backend/deploy/systemd/gh-social-api.service /etc/systemd/system/gh-social-api.service &&
+              sudo install -o root -g root -m 0644 /tmp/gh-social-backend-deploy/backend/deploy/systemd/gh-social-outbox.service /etc/systemd/system/gh-social-outbox.service &&
+              sudo install -o root -g root -m 0644 /tmp/gh-social-backend-deploy/backend/deploy/systemd/gh-social-feed.service /etc/systemd/system/gh-social-feed.service &&
+              sudo install -o root -g root -m 0644 /tmp/gh-social-backend-deploy/backend/deploy/systemd/gh-social-maintenance.service /etc/systemd/system/gh-social-maintenance.service &&
+              sudo systemctl daemon-reload &&
+              sudo systemctl enable $deployment_services &&
+              sudo systemctl restart $deployment_services
+            }
+            if ! activate_release; then
+              rollback_release
+              exit 1
+            fi
             healthy=false
             for attempt in $(seq 1 12); do
-              if curl --fail --silent --max-time 15 http://127.0.0.1:5000/readyz >/dev/null; then
+              services_healthy=true
+              for deployment_service in $deployment_services; do
+                if ! sudo systemctl is-active --quiet "$deployment_service"; then
+                  services_healthy=false
+                fi
+              done
+              if $services_healthy && curl --fail --silent --max-time 15 http://127.0.0.1:5000/readyz >/dev/null; then
                 healthy=true
                 break
               fi
               sleep 5
             done
             if ! $healthy; then
-              if sudo docker image inspect gh-social-backend:previous >/dev/null 2>&1; then
-                sudo docker tag gh-social-backend:previous gh-social-backend:current
-                sudo systemctl restart gh-social-api gh-social-outbox gh-social-feed gh-social-maintenance
-              fi
+              rollback_release
               exit 1
             fi

@@ -3,6 +3,13 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import { ActivityIndicator, Text, TouchableOpacity, View } from 'react-native';
 import { useAuth } from '@/store/AuthContext';
 import { exchangeCode } from '@/api/auth';
+import * as WebBrowser from 'expo-web-browser';
+import {
+  clearOAuthClientVerifier,
+  loadOAuthClientVerifier,
+} from '@/services/oauthClientPkce';
+
+WebBrowser.maybeCompleteAuthSession();
 
 /**
  * OAuth Callback Screen — handles the deep-link redirect after OAuth completes.
@@ -32,8 +39,15 @@ export default function OAuthCallbackScreen() {
     exchangedCodeRef.current = code;
 
     // Exchange the short-lived code for a JWT — _layout.tsx handles the redirect after
-    exchangeCode(code)
-      .then((data) => setSession(data.accessToken, data.user))
+    loadOAuthClientVerifier()
+      .then((verifier) => {
+        if (!verifier) throw new Error('This sign-in attempt is no longer available. Please try again.');
+        return exchangeCode(code, verifier);
+      })
+      .then(async (data) => {
+        await clearOAuthClientVerifier().catch(() => undefined);
+        await setSession(data);
+      })
       .catch((err) => setExchangeError(err.message || 'Authentication failed'));
   }, [code, oauthError, setSession]);
 

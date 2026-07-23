@@ -6,6 +6,7 @@ export type RepositoryData = {
   viewerSaved?: boolean;
   title: string;
   owner: string;
+  githubUrl?: string;
   ownerUserId?: string | null;
   ownerBio?: string | null;
   viewerFollowsOwner?: boolean | null;

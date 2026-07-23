@@ -94,7 +94,7 @@ export function FollowButton({
         setFailureState({ identity: followIdentity, failed: true });
       },
       onSuccess: () => {
-        if (!localOnly) onFollowingChange?.(next);
+        onFollowingChange?.(next);
       },
     });
   };

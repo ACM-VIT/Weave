@@ -12,9 +12,11 @@ import ProgressBar from "@/components/onboarding/ProgressBar";
 import SkillCard from "@/components/onboarding/SkillCard";
 import LogoPlaceholder from "@/components/onboarding/LogoPlaceholder";
 import { SKILL_CATEGORIES } from "@/constants/onboarding";
+import { useOnboarding } from "../../store/OnboardingContext";
 
 export default function Step1() {
-  const [selectedCategories, setSelectedCategories] = useState<string[]>([]);
+  const { data, updateData } = useOnboarding();
+  const [selectedCategories, setSelectedCategories] = useState<string[]>(data.skills ?? []);
 
   const toggleCategory = (id: string) => {
     setSelectedCategories((prev) =>
@@ -24,10 +26,8 @@ export default function Step1() {
 
   const handleContinue = () => {
     if (selectedCategories.length >= 2) {
-      router.push({
-        pathname: "/onboarding/step2",
-        params: { categories: selectedCategories.join(",") }
-      });
+      updateData({ skills: selectedCategories });
+      router.push("/onboarding/step2");
     }
   };
 

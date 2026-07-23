@@ -6,7 +6,11 @@ import { fileURLToPath } from 'node:url';
 import { drizzle } from 'drizzle-orm/postgres-js';
 import { migrate } from 'drizzle-orm/postgres-js/migrator';
 import postgres from 'postgres';
-import { LEGACY_BASELINE_TAGS, RETROACTIVE_LEGACY_TAGS } from './migrationPlan.js';
+import {
+  LEGACY_BASELINE_TAGS,
+  RETROACTIVE_LEGACY_TAGS,
+  STRUCTURALLY_ADOPTABLE_V2_TAGS,
+} from './migrationPlan.js';
 
 const databaseUrl = process.env.DATABASE_URL;
 if (!databaseUrl) throw new Error('DATABASE_URL is required.');
@@ -66,6 +70,16 @@ async function relationExists(schema: string, relation: string): Promise<boolean
     SELECT EXISTS (
       SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
       WHERE n.nspname = ${schema} AND c.relname = ${relation}
+    ) AS present
+  `;
+  return rows[0]?.present === true;
+}
+
+async function columnExists(schema: string, table: string, column: string): Promise<boolean> {
+  const rows = await client`
+    SELECT EXISTS (
+      SELECT 1 FROM information_schema.columns
+      WHERE table_schema=${schema} AND table_name=${table} AND column_name=${column}
     ) AS present
   `;
   return rows[0]?.present === true;
@@ -133,10 +147,74 @@ async function applyRetroactiveLegacyMigrations(): Promise<void> {
   }
 }
 
+async function adoptStructurallyVerifiedV2History(): Promise<void> {
+  if (!await relationExists('app', 'users')) return;
+
+  const entries = migrationEntries(STRUCTURALLY_ADOPTABLE_V2_TAGS);
+  const recordedHashes = await recordedMigrationHashes();
+  const missingEntries = entries.filter((entry) => !recordedHashes.has(entry.hash));
+  if (missingEntries.length === 0) return;
+  if (process.env.ADOPT_LEGACY_SCHEMA !== '1') {
+    throw new Error(
+      'The v2 schema exists with incomplete Drizzle history. Audit a clone, then rerun once with ADOPT_LEGACY_SCHEMA=1.',
+    );
+  }
+
+  const structuralChecks: Record<string, () => Promise<boolean>> = {
+    '0008_interaction_events_and_saved_counts': async () =>
+      await relationExists('public', 'interaction_events')
+      && await relationExists('public', 'user_feedback_features'),
+    '0009_app_telemetry_baseline': async () => {
+      const roles = await client`SELECT 1 FROM pg_roles WHERE rolname='ghsocial_backend'`;
+      return await relationExists('app', 'users')
+        && await relationExists('app', 'repos')
+        && await relationExists('telemetry', 'ml_outbox')
+        && roles.length > 0;
+    },
+    '0010_product_api_baseline': async () =>
+      await relationExists('app', 'refresh_tokens')
+      && await relationExists('app', 'oauth_codes'),
+    '0011_interaction_feedback_grant': async () => {
+      const grants = await client`
+        SELECT has_column_privilege(
+          'ghsocial_backend','telemetry.interaction_events','feedback_version','UPDATE'
+        ) AS interaction_grant,
+        has_column_privilege(
+          'ghsocial_backend','telemetry.user_repo_engagement','feedback_score','UPDATE'
+        ) AS engagement_grant
+      `;
+      return grants[0]?.interaction_grant === true && grants[0]?.engagement_grant === true;
+    },
+    '0012_remove_profile_length_limits': async () => {
+      const columns = await client`
+        SELECT column_name,data_type FROM information_schema.columns
+        WHERE table_schema='public' AND table_name='users'
+          AND column_name IN ('username','full_name')
+      `;
+      return columns.length === 2 && columns.every((row) => row.data_type === 'text');
+    },
+    '0013_feed_serve_cursor': async () => columnExists('telemetry', 'feed_serves', 'next_cursor'),
+  };
+
+  await ensureMigrationHistoryTable();
+  for (const entry of missingEntries) {
+    if (!await structuralChecks[entry.tag]?.()) {
+      throw new Error(`Cannot adopt ${entry.tag}; its required database structures are incomplete.`);
+    }
+    await client`
+      INSERT INTO drizzle.__drizzle_migrations(hash,created_at)
+      SELECT ${entry.hash},${entry.when}
+      WHERE NOT EXISTS (SELECT 1 FROM drizzle.__drizzle_migrations WHERE hash=${entry.hash})
+    `;
+    console.log(`Adopted structurally verified migration history ${entry.tag}.`);
+  }
+}
+
 try {
   await bootstrapSupabaseAuthStub();
   await adoptLegacyHistory();
   await applyRetroactiveLegacyMigrations();
+  await adoptStructurallyVerifiedV2History();
   await migrate(drizzle(client), {
     migrationsFolder,
     migrationsSchema: 'drizzle',

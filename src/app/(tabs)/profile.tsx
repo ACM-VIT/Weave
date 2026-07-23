@@ -1,28 +1,33 @@
 import React, { useMemo, useState } from "react"
 import { ActivityIndicator, Modal, Pressable, ScrollView, Text, TextInput, View, useWindowDimensions } from "react-native"
 import { FolderPlus, LogOut, Square, SquarePen } from "lucide-react-native"
-import { router } from "expo-router"
+import { router, type Href } from "expo-router"
 import { useSafeAreaInsets } from "react-native-safe-area-context"
 import { useQuery } from "@tanstack/react-query"
 import { API_URL } from "@/api/config"
+import { apiV2 } from "@/api/client"
 import { getProfileContent } from "@/api/profile"
 import { BoardListCard } from "@/components/profile/BoardListCard"
 import { ConnectionSheet, type ProfileStatType } from "@/components/connection-sheet"
 import { useAuth } from "@/store/AuthContext"
-import { AUTH_BYPASS_ENABLED, AUTH_BYPASS_PROFILE_STORAGE_KEY } from "@/constants/auth"
-import { getStorageItem, setStorageItem } from "@/utils/storage"
+import { getStorageItem } from "@/utils/storage"
 import { formatCompactCount } from "@/utils/format-count"
+import { isValidUsername, USERNAME_GUIDANCE } from "@/utils/username"
 import { loadPinnedRepositories } from "@/services/pinnedRepositoryStorage"
-import { PREVIEW_PROFILE_BOARDS } from "@/data/previewProfile"
 
 type TabName = "Lists" | "Repositories"
 
-const DEFAULT_USERNAME = "user"
 const COLORS = { background: "#000000", card: "#151515", selected: "#68686B", white: "#F7F7F8", muted: "#77767C", green: "#63E08A", purple: "#9B4FE4" }
 
 function requestError(error: unknown, fallback: string) {
   if (error instanceof TypeError) return `Unable to connect to the local backend at ${API_URL}.`
   return error instanceof Error ? error.message : fallback
+}
+
+function boardHref(params: Record<string, string>): Href {
+  // The route is introduced by the incoming merge; Expo's ignored generated
+  // route declaration can remain stale until the next development server run.
+  return { pathname: "/board", params } as unknown as Href
 }
 
 export default function ProfileScreen() {
@@ -36,9 +41,9 @@ export default function ProfileScreen() {
   const [loggingOut, setLoggingOut] = useState(false)
   const [logoutError, setLogoutError] = useState("")
   const [savedProfile, setSavedProfile] = useState<{ name: string; job: string; username: string } | null>(null)
-  const name = savedProfile?.name ?? user?.full_name ?? "Weave user"
-  const job = savedProfile?.job ?? user?.bio ?? "Developer"
-  const username = savedProfile?.username ?? user?.username ?? DEFAULT_USERNAME
+  const name = savedProfile?.name ?? (typeof user?.full_name === "string" ? user.full_name : "")
+  const job = savedProfile?.job ?? (typeof user?.bio === "string" ? user.bio : "")
+  const username = savedProfile?.username ?? user?.username ?? ""
   const [draft, setDraft] = useState({ name, job, username })
   const [isSaving, setIsSaving] = useState(false)
   const [editError, setEditError] = useState("")
@@ -46,11 +51,11 @@ export default function ProfileScreen() {
   const [statSheetType, setStatSheetType] = useState<ProfileStatType | null>(null)
   const profileContentQuery = useQuery({
     queryKey: ["profile-content", user?.user_id],
-    enabled: Boolean(user?.user_id) && !user?.isPreview && !AUTH_BYPASS_ENABLED,
-    queryFn: async () => {
+    enabled: Boolean(user?.user_id),
+    queryFn: async ({ signal }) => {
       const token = await getStorageItem("access_token")
       if (!token) throw new Error("Your session has expired. Please log in again.")
-      return getProfileContent(token)
+      return getProfileContent(token, signal)
     },
     staleTime: 60_000,
   })
@@ -61,13 +66,13 @@ export default function ProfileScreen() {
     staleTime: Infinity,
   })
   const repositories = profileContentQuery.data?.repositories ?? []
+  const contentErrors = profileContentQuery.data?.errors ?? {}
   const pinnedRepositories = pinnedRepositoriesQuery.data ?? []
-  const previewBoardsEnabled = user?.isPreview === true || AUTH_BYPASS_ENABLED
   const displayedBoards = useMemo(
-    () => [...(previewBoardsEnabled ? PREVIEW_PROFILE_BOARDS : profileContentQuery.data?.boards ?? [])].sort((first, second) =>
+    () => [...(profileContentQuery.data?.boards ?? [])].sort((first, second) =>
       first.name.localeCompare(second.name, undefined, { sensitivity: "base" })
     ),
-    [previewBoardsEnabled, profileContentQuery.data?.boards],
+    [profileContentQuery.data?.boards],
   )
 
   const openEditor = () => {
@@ -80,38 +85,18 @@ export default function ProfileScreen() {
     const next = { name: draft.name.trim(), job: draft.job.trim(), username: draft.username.trim() }
     if (!next.name) return setEditError("Name is required.")
     if (!next.job) return setEditError("Job role is required.")
-    if (!/^[a-zA-Z0-9_]+$/.test(next.username)) return setEditError("Username can only contain letters, numbers, or underscores.")
+    if (!isValidUsername(next.username)) return setEditError(USERNAME_GUIDANCE)
 
     setIsSaving(true)
     setEditError("")
     try {
-      if (AUTH_BYPASS_ENABLED) {
-        await setStorageItem(AUTH_BYPASS_PROFILE_STORAGE_KEY, JSON.stringify({
-          username: next.username,
-          full_name: next.name,
-          bio: next.job,
-        }))
-        setSavedProfile(next)
-        setDraft(next)
-        await checkOnboardingStatus()
-        setEditVisible(false)
-        return
-      }
-
       const accessToken = await getStorageItem("access_token")
       if (!accessToken) throw new Error("Your session has expired. Please log in again.")
-      const response = await fetch(`${API_URL}/v2/users/me`, {
+      const updated = await apiV2<{ full_name: string; bio: string; username: string }>("/users/me", {
         method: "PATCH",
-        credentials: "include",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${accessToken}`,
-        },
         body: JSON.stringify({ username: next.username, full_name: next.name, bio: next.job }),
-      })
-      const payload = await response.json()
-      if (!response.ok) throw new Error(payload.error ?? "Unable to update your profile.")
-      const updatedProfile = { name: payload.data.full_name, job: payload.data.bio, username: payload.data.username }
+      }, accessToken)
+      const updatedProfile = { name: updated.full_name, job: updated.bio, username: updated.username }
       setSavedProfile(updatedProfile)
       setDraft(updatedProfile)
       await checkOnboardingStatus()
@@ -128,12 +113,12 @@ export default function ProfileScreen() {
     setLogoutError("")
     try {
       await signOut()
+      setLogoutVisible(false)
+      router.replace("/(auth)/login")
     } catch (error) {
       setLogoutError(error instanceof Error ? error.message : "Unable to log out.")
     } finally {
       setLoggingOut(false)
-      setLogoutVisible(false)
-      router.replace("/(auth)/login")
     }
   }
 
@@ -148,8 +133,8 @@ export default function ProfileScreen() {
   const contentGap = isCompact ? 10 : isTablet ? 16 : 13
   const sectionGap = isCompact ? 10 : isTablet ? 14 : 12
   const tabContentHeight = isCompact ? 280 : isTablet ? 420 : 340
-  const avatarLetter = username.trim().charAt(0).toUpperCase() || name.charAt(0).toUpperCase() || "U"
-  const usernameText = `@${username}`
+  const avatarLetter = username.trim().charAt(0).toUpperCase() || name.charAt(0).toUpperCase() || "?"
+  const usernameText = username ? `@${username}` : ""
   const horizontalPadding = isTablet ? 48 : 24
   const contentWidth = Math.min(Math.max(width - (horizontalPadding * 2), 0), isTablet ? 760 : 600)
   const avatarWidth = Math.min(contentWidth * (isTablet ? 0.31 : 0.25), 116)
@@ -170,8 +155,7 @@ export default function ProfileScreen() {
   const jobFontSize = fitSingleLineText(job, isCompact ? 12 : 15, detailsWidth)
   const fullNameFontSize = fitSingleLineText(name, isCompact ? 11 : 14, detailsWidth)
 
-  const loadingContent = (profileContentQuery.isLoading && !AUTH_BYPASS_ENABLED)
-    || pinnedRepositoriesQuery.isLoading
+  const loadingContent = profileContentQuery.isLoading || pinnedRepositoriesQuery.isLoading
   const contentError = profileContentQuery.isError
   const contentState = loadingContent ? (
     <View style={{ minHeight: tabContentHeight, alignItems: "center", justifyContent: "center", gap: 12 }}>
@@ -187,35 +171,40 @@ export default function ProfileScreen() {
     </View>
   ) : null
 
+  const sectionError = (message: string) => (
+    <View style={{ minHeight: cardHeight, alignItems: "center", justifyContent: "center", gap: 10, paddingVertical: 12 }}>
+      <Text className="text-[#FF6878] font-nata text-center">{message}</Text>
+      <Pressable onPress={() => void profileContentQuery.refetch()} className="rounded-[12px] bg-[#292929] px-5 py-3">
+        <Text className="text-white font-nataSemiBold">Retry</Text>
+      </Pressable>
+    </View>
+  )
+
   const listContent = contentState ?? (activeTab === "Lists" ? <View key="lists" style={{ minHeight: tabContentHeight, gap: contentGap }}>
     <BoardListCard
       compact={isCompact}
       name="Pinned"
-      onPress={() => router.push({
-        pathname: "/board",
-        params: { boardName: "Pinned", collectionType: "pinned" },
-      })}
+      onPress={() => router.push(boardHref({
+        boardName: "Pinned",
+        collectionType: "pinned",
+      }))}
       repositoryCount={pinnedRepositories.length}
       variant="pinned"
     />
     <View style={{ gap: contentGap }}>
-      {displayedBoards.map((item) => <BoardListCard
+      {contentErrors.boards ? sectionError("Unable to load your boards.") : displayedBoards.map((item) => <BoardListCard
         key={item.board_id}
         compact={isCompact}
         description={item.description}
         name={item.name}
-        onPress={() => router.push({
-          pathname: "/board",
-          params: {
-            boardId: item.board_id,
-            boardName: item.name,
-            ...(previewBoardsEnabled ? { collectionType: "preview-board" } : {}),
-            ...(item.description ? { boardDescription: item.description } : {}),
-          },
-        })}
+        onPress={() => router.push(boardHref({
+          boardId: item.board_id,
+          boardName: item.name,
+          ...(item.description ? { boardDescription: item.description } : {}),
+        }))}
         repositoryCount={item.repo_count}
       />)}
-      {displayedBoards.length === 0 ? <View className="items-center justify-center py-9 px-6 gap-4">
+      {!contentErrors.boards && displayedBoards.length === 0 ? <View className="items-center justify-center py-9 px-6 gap-4">
         <View className="w-[68px] h-[68px] rounded-[22px] bg-[#151515] border border-[#252525] items-center justify-center" style={{ borderCurve: "continuous" }}>
           <FolderPlus size={29} color="#63E08A" strokeWidth={1.7} />
         </View>
@@ -228,12 +217,12 @@ export default function ProfileScreen() {
   </View> : <View key="repositories" style={{ minHeight: tabContentHeight, gap: sectionGap }}>
     <Text className="text-[#63E08A] font-nataMedium" style={{ fontSize: isCompact ? 13 : 16 }}>Saved Repositories</Text>
     <View style={{ gap: contentGap }}>
-      {repositories.map((item) => <View key={item.repo_id} className="w-full flex-row items-center bg-[#151515]" style={{ height: cardHeight, paddingHorizontal: "5%", borderRadius: 16, gap: "4%", borderCurve: "continuous" }}>
+      {contentErrors.repositories ? sectionError("Unable to load your saved repositories.") : repositories.map((item) => <View key={item.repo_id} className="w-full flex-row items-center bg-[#151515]" style={{ height: cardHeight, paddingHorizontal: "5%", borderRadius: 16, gap: "4%", borderCurve: "continuous" }}>
         <Square size={isCompact ? 15 : 18} color="#B8B7BD" />
         <Text numberOfLines={1} className="flex-1 text-white font-nata" style={{ fontSize: isCompact ? 13 : 16 }}>{item.full_name || item.name}</Text>
         <Text className="text-[#FFD600] font-nata" style={{ fontSize: isCompact ? 11 : 13 }}>★ <Text className="text-[#77767C]">{formatCompactCount(item.star_count)}</Text></Text>
       </View>)}
-      {repositories.length === 0 ? <Text className="text-[#77767C] font-nata text-center py-5">No saved repositories yet.</Text> : null}
+      {!contentErrors.repositories && repositories.length === 0 ? <Text className="text-[#77767C] font-nata text-center py-5">No saved repositories yet.</Text> : null}
     </View>
   </View>)
 
@@ -293,7 +282,9 @@ export default function ProfileScreen() {
 
       <ConnectionSheet
         onClose={() => setStatSheetType(null)}
-        onFollowingCountChange={() => void checkOnboardingStatus()}
+        onFollowingCountChange={() => {
+          void checkOnboardingStatus().catch(() => undefined)
+        }}
         type={statSheetType ?? "followers"}
         userId={user?.user_id}
         username={username}

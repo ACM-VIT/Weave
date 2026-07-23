@@ -14,6 +14,7 @@ export interface RecommendationEntry {
 export interface RepositoryProjection {
   repo_id: string;
   full_name: string;
+  owner_user_id: string | null;
   description: string | null;
   primary_language: string | null;
   languages: string[];
@@ -30,6 +31,7 @@ export interface RepositoryProjection {
   updated_at: string | null;
   viewer_reaction: 'like' | 'dislike' | null;
   viewer_saved: boolean;
+  viewer_follows_owner: boolean;
   status: 'active' | 'archived' | 'deleted' | 'blocked';
 }
 

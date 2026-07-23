@@ -2,7 +2,7 @@ import React from 'react';
 import { Pressable, Text, View } from 'react-native';
 import { TabName } from '../../types';
 
-const TABS: TabName[] = ['For you', 'Trending'];
+const TABS: TabName[] = ['Latest', 'Trending'];
 
 interface TabBarProps {
   activeTab: TabName;

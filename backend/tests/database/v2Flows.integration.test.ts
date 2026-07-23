@@ -8,8 +8,10 @@ import { processInteractionBatchV2 } from '../../services/activityV2Service.js';
 import { OutboxService } from '../../services/outboxService.js';
 import { DataReconciliationService } from '../../services/dataReconciliationService.js';
 import { PostgresFeedPersistence } from '../../adapters/postgresFeedPersistence.js';
+import { PostgresRepositoryPersistence } from '../../adapters/postgresRepositoryPersistence.js';
 import { RedisFeedQueue } from '../../redis/feedQueue.js';
 import { FeedV2Service } from '../../services/feedV2Service.js';
+import { ensureIdentityProfile } from '../../services/identityService.js';
 import type { InteractionEventV2 } from '../../contracts/interactions.v2.js';
 
 const integration = process.env.RUN_DATABASE_INTEGRATION === '1' ? test : test.skip;
@@ -69,6 +71,27 @@ async function seed(): Promise<void> {
 
 integration('v2 database, outbox, and Redis feed flows preserve invariants', async () => {
   await seed();
+
+  await ensureIdentityProfile({
+    userId,
+    username: 'v2_test',
+    onboardingCompleted: true,
+  });
+  assert.equal(Boolean((await sqlClient`
+    SELECT onboarding_completed FROM app.users WHERE user_id=${userId}::uuid
+  `)[0].onboarding_completed), false);
+
+  await sqlClient`
+    UPDATE app.users SET onboarding_completed=true WHERE user_id=${userId}::uuid
+  `;
+  await ensureIdentityProfile({
+    userId,
+    username: 'v2_test',
+    onboardingCompleted: false,
+  });
+  assert.equal(Boolean((await sqlClient`
+    SELECT onboarding_completed FROM app.users WHERE user_id=${userId}::uuid
+  `)[0].onboarding_completed), true);
 
   // UUID ordering intentionally opposes client ordering. The latest action
   // must win, and feedback versions must follow the submitted sequence.
@@ -138,8 +161,34 @@ integration('v2 database, outbox, and Redis feed flows preserve invariants', asy
   await priorityWorker.markDelivered(onboardingClaim);
   const [feedbackClaim] = await priorityWorker.claim(1);
   assert.equal(feedbackClaim.job_type, 'feedback');
-  await priorityWorker.markDelivered(feedbackClaim);
+  const failedFeedbackVersion = String(feedbackClaim.payload.feedback_version);
+  await priorityWorker.markFailed(feedbackClaim, 'transient integration failure', true, 60_000);
+  const claimsWhilePredecessorDelayed = await priorityWorker.claim(50);
+  assert.equal(claimsWhilePredecessorDelayed.some((row) => row.job_type === 'feedback'
+    && row.aggregate_id === userId), false);
+  for (const claim of claimsWhilePredecessorDelayed) await priorityWorker.markDelivered(claim);
+  await sqlClient`
+    UPDATE telemetry.ml_outbox SET available_at=now()
+    WHERE outbox_id=${feedbackClaim.outbox_id}::uuid
+  `;
+  const [retriedFeedback] = await priorityWorker.claim(1);
+  assert.equal(retriedFeedback.outbox_id, feedbackClaim.outbox_id);
+  assert.equal(String(retriedFeedback.payload.feedback_version), failedFeedbackVersion);
+  await priorityWorker.markDelivered(retriedFeedback);
+  const [nextFeedback] = await priorityWorker.claim(1);
+  assert.equal(nextFeedback.job_type, 'feedback');
+  assert.equal(
+    BigInt(String(nextFeedback.payload.feedback_version)),
+    BigInt(failedFeedbackVersion) + 1n,
+  );
+  await priorityWorker.markDelivered(nextFeedback);
 
+  await sqlClient`
+    INSERT INTO telemetry.ml_outbox(job_type,aggregate_id,idempotency_key,payload)
+    VALUES
+      ('repo_refresh',${repoId}::uuid,'integration:parallel-refresh:1','{}'::jsonb),
+      ('repo_refresh',${repoId}::uuid,'integration:parallel-refresh:2','{}'::jsonb)
+  `;
   const firstWorker = new OutboxService();
   const secondWorker = new OutboxService();
   const [claimA, claimB] = await Promise.all([firstWorker.claim(1), secondWorker.claim(1)]);
@@ -149,6 +198,71 @@ integration('v2 database, outbox, and Redis feed flows preserve invariants', asy
   await firstWorker.markFailed(claimA[0], 'permanent test failure', false);
   await secondWorker.markDelivered(claimB[0]);
   assert.equal(await firstWorker.replay(claimA[0].outbox_id), true);
+
+  const obsoleteId = crypto.randomUUID();
+  const contextualId = crypto.randomUUID();
+  await sqlClient`
+    INSERT INTO telemetry.ml_outbox (outbox_id,job_type,aggregate_id,idempotency_key,payload,status)
+    VALUES
+      (${obsoleteId}::uuid,'onboard',${userId}::uuid,${`integration:obsolete:${obsoleteId}`},
+        ${JSON.stringify({
+          job_id: crypto.randomUUID(), user_id: userId, profile_version: 1,
+          profile: { username: 'integration-user', bio: null, interests: [], skills: [], tech_stack: [] },
+        })}::jsonb,'dead'),
+      (${contextualId}::uuid,'onboard',${userId}::uuid,${`integration:contextual:${contextualId}`},
+        ${JSON.stringify({
+          job_id: crypto.randomUUID(), user_id: userId, profile_version: 2,
+          profile: { username: 'integration-user', bio: null, interests: ['typescript'], skills: [], tech_stack: [] },
+        })}::jsonb,'dead')
+  `;
+  assert.equal(await firstWorker.supersedeObsoleteOnboarding(obsoleteId), true);
+  assert.equal(await firstWorker.supersedeObsoleteOnboarding(contextualId), false);
+  assert.equal(String((await sqlClient`
+    SELECT status FROM telemetry.ml_outbox WHERE outbox_id=${obsoleteId}::uuid
+  `)[0].status), 'superseded');
+  assert.equal(await firstWorker.replay(obsoleteId), false);
+
+  const concurrentPersistence = new PostgresRepositoryPersistence();
+  const concurrentBase = {
+    github_id: '202',
+    full_name: 'owner/concurrent',
+    owner: 'owner',
+    name: 'concurrent',
+    url: 'https://github.com/owner/concurrent',
+    readme: '# Concurrent',
+    primary_language: 'TypeScript',
+    languages: ['TypeScript'],
+    topics: ['concurrency'],
+    star_count: 1,
+    fork_count: 0,
+    open_issues_count: 0,
+    observed_at: new Date().toISOString(),
+  };
+  await Promise.all([
+    concurrentPersistence.bulkUpsert([{ ...concurrentBase, description: 'first' }]),
+    concurrentPersistence.bulkUpsert([{ ...concurrentBase, description: 'second' }]),
+  ]);
+  const [concurrentContent] = await sqlClient`
+    SELECT content.repo_id,content.description,content.content_version
+    FROM app.repo_content content JOIN app.repos repo USING(repo_id)
+    WHERE repo.github_id=202
+  `;
+  assert.equal(Number(concurrentContent.content_version), 2);
+  const concurrentJobs = await sqlClient`
+    SELECT payload FROM telemetry.ml_outbox
+    WHERE aggregate_id=${String(concurrentContent.repo_id)}::uuid AND job_type='repo_index'
+    ORDER BY (payload->>'content_version')::int
+  `;
+  assert.deepEqual(concurrentJobs.map((row) => Number(row.payload.content_version)), [1, 2]);
+  assert.equal(
+    String(concurrentJobs[1].payload.repository.description),
+    String(concurrentContent.description),
+  );
+
+  // PostgreSQL invariants can run in an isolated database without requiring a
+  // Redis daemon. Enable the final queue/restart section explicitly when the
+  // disposable Redis database is available.
+  if (process.env.RUN_REDIS_INTEGRATION !== '1') return;
 
   const redis = new Redis(process.env.REDIS_DATABASE_TEST_URL ?? 'redis://127.0.0.1:6379/14', { maxRetriesPerRequest: 1 });
   await redis.flushdb();

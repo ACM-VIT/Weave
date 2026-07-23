@@ -33,6 +33,55 @@ test('ML transport classifies 429 and 5xx as retryable and 4xx as terminal', asy
   }
 });
 
+test('ML delivery accepts plain-text 2xx and preserves terminal plain-text 4xx status', async () => {
+  for (const [status, accepted, retryable] of [[202, true, false], [400, false, false]] as const) {
+    await withServer((_req, response) => {
+      response.writeHead(status, { 'content-type': 'text/plain' });
+      response.end(status === 202 ? 'accepted' : 'invalid onboarding profile');
+    }, async (url) => {
+      const result = await new MlV2Client({
+        baseUrl: url, internalSecret: 'test', timeoutMs: 500, maxResponseBytes: 10_000,
+      }).deliverFeedback(feedback);
+      assert.equal(result.accepted, accepted);
+      assert.equal(result.retryable, retryable);
+      assert.equal(result.status_code, status);
+      assert.equal(result.detail, status === 202 ? 'accepted' : 'invalid onboarding profile');
+    });
+  }
+});
+
+test('repository-index transport adds the v2 envelope without changing strict source keys', async () => {
+  let received: Record<string, unknown> | null = null;
+  await withServer((request, response) => {
+    const chunks: Buffer[] = [];
+    request.on('data', (chunk: Buffer) => chunks.push(chunk));
+    request.on('end', () => {
+      received = JSON.parse(Buffer.concat(chunks).toString('utf8')) as Record<string, unknown>;
+      response.writeHead(202, { 'content-type': 'text/plain' });
+      response.end('accepted');
+    });
+  }, async (url) => {
+    const result = await new MlV2Client({
+      baseUrl: url, internalSecret: 'test', timeoutMs: 500, maxResponseBytes: 10_000,
+    }).deliverRepositoryIndex({
+      job_id: '00000000-0000-4000-8000-000000000010',
+      repo_id: '00000000-0000-4000-8000-000000000011',
+      content_version: 1,
+      repository: {
+        github_id: '123', full_name: 'owner/repository', url: 'https://github.com/owner/repository',
+        description: '', primary_language: 'Unknown', languages: [], topics: [], readme: null,
+        star_count: 0, fork_count: 0, open_issues_count: 0, pushed_at: null, content_hash: 'hash',
+      },
+    });
+    assert.equal(result.accepted, true);
+  });
+  const body = received as unknown as Record<string, unknown>;
+  assert.equal(body.schema_version, 2);
+  assert.deepEqual(Object.keys(body).sort(), [
+    'content_version', 'job_id', 'repo_id', 'repository', 'schema_version',
+  ]);
+});
+
 test('ML recommendation client rejects invalid contracts', async () => {
   await withServer((_req, response) => {
     response.writeHead(200, { 'content-type': 'application/json' });
@@ -44,6 +93,20 @@ test('ML recommendation client rejects invalid contracts', async () => {
       user_id: '00000000-0000-4000-8000-000000000002', feed_version: 1, limit: 10,
       exclude_repo_ids: [], context: { cold_start: false },
     }), /violated the v2 envelope/);
+  });
+});
+
+test('ML recommendation client still requires JSON', async () => {
+  await withServer((_req, response) => {
+    response.writeHead(200, { 'content-type': 'text/plain' });
+    response.end('not-json');
+  }, async (url) => {
+    const client = new MlV2Client({ baseUrl: url, internalSecret: 'test', timeoutMs: 500, maxResponseBytes: 10_000 });
+    await assert.rejects(client.generate({
+      schema_version: 2, generation_id: '00000000-0000-4000-8000-000000000001',
+      user_id: '00000000-0000-4000-8000-000000000002', feed_version: 1, limit: 10,
+      exclude_repo_ids: [], context: { cold_start: false },
+    }), /invalid JSON/);
   });
 });
 

@@ -1,5 +1,4 @@
-import { Image } from 'expo-image';
-import { StyleSheet, Text, View } from 'react-native';
+import { Image, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Svg, { Defs, LinearGradient, Rect, Stop } from 'react-native-svg';
 
@@ -45,7 +44,7 @@ export function FeedHeader({ pageWidth }: { pageWidth: number }) {
           >
             <Image
               accessible={false}
-              contentFit="contain"
+              resizeMode="contain"
               source={WEAVE_LOGO}
               style={{
                 position: 'absolute',

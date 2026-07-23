@@ -7,13 +7,25 @@ export interface RepositoryUpsert {
   url: string;
   description?: string | null;
   readme?: string | null;
+  readme_length?: number;
   primary_language?: string | null;
   languages?: string[];
   topics?: string[];
   star_count?: number;
   fork_count?: number;
   open_issues_count?: number;
+  pushed_days_ago?: number;
+  delta_3d?: number;
+  delta_7d?: number;
+  delta_30d?: number;
+  mentionable_users_count?: number;
+  readme_to_codebase_ratio?: number;
+  recent_commits?: string[];
+  created_at?: string | null;
+  updated_at?: string | null;
   pushed_at?: string | null;
+  discovery_category?: string | null;
+  discovery_band?: string | null;
   observed_at: string;
 }
 

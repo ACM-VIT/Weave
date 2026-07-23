@@ -3,6 +3,7 @@ import {
   bigserial,
   boolean,
   check,
+  date,
   doublePrecision,
   index,
   integer,
@@ -25,16 +26,25 @@ export const appUsers = appSchema.table('users', {
   userId: uuid('user_id').primaryKey(),
   username: varchar('username', { length: 50 }).notNull(),
   fullName: varchar('full_name', { length: 100 }),
+  dateOfBirth: date('date_of_birth', { mode: 'string' }),
   bio: text('bio'),
   githubId: text('github_id'),
   githubHandle: text('github_handle'),
+  githubIdentityVerifiedAt: timestamp('github_identity_verified_at', { withTimezone: true }),
   avatarUrl: text('avatar_url'),
+  interests: jsonb('interests').$type<string[]>().notNull().default([]),
+  skills: jsonb('skills').$type<string[]>().notNull().default([]),
+  techStack: jsonb('tech_stack').$type<string[]>().notNull().default([]),
+  onboardingCompleted: boolean('onboarding_completed').notNull().default(false),
   status: text('status').notNull().default('active'),
   profileVersion: bigint('profile_version', { mode: 'bigint' }).notNull().default(1n),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 }, (table) => [
   uniqueIndex('app_users_username_lower_uidx').on(sql`lower(${table.username})`),
+  uniqueIndex('app_users_verified_github_id_uidx')
+    .on(table.githubId)
+    .where(sql`${table.githubIdentityVerifiedAt} IS NOT NULL AND ${table.githubId} IS NOT NULL`),
   check('app_users_status_check', sql`${table.status} IN ('active','suspended','deleted')`),
 ]);
 
@@ -66,6 +76,7 @@ export const appRefreshTokens = appSchema.table('refresh_tokens', {
 export const appOauthCodes = appSchema.table('oauth_codes', {
   code: uuid('code').defaultRandom().primaryKey(),
   userId: uuid('user_id').notNull().references(() => appUsers.userId, { onDelete: 'cascade' }),
+  clientCodeChallenge: text('client_code_challenge'),
   expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 });
@@ -186,8 +197,18 @@ export const boardCollections = appSchema.table('board_collections', {
   userId: uuid('user_id').notNull().references(() => appUsers.userId, { onDelete: 'cascade' }),
   name: text('name').notNull(),
   description: text('description'),
+  icon: text('icon'),
+  color: varchar('color', { length: 7 }),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 });
+
+export const collectionRepos = appSchema.table('collection_repos', {
+  collectionId: uuid('collection_id').notNull().references(() => boardCollections.collectionId, { onDelete: 'cascade' }),
+  repoId: uuid('repo_id').notNull().references(() => appRepos.repoId, { onDelete: 'cascade' }),
+  addedBy: uuid('added_by').references(() => appUsers.userId, { onDelete: 'set null' }),
+  addedAt: timestamp('added_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [primaryKey({ columns: [table.collectionId, table.repoId] })]);
 
 export const appBoards = appSchema.table('boards', {
   boardId: uuid('board_id').defaultRandom().primaryKey(),

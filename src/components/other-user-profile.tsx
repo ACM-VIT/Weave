@@ -3,6 +3,7 @@ import {
   ActivityIndicator,
   Animated,
   Easing,
+  Image,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -10,13 +11,13 @@ import {
   View,
   useWindowDimensions,
 } from 'react-native';
-import { Image } from 'expo-image';
 import { ArrowLeft, List as ListIcon, Pin } from 'lucide-react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import RepoCard from '@/components/explore/RepoCard';
 import { FollowButton } from '@/components/follow-button';
 import { BoardListCard } from '@/components/profile/BoardListCard';
+import { DEVELOPMENT_PREVIEW_ENABLED } from '@/config/development-preview';
 import { APP_THEME, REFERENCE_THEME } from '@/constants/theme';
 import type { Repo } from '@/types';
 import { getAvatarColor } from '@/utils/avatar-color';
@@ -178,10 +179,9 @@ export function OtherUserProfile({
                 {profile.avatarUrl ? (
                   <Image
                     accessibilityLabel={`${profile.displayName}'s profile picture`}
-                    contentFit="cover"
-                    source={profile.avatarUrl}
+                    resizeMode="cover"
+                    source={{ uri: profile.avatarUrl }}
                     style={StyleSheet.absoluteFill}
-                    transition={180}
                   />
                 ) : (
                   <Text style={[styles.avatarInitial, compact && styles.avatarInitialCompact]}>
@@ -206,7 +206,7 @@ export function OtherUserProfile({
                     compact={compact}
                     identityKey={profile.username}
                     isFollowing={profile.isFollowing}
-                    localOnly={!profile.userId || profile.followStateKnown === false}
+                    localOnly={DEVELOPMENT_PREVIEW_ENABLED}
                     stateKnown={profile.followStateKnown ?? Boolean(profile.userId)}
                     targetUserId={profile.userId}
                   />

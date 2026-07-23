@@ -3,14 +3,12 @@ import { useState } from "react";
 import { ScrollView, Text, View } from "react-native";
 import { useOnboarding } from "../../store/OnboardingContext";
 import { useAuth } from "../../store/AuthContext";
+import { isValidUsername, normalizeUsername, USERNAME_GUIDANCE } from "../../utils/username";
 
 import PrimaryButton from "@/components/Auth/PrimaryButton";
-import ProfileAvatar from "@/components/Auth/ProfileAvatar";
-import ProfileDateInput from "@/components/Auth/ProfileDateInput";
 import ProfileInput from "@/components/Auth/ProfileInput";
 import ProfileTextArea from "@/components/Auth/ProfileTextArea";
 import TermsFooter from "@/components/Auth/TermsFooter";
-import UsernameStatus from "@/components/Auth/UsernameStatus";
 
 export default function CreateProfile() {
   const router = useRouter();
@@ -18,30 +16,17 @@ export default function CreateProfile() {
   const { user } = useAuth();
   
   const [username, setUsername] = useState(user?.username || "");
-  const [dob, setDob] = useState("");
   const [bio, setBio] = useState("");
 
-  const isValidDate = (dateString: string) => {
-    // Regex for YYYY-MM-DD format
-    const regex = /^\d{4}-\d{2}-\d{2}$/;
-    if (!regex.test(dateString)) return false;
-    // Check if it's an actual calendar date
-    const d = new Date(dateString);
-    const dNum = d.getTime();
-    if (!dNum && dNum !== 0) return false; 
-    return d.toISOString().slice(0, 10) === dateString;
-  };
-
-  const isDobValid = dob.trim().length === 0 || isValidDate(dob.trim());
-  const isFormValid = username.trim().length > 0 && dob.trim().length > 0 && isDobValid;
+  const normalizedUsername = normalizeUsername(username);
+  const isUsernameValid = isValidUsername(username);
 
   const handleCreateAccount = () => {
-    if (isFormValid) {
+    if (isUsernameValid) {
       updateData({ 
-        username, 
-        date_of_birth: dob,
+        username: normalizedUsername,
         bio,
-        full_name: user?.full_name || "New User" // We can grab this from auth or prompt
+        full_name: user?.full_name || normalizedUsername,
       });
       router.push("/onboarding/step1");
     }
@@ -54,9 +39,6 @@ export default function CreateProfile() {
       contentContainerStyle={{ paddingBottom: 50 }}
     >
       <View className="px-8 pt-14 w-full" style={{ maxWidth: 450, alignSelf: 'center' }}>
-
-        {/* Avatar */}
-        <ProfileAvatar />
 
         {/* Heading */}
         <View className="items-center mt-4">
@@ -89,17 +71,11 @@ export default function CreateProfile() {
             onChangeText={setUsername}
           />
 
-          {username.trim().length > 0 && <UsernameStatus />}
-        </View>
-
-        {/* Date of birth */}
-        <View className="mt-4">
-          <ProfileDateInput value={dob} onChangeText={setDob} />
-          {dob.trim().length > 0 && !isDobValid && (
+          {username.length > 0 && !isUsernameValid ? (
             <Text className="text-[#FF453A] text-[13px] font-nata mt-1 ml-1">
-              Please enter a valid date in YYYY-MM-DD format.
+              {USERNAME_GUIDANCE}
             </Text>
-          )}
+          ) : null}
         </View>
 
         {/* Bio */}
@@ -112,7 +88,7 @@ export default function CreateProfile() {
           <PrimaryButton
             label="Create Account"
             onPress={handleCreateAccount}
-            disabled={!isFormValid}
+            disabled={!isUsernameValid}
           />
         </View>
 

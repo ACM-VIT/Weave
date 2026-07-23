@@ -9,9 +9,10 @@ import {
   OtherUserProfile,
   type OtherUserProfileData,
 } from '@/components/other-user-profile';
-import { AUTH_BYPASS_ENABLED } from '@/constants/auth';
-import { PREVIEW_PROFILE_BOARDS } from '@/data/previewProfile';
-import { REPOSITORIES } from '@/data/repositories';
+import {
+  DEVELOPMENT_PREVIEW_ENABLED,
+} from '@/config/development-preview';
+import { DEVELOPMENT_REPOSITORIES } from '@/data/development-repositories';
 import { useAuth } from '@/store/AuthContext';
 import type { Repo } from '@/types';
 import { getStorageItem } from '@/utils/storage';
@@ -47,14 +48,7 @@ function repositoryUrl(repository: Repo) {
     || `https://github.com/${encodeURIComponent(repository.author)}/${encodeURIComponent(repository.name)}`;
 }
 
-const DEFAULT_LISTS: OtherUserProfileData['lists'] = PREVIEW_PROFILE_BOARDS.map((list) => ({
-  id: list.board_id,
-  name: list.name,
-  description: list.description,
-  repositoryCount: list.repo_count,
-}));
-
-const DEFAULT_PINNED_REPOSITORIES: Repo[] = REPOSITORIES.slice(0, 3).map((repository) => ({
+const DEVELOPMENT_PINNED_REPOSITORIES: Repo[] = DEVELOPMENT_REPOSITORIES.slice(0, 3).map((repository) => ({
   id: `other-profile:${repository.id}:${repository.title}`,
   name: repository.title,
   description: repository.description,
@@ -79,7 +73,7 @@ export default function OtherUserProfileRoute() {
 
   const profileQuery = useQuery({
     queryKey: ['public-user-profile', userId],
-    enabled: Boolean(userId) && user?.isPreview !== true && !AUTH_BYPASS_ENABLED,
+    enabled: Boolean(userId) && user?.isPreview !== true && !DEVELOPMENT_PREVIEW_ENABLED,
     queryFn: async ({ signal }) => {
       const token = await getStorageItem('access_token');
       if (!token) throw new Error('Your session has expired. Please sign in again.');
@@ -104,10 +98,10 @@ export default function OtherUserProfileRoute() {
         followers: fetched?.followers_count ?? countParam(params.followers),
         following: fetched?.following_count ?? countParam(params.following),
       },
-      // Public lists and pins are not exposed yet, so existing preview data
-      // keeps both tabs visually complete until a real source can replace it.
-      lists: DEFAULT_LISTS,
-      pinnedRepositories: DEFAULT_PINNED_REPOSITORIES,
+      lists: [],
+      pinnedRepositories: DEVELOPMENT_PREVIEW_ENABLED
+        ? DEVELOPMENT_PINNED_REPOSITORIES
+        : [],
     };
   }, [
     params.followStateKnown,
@@ -136,20 +130,6 @@ export default function OtherUserProfileRoute() {
     }
   };
 
-  const openList = (listId: string) => {
-    const list = DEFAULT_LISTS.find((item) => item.id === listId);
-    if (!list) return;
-    router.push({
-      pathname: '/board',
-      params: {
-        boardId: list.id,
-        boardName: list.name,
-        boardDescription: list.description ?? '',
-        collectionType: 'preview-board',
-      },
-    });
-  };
-
   return (
     <>
       <OtherUserProfile
@@ -158,7 +138,7 @@ export default function OtherUserProfileRoute() {
         onBack={goBack}
         onFollowersPress={() => setConnectionType('followers')}
         onFollowingPress={() => setConnectionType('following')}
-        onListPress={openList}
+        onListPress={() => undefined}
         onRepositoryPress={(repository) => void openRepository(repository)}
         profile={profile}
       />

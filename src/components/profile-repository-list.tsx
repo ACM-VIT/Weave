@@ -14,10 +14,7 @@ import { useQuery } from '@tanstack/react-query';
 import { FolderGit2, GitFork, Heart, RotateCcw, Search, Star, X } from 'lucide-react-native';
 
 import { apiV2 } from '@/api/client';
-import { AUTH_BYPASS_ENABLED } from '@/constants/auth';
 import { REFERENCE_THEME } from '@/constants/theme';
-import { REPOSITORIES } from '@/data/repositories';
-import { useAuth } from '@/store/AuthContext';
 import { formatCompactCount } from '@/utils/format-count';
 import { getStorageItem } from '@/utils/storage';
 
@@ -37,13 +34,6 @@ type RepositoryRecord = {
 
 type RawRepository = Record<string, unknown>;
 
-const PREVIEW_METRICS = [
-  { likes: 412, stars: 1_200, forks: 2_000 },
-  { likes: 288, stars: 980, forks: 1_500 },
-  { likes: 156, stars: 2_100, forks: 3_200 },
-  { likes: 96, stars: 740, forks: 1_100 },
-];
-
 function normalizeRepository(repository: RawRepository): RepositoryRecord {
   const fullName = String(repository.full_name ?? 'Unknown repository');
   const [fallbackOwner = 'Unknown owner', fallbackName = fullName] = fullName.split('/');
@@ -60,21 +50,6 @@ function normalizeRepository(repository: RawRepository): RepositoryRecord {
     fork_count: Number(repository.fork_count ?? repository.forks_count ?? 0) || 0,
     likes_count: Number(repository.likes_count ?? 0) || 0,
   };
-}
-
-function previewRepositories(type: ProfileRepositoryType): RepositoryRecord[] {
-  const repositories = type === 'likes' ? REPOSITORIES.slice(0, 3) : REPOSITORIES.slice(1, 4);
-  return repositories.map((repository, index) => ({
-    repo_id: `${type}:${repository.owner}/${repository.title}`,
-    name: repository.title,
-    owner: repository.owner,
-    full_name: `${repository.owner}/${repository.title}`,
-    url: `https://github.com/${repository.owner}/${repository.title}`,
-    description: repository.description,
-    star_count: PREVIEW_METRICS[index].stars,
-    fork_count: PREVIEW_METRICS[index].forks,
-    likes_count: PREVIEW_METRICS[index].likes,
-  }));
 }
 
 async function loadRepositories(
@@ -103,9 +78,7 @@ export function ProfileRepositoryList({
   userId?: string;
 }) {
   const { width } = useWindowDimensions();
-  const { user } = useAuth();
   const compact = width < 360;
-  const preview = user?.isPreview === true || AUTH_BYPASS_ENABLED;
   const searchKey = `${type}:${userId ?? 'missing'}`;
   const [searchState, setSearchState] = useState({ key: searchKey, value: '' });
   const search = searchState.key === searchKey ? searchState.value : '';
@@ -113,9 +86,7 @@ export function ProfileRepositoryList({
   const repositoriesQuery = useQuery({
     queryKey: ['profile-stat-repositories', type, userId],
     enabled: active && Boolean(userId),
-    queryFn: ({ signal }) => preview
-      ? Promise.resolve(previewRepositories(type))
-      : loadRepositories(type, userId!, signal),
+    queryFn: ({ signal }) => loadRepositories(type, userId!, signal),
     staleTime: 30_000,
   });
   const filteredRepositories = useMemo(() => {

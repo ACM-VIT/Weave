@@ -22,8 +22,6 @@ import { loadPinnedRepositories, type PinnedRepository } from '@/services/pinned
 import { useAuth } from '@/store/AuthContext';
 import type { Repo } from '@/types';
 import { getStorageItem } from '@/utils/storage';
-import { getPreviewBoardRepositories } from '@/data/previewProfile';
-import type { RepositoryData } from '@/data/repositories';
 
 type BoardRouteParams = {
   boardId?: string | string[];
@@ -68,21 +66,6 @@ function pinnedToRepositoryCard(repository: PinnedRepository): Repo {
   };
 }
 
-function previewToRepositoryCard(repository: RepositoryData, boardId: string): Repo {
-  return {
-    id: `${boardId}:${repository.owner}/${repository.title}`,
-    name: repository.title,
-    description: repository.description,
-    stars: repository.stats.stars,
-    forks: repository.stats.forks,
-    author: repository.owner,
-    avatarColor: REFERENCE_THEME.accentDark,
-    avatarInitial: repository.owner.slice(0, 2).toUpperCase(),
-    language: repository.techStack?.[0],
-    url: `https://github.com/${encodeURIComponent(repository.owner)}/${encodeURIComponent(repository.title)}`,
-  };
-}
-
 function repositoryUrl(repository: Repo): string {
   if (repository.url) return repository.url;
   return `https://github.com/${encodeURIComponent(repository.author)}/${encodeURIComponent(repository.name)}`;
@@ -95,7 +78,6 @@ export default function BoardScreen() {
   const params = useLocalSearchParams<BoardRouteParams>();
   const boardId = firstParam(params.boardId);
   const isPinnedCollection = firstParam(params.collectionType) === 'pinned';
-  const isPreviewCollection = firstParam(params.collectionType) === 'preview-board';
   const boardName = firstParam(params.boardName) || 'List';
   const boardDescription = firstParam(params.boardDescription);
   const isCompact = width < 360;
@@ -104,20 +86,13 @@ export default function BoardScreen() {
   const repositoriesQuery = useQuery({
     queryKey: isPinnedCollection
       ? ['pinned-repositories', user?.user_id]
-      : isPreviewCollection
-        ? ['preview-board-repositories', boardId]
-        : ['board-repositories', boardId],
+      : ['board-repositories', boardId],
     enabled: isPinnedCollection ? Boolean(user?.user_id) : Boolean(boardId),
     staleTime: 30_000,
     queryFn: async ({ signal }) => {
       if (isPinnedCollection) {
         if (!user?.user_id) throw new Error('Sign in to view pinned repositories.');
         return (await loadPinnedRepositories(user.user_id)).map(pinnedToRepositoryCard);
-      }
-      if (isPreviewCollection) {
-        return getPreviewBoardRepositories(boardId).map((repository) =>
-          previewToRepositoryCard(repository, boardId)
-        );
       }
       const token = await getStorageItem('access_token');
       if (!token) throw new Error('Your session has expired. Please log in again.');
@@ -208,7 +183,7 @@ export default function BoardScreen() {
           keyExtractor={(repository) => repository.id}
           ListEmptyComponent={
             <View style={styles.state}>
-              {!boardId && !isPinnedCollection && !isPreviewCollection ? (
+              {!boardId && !isPinnedCollection ? (
                 <>
                   <View style={styles.stateIcon}>
                     <CircleAlert color="#FF6878" size={31} strokeWidth={1.7} />
