@@ -8,7 +8,9 @@ export class DataReconciliationService {
           likes_count=(SELECT count(*) FROM app.reactions r WHERE r.repo_id=engagement.repo_id AND r.reaction='like'),
           dislikes_count=(SELECT count(*) FROM app.reactions r WHERE r.repo_id=engagement.repo_id AND r.reaction='dislike'),
           saves_count=(SELECT count(*) FROM app.saves s WHERE s.repo_id=engagement.repo_id),
-          comments_count=(SELECT count(*) FROM app.comments c WHERE c.repo_id=engagement.repo_id),updated_at=now()
+          comments_count=(SELECT count(*) FROM app.comments c WHERE c.repo_id=engagement.repo_id),
+          views_count=(SELECT COALESCE(sum(e.impressions),0) FROM telemetry.user_repo_engagement e
+            WHERE e.repo_id=engagement.repo_id),updated_at=now()
       `;
       await tx`
         UPDATE app.user_stats stats SET

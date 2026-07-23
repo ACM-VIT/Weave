@@ -1,6 +1,6 @@
 # GH Social Backend v2
 
-This service is the system of record for users, repositories, social state, feed serves, and interaction history. New clients must use only the APIs documented here. The legacy `/api/users`, `/api/repos`, `/api/activity`, `/api/comment`, `/api/boards`, `/api/containers`, `/api/onboarding`, and `/api/feed` routes are disabled unless `LEGACY_API_ENABLED=true`.
+This service is the system of record for users, repositories, social state, feed serves, and interaction history. Product and ML integrations use the V2 APIs documented here. The former `/api/users`, `/api/repos`, `/api/activity`, `/api/comment`, `/api/boards`, `/api/containers`, `/api/onboarding`, and `/api/feed` routes are not registered.
 
 ## Authority boundaries
 
@@ -269,7 +269,7 @@ docker run --rm --entrypoint node gh-social-backend:local dist/scripts/verify-de
 `docker build backend` is intentionally unsupported because Docker cannot read
 the top-level database assets from that context.
 
-Required production environment variables: `DATABASE_URL`, `SUPABASE_URL`, `SUPABASE_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, `JWT_SECRET`, `CLIENT_URL`, `BACKEND_URL`, `OAUTH_REDIRECT_ORIGINS`, `REDIS_URL`, `GITHUB_TOKEN`, `ML_SERVICE_URL`, and `INTERNAL_API_SECRET`. Start from `.env.production.example`, set `FEED_V2_CANARY_PERCENT=100`, and keep `LEGACY_API_ENABLED=false`. Leave `ML_V2_RECOMMENDATIONS=false` until the ingestion canary proves non-empty canonical repository UUID results; `ML_FEEDBACK_OUTBOX=true` still allows onboarding and repository indexing jobs to drain. Rotate internal secrets only through the documented primary/previous overlap, not when adding another worker process.
+Required production environment variables: `DATABASE_URL`, `SUPABASE_URL`, `SUPABASE_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, `JWT_SECRET`, `CLIENT_URL`, `BACKEND_URL`, `OAUTH_REDIRECT_ORIGINS`, `REDIS_URL`, `GITHUB_TOKEN`, `ML_SERVICE_URL`, and `INTERNAL_API_SECRET`. Start from `.env.production.example`. Production requires the complete V2 path, `FEED_V2_CANARY_PERCENT=100`, and `TRENDING_FALLBACK=false`; readiness stays red until the ingestion canary, feedback consumer, and strict heavy-ranker gates pass. Rotate internal secrets only through the documented primary/previous overlap, not when adding another worker process.
 
 The outbox launch script sets `--role=outbox` portably and fails startup when `ML_FEEDBACK_OUTBOX` is disabled. A hardened systemd template and install/acceptance procedure are in [the outbox worker runbook](../docs/runbooks/outbox-worker.md).
 
@@ -277,7 +277,16 @@ The coordinated backend, ML, OAuth, corpus, device, and load gates for v2 are in
 
 Set `TRUST_PROXY=true` only when exactly one trusted ingress proxy is in front of the service. Authentication endpoints have a Redis-backed per-IP/path limit of 20 requests per minute; configure broader request and connection limits at the ingress as well.
 
-`GET /healthz` is process liveness. `GET /readyz` checks PostgreSQL, Redis, ML, and feature dependencies. Internal `GET /api/internal/v2/operations/status` adds outbox and metric state. `POST /api/internal/v2/operations/outbox/:outboxId/replay` retries a dead outbox row. Identity-only version-1 onboarding jobs that are provably obsolete are classified, never replayed, with `POST /api/internal/v2/operations/outbox/:outboxId/supersede`; see the outbox worker runbook.
+`GET /healthz` is process liveness. `GET /readyz` checks PostgreSQL, Redis, ML,
+the durable outbox, and feature dependencies. Production defaults
+`OUTBOX_MAX_DEAD` to zero, so permanently failed ML delivery cannot hide behind
+a green deployment. Internal `GET /api/internal/v2/operations/status` adds
+metric state. `POST /api/internal/v2/operations/outbox/:outboxId/replay` retries
+a dead outbox row. Identity-only version-1 onboarding jobs that are provably
+obsolete are classified, never replayed, with
+`POST /api/internal/v2/operations/outbox/:outboxId/supersede`; see the outbox
+worker runbook. A historical repository job can use the same endpoint only
+after a newer canonical job for that repository has been delivered.
 
 ## Database deployment and clean ingestion
 

@@ -15,6 +15,15 @@ const requiredVariables = [
   'GITHUB_TOKEN',
   'ML_SERVICE_URL',
   'INTERNAL_API_SECRET',
+  'DB_SCHEMA_V2_READS',
+  'DB_SCHEMA_V2_WRITES',
+  'FEED_V2',
+  'FEED_RESERVATIONS',
+  'FEED_V2_CANARY_PERCENT',
+  'ML_V2_RECOMMENDATIONS',
+  'ML_FEEDBACK_OUTBOX',
+  'ML_QDRANT_ONLY',
+  'TRENDING_FALLBACK',
 ] as const;
 
 type DeploymentEnvironment = Readonly<Record<string, string | undefined>>;
@@ -101,6 +110,33 @@ export function validateDeploymentEnvironment(env: DeploymentEnvironment = proce
   if (enabledForbiddenFlags.length > 0) {
     throw new Error(
       `Unsafe one-time database flags are forbidden in automated deployment: ${enabledForbiddenFlags.join(', ')}.`,
+    );
+  }
+
+  const requiredV2Flags = [
+    'DB_SCHEMA_V2_READS',
+    'DB_SCHEMA_V2_WRITES',
+    'FEED_V2',
+    'FEED_RESERVATIONS',
+    'ML_V2_RECOMMENDATIONS',
+    'ML_FEEDBACK_OUTBOX',
+    'ML_QDRANT_ONLY',
+  ] as const;
+  const enabledFlagValues = new Set(['1', 'true', 'yes', 'on']);
+  const disabledV2Flags = requiredV2Flags.filter(
+    (name) => !enabledFlagValues.has(value(env, name).toLowerCase()),
+  );
+  if (disabledV2Flags.length > 0) {
+    throw new Error(
+      `Strict V2 deployment requires these flags to be enabled: ${disabledV2Flags.join(', ')}.`,
+    );
+  }
+  if (Number(value(env, 'FEED_V2_CANARY_PERCENT')) !== 100) {
+    throw new Error('Strict V2 deployment requires FEED_V2_CANARY_PERCENT=100.');
+  }
+  if (!disabledFlagValues.has(value(env, 'TRENDING_FALLBACK').toLowerCase())) {
+    throw new Error(
+      'Strict V2 deployment requires TRENDING_FALLBACK=false so ML failures fail closed.',
     );
   }
 

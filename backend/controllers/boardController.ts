@@ -8,7 +8,6 @@ import * as repoService from '../services/repoService.js';
 import { db } from '../db/index.js';
 import { repos } from '../db/schema.js';
 import { eq } from 'drizzle-orm';
-import { mlService } from '../services/mlService.js';
 import { FeedService } from '../services/feedService.js';
 
 const feedService = new FeedService();
@@ -161,11 +160,6 @@ export async function saveRepoToBoard(req: AuthRequest, res: Response): Promise<
     
     if ((data as { saveStateChanged?: boolean } | null)?.saveStateChanged) {
       void feedService.invalidateUserFeed(authUserId);
-      void mlService.sendBatchedActivityFeedback([{
-        user_id: authUserId,
-        repo_id: repoId,
-        action: 'save',
-      }]);
     }
 
     return sendSuccess(res, 201, data);

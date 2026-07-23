@@ -138,6 +138,13 @@ export async function processInteractionBatchV2InTransaction(
           event.repo_id,
           event.event_type === 'save',
         );
+      } else if (event.event_type === 'impression') {
+        // The event insert above is the idempotency boundary, so retries never
+        // double-count the repository's public view total.
+        await tx`
+          UPDATE app.repo_engagement SET views_count=views_count+1,updated_at=now()
+          WHERE repo_id=${event.repo_id}::uuid
+        `;
       }
 
       await tx`

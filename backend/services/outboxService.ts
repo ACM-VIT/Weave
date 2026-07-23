@@ -138,4 +138,34 @@ export class OutboxService {
       return updated.length === 1;
     });
   }
+
+  async supersedeRepositoryJobDeliveredBySuccessor(outboxId: string): Promise<boolean> {
+    return sqlClient.begin(async (tx) => {
+      const rows = await tx`
+        SELECT outbox_id,job_type,aggregate_id,created_at
+        FROM telemetry.ml_outbox
+        WHERE outbox_id=${outboxId}::uuid AND status='dead'
+          AND job_type IN ('repo_index','repo_refresh')
+        FOR UPDATE
+      `;
+      const row = rows[0];
+      if (!row) return false;
+      const successors = await tx`
+        SELECT 1 FROM telemetry.ml_outbox
+        WHERE aggregate_id=${String(row.aggregate_id)}::uuid
+          AND job_type IN ('repo_index','repo_refresh')
+          AND status='delivered'
+          AND created_at>=${row.created_at as string}::timestamptz
+          AND outbox_id<>${outboxId}::uuid
+        LIMIT 1
+      `;
+      if (successors.length === 0) return false;
+      const updated = await tx`
+        UPDATE telemetry.ml_outbox SET status='superseded',claim_token=NULL,claimed_at=NULL,
+          last_error='Historical repository job superseded by a newer delivered canonical job.'
+        WHERE outbox_id=${outboxId}::uuid AND status='dead' RETURNING outbox_id
+      `;
+      return updated.length === 1;
+    });
+  }
 }

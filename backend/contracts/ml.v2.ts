@@ -9,6 +9,7 @@ export interface MlRecommendationRequest {
   feed_version: number;
   limit: number;
   exclude_repo_ids: string[];
+  social_repo_ids?: string[];
   context: { cold_start: boolean; locale?: string };
 }
 

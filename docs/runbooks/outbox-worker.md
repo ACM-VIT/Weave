@@ -12,8 +12,9 @@ repository refresh jobs to the authenticated ML v2 endpoints.
 - Keep `ML_FEEDBACK_OUTBOX=true` and `DB_SCHEMA_V2_WRITES=true`.
 - Set `ML_DELIVERY_TIMEOUT_MS=30000`; health/recommendation reads retain the
   shorter `ML_TIMEOUT_MS=5000` bound.
-- Keep `ML_V2_RECOMMENDATIONS=false` until the ingestion canary returns a
-  non-empty set of canonical backend `repo_id` UUIDs.
+- Keep `ML_V2_RECOMMENDATIONS=true`; production readiness must remain red until
+  the ingestion canary returns a non-empty set of canonical backend `repo_id`
+  UUIDs.
 - Leave `WORKER_ROLE` blank in the shared environment file. The worker unit
   passes `--role=outbox`, while the API process remains role `api`.
 - Deploy only an image that passed `npm run build` and `npm test`. The worker

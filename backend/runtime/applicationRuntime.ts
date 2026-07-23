@@ -15,6 +15,7 @@ import { WorkerSupervisor } from './workerSupervisor.js';
 import { FeedShadowService } from '../services/feedShadowService.js';
 import { validateProductionIntegrations } from '../config/runtimeConfig.js';
 import { applyMlReadinessGate } from './mlReadiness.js';
+import { applyOutboxReadinessGate } from './outboxReadiness.js';
 
 export class ApplicationRuntime {
   readonly flags = getV2FeatureFlags();
@@ -28,6 +29,7 @@ export class ApplicationRuntime {
     ? new FeedGenerationService(this.persistence, this.queue, this.ml)
     : null;
   readonly shadow = this.ml ? new FeedShadowService(this.persistence, this.ml) : null;
+  readonly outbox = new OutboxService();
   readonly feed = new FeedV2Service(
     this.persistence,
     this.queue,
@@ -44,7 +46,7 @@ export class ApplicationRuntime {
   constructor(readonly role: 'api' | 'outbox' | 'feed' | 'maintenance' | 'all' = 'api') {
     if ((role === 'outbox' || role === 'all') && this.flags.ML_FEEDBACK_OUTBOX && this.ml) {
       const worker = new OutboxWorker(
-        new OutboxService(),
+        this.outbox,
         this.ml,
         this.generation ? async (row) => {
           if (row.job_type === 'onboard') await this.generation!.generate(row.aggregate_id, 45, [], 'prewarm');
@@ -90,6 +92,12 @@ export class ApplicationRuntime {
       catch (error) { checks.ml = { healthy: false, error: error instanceof Error ? error.message : String(error) }; }
     } else {
       checks.ml = { healthy: true, disabled: true };
+    }
+    try {
+      const status = await this.outbox.status();
+      checks.outbox = applyOutboxReadinessGate(status);
+    } catch (error) {
+      checks.outbox = { healthy: false, error: error instanceof Error ? error.message : String(error) };
     }
     return {
       healthy: this.featureErrors.length === 0

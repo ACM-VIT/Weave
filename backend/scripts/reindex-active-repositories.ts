@@ -159,7 +159,8 @@ export async function runReindex(options: ReindexOptions, databaseUrl: string): 
           if (options.execute) {
             const inserted = await tx`
               INSERT INTO telemetry.ml_outbox (job_type,aggregate_id,idempotency_key,payload)
-              VALUES ('repo_index',${row.repo_id}::uuid,${key},${JSON.stringify(job)}::jsonb)
+              VALUES ('repo_index',${row.repo_id}::uuid,${key},
+                ${tx.json(job as unknown as Parameters<typeof tx.json>[0])})
               ON CONFLICT (idempotency_key) DO NOTHING RETURNING outbox_id
             `;
             if (inserted.length === 1) queued++;

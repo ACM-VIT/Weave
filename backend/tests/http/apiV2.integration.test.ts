@@ -59,13 +59,11 @@ integration('registered v2 HTTP paths complete controlled integration flows', as
     DB_SCHEMA_V2_WRITES: 'true',
     FEED_V2: 'true',
     FEED_RESERVATIONS: 'true',
-    FEED_V2_CANARY_PERCENT: '100',
     ML_V2_RECOMMENDATIONS: 'false',
     // The HTTP suite verifies durable outbox writes, not live ML delivery/health.
     ML_FEEDBACK_OUTBOX: 'false',
     ML_QDRANT_ONLY: 'true',
     TRENDING_FALLBACK: 'true',
-    LEGACY_API_ENABLED: 'false',
   });
   const [{ default: app }, { default: redisClient }, { getApplicationRuntime }] = await Promise.all([
     import('../../app.js'), import('../../config/redis.js'), import('../../runtime/applicationRuntime.js'),
@@ -104,14 +102,16 @@ integration('registered v2 HTTP paths complete controlled integration flows', as
       source: string;
       items: Array<{
         repo_id: string;
-        owner_user_id: string | null;
-        viewer_follows_owner: boolean;
+        repository: {
+          owner_user_id: string | null;
+          viewer_follows_owner: boolean;
+        };
       }>;
     };
     assert.equal(served.source, 'fallback');
     assert.deepEqual(served.items.map((item) => item.repo_id), [repoId]);
-    assert.equal(served.items[0].owner_user_id, ownerUserId);
-    assert.equal(served.items[0].viewer_follows_owner, false);
+    assert.equal(served.items[0].repository.owner_user_id, ownerUserId);
+    assert.equal(served.items[0].repository.viewer_follows_owner, false);
 
     const interaction = await fetch(`${base}/api/v2/interactions/batch`, {
       method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
@@ -148,10 +148,16 @@ integration('registered v2 HTTP paths complete controlled integration flows', as
     });
     assert.equal(followedFeed.status, 200);
     const followedItems = (await followedFeed.json()) as {
-      items: Array<{ repo_id: string; owner_user_id: string | null; viewer_follows_owner: boolean }>;
+      items: Array<{
+        repo_id: string;
+        repository: {
+          owner_user_id: string | null;
+          viewer_follows_owner: boolean;
+        };
+      }>;
     };
-    assert.equal(followedItems.items[0].owner_user_id, ownerUserId);
-    assert.equal(followedItems.items[0].viewer_follows_owner, true);
+    assert.equal(followedItems.items[0].repository.owner_user_id, ownerUserId);
+    assert.equal(followedItems.items[0].repository.viewer_follows_owner, true);
 
     const unfollow = await fetch(`${base}/api/v2/users/${ownerUserId}/follow`, {
       method: 'DELETE', headers: authHeaders,

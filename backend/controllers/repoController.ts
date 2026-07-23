@@ -2,7 +2,6 @@ import type { Request, Response } from "express";
 import * as githubService from "../services/githubService.js";
 import * as repoService from "../services/repoService.js";
 import * as summaryService from "../services/summaryService.js";
-import { buildMlEmbedRepositoryPayload, mlService } from "../services/mlService.js";
 import {
   sendControllerError,
   sendError,
@@ -128,8 +127,6 @@ export async function importRepo(req: Request, res: Response): Promise<void> {
       return sendRepoDatabaseError(res, error);
     }
 
-    void mlService.embedRepositoryBestEffort(buildMlEmbedRepositoryPayload(data));
-
     return sendSuccess(res, 201, data);
   } catch (err) {
     return sendControllerError(res, err as Error);
@@ -179,8 +176,6 @@ export async function syncRepo(req: Request, res: Response): Promise<void> {
     if (error) {
       return sendRepoDatabaseError(res, error);
     }
-
-    void mlService.embedRepositoryBestEffort(buildMlEmbedRepositoryPayload(data));
 
     return sendSuccess(res, 200, data);
   } catch (err) {

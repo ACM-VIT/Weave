@@ -1,7 +1,6 @@
 import type { Response } from 'express';
 import type { AuthRequest } from '../middlewares/authMiddleware.js';
 import * as onboardingService from '../services/onboardingService.js';
-import { buildMlOnboardPayload, mlService } from '../services/mlService.js';
 import {
   sendControllerError,
   sendError,
@@ -102,9 +101,6 @@ export async function setupOnboarding(req: AuthRequest, res: Response): Promise<
     });
   }
 
-  // Finish syncing the chosen profile before Home asks ML for recommendations.
-  // Best-effort keeps onboarding usable if ML is temporarily unavailable.
-  await mlService.onboardUserBestEffort(buildMlOnboardPayload(userId, data));
   await feedService.invalidateUserFeed(userId);
 
   return sendSuccess(res, 200, data);
@@ -127,10 +123,6 @@ export async function syncGitHub(req: AuthRequest, res: Response): Promise<void>
         notFoundMessage: 'User profile not found',
         conflictMessage: 'This GitHub account is already linked to another user.',
       });
-    }
-
-    if (profile) {
-      void mlService.onboardUserBestEffort(buildMlOnboardPayload(userId, profile));
     }
 
     return sendSuccess(res, 200, { synced: data, profile });
