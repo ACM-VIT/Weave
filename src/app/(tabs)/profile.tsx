@@ -33,17 +33,16 @@ function boardHref(params: Record<string, string>): Href {
 export default function ProfileScreen() {
   const { width, height } = useWindowDimensions()
   const insets = useSafeAreaInsets()
-  const { user, signOut, checkOnboardingStatus } = useAuth()
+  const { user, signOut, checkOnboardingStatus, updateUserProfile } = useAuth()
   const isTablet = width >= 768
   const isCompact = height < 750 || width < 360
   const [editVisible, setEditVisible] = useState(false)
   const [logoutVisible, setLogoutVisible] = useState(false)
   const [loggingOut, setLoggingOut] = useState(false)
   const [logoutError, setLogoutError] = useState("")
-  const [savedProfile, setSavedProfile] = useState<{ name: string; job: string; username: string } | null>(null)
-  const name = savedProfile?.name ?? (typeof user?.full_name === "string" ? user.full_name : "")
-  const job = savedProfile?.job ?? (typeof user?.bio === "string" ? user.bio : "")
-  const username = savedProfile?.username ?? user?.username ?? ""
+  const name = typeof user?.full_name === "string" ? user.full_name : ""
+  const job = typeof user?.bio === "string" ? user.bio : ""
+  const username = user?.username ?? ""
   const [draft, setDraft] = useState({ name, job, username })
   const [isSaving, setIsSaving] = useState(false)
   const [editError, setEditError] = useState("")
@@ -92,15 +91,29 @@ export default function ProfileScreen() {
     try {
       const accessToken = await getStorageItem("access_token")
       if (!accessToken) throw new Error("Your session has expired. Please log in again.")
-      const updated = await apiV2<{ full_name: string; bio: string; username: string }>("/users/me", {
+      const updated = await apiV2<{
+        full_name: string | null
+        bio: string | null
+        username: string
+      }>("/users/me", {
         method: "PATCH",
         body: JSON.stringify({ username: next.username, full_name: next.name, bio: next.job }),
       }, accessToken)
-      const updatedProfile = { name: updated.full_name, job: updated.bio, username: updated.username }
-      setSavedProfile(updatedProfile)
+      const updatedProfile = {
+        name: updated.full_name ?? "",
+        job: updated.bio ?? "",
+        username: updated.username,
+      }
+      updateUserProfile({
+        username: updated.username,
+        full_name: updated.full_name,
+        bio: updated.bio,
+      })
       setDraft(updatedProfile)
-      await checkOnboardingStatus()
       setEditVisible(false)
+      void checkOnboardingStatus().catch((error) => {
+        console.error("Failed to refresh the saved profile", error)
+      })
     } catch (error) {
       setEditError(requestError(error, "Unable to update your profile."))
     } finally {

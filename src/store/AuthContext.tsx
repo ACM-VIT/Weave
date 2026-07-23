@@ -15,6 +15,10 @@ import {
   DEVELOPMENT_PREVIEW_USER,
 } from '../config/development-preview';
 import { resolveOnboardingCompleted } from '../utils/auth-routing';
+import {
+  mergeSavedUserProfile,
+  type SavedUserProfileAttributes,
+} from '../utils/profile-state';
 import { restoreStartupSession } from './restore-session';
 
 interface User {
@@ -25,12 +29,15 @@ interface User {
   [key: string]: any;
 }
 
+export type EditableUserProfile = SavedUserProfileAttributes;
+
 interface AuthContextType {
   user: User | null;
   isLoading: boolean;
   setSession: (session: AuthenticatedSession<any>) => Promise<void>;
   signOut: () => Promise<void>;
   checkOnboardingStatus: () => Promise<void>;
+  updateUserProfile: (profile: EditableUserProfile) => void;
 }
 
 type UserProfileRequestPolicy = {
@@ -143,6 +150,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   }, [fetchUserProfile]);
 
+  const updateUserProfile = useCallback((profile: EditableUserProfile) => {
+    setUser((current) => mergeSavedUserProfile(current, profile));
+  }, []);
+
   const setSession = useCallback(async ({
     accessToken,
     sessionGeneration,
@@ -202,7 +213,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [loadSession]);
 
   return (
-    <AuthContext.Provider value={{ user, isLoading, setSession, signOut, checkOnboardingStatus }}>
+    <AuthContext.Provider value={{
+      user,
+      isLoading,
+      setSession,
+      signOut,
+      checkOnboardingStatus,
+      updateUserProfile,
+    }}>
       {children}
     </AuthContext.Provider>
   );
