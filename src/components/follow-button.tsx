@@ -7,10 +7,11 @@ import {
   type StyleProp,
   type ViewStyle,
 } from 'react-native';
-import { useMutation } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
 import { setUserFollowing } from '@/api/connections';
 import { REFERENCE_THEME } from '@/constants/theme';
+import { followStateQueryKey, getFollowIdentity } from '@/utils/follow-state';
 import { getStorageItem } from '@/utils/storage';
 
 export type FollowButtonProps = {
@@ -23,6 +24,8 @@ export type FollowButtonProps = {
   disabled?: boolean;
   onFollowingChange?: (following: boolean) => void;
   style?: StyleProp<ViewStyle>;
+  accentColor?: string;
+  identityKey?: string | null;
 };
 
 export function FollowButton({
@@ -35,17 +38,26 @@ export function FollowButton({
   disabled = false,
   onFollowingChange,
   style,
+  accentColor = REFERENCE_THEME.accent,
+  identityKey,
 }: FollowButtonProps) {
-  const stateKey = `${targetUserId ?? 'unavailable'}:${isFollowing}`;
-  const [localState, setLocalState] = useState({
-    key: stateKey,
-    following: isFollowing,
+  const queryClient = useQueryClient();
+  const followIdentity = getFollowIdentity(targetUserId, identityKey);
+  const queryKey = followStateQueryKey(followIdentity);
+  const followStateQuery = useQuery<boolean>({
+    queryKey,
+    queryFn: async () => isFollowing,
+    initialData: isFollowing,
+    enabled: false,
+    staleTime: Infinity,
+    gcTime: Infinity,
+  });
+  const [failureState, setFailureState] = useState({
+    identity: followIdentity,
     failed: false,
   });
-  const displayedFollowing = localState.key === stateKey
-    ? localState.following
-    : isFollowing;
-  const failed = localState.key === stateKey && localState.failed;
+  const displayedFollowing = followStateQuery.data;
+  const failed = failureState.identity === followIdentity && failureState.failed;
 
   const mutation = useMutation<void, Error, boolean>({
     mutationFn: async (following) => {
@@ -73,11 +85,13 @@ export function FollowButton({
     if (buttonDisabled) return;
     const previous = displayedFollowing;
     const next = !previous;
-    setLocalState({ key: stateKey, following: next, failed: false });
+    queryClient.setQueryData(queryKey, next);
+    setFailureState({ identity: followIdentity, failed: false });
 
     mutation.mutate(next, {
       onError: () => {
-        setLocalState({ key: stateKey, following: previous, failed: true });
+        queryClient.setQueryData(queryKey, previous);
+        setFailureState({ identity: followIdentity, failed: true });
       },
       onSuccess: () => {
         if (!localOnly) onFollowingChange?.(next);
@@ -110,7 +124,7 @@ export function FollowButton({
           ? styles.followingButton
           : neutral
             ? styles.neutralFollowButton
-            : styles.followButton,
+            : [styles.followButton, { backgroundColor: accentColor, borderColor: accentColor }],
         failed && styles.failedButton,
         buttonDisabled && styles.disabledButton,
         pressed && styles.pressedButton,

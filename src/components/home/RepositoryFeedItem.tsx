@@ -29,12 +29,14 @@ export function RepositoryFeedItem({
   pageWidth,
   pageHeight,
   isViewable = false,
+  onOwnerPress,
   onQueueActivity,
 }: {
   repository: RepositoryData;
   pageWidth: number;
   pageHeight: number;
   isViewable?: boolean;
+  onOwnerPress?: () => void;
   onQueueActivity?: (
     event: { repo_id: string; action: FeedbackAction; dwell_seconds?: number },
     flushNow?: boolean
@@ -129,6 +131,7 @@ export function RepositoryFeedItem({
         isActive={isViewable}
         isSaved={isSaved}
         onCommentPress={() => setIsCommentsVisible(true)}
+        onOwnerPress={onOwnerPress}
         onQueueActivity={onQueueActivity}
         onReadFullPress={() => {
           onQueueActivity?.(

@@ -11,12 +11,6 @@ import {
   type ViewStyle,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import Svg, {
-  Defs,
-  LinearGradient,
-  Rect,
-  Stop,
-} from 'react-native-svg';
 import {
   Bookmark,
   CircleAlert,
@@ -32,6 +26,7 @@ import {
 
 import { REFERENCE_THEME } from '@/constants/theme';
 import { useAuth } from '@/store/AuthContext';
+import { getAvatarColor } from '@/utils/avatar-color';
 import type { RepositoryData } from '../../data/repositories';
 import DescriptionCard from './DescriptionCard';
 import ReadmeCard from './ReadmeCard';
@@ -60,13 +55,6 @@ type ActionButtonProps = {
   label?: string;
   onPress: () => void;
 };
-
-const AVATAR_GRADIENTS = [
-  ['#BF5AF2', '#8944AB'],
-  ['#64D2FF', '#2A7FBF'],
-  ['#FF6482', '#C93A56'],
-  ['#63E6A9', '#2E9E6B'],
-] as const;
 
 function formatCount(value?: string) {
   if (!value) return '0';
@@ -137,6 +125,7 @@ export function RepositoryScreen({
   onReadFullPress,
   onSavePress,
   onCommentPress,
+  onOwnerPress,
   onQueueActivity,
 }: {
   pageWidth: number;
@@ -148,6 +137,7 @@ export function RepositoryScreen({
   onReadFullPress: () => void;
   onSavePress: () => void;
   onCommentPress: () => void;
+  onOwnerPress?: () => void;
   onQueueActivity?: QueueActivity;
 }) {
   const insets = useSafeAreaInsets();
@@ -183,8 +173,7 @@ export function RepositoryScreen({
   const likeCount = Math.max(0, initialLikes + Number(liked) - Number(serverLiked));
   const dislikeCount = disliked ? 1 : 0;
   const visibleCommentCount = (commentCount ?? Number(repository.stats.comments || 0)) || 0;
-  const avatarIndex = [...repository.owner].reduce((sum, character) => sum + character.charCodeAt(0), 0) % AVATAR_GRADIENTS.length;
-  const [avatarStart, avatarEnd] = AVATAR_GRADIENTS[avatarIndex];
+  const avatarColor = getAvatarColor(repository.ownerUserId || repository.owner);
   const normalizedOwner = repository.owner.trim().toLocaleLowerCase();
   const viewerGithubHandle = typeof user?.github_handle === 'string'
     ? user.github_handle.trim().toLocaleLowerCase()
@@ -275,22 +264,33 @@ export function RepositoryScreen({
 
         <View style={[styles.repoDetails, compact && styles.repoDetailsCompact]}>
           <View style={[styles.ownerRow, compact && styles.ownerRowCompact]}>
-            <View style={[styles.avatar, compact && styles.avatarCompact]}>
-              <Svg style={StyleSheet.absoluteFill} width="100%" height="100%">
-                <Defs>
-                  <LinearGradient id="ownerGradient" x1="0" y1="0" x2="1" y2="1">
-                    <Stop offset="0" stopColor={avatarStart} />
-                    <Stop offset="1" stopColor={avatarEnd} />
-                  </LinearGradient>
-                </Defs>
-                <Rect width="100%" height="100%" fill="url(#ownerGradient)" />
-              </Svg>
+            <Pressable
+              accessibilityLabel={`View ${repository.owner}'s profile`}
+              accessibilityRole="link"
+              hitSlop={6}
+              onPress={onOwnerPress}
+              style={({ pressed }) => [
+                styles.avatar,
+                compact && styles.avatarCompact,
+                { backgroundColor: avatarColor },
+                pressed && styles.ownerPressed,
+              ]}
+            >
               <Text style={styles.avatarText}>{getInitials(repository.owner)}</Text>
-            </View>
-            <Text style={styles.ownerHandle} numberOfLines={1}>{repository.owner}</Text>
+            </Pressable>
+            <Pressable
+              accessibilityLabel={`View ${repository.owner}'s profile`}
+              accessibilityRole="link"
+              hitSlop={6}
+              onPress={onOwnerPress}
+              style={({ pressed }) => [styles.ownerHandleButton, pressed && styles.ownerPressed]}
+            >
+              <Text style={styles.ownerHandle} numberOfLines={1}>{repository.owner}</Text>
+            </Pressable>
             {!isViewerOwner ? (
               <FollowButton
                 compact={compact}
+                identityKey={repository.owner}
                 isFollowing={repository.viewerFollowsOwner === true}
                 localOnly={user?.isPreview === true}
                 neutral
@@ -488,12 +488,19 @@ const styles = StyleSheet.create({
     lineHeight: 18,
   },
   ownerHandle: {
-    flexShrink: 1,
     color: REFERENCE_THEME.text,
     fontFamily: 'NataSans-SemiBold',
     fontSize: 14.5,
     lineHeight: 19,
     letterSpacing: -0.2,
+  },
+  ownerHandleButton: {
+    flexShrink: 1,
+    minWidth: 0,
+  },
+  ownerPressed: {
+    opacity: 0.65,
+    transform: [{ scale: 0.97 }],
   },
   repoTitle: {
     color: REFERENCE_THEME.text,

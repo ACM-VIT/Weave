@@ -26,6 +26,17 @@ export type ProfileContent = {
   repositories: ProfileRepository[];
 };
 
+export type PublicUserProfile = {
+  user_id: string;
+  username: string;
+  full_name: string | null;
+  bio: string | null;
+  avatar_url: string | null;
+  followers_count: number;
+  following_count: number;
+  likes_given_count?: number;
+};
+
 export async function getProfileContent(token: string): Promise<ProfileContent> {
   const [boards, collections, repositories] = await Promise.all([
     apiV2<{ items: ProfileBoard[] }>('/boards', {}, token),
@@ -38,4 +49,16 @@ export async function getProfileContent(token: string): Promise<ProfileContent> 
     collections: collections.items,
     repositories: repositories.items,
   };
+}
+
+export function getPublicUserProfile(
+  userId: string,
+  token: string,
+  signal?: AbortSignal,
+): Promise<PublicUserProfile> {
+  return apiV2<PublicUserProfile>(
+    `/users/${encodeURIComponent(userId)}`,
+    { signal },
+    token,
+  );
 }
