@@ -1,12 +1,17 @@
 import React from 'react';
-import { Pressable, Text, View } from 'react-native';
+import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { FolderGit2 } from 'lucide-react-native';
 import Svg, { Circle, Defs, LinearGradient, Path, Stop } from 'react-native-svg';
+
+import { APP_THEME, REFERENCE_THEME } from '@/constants/theme';
 import { Repo } from '../../types';
 
 interface RepoCardProps {
   repo: Repo;
   onPress?: () => void;
   showMetrics?: boolean;
+  variant?: 'default' | 'profile';
+  compact?: boolean;
 }
 
 function StarIcon(): React.JSX.Element {
@@ -62,7 +67,76 @@ function GradientAvatar({ repo }: { repo: Repo }): React.JSX.Element {
   );
 }
 
-export default function RepoCard({ repo, onPress, showMetrics = true }: RepoCardProps): React.JSX.Element {
+export default function RepoCard({
+  repo,
+  onPress,
+  showMetrics = true,
+  variant = 'default',
+  compact = false,
+}: RepoCardProps): React.JSX.Element {
+  if (variant === 'profile') {
+    return (
+      <Pressable
+        accessibilityHint="Opens this repository"
+        accessibilityLabel={`Open ${repo.name} by ${repo.author}`}
+        accessibilityRole="link"
+        onPress={onPress}
+        style={({ pressed }) => [
+          styles.profileCard,
+          compact && styles.profileCardCompact,
+          pressed && styles.profileCardPressed,
+        ]}
+      >
+        <View style={styles.profileCardHeader}>
+          <View style={[styles.repositoryIcon, compact && styles.repositoryIconCompact]}>
+            <FolderGit2
+              color={APP_THEME.primary}
+              size={compact ? 18 : 21}
+              strokeWidth={1.8}
+            />
+          </View>
+          <View style={styles.profileCardCopy}>
+            <Text
+              numberOfLines={1}
+              style={[styles.profileCardName, compact && styles.profileCardNameCompact]}
+            >
+              {repo.name}
+            </Text>
+            {repo.description ? (
+              <Text
+                numberOfLines={compact ? 2 : 3}
+                style={[
+                  styles.profileCardDescription,
+                  compact && styles.profileCardDescriptionCompact,
+                ]}
+              >
+                {repo.description}
+              </Text>
+            ) : null}
+          </View>
+        </View>
+
+        <View style={styles.profileCardFooter}>
+          <Text numberOfLines={1} style={styles.profileCardAuthor}>
+            {repo.author}
+          </Text>
+          {showMetrics ? (
+            <View style={styles.profileCardMetrics}>
+              <View style={styles.profileCardMetric}>
+                <StarIcon />
+                <Text style={styles.profileCardMetricText}>{repo.stars}</Text>
+              </View>
+              <View style={styles.profileCardMetric}>
+                <ForkIcon />
+                <Text style={styles.profileCardMetricText}>{repo.forks}</Text>
+              </View>
+            </View>
+          ) : null}
+        </View>
+      </Pressable>
+    );
+  }
+
   return (
     <Pressable
       accessibilityHint="Opens this repository"
@@ -115,3 +189,110 @@ export default function RepoCard({ repo, onPress, showMetrics = true }: RepoCard
     </Pressable>
   );
 }
+
+const styles = StyleSheet.create({
+  profileCard: {
+    width: '100%',
+    height: 136,
+    overflow: 'hidden',
+    borderRadius: 17,
+    borderCurve: 'continuous',
+    paddingHorizontal: 14,
+    paddingVertical: 13,
+    justifyContent: 'space-between',
+    backgroundColor: REFERENCE_THEME.surface,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: REFERENCE_THEME.separator,
+  },
+  profileCardCompact: {
+    height: 122,
+    paddingHorizontal: 12,
+    paddingVertical: 11,
+  },
+  profileCardPressed: {
+    opacity: 0.76,
+    transform: [{ scale: 0.992 }],
+  },
+  profileCardHeader: {
+    minHeight: 0,
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 11,
+  },
+  repositoryIcon: {
+    width: 42,
+    height: 42,
+    flexShrink: 0,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 12,
+    borderCurve: 'continuous',
+    backgroundColor: '#29292C',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: REFERENCE_THEME.border,
+  },
+  repositoryIconCompact: {
+    width: 38,
+    height: 38,
+    borderRadius: 11,
+  },
+  profileCardCopy: {
+    minWidth: 0,
+    flex: 1,
+    paddingRight: 30,
+  },
+  profileCardName: {
+    color: REFERENCE_THEME.text,
+    fontFamily: 'NataSans-SemiBold',
+    fontSize: 15,
+    lineHeight: 20,
+    letterSpacing: -0.1,
+  },
+  profileCardNameCompact: {
+    fontSize: 13.5,
+    lineHeight: 18,
+  },
+  profileCardDescription: {
+    marginTop: 4,
+    color: REFERENCE_THEME.textSecondary,
+    fontFamily: 'NataSans-Regular',
+    fontSize: 11.5,
+    lineHeight: 16,
+  },
+  profileCardDescriptionCompact: {
+    fontSize: 10.5,
+    lineHeight: 14,
+  },
+  profileCardFooter: {
+    minHeight: 20,
+    marginTop: 7,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  profileCardAuthor: {
+    minWidth: 0,
+    flex: 1,
+    color: REFERENCE_THEME.textSecondary,
+    fontFamily: 'NataSans-Medium',
+    fontSize: 11.5,
+    lineHeight: 16,
+  },
+  profileCardMetrics: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 11,
+  },
+  profileCardMetric: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  profileCardMetricText: {
+    color: REFERENCE_THEME.textTertiary,
+    fontFamily: 'NataSans-Medium',
+    fontSize: 10.5,
+    lineHeight: 14,
+  },
+});
