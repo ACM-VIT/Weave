@@ -86,14 +86,12 @@ export const getOAuthUrl = async (
   redirectUri: string,
   codeChallenge: string,
   authIntent: 'login' | 'signup',
-  dateOfBirth?: string,
 ): Promise<string> => {
   const params = new URLSearchParams({
     redirect_uri: redirectUri,
     code_challenge: codeChallenge,
     auth_intent: authIntent,
   });
-  if (dateOfBirth) params.set('date_of_birth', dateOfBirth);
   const response = await fetch(`${API_URL}/auth/oauth/${provider}?${params}`);
   const data = await readJson(response);
   if (!response.ok) {

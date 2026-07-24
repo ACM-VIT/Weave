@@ -3,11 +3,14 @@ import { useState } from "react";
 import { ScrollView, Text, View } from "react-native";
 import { useOnboarding } from "../../store/OnboardingContext";
 import { useAuth } from "../../store/AuthContext";
+import { isValidDateOfBirth } from "../../utils/date-of-birth";
 import { isValidUsername, normalizeUsername, USERNAME_GUIDANCE } from "../../utils/username";
 
+import DateOfBirthField from "@/components/Auth/date-of-birth-field";
 import PrimaryButton from "@/components/Auth/PrimaryButton";
 import ProfileInput from "@/components/Auth/ProfileInput";
 import ProfileTextArea from "@/components/Auth/ProfileTextArea";
+import SectionLabel from "@/components/Auth/SectionLabel";
 import TermsFooter from "@/components/Auth/TermsFooter";
 
 export default function CreateProfile() {
@@ -15,18 +18,24 @@ export default function CreateProfile() {
   const { updateData } = useOnboarding();
   const { user } = useAuth();
   
+  const [fullName, setFullName] = useState(user?.full_name || "");
   const [username, setUsername] = useState(user?.username || "");
+  const [dateOfBirth, setDateOfBirth] = useState(user?.date_of_birth || "");
   const [bio, setBio] = useState("");
 
   const normalizedUsername = normalizeUsername(username);
+  const isFullNameValid = fullName.trim().length > 0;
   const isUsernameValid = isValidUsername(username);
+  const isDateOfBirthValid = isValidDateOfBirth(dateOfBirth);
+  const isProfileValid = isFullNameValid && isUsernameValid && isDateOfBirthValid;
 
   const handleCreateAccount = () => {
-    if (isUsernameValid) {
+    if (isProfileValid) {
       updateData({ 
         username: normalizedUsername,
+        full_name: fullName.trim(),
+        date_of_birth: dateOfBirth,
         bio,
-        full_name: user?.full_name || normalizedUsername,
       });
       router.push("/onboarding/step1");
     }
@@ -62,20 +71,39 @@ export default function CreateProfile() {
           </Text>
         </View>
 
-        {/* Username */}
+        {/* Profile details */}
         <View className="mt-8">
           <ProfileInput
-            title="Username"
-            placeholder="Choose a username"
-            value={username}
-            onChangeText={setUsername}
+            title="Full Name"
+            placeholder="Enter your full name"
+            value={fullName}
+            onChangeText={setFullName}
           />
+
+          <View className="mt-4">
+            <ProfileInput
+              title="Username"
+              placeholder="Choose a username"
+              value={username}
+              onChangeText={setUsername}
+            />
+          </View>
 
           {username.length > 0 && !isUsernameValid ? (
             <Text className="text-[#FF453A] text-[13px] font-nata mt-1 ml-1">
               {USERNAME_GUIDANCE}
             </Text>
           ) : null}
+
+          <View className="mt-4">
+            <SectionLabel title="Date of Birth" />
+            <DateOfBirthField value={dateOfBirth} onChange={setDateOfBirth} />
+            {dateOfBirth.length > 0 && !isDateOfBirthValid ? (
+              <Text className="text-[#FF453A] text-[13px] font-nata mt-1 ml-1">
+                Select a valid date of birth.
+              </Text>
+            ) : null}
+          </View>
         </View>
 
         {/* Bio */}
@@ -88,7 +116,7 @@ export default function CreateProfile() {
           <PrimaryButton
             label="Create Account"
             onPress={handleCreateAccount}
-            disabled={!isUsernameValid}
+            disabled={!isProfileValid}
           />
         </View>
 
