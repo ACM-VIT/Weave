@@ -24,6 +24,8 @@
     "social_profile_follows_profile_idx", "social_profile_follows_follower_idx",
     "social_profiles_provider_subject_uidx", "social_profiles_provider_handle_uidx",
     "social_profiles_claimed_user_uidx", "social_profiles_active_handle_idx",
+    "app_reactions_repo_idx", "app_saves_repo_idx", "telemetry_user_repo_engagement_repo_idx",
+    "app_repos_owner_github_id_idx",
     "app_collection_repos_repo_idx", "app_collection_repos_added_idx",
     "repo_card_summaries_one_active_uidx", "repos_full_name_key",
     "repos_github_id_key", "trending_one_active_period_uidx"

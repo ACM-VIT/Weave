@@ -32,6 +32,12 @@ export class FeedGenerationService {
       return 'coalesced';
     }
     try {
+      let socialRepoIds: string[] = [];
+      try {
+        socialRepoIds = await this.persistence.listFollowedRepositoryIds(userId, 500);
+      } catch (error) {
+        console.error('[FeedGenerationService] Failed to load followed-owner repositories:', error);
+      }
       const response = await this.recommendations.generate({
         schema_version: 2,
         generation_id: generationId,
@@ -39,6 +45,7 @@ export class FeedGenerationService {
         feed_version: Number(feedVersion),
         limit,
         exclude_repo_ids: excludeRepoIds,
+        social_repo_ids: socialRepoIds,
         context: { cold_start: false },
       });
       if (await this.persistence.getFeedVersion(userId) !== feedVersion) {

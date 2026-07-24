@@ -24,6 +24,7 @@ class FakePersistence implements FeedPersistencePort {
   fallbackCalls = 0;
   fallbackViewerId: string | undefined;
   async getFeedVersion() { return this.version; }
+  async listFollowedRepositoryIds() { return []; }
   async getServeByRequest(_userId?: string, requestId?: string) {
     if (this.missesBeforeServe > 0) { this.missesBeforeServe--; return null; }
     return this.serve?.feed_request_id === requestId ? this.serve : null;

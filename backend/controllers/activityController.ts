@@ -4,11 +4,7 @@ import * as activityService from '../services/activityService.js';
 import { FeedService } from '../services/feedService.js';
 import { sendError, sendSuccess, sendDatabaseError } from '../utils/response.js';
 import { isValidUuid } from '../utils/validators.js';
-import { mlService } from '../services/mlService.js';
 import { isFeedbackInteraction } from '../config/feedback.js';
-import crypto from 'node:crypto';
-import { getV2FeatureFlags } from '../config/features.js';
-import { processLegacyInteractionBatchV2 } from '../services/legacyInteractionV2Adapter.js';
 
 const feedService = new FeedService();
 
@@ -53,17 +49,6 @@ export async function processBatchedActivity(req: AuthRequest, res: Response): P
     }
   }
 
-  if (getV2FeatureFlags().DB_SCHEMA_V2_WRITES) {
-    try {
-      const requestKey = String(req.header('idempotency-key') ?? req.header('x-request-id') ?? crypto.randomUUID());
-      const result = await processLegacyInteractionBatchV2(userId, events, requestKey);
-      return sendSuccess(res, 202, { message: 'Batched activity processed', v2: result });
-    } catch (error) {
-      console.error('[ActivityController] Legacy-to-v2 transaction failed:', error);
-      return sendError(res, 409, error instanceof Error ? error.message : 'Interaction transaction failed');
-    }
-  }
-
   const persistEvents: activityService.BatchedActivityEvent[] = [];
   for (const event of events) {
     if (event.action === 'like' || event.action === 'dislike') {
@@ -89,13 +74,6 @@ export async function processBatchedActivity(req: AuthRequest, res: Response): P
   if (shouldInvalidateFeedForEvents(persistEvents)) {
     void feedService.invalidateUserFeed(userId);
   }
-
-  // Forward the exact transition sequence committed to the audit log.
-  const mlEvents = persistEvents.map((event) => ({
-    user_id: userId,
-    ...event,
-  }));
-  void mlService.sendBatchedActivityFeedback(mlEvents as any);
 
   return sendSuccess(res, 202, { message: 'Batched activity processed' });
 }
@@ -250,17 +228,6 @@ export async function likeRepo(req: AuthRequest, res: Response): Promise<void> {
 
   const { data } = await activityService.getActivityByUserAndRepo(userId, repoId);
   const liked = (data as { likelihood_count?: number } | null)?.likelihood_count === 1;
-  const mlEvents: any[] = [];
-  if (liked && wasDisliked) {
-    mlEvents.push({ user_id: userId, repo_id: repoId, action: 'undislike' });
-  }
-  mlEvents.push({
-    user_id: userId,
-    repo_id: repoId,
-    action: liked ? 'like' : 'unlike',
-  });
-  void mlService.sendBatchedActivityFeedback(mlEvents);
-
   return sendSuccess(res, 200, data);
 }
 
@@ -294,13 +261,6 @@ export async function saveRepo(req: AuthRequest, res: Response): Promise<void> {
   void feedService.invalidateUserFeed(userId);
 
   const { data } = await activityService.getActivityByUserAndRepo(userId, repoId);
-  const saved = (data as { is_saved?: boolean } | null)?.is_saved === true;
-  void mlService.sendBatchedActivityFeedback([{
-    user_id: userId,
-    repo_id: repoId,
-    action: saved ? 'save' : 'unsave',
-  }]);
-
   return sendSuccess(res, 200, data);
 }
 
@@ -341,17 +301,7 @@ export async function dislikeRepo(req: AuthRequest, res: Response): Promise<void
   void feedService.invalidateUserFeed(userId);
 
   // Build ML events with correct reversal ordering
-  const mlEvents: { user_id: string; repo_id: string; action: string }[] = [];
-  if (!wasDisliked && wasLiked) {
     // Switching from like → dislike: emit unlike first
-    mlEvents.push({ user_id: userId, repo_id: repoId, action: 'unlike' });
-  }
-  mlEvents.push({
-    user_id: userId,
-    repo_id: repoId,
-    action,
-  });
-  void mlService.sendBatchedActivityFeedback(mlEvents as any);
 
   // Re-fetch the updated activity row
   const { data: updatedActivity } = await activityService.getActivityByUserAndRepo(userId, repoId);

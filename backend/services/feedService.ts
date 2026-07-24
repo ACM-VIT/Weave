@@ -1,6 +1,5 @@
 import crypto from 'crypto';
 import redisClient from '../config/redis.js';
-import { mlService, type MlRecommendationBatches } from './mlService.js';
 import { db } from '../db/index.js';
 import { repos, users } from '../db/schema.js';
 import { desc, inArray, eq } from 'drizzle-orm';
@@ -115,20 +114,6 @@ export class FeedService {
       ...serializedRecommendations,
     );
     return Number(result) === 1;
-  }
-
-  private flattenRecommendationBatches(batches: MlRecommendationBatches): unknown[] {
-    return Object.keys(batches)
-      .filter((key) => key.startsWith('batch_'))
-      .sort((a, b) => {
-        const numA = parseInt(a.replace('batch_', ''), 10);
-        const numB = parseInt(b.replace('batch_', ''), 10);
-        return numA - numB;
-      })
-      .flatMap((key) => {
-        const batch = batches[key];
-        return Array.isArray(batch) ? batch : [];
-      });
   }
 
   private async enrichRecommendations(recommendations: any[]): Promise<any[]> {
@@ -283,10 +268,8 @@ export class FeedService {
     
     if (acquired === 'OK') {
       try {
-        const coldStart = await this.isColdStartUser(userId);
         const feedVersion = await this.getFeedVersion(userId);
-        const batches = await mlService.generateRecommendations(userId, coldStart);
-        const recommendations = this.flattenRecommendationBatches(batches);
+        const recommendations = await this.getDatabaseFallback(45);
         await this.appendBatch(userId, recommendations, feedVersion);
       } catch (error) {
         console.error('[FeedService] Background replenishment failed:', error);
@@ -385,10 +368,8 @@ export class FeedService {
 
       if (acquired === 'OK') {
         try {
-          const coldStart = await this.isColdStartUser(userId);
           const feedVersion = await this.getFeedVersion(userId);
-          const batches = await mlService.generateRecommendations(userId, coldStart);
-          const recommendations = this.flattenRecommendationBatches(batches);
+          const recommendations = await this.getDatabaseFallback(Math.max(limit, 5));
           const cached = await this.processAndCacheBatch(userId, recommendations, feedVersion);
 
           if (!cached) {

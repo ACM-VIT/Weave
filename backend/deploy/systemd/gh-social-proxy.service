@@ -1,0 +1,27 @@
+[Unit]
+Description=GH Social HTTPS ingress proxy
+Documentation=file:///opt/gh-social/docs/runbooks/ec2-ingress.md
+Wants=network-online.target
+Requires=docker.service
+After=network-online.target docker.service gh-social-api.service
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/gh-social/proxy.env
+ExecStartPre=/usr/bin/test -r /etc/gh-social/Caddyfile
+ExecStartPre=-/usr/bin/docker rm -f gh-social-proxy
+ExecStartPre=/usr/bin/docker volume create gh-social-caddy-data
+ExecStartPre=/usr/bin/docker volume create gh-social-caddy-config
+ExecStart=/usr/bin/docker run --rm --name gh-social-proxy --network host --env-file /etc/gh-social/proxy.env --volume /etc/gh-social/Caddyfile:/etc/caddy/Caddyfile:ro --volume gh-social-caddy-data:/data --volume gh-social-caddy-config:/config --log-opt max-size=10m --log-opt max-file=5 ${CADDY_IMAGE}
+ExecReload=/usr/bin/docker exec gh-social-proxy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile
+ExecStop=/usr/bin/docker stop --time 30 gh-social-proxy
+Restart=on-failure
+RestartSec=5
+KillSignal=SIGTERM
+TimeoutStopSec=60
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

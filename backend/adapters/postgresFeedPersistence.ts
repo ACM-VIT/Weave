@@ -59,6 +59,29 @@ export class PostgresFeedPersistence implements FeedPersistencePort {
     return BigInt(rows[0].feed_version);
   }
 
+  async listFollowedRepositoryIds(userId: string, limit: number): Promise<string[]> {
+    const normalizedLimit = Number.isFinite(limit) ? Math.trunc(limit) : 0;
+    const boundedLimit = Math.max(0, Math.min(normalizedLimit, 500));
+    if (boundedLimit === 0) return [];
+    const rows = await sqlClient`
+      SELECT DISTINCT repo.repo_id, f.created_at AS followed_at, repo.updated_at
+      FROM app.follows f
+      JOIN app.users followed ON followed.user_id = f.following_id
+      JOIN app.repos repo ON repo.owner_github_id = CASE
+        WHEN followed.github_id ~ '^[1-9][0-9]*$' THEN followed.github_id::bigint
+        ELSE NULL
+      END
+      WHERE f.follower_id = ${userId}::uuid
+        AND followed.status = 'active'
+        AND followed.github_identity_verified_at IS NOT NULL
+        AND followed.github_id IS NOT NULL
+        AND repo.status = 'active'
+      ORDER BY f.created_at DESC, repo.updated_at DESC, repo.repo_id
+      LIMIT ${boundedLimit}
+    `;
+    return rows.map((row) => String(row.repo_id));
+  }
+
   async getServeByRequest(userId: string, feedRequestId: string): Promise<StoredServe | null> {
     const serves = await sqlClient`
       SELECT * FROM telemetry.feed_serves
@@ -89,7 +112,16 @@ export class PostgresFeedPersistence implements FeedPersistencePort {
         SELECT profile.profile_id,profile.claimed_by_user_id
         FROM app.social_profiles profile
         WHERE profile.provider='github' AND profile.status='active'
-          AND lower(profile.handle)=lower(repo.owner)
+          AND (
+            (
+              repo.owner_github_id IS NOT NULL
+              AND profile.provider_subject=repo.owner_github_id::text
+            )
+            OR (
+              repo.owner_github_id IS NULL
+              AND lower(profile.handle)=lower(repo.owner)
+            )
+          )
         ORDER BY (profile.claimed_by_user_id IS NOT NULL) DESC,profile.created_at ASC
         LIMIT 1
       ) social_profile ON true
@@ -182,7 +214,16 @@ export class PostgresFeedPersistence implements FeedPersistencePort {
         SELECT profile.profile_id,profile.claimed_by_user_id
         FROM app.social_profiles profile
         WHERE profile.provider='github' AND profile.status='active'
-          AND lower(profile.handle)=lower(repo.owner)
+          AND (
+            (
+              repo.owner_github_id IS NOT NULL
+              AND profile.provider_subject=repo.owner_github_id::text
+            )
+            OR (
+              repo.owner_github_id IS NULL
+              AND lower(profile.handle)=lower(repo.owner)
+            )
+          )
         ORDER BY (profile.claimed_by_user_id IS NOT NULL) DESC,profile.created_at ASC
         LIMIT 1
       ) social_profile ON true

@@ -1,15 +1,7 @@
 import express, { type Request, type Response, type NextFunction } from 'express';
 import cors from 'cors';
 import authRoutes from './routes/authRoutes.js';
-import activityRoutes from './routes/activityRoutes.js';
-import commentRoutes from './routes/commentRoutes.js';
-import repoRoutes from './routes/repoRoutes.js';
-import userRoutes from './routes/userRoutes.js';
-import boardRoutes from './routes/boardRoutes.js';
-import containersRoutes from './routes/containersRoutes.js';
-import onboardingRoutes from './routes/onboardingRoutes.js';
 import cookieParser from 'cookie-parser';
-import feedRoutes from './routes/feedRoutes.js';
 import feedV2Routes from './routes/feedV2Routes.js';
 import activityV2Routes from './routes/activityV2Routes.js';
 import ingestionRoutes from './routes/ingestionRoutes.js';
@@ -67,19 +59,7 @@ app.get('/readyz', readiness);
 // Auth API routes 
 app.use('/api/auth', authRateLimit, authRoutes);
 
-// Activity API routes.
-if (process.env.LEGACY_API_ENABLED === 'true') {
-  app.use('/api/activity', activityRoutes);
-  app.use('/api/comment', commentRoutes);
-  app.use('/api/repos', repoRoutes);
-  app.use('/api/users', userRoutes);
-  app.use('/api/boards', boardRoutes);
-  app.use('/api/containers', containersRoutes);
-  app.use('/api/onboarding', onboardingRoutes);
-  app.use('/api', feedRoutes);
-}
-
-// Contract-v2 routes are deployed dark and are controlled by rollout flags.
+// GitSocial product and ML-facing routes use the V2 contract exclusively.
 app.use('/api/v2', feedV2Routes);
 app.use('/api/v2', activityV2Routes);
 app.use('/api/v2', productV2Routes);

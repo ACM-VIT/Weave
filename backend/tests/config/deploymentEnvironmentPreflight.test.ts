@@ -20,6 +20,15 @@ const productionEnvironment = {
   GITHUB_TOKEN: 'github-token',
   ML_SERVICE_URL: 'https://ml.example.com',
   INTERNAL_API_SECRET: 'internal-secret',
+  DB_SCHEMA_V2_READS: 'true',
+  DB_SCHEMA_V2_WRITES: 'true',
+  FEED_V2: 'true',
+  FEED_RESERVATIONS: 'true',
+  FEED_V2_CANARY_PERCENT: '100',
+  ML_V2_RECOMMENDATIONS: 'true',
+  ML_FEEDBACK_OUTBOX: 'true',
+  ML_QDRANT_ONLY: 'true',
+  TRENDING_FALLBACK: 'false',
   WORKER_ROLE: '',
 } as const;
 
@@ -68,5 +77,29 @@ test('deployment preflight continues to reject unsafe one-time migration flags',
   assert.throws(
     () => validateDeploymentEnvironment({ ...productionEnvironment, ADOPT_LEGACY_SCHEMA: '1' }),
     /forbidden/i,
+  );
+});
+
+test('deployment preflight requires the complete V2 path and disables non-ML fallback', () => {
+  assert.throws(
+    () => validateDeploymentEnvironment({
+      ...productionEnvironment,
+      ML_V2_RECOMMENDATIONS: 'false',
+    }),
+    /Strict V2 deployment/i,
+  );
+  assert.throws(
+    () => validateDeploymentEnvironment({
+      ...productionEnvironment,
+      FEED_V2_CANARY_PERCENT: '99',
+    }),
+    /FEED_V2_CANARY_PERCENT=100/i,
+  );
+  assert.throws(
+    () => validateDeploymentEnvironment({
+      ...productionEnvironment,
+      TRENDING_FALLBACK: 'true',
+    }),
+    /TRENDING_FALLBACK=false/i,
   );
 });

@@ -51,16 +51,31 @@ export class PostgresRepositoryPersistence implements RepositoryPersistencePort 
           WHERE repo.github_id=${repo.github_id}::bigint FOR UPDATE OF repo
         `;
         const rows = await tx`
-          INSERT INTO app.repos (github_id,github_node_id,full_name,owner,name,url)
-          VALUES (${repo.github_id}::bigint,${repo.github_node_id ?? null},${repo.full_name},${repo.owner},${repo.name},${repo.url})
+          INSERT INTO app.repos (github_id,github_node_id,owner_github_id,full_name,owner,name,url)
+          VALUES (${repo.github_id}::bigint,${repo.github_node_id ?? null},${repo.owner_github_id}::bigint,${repo.full_name},${repo.owner},${repo.name},${repo.url})
           ON CONFLICT (github_id) DO UPDATE SET github_node_id=EXCLUDED.github_node_id,
-            full_name=EXCLUDED.full_name,owner=EXCLUDED.owner,name=EXCLUDED.name,url=EXCLUDED.url,updated_at=now()
+            owner_github_id=EXCLUDED.owner_github_id,full_name=EXCLUDED.full_name,owner=EXCLUDED.owner,
+            name=EXCLUDED.name,url=EXCLUDED.url,updated_at=now()
           RETURNING repo_id
         `;
         const repoId = String(rows[0].repo_id);
         await tx`
-          INSERT INTO app.social_profiles(provider,handle,profile_kind)
-          VALUES ('github',${repo.owner},'unknown')
+          UPDATE app.social_profiles profile
+          SET provider_subject=${repo.owner_github_id},updated_at=now()
+          WHERE profile.provider='github'
+            AND profile.provider_subject IS NULL
+            AND profile.claimed_by_user_id IS NULL
+            AND lower(profile.handle)=lower(${repo.owner})
+            AND NOT EXISTS (
+              SELECT 1
+              FROM app.social_profiles identified
+              WHERE identified.provider='github'
+                AND identified.provider_subject=${repo.owner_github_id}
+            )
+        `;
+        await tx`
+          INSERT INTO app.social_profiles(provider,provider_subject,handle,profile_kind)
+          VALUES ('github',${repo.owner_github_id},${repo.owner},'unknown')
           ON CONFLICT DO NOTHING
         `;
         const changed = previous.length === 0 || previous[0].content_hash !== hash;

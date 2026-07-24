@@ -31,6 +31,7 @@ export async function replayOutbox(req: Request, res: Response): Promise<void> {
 export async function supersedeOutbox(req: Request, res: Response): Promise<void> {
   const outboxId = String(req.params.outboxId ?? '');
   if (!isValidUuid(outboxId)) { res.status(400).json({ error: 'outboxId must be a UUID.' }); return; }
-  const superseded = await outbox.supersedeObsoleteOnboarding(outboxId);
+  const superseded = await outbox.supersedeObsoleteOnboarding(outboxId)
+    || await outbox.supersedeRepositoryJobDeliveredBySuccessor(outboxId);
   res.status(superseded ? 202 : 409).json({ outbox_id: outboxId, superseded });
 }
