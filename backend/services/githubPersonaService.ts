@@ -211,9 +211,6 @@ export function planGitHubPersonaUpdate(
     || !sameStrings(update.interests, currentInterests)
     || !sameStrings(update.skills, currentSkills)
     || !sameStrings(update.techStack, currentTechStack)
-    // GitHub signup is not complete until the inferred persona has been
-    // persisted. This also covers accounts with no public repositories.
-    || !existing.onboardingCompleted
     || topicSlugsToInsert.length > 0;
   return {
     update,
@@ -274,7 +271,7 @@ class PostgresGitHubPersonaTransactionStore implements GitHubPersonaTransactionS
         interests=${JSON.stringify(update.interests)}::jsonb,
         skills=${JSON.stringify(update.skills)}::jsonb,
         tech_stack=${JSON.stringify(update.techStack)}::jsonb,
-        onboarding_completed=true,profile_version=profile_version+1,updated_at=now()
+        profile_version=profile_version+1,updated_at=now()
       WHERE user_id=${userId}::uuid RETURNING profile_version
     `;
     if (!rows[0]) throw Object.assign(new Error('User profile not found.'), { statusCode: 404 });

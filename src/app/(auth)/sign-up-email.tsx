@@ -60,9 +60,9 @@ export default function SignUpEmail() {
     && !isLoading;
 
   const getValidationMessage = () => {
-    if (!isDateOfBirthValid) return 'Select your date of birth above.';
     if (!fullName.trim()) return 'Enter your name.';
     if (!isUsernameValid) return USERNAME_GUIDANCE;
+    if (!isDateOfBirthValid) return 'Select your date of birth.';
     if (!isEmailValid) return 'Enter a valid email address.';
     if (!isPasswordValid) return 'Your password must satisfy all three rules.';
     return '';
@@ -72,9 +72,6 @@ export default function SignUpEmail() {
     if (!isFormValid) {
       const validationMessage = getValidationMessage();
       setErrorMsg(validationMessage);
-      if (!isDateOfBirthValid) {
-        scrollViewRef.current?.scrollTo({ y: 0, animated: true });
-      }
       return;
     }
     setIsLoading(true);
@@ -91,12 +88,7 @@ export default function SignUpEmail() {
   };
 
   const handleOAuth = (provider: 'github' | 'google') => {
-    if (!isDateOfBirthValid) {
-      setErrorMsg('Select your date of birth before continuing.');
-      scrollViewRef.current?.scrollTo({ y: 0, animated: true });
-      return;
-    }
-    void signInWithProvider(provider, 'signup', dateOfBirth);
+    void signInWithProvider(provider, 'signup');
   };
 
   return (
@@ -129,18 +121,6 @@ export default function SignUpEmail() {
               Join repositories and connect{"\n"}
               with developers around the world.
             </Text>
-          </View>
-
-          <View className="mt-8">
-            <SectionLabel title="Date of Birth" />
-            <DateOfBirthField value={dateOfBirth} onChange={setDateOfBirth} />
-            {!isDateOfBirthValid ? (
-              <Text className="text-[#FF453A] text-[13px] font-nata mt-1 ml-1">
-                {dateOfBirth.length > 0
-                  ? 'Select a valid date of birth.'
-                  : 'Required to create an account or continue with a provider.'}
-              </Text>
-            ) : null}
           </View>
 
           <View className="mt-10 gap-y-5">
@@ -200,6 +180,14 @@ export default function SignUpEmail() {
             {username.length > 0 && !isUsernameValid ? (
               <Text className="text-[#FF453A] text-[13px] font-nata mt-1 ml-1">
                 {USERNAME_GUIDANCE}
+              </Text>
+            ) : null}
+
+            <SectionLabel title="Date of Birth" />
+            <DateOfBirthField value={dateOfBirth} onChange={setDateOfBirth} />
+            {dateOfBirth.length > 0 && !isDateOfBirthValid ? (
+              <Text className="text-[#FF453A] text-[13px] font-nata mt-1 ml-1">
+                Select a valid date of birth.
               </Text>
             ) : null}
 

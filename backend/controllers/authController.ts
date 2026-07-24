@@ -493,8 +493,8 @@ export async function getOAuthUrl(req: Request, res: Response): Promise<void> {
       return sendError(res, 400, "auth_intent must be login or signup.");
     }
     const dateOfBirth = authIntent === "signup" ? queryString(req.query.date_of_birth) : null;
-    if (authIntent === "signup" && !isValidDateOfBirth(dateOfBirth)) {
-      return sendError(res, 400, "Date of birth is required for signup.");
+    if (dateOfBirth !== null && !isValidDateOfBirth(dateOfBirth)) {
+      return sendError(res, 400, "Date of birth must be a valid date.");
     }
     const callbackUrl = getBackendCallbackUrl(req);
     const authorization = await oauthPkce.begin(
@@ -580,8 +580,8 @@ export async function handleOAuthCallback(
       .where(eq(users.userId, data.user.id))
       .limit(1);
     // OAuth providers can create an identity even from a button labelled
-    // "Log in". Do not silently create a product account without the signup
-    // DOB/consent step; ask the user to use the actual signup entry point.
+    // "Log in". Do not silently create a product account without an explicit
+    // signup intent; ask the user to use the actual signup entry point.
     if (oauthLoginNeedsSignup(attempt.authIntent, Boolean(existingProductProfile))) {
       return res.redirect(withClientRedirectParams(clientRedirect, {
         error: "oauth_account_not_found",
@@ -605,9 +605,8 @@ export async function handleOAuthCallback(
       githubHandle: githubIdentity.githubHandle,
       githubIdentityVerified: Boolean(githubIdentity.githubId && githubIdentity.githubHandle),
       avatarUrl: typeof data.user.user_metadata?.avatar_url === "string" ? data.user.user_metadata.avatar_url : null,
-      // Existing accounts retain their durable completion state. A new GitHub
-      // account is completed only by syncGitHubPersona below; Google/email
-      // signups finish the explicit onboarding flow.
+      // Existing accounts retain their durable completion state. New OAuth
+      // signups finish only through the explicit onboarding flow.
       onboardingCompleted: initialOAuthOnboardingCompleted(
         attempt.authIntent,
         existingProductProfile?.onboardingCompleted,
