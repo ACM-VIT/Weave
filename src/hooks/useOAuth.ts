@@ -18,7 +18,6 @@ export function useOAuth() {
   const signInWithProvider = async (
     provider: 'github' | 'google',
     authIntent: 'login' | 'signup' = 'login',
-    dateOfBirth?: string,
   ) => {
     setIsLoading(true);
     setError(null);
@@ -36,7 +35,6 @@ export function useOAuth() {
         redirectUri,
         clientPkce.challenge,
         authIntent,
-        dateOfBirth,
       );
       
       // 3. Open the in-app browser — it will intercept the redirect automatically

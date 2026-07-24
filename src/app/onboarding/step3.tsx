@@ -40,6 +40,7 @@ export default function Step3() {
           ...onboardingData,
           username: onboardingData.username || "",
           full_name: onboardingData.full_name || "",
+          date_of_birth: onboardingData.date_of_birth || "",
           interests: selectedInterests,
           skills: selectedCategoryIds,
         });

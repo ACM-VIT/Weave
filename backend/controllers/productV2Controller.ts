@@ -5,6 +5,7 @@ import { processInteractionBatchV2InTransaction } from '../services/activityV2Se
 import { buildMlOnboardingJob, hasMlEmbeddingContext } from '../services/mlOnboardingService.js';
 import { setRepositorySaved } from '../services/savedRepositoryService.js';
 import { isInteractionEventV2 } from '../utils/interactionValidation.js';
+import { isValidDateOfBirth } from '../utils/dateOfBirth.js';
 import { normalizeUsername } from '../utils/username.js';
 import { isValidUuid } from '../utils/validators.js';
 import { sendControllerError, sendError, sendSuccess } from '../utils/response.js';
@@ -96,14 +97,18 @@ export async function getUser(req: AuthRequest, res: Response): Promise<void> {
 
 export async function updateMe(req: AuthRequest, res: Response): Promise<void> {
   const id = userId(req, res); if (!id) return;
-  const allowed = ['username', 'full_name', 'bio', 'avatar_url'];
+  const allowed = ['username', 'full_name', 'date_of_birth', 'bio', 'avatar_url'];
   if (!req.body || Object.keys(req.body).some((key) => !allowed.includes(key))) return sendError(res, 400, 'Unsupported profile field.');
   const usernameValue = req.body.username === undefined ? undefined : normalizeUsername(req.body.username) ?? undefined;
   const fullName = req.body.full_name === undefined ? undefined : text(req.body.full_name, 100);
+  const dateOfBirth = req.body.date_of_birth === undefined ? undefined : req.body.date_of_birth;
   const bio = req.body.bio === undefined ? undefined : text(req.body.bio, 2_000);
   const avatarUrl = req.body.avatar_url === undefined ? undefined : text(req.body.avatar_url, 2_048);
-  if ([usernameValue, fullName, bio, avatarUrl]
-    .some((v, i) => Object.hasOwn(req.body, allowed[i]) && v === undefined)) {
+  if ((req.body.username !== undefined && usernameValue === undefined)
+    || (req.body.full_name !== undefined && fullName === undefined)
+    || (req.body.date_of_birth !== undefined && !isValidDateOfBirth(dateOfBirth))
+    || (req.body.bio !== undefined && bio === undefined)
+    || (req.body.avatar_url !== undefined && avatarUrl === undefined)) {
     return sendError(res, 400, 'Invalid profile value.');
   }
   try {
@@ -111,11 +116,12 @@ export async function updateMe(req: AuthRequest, res: Response): Promise<void> {
       const rows = await tx`
         UPDATE app.users SET username=COALESCE(${usernameValue ?? null},username),
           full_name=CASE WHEN ${req.body.full_name !== undefined} THEN ${fullName ?? null} ELSE full_name END,
+          date_of_birth=CASE WHEN ${req.body.date_of_birth !== undefined} THEN ${dateOfBirth ?? null}::date ELSE date_of_birth END,
           bio=CASE WHEN ${req.body.bio !== undefined} THEN ${bio ?? null} ELSE bio END,
           avatar_url=CASE WHEN ${req.body.avatar_url !== undefined} THEN ${avatarUrl ?? null} ELSE avatar_url END,
           profile_version=profile_version+1,updated_at=now()
         WHERE user_id=${id}::uuid
-        RETURNING user_id,username,full_name,bio,github_handle,avatar_url,interests,skills,tech_stack,
+        RETURNING user_id,username,full_name,date_of_birth,bio,github_handle,avatar_url,interests,skills,tech_stack,
           profile_version,updated_at`;
       if (!rows[0]) throw Object.assign(new Error('User profile not found.'), { statusCode: 404 });
       const job = buildMlOnboardingJob(id, Number(rows[0].profile_version), {
@@ -173,6 +179,19 @@ export async function completeOnboarding(req: AuthRequest, res: Response): Promi
   if (uniqueTopics.length > 100) return sendError(res, 400, 'The combined onboarding profile may contain at most 100 unique slugs.');
   try {
     const result = await sqlClient.begin(async (tx) => {
+      const profiles = await tx`
+        SELECT username,full_name,date_of_birth
+        FROM app.users
+        WHERE user_id=${id}::uuid
+        FOR UPDATE
+      `;
+      if (!profiles[0]) throw Object.assign(new Error('User profile not found.'), { statusCode: 404 });
+      if (!profiles[0].username || !profiles[0].full_name || !profiles[0].date_of_birth) {
+        throw Object.assign(
+          new Error('Complete your full name, username, and date of birth before finishing onboarding.'),
+          { statusCode: 400 },
+        );
+      }
       const updated = await tx`UPDATE app.users SET bio=COALESCE(${bio},bio),
         interests=${JSON.stringify(interests)}::jsonb,skills=${JSON.stringify(skills)}::jsonb,
         tech_stack=${JSON.stringify(techStack)}::jsonb,onboarding_completed=true,

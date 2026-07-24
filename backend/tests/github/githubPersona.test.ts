@@ -116,7 +116,6 @@ class MemoryPersonaStore implements GitHubPersonaTransactionStore {
       interests: [...update.interests],
       skills: [...update.skills],
       techStack: [...update.techStack],
-      onboardingCompleted: true,
       profileVersion: this.profile.profileVersion + 1n,
     };
     return this.profile.profileVersion;
@@ -213,7 +212,7 @@ test('update planning preserves every nonempty manual array and leaves existing 
   assert.equal(plan.nextProfileVersion, 7n);
 });
 
-test('an incomplete GitHub profile is completed even when GitHub has no public persona fields', async () => {
+test('GitHub persona sync never completes explicit onboarding', async () => {
   const existing = emptyStoredProfile();
   existing.fullName = 'The Octocat';
   existing.bio = 'Builds developer tools';
@@ -228,10 +227,10 @@ test('an incomplete GitHub profile is completed even when GitHub has no public p
     tech_stack: [],
   });
 
-  assert.equal(result.changed, true);
-  assert.equal(result.profileVersion, '2');
-  assert.equal(store.profile.onboardingCompleted, true);
-  assert.equal(store.updateCalls, 1);
+  assert.equal(result.changed, false);
+  assert.equal(result.profileVersion, '1');
+  assert.equal(store.profile.onboardingCompleted, false);
+  assert.equal(store.updateCalls, 0);
 });
 
 test('GitHub persona REST fetch uses one timeout signal, caps owned public repos, and rejects failures', async () => {
