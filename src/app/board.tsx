@@ -15,7 +15,11 @@ import { ArrowLeft, CircleAlert, FolderOpen, Pin } from 'lucide-react-native';
 import { router, useLocalSearchParams } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { getBoardRepositories, type BoardRepositoryRecord } from '@/api/boards';
+import {
+  getBoardRepositories,
+  getCollectionRepositories,
+  type BoardRepositoryRecord,
+} from '@/api/boards';
 import RepoCard from '@/components/explore/RepoCard';
 import { REFERENCE_THEME } from '@/constants/theme';
 import { loadPinnedRepositories, type PinnedRepository } from '@/services/pinnedRepositoryStorage';
@@ -27,6 +31,7 @@ type BoardRouteParams = {
   boardId?: string | string[];
   boardName?: string | string[];
   boardDescription?: string | string[];
+  collectionId?: string | string[];
   collectionType?: string | string[];
 };
 
@@ -77,7 +82,10 @@ export default function BoardScreen() {
   const { user } = useAuth();
   const params = useLocalSearchParams<BoardRouteParams>();
   const boardId = firstParam(params.boardId);
-  const isPinnedCollection = firstParam(params.collectionType) === 'pinned';
+  const collectionId = firstParam(params.collectionId);
+  const collectionType = firstParam(params.collectionType);
+  const isPinnedCollection = collectionType === 'pinned';
+  const isRepositoryCollection = collectionType === 'collection';
   const boardName = firstParam(params.boardName) || 'List';
   const boardDescription = firstParam(params.boardDescription);
   const isCompact = width < 360;
@@ -86,8 +94,14 @@ export default function BoardScreen() {
   const repositoriesQuery = useQuery({
     queryKey: isPinnedCollection
       ? ['pinned-repositories', user?.user_id]
-      : ['board-repositories', boardId],
-    enabled: isPinnedCollection ? Boolean(user?.user_id) : Boolean(boardId),
+      : isRepositoryCollection
+        ? ['collection-repositories', collectionId]
+        : ['board-repositories', boardId],
+    enabled: isPinnedCollection
+      ? Boolean(user?.user_id)
+      : isRepositoryCollection
+        ? Boolean(collectionId)
+        : Boolean(boardId),
     staleTime: 30_000,
     queryFn: async ({ signal }) => {
       if (isPinnedCollection) {
@@ -96,7 +110,9 @@ export default function BoardScreen() {
       }
       const token = await getStorageItem('access_token');
       if (!token) throw new Error('Your session has expired. Please log in again.');
-      const repositories = await getBoardRepositories(boardId, token, signal);
+      const repositories = isRepositoryCollection
+        ? await getCollectionRepositories(collectionId, token, signal)
+        : await getBoardRepositories(boardId, token, signal);
       return repositories.map(toRepositoryCard);
     },
   });
@@ -183,7 +199,7 @@ export default function BoardScreen() {
           keyExtractor={(repository) => repository.id}
           ListEmptyComponent={
             <View style={styles.state}>
-              {!boardId && !isPinnedCollection ? (
+              {!boardId && !isPinnedCollection && !collectionId ? (
                 <>
                   <View style={styles.stateIcon}>
                     <CircleAlert color="#FF6878" size={31} strokeWidth={1.7} />

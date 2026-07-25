@@ -29,6 +29,7 @@ router.delete('/comments/:commentId', product.deleteComment);
 router.get('/collections', product.listCollections);
 router.post('/collections', product.createCollection);
 router.post('/collections/save', product.saveRepositoryCollections);
+router.get('/collections/:collectionId/repositories', product.listCollectionRepos);
 router.put('/collections/:collectionId', product.updateCollection);
 router.delete('/collections/:collectionId', product.deleteCollection);
 router.get('/boards', product.listBoards);

@@ -647,6 +647,24 @@ export async function deleteCollection(req: AuthRequest, res: Response): Promise
   if (!rows[0]) return sendError(res, 404, 'Collection not found.'); res.status(204).end();
 }
 
+export async function listCollectionRepos(req: AuthRequest, res: Response): Promise<void> {
+  const id = userId(req, res); const collection = idParam(req, res, 'collectionId'); if (!id || !collection) return;
+  const owned = await sqlClient`
+    SELECT 1 FROM app.board_collections
+    WHERE collection_id=${collection}::uuid AND user_id=${id}::uuid
+  `;
+  if (!owned.length) return sendError(res, 404, 'Collection not found.');
+  const rows = await sqlClient`
+    SELECT cr.added_at,r.repo_id,r.full_name,r.owner,r.name,r.url,c.description,c.primary_language
+    FROM app.collection_repos cr
+    JOIN app.repos r USING(repo_id)
+    JOIN app.repo_content c USING(repo_id)
+    WHERE cr.collection_id=${collection}::uuid
+    ORDER BY cr.added_at DESC
+  `;
+  sendSuccess(res, 200, { items: rows });
+}
+
 export async function createBoard(req: AuthRequest, res: Response): Promise<void> {
   const id = userId(req, res); if (!id) return; const name = text(req.body?.name, 100, true); const description = text(req.body?.description ?? null, 1_000);
   const visibility = req.body?.visibility ?? 'private'; const collection = req.body?.collection_id ?? null;

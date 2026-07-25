@@ -128,9 +128,11 @@ export function SavePopup({
   const insets = useSafeAreaInsets();
   const { checkOnboardingStatus } = useAuth();
   const queryClient = useQueryClient();
+  const [modalHeight] = useState(height);
   const [translateY] = useState(() => new Animated.Value(height));
   const [overlayOpacity] = useState(() => new Animated.Value(0));
   const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const createInputRef = useRef<TextInput>(null);
   const [search, setSearch] = useState('');
   const [localSelectedIds, setLocalSelectedIds] = useState<Set<string>>(new Set());
   const [hasLocalChanges, setHasLocalChanges] = useState(false);
@@ -169,7 +171,7 @@ export function SavePopup({
     );
   }, [collections, search]);
   const sheetWidth = Math.min(Math.max(width - SHEET_HORIZONTAL_MARGIN, 0), SHEET_MAX_WIDTH);
-  const sheetHeight = Math.min(460, height * 0.82);
+  const sheetHeight = Math.min(460, modalHeight * 0.82);
   const collectionGridWidth = Math.max(
     sheetWidth - (SHEET_BORDER_WIDTH * 2) - (COLLECTION_LIST_HORIZONTAL_PADDING * 2),
     0,
@@ -191,7 +193,7 @@ export function SavePopup({
   const closeAnimated = useCallback(() => {
     Animated.parallel([
       Animated.timing(translateY, {
-        toValue: height,
+        toValue: modalHeight,
         duration: 210,
         easing: Easing.in(Easing.cubic),
         useNativeDriver: true,
@@ -211,11 +213,11 @@ export function SavePopup({
       setHasLocalChanges(false);
       onClose();
     });
-  }, [height, onClose, overlayOpacity, translateY]);
+  }, [modalHeight, onClose, overlayOpacity, translateY]);
 
   useEffect(() => {
     if (!isVisible) return;
-    translateY.setValue(height);
+    translateY.setValue(modalHeight);
     overlayOpacity.setValue(0);
     Animated.parallel([
       Animated.timing(translateY, {
@@ -230,11 +232,20 @@ export function SavePopup({
         useNativeDriver: true,
       }),
     ]).start();
-  }, [height, isVisible, overlayOpacity, translateY]);
+  }, [isVisible, modalHeight, overlayOpacity, translateY]);
 
   useEffect(() => () => {
     if (closeTimer.current) clearTimeout(closeTimer.current);
   }, []);
+
+  useEffect(() => {
+    if (!isCreating) {
+      createInputRef.current?.blur();
+      return;
+    }
+    const focusTimer = setTimeout(() => createInputRef.current?.focus(), 180);
+    return () => clearTimeout(focusTimer);
+  }, [isCreating]);
 
   const createMutation = useMutation({
     mutationFn: async () => {
@@ -338,7 +349,8 @@ export function SavePopup({
         </Pressable>
 
         <KeyboardAvoidingView
-          behavior={process.env.EXPO_OS === 'ios' ? 'padding' : 'height'}
+          behavior="padding"
+          enabled={process.env.EXPO_OS === 'ios'}
           pointerEvents="box-none"
           style={styles.keyboardLayer}
         >
@@ -530,8 +542,8 @@ export function SavePopup({
                   </View>
                   <TextInput
                     accessibilityLabel="Collection name"
-                    autoFocus
                     editable={!createMutation.isPending}
+                    ref={createInputRef}
                     maxLength={100}
                     onChangeText={(value) => { setNewCollectionName(value); if (message) setMessage(null); }}
                     onSubmitEditing={() => { if (newCollectionName.trim() && !createMutation.isPending) createMutation.mutate(); }}

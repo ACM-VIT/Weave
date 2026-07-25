@@ -73,6 +73,12 @@ export default function ProfileScreen() {
     ),
     [profileContentQuery.data?.boards],
   )
+  const displayedCollections = useMemo(
+    () => [...(profileContentQuery.data?.collections ?? [])].sort((first, second) =>
+      first.name.localeCompare(second.name, undefined, { sensitivity: "base" })
+    ),
+    [profileContentQuery.data?.collections],
+  )
 
   const openEditor = () => {
     setDraft({ name, job, username })
@@ -217,7 +223,20 @@ export default function ProfileScreen() {
         }))}
         repositoryCount={item.repo_count}
       />)}
-      {!contentErrors.boards && displayedBoards.length === 0 ? <View className="items-center justify-center py-9 px-6 gap-4">
+      {contentErrors.collections ? sectionError("Unable to load your collections.") : displayedCollections.map((item) => <BoardListCard
+        key={item.collection_id}
+        compact={isCompact}
+        description={item.description}
+        name={item.name}
+        onPress={() => router.push(boardHref({
+          collectionId: item.collection_id,
+          collectionType: "collection",
+          boardName: item.name,
+          ...(item.description ? { boardDescription: item.description } : {}),
+        }))}
+        repositoryCount={item.repo_count}
+      />)}
+      {!contentErrors.boards && !contentErrors.collections && displayedBoards.length === 0 && displayedCollections.length === 0 ? <View className="items-center justify-center py-9 px-6 gap-4">
         <View className="w-[68px] h-[68px] rounded-[22px] bg-[#151515] border border-[#252525] items-center justify-center" style={{ borderCurve: "continuous" }}>
           <FolderPlus size={29} color="#63E08A" strokeWidth={1.7} />
         </View>

@@ -412,6 +412,16 @@ integration('registered v2 HTTP paths complete controlled integration flows', as
     assert.equal(collectionItems.data.items[0].collection_id, collectionId);
     assert.equal(collectionItems.data.items[0].repo_count, 1);
     assert.equal(collectionItems.data.items[0].selected, true);
+    const collectionRepos = await fetch(
+      `${base}/api/v2/collections/${collectionId}/repositories`,
+      { headers: authHeaders },
+    );
+    assert.equal(collectionRepos.status, 200);
+    const collectionRepoItems = (await collectionRepos.json()) as {
+      data: { items: Array<{ repo_id: string; full_name: string }> };
+    };
+    assert.equal(collectionRepoItems.data.items[0].repo_id, repoId);
+    assert.equal(collectionRepoItems.data.items[0].full_name, 'owner/http-repo');
     const board = await fetch(`${base}/api/v2/boards`, {
       method: 'POST', headers: authHeaders,
       body: JSON.stringify({ name: 'Read later', visibility: 'private', collection_id: collectionId }),

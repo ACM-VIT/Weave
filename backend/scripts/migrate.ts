@@ -9,6 +9,7 @@ import postgres from 'postgres';
 import {
   LEGACY_BASELINE_TAGS,
   RETROACTIVE_LEGACY_TAGS,
+  RETROACTIVE_V2_TAGS,
   STRUCTURALLY_ADOPTABLE_V2_TAGS,
 } from './migrationPlan.js';
 
@@ -147,6 +148,26 @@ async function applyRetroactiveLegacyMigrations(): Promise<void> {
   }
 }
 
+async function applyRetroactiveV2Migrations(): Promise<void> {
+  if (!await relationExists('app', 'users')) return;
+  await ensureMigrationHistoryTable();
+  const recordedHashes = await recordedMigrationHashes();
+  for (const entry of migrationEntries(RETROACTIVE_V2_TAGS)) {
+    if (recordedHashes.has(entry.hash)) continue;
+    await client.begin(async (tx) => {
+      for (const statement of entry.sql.split('--> statement-breakpoint')) {
+        if (statement.trim()) await tx.unsafe(statement).simple();
+      }
+      await tx`
+        INSERT INTO drizzle.__drizzle_migrations (hash, created_at)
+        VALUES (${entry.hash}, ${entry.when})
+      `;
+    });
+    recordedHashes.add(entry.hash);
+    console.log(`Applied retroactive V2 migration ${entry.tag}.`);
+  }
+}
+
 async function adoptStructurallyVerifiedV2History(): Promise<void> {
   if (!await relationExists('app', 'users')) return;
 
@@ -215,6 +236,7 @@ try {
   await adoptLegacyHistory();
   await applyRetroactiveLegacyMigrations();
   await adoptStructurallyVerifiedV2History();
+  await applyRetroactiveV2Migrations();
   await migrate(drizzle(client), {
     migrationsFolder,
     migrationsSchema: 'drizzle',

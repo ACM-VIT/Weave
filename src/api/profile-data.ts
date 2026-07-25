@@ -8,6 +8,8 @@ export type ProfileCollection = {
   collection_id: string;
   name: string;
   board_count: number;
+  repo_count: number;
+  description?: string | null;
 };
 
 export type ProfileRepository = {
