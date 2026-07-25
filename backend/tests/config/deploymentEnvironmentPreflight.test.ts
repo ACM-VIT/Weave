@@ -16,7 +16,7 @@ const productionEnvironment = {
   CLIENT_URL: 'ghsocial://callback',
   BACKEND_URL: 'https://weave-backend.example.com',
   OAUTH_REDIRECT_ORIGINS: 'ghsocial://callback,https://weave.example.com',
-  REDIS_URL: 'rediss://redis.example.com:6380',
+  REDIS_URL: 'redis://backend-runtime:strong-test-password@redis.internal:6379/0',
   GITHUB_TOKEN: 'github-token',
   ML_SERVICE_URL: 'https://ml.example.com',
   INTERNAL_API_SECRET: 'internal-secret',
@@ -34,7 +34,21 @@ const productionEnvironment = {
 
 test('deployment preflight accepts the exact mobile callback and public HTTPS targets', () => {
   assert.doesNotThrow(() => validateDeploymentEnvironment(productionEnvironment));
+  assert.doesNotThrow(() => validateDeploymentEnvironment({
+    ...productionEnvironment,
+    REDIS_URL: 'rediss://backend-runtime:strong-test-password@redis.example.com:6380/0',
+  }));
   assert.equal(isPrivateDeploymentHostname('2606:4700:4700::1111'), false);
+});
+
+test('deployment preflight requires authenticated Redis for either transport', () => {
+  assert.throws(
+    () => validateDeploymentEnvironment({
+      ...productionEnvironment,
+      REDIS_URL: 'redis://redis.internal:6379/0',
+    }),
+    /ACL username and password/i,
+  );
 });
 
 test('deployment preflight rejects local and private backend callback origins', () => {

@@ -1,6 +1,7 @@
 import { isIP } from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { resolveRedisUrl } from '../config/runtimeConfig.js';
 
 const requiredVariables = [
   'DATABASE_URL',
@@ -96,6 +97,7 @@ export function validateDeploymentEnvironment(env: DeploymentEnvironment = proce
   if (missing.length > 0) {
     throw new Error(`Missing required production variables: ${missing.join(', ')}.`);
   }
+  resolveRedisUrl(value(env, 'REDIS_URL'), env.NODE_ENV);
 
   const forbiddenFlags = [
     'ADOPT_LEGACY_SCHEMA',
