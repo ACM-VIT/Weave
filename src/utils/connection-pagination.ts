@@ -3,7 +3,13 @@ export const FOLLOWING_LOOKUP_PAGE_SIZE = 100;
 export const CONNECTION_MAX_OFFSET = 10_000;
 
 export type ConnectionIdentity = {
-  user_id: string;
+  user_id?: string | null;
+  profile_id?: string | null;
+};
+
+export type ConnectionFollowState = ConnectionIdentity & {
+  viewer_follows_user?: boolean;
+  viewer_follows_profile?: boolean;
 };
 
 export type ConnectionPage<T extends ConnectionIdentity = ConnectionIdentity> = {
@@ -11,6 +17,29 @@ export type ConnectionPage<T extends ConnectionIdentity = ConnectionIdentity> = 
   limit: number;
   offset: number;
 };
+
+export function connectionIdentity(item: ConnectionIdentity): string | null {
+  if (item.profile_id) return `profile:${item.profile_id}`;
+  if (item.user_id) return `user:${item.user_id}`;
+  return null;
+}
+
+export function connectionFollowState(
+  item: ConnectionFollowState,
+  isViewerFollowingList: boolean,
+  override?: boolean,
+): { following: boolean; stateKnown: boolean } {
+  const serverFollowing = item.profile_id
+    ? item.viewer_follows_profile
+    : item.viewer_follows_user;
+
+  return {
+    following: override ?? (isViewerFollowingList || serverFollowing === true),
+    stateKnown: override !== undefined
+      || isViewerFollowingList
+      || typeof serverFollowing === 'boolean',
+  };
+}
 
 export function buildFollowMutation(userId: string, currentlyFollowing: boolean): {
   path: string;
@@ -42,8 +71,9 @@ export function mergeConnectionPages<T extends ConnectionIdentity>(
 
   for (const page of pages) {
     for (const item of page.items) {
-      if (!item.user_id || seen.has(item.user_id)) continue;
-      seen.add(item.user_id);
+      const identity = connectionIdentity(item);
+      if (!identity || seen.has(identity)) continue;
+      seen.add(identity);
       merged.push(item);
     }
   }

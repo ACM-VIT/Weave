@@ -9,6 +9,8 @@ export type RepositoryData = {
   githubUrl?: string;
   ownerUserId?: string | null;
   ownerBio?: string | null;
+  ownerProfileId?: string | null;
+  ownerProfileClaimedUserId?: string | null;
   viewerFollowsOwner?: boolean | null;
   description: string;
   readmeSummary: string;

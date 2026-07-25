@@ -1,5 +1,6 @@
 import { sqlClient } from '../db/index.js';
 import { buildMlOnboardingJob, hasMlEmbeddingContext } from './mlOnboardingService.js';
+import { claimVerifiedGithubProfile } from './socialProfileService.js';
 
 interface IdentityProfile {
   userId: string;
@@ -93,6 +94,15 @@ export async function ensureIdentityProfile(profile: IdentityProfile): Promise<v
     `;
     await tx`INSERT INTO app.user_stats (user_id) VALUES (${profile.userId}::uuid) ON CONFLICT DO NOTHING`;
     await tx`INSERT INTO app.user_feed_state (user_id) VALUES (${profile.userId}::uuid) ON CONFLICT DO NOTHING`;
+    if (githubIdentityVerified && profile.githubId && profile.githubHandle) {
+      await claimVerifiedGithubProfile(tx, {
+        userId: profile.userId,
+        githubId: profile.githubId,
+        githubHandle: profile.githubHandle,
+        displayName: profile.fullName,
+        avatarUrl: profile.avatarUrl,
+      });
+    }
     if (hasMlEmbeddingContext(onboardingJob.profile)) {
       await tx`
         INSERT INTO telemetry.ml_outbox (job_type,aggregate_id,idempotency_key,payload)

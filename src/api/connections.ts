@@ -3,11 +3,14 @@ import { apiV2, apiV2Raw } from './client';
 export type ConnectionType = 'followers' | 'following';
 
 export type ConnectionUser = {
-  user_id: string;
+  user_id: string | null;
+  profile_id: string | null;
   username: string;
   full_name: string | null;
   avatar_url: string | null;
   created_at: string;
+  viewer_follows_user: boolean;
+  viewer_follows_profile: boolean;
 };
 
 export type ConnectionPage = {

@@ -3,6 +3,8 @@ import { sqlClient } from '../db/index.js';
 import type { AuthRequest } from '../middlewares/authMiddleware.js';
 import { processInteractionBatchV2InTransaction } from '../services/activityV2Service.js';
 import { buildMlOnboardingJob, hasMlEmbeddingContext } from '../services/mlOnboardingService.js';
+import { setFollowRelationship } from '../services/followService.js';
+import { setSocialProfileFollowing } from '../services/socialProfileService.js';
 import { setRepositorySaved } from '../services/savedRepositoryService.js';
 import { isInteractionEventV2 } from '../utils/interactionValidation.js';
 import { isValidDateOfBirth } from '../utils/dateOfBirth.js';
@@ -83,10 +85,17 @@ export async function getMe(req: AuthRequest, res: Response): Promise<void> {
 }
 
 export async function getUser(req: AuthRequest, res: Response): Promise<void> {
+  const viewer = userId(req, res); if (!viewer) return;
   const target = idParam(req, res, 'userId'); if (!target) return;
   const rows = await sqlClient`
     SELECT u.user_id,u.username,u.full_name,u.bio,u.github_handle,u.avatar_url,u.created_at,
-      s.followers_count,s.following_count,
+      s.followers_count,s.following_count,s.likes_given_count,
+      (${viewer}::uuid=u.user_id) AS is_self,
+      EXISTS(
+        SELECT 1 FROM app.follows viewer_follow
+        WHERE viewer_follow.follower_id=${viewer}::uuid
+          AND viewer_follow.following_id=u.user_id
+      ) AS viewer_follows_user,
       COALESCE((SELECT json_agg(t.slug ORDER BY t.slug) FROM app.user_topics ut JOIN app.topics t USING(topic_id)
         WHERE ut.user_id=u.user_id),'[]'::json) AS topics
     FROM app.users u JOIN app.user_stats s USING(user_id)
@@ -228,50 +237,141 @@ export async function setFollow(req: AuthRequest, res: Response): Promise<void> 
   const id = userId(req, res); const target = idParam(req, res, 'userId'); if (!id || !target) return;
   if (id === target) return sendError(res, 400, 'A user cannot follow themselves.');
   try {
-    await sqlClient.begin(async (tx) => {
-      const rows = await tx`INSERT INTO app.follows(follower_id,following_id) VALUES(${id}::uuid,${target}::uuid)
-        ON CONFLICT DO NOTHING RETURNING follower_id`;
-      if (rows.length) {
-        await tx`UPDATE app.user_stats SET following_count=following_count+1,updated_at=now() WHERE user_id=${id}::uuid`;
-        await tx`UPDATE app.user_stats SET followers_count=followers_count+1,updated_at=now() WHERE user_id=${target}::uuid`;
-        await tx`
-          INSERT INTO app.user_feed_state (user_id,feed_version,updated_at)
-          VALUES (${id}::uuid,2,now())
-          ON CONFLICT (user_id) DO UPDATE SET
-            feed_version=app.user_feed_state.feed_version+1,
-            updated_at=now()
-        `;
-      }
-    });
+    await setFollowRelationship({ followerId: id, followingId: target, following: true });
+    res.status(204).end();
+  } catch (error) { sendControllerError(res, error); }
+}
+
+export async function getSocialProfile(req: AuthRequest, res: Response): Promise<void> {
+  const viewer = userId(req, res); if (!viewer) return;
+  const profileId = idParam(req, res, 'profileId'); if (!profileId) return;
+  const rows = await sqlClient`
+    SELECT profile.profile_id,profile.provider,profile.provider_subject,profile.handle,
+      COALESCE(claimed_user.full_name,profile.display_name) AS display_name,
+      COALESCE(claimed_user.avatar_url,profile.avatar_url) AS avatar_url,
+      claimed_user.username,claimed_user.bio,claimed_user.github_handle,
+      profile.profile_kind,profile.claimed_by_user_id,
+      profile.created_at,
+      CASE
+        WHEN claimed_stats.user_id IS NOT NULL THEN claimed_stats.followers_count
+        ELSE (SELECT count(*)::int FROM app.social_profile_follows external_follow
+              WHERE external_follow.profile_id=profile.profile_id)
+      END AS followers_count,
+      COALESCE(claimed_stats.following_count,0) AS following_count,
+      COALESCE(claimed_stats.likes_given_count,0) AS likes_given_count,
+      CASE
+        WHEN profile.claimed_by_user_id IS NOT NULL THEN EXISTS(
+          SELECT 1 FROM app.follows claimed_follow
+          WHERE claimed_follow.follower_id=${viewer}::uuid
+            AND claimed_follow.following_id=profile.claimed_by_user_id
+        )
+        ELSE EXISTS(
+          SELECT 1 FROM app.social_profile_follows external_follow
+          WHERE external_follow.follower_id=${viewer}::uuid
+            AND external_follow.profile_id=profile.profile_id
+        )
+      END AS viewer_follows_profile,
+      (profile.claimed_by_user_id=${viewer}::uuid) AS is_self,
+      COALESCE((
+        SELECT json_agg(json_build_object(
+          'repo_id',repo.repo_id,
+          'full_name',repo.full_name,
+          'name',repo.name,
+          'url',repo.url,
+          'description',content.description,
+          'star_count',COALESCE(stats.star_count,0),
+          'fork_count',COALESCE(stats.fork_count,0)
+        ) ORDER BY repo.updated_at DESC)
+        FROM app.repos repo
+        LEFT JOIN app.repo_content content ON content.repo_id=repo.repo_id
+        LEFT JOIN LATERAL (
+          SELECT snapshot.star_count,snapshot.fork_count
+          FROM app.repo_stat_snapshots snapshot
+          WHERE snapshot.repo_id=repo.repo_id
+          ORDER BY snapshot.observed_at DESC
+          LIMIT 1
+        ) stats ON true
+        WHERE repo.status='active' AND lower(repo.owner)=lower(profile.handle)
+      ),'[]'::json) AS repositories
+    FROM app.social_profiles profile
+    LEFT JOIN app.users claimed_user ON claimed_user.user_id=profile.claimed_by_user_id
+    LEFT JOIN app.user_stats claimed_stats ON claimed_stats.user_id=profile.claimed_by_user_id
+    WHERE profile.profile_id=${profileId}::uuid AND profile.status='active'
+  `;
+  if (!rows[0]) return sendError(res, 404, 'Profile not found.');
+  sendSuccess(res, 200, rows[0]);
+}
+
+export async function setSocialProfileFollow(req: AuthRequest, res: Response): Promise<void> {
+  const id = userId(req, res); const profileId = idParam(req, res, 'profileId');
+  if (!id || !profileId) return;
+  try {
+    await setSocialProfileFollowing({ followerId: id, profileId, following: true });
+    res.status(204).end();
+  } catch (error) { sendControllerError(res, error); }
+}
+
+export async function removeSocialProfileFollow(req: AuthRequest, res: Response): Promise<void> {
+  const id = userId(req, res); const profileId = idParam(req, res, 'profileId');
+  if (!id || !profileId) return;
+  try {
+    await setSocialProfileFollowing({ followerId: id, profileId, following: false });
     res.status(204).end();
   } catch (error) { sendControllerError(res, error); }
 }
 
 export async function removeFollow(req: AuthRequest, res: Response): Promise<void> {
   const id = userId(req, res); const target = idParam(req, res, 'userId'); if (!id || !target) return;
-  await sqlClient.begin(async (tx) => {
-    const rows = await tx`DELETE FROM app.follows WHERE follower_id=${id}::uuid AND following_id=${target}::uuid RETURNING follower_id`;
-    if (rows.length) {
-      await tx`UPDATE app.user_stats SET following_count=GREATEST(0,following_count-1),updated_at=now() WHERE user_id=${id}::uuid`;
-      await tx`UPDATE app.user_stats SET followers_count=GREATEST(0,followers_count-1),updated_at=now() WHERE user_id=${target}::uuid`;
-      await tx`
-        INSERT INTO app.user_feed_state (user_id,feed_version,updated_at)
-        VALUES (${id}::uuid,2,now())
-        ON CONFLICT (user_id) DO UPDATE SET
-          feed_version=app.user_feed_state.feed_version+1,
-          updated_at=now()
-      `;
-    }
-  });
-  res.status(204).end();
+  if (id === target) return sendError(res, 400, 'A user cannot unfollow themselves.');
+  try {
+    await setFollowRelationship({ followerId: id, followingId: target, following: false });
+    res.status(204).end();
+  } catch (error) { sendControllerError(res, error); }
 }
 
 async function followList(req: AuthRequest, res: Response, direction: 'followers' | 'following'): Promise<void> {
+  const viewer = userId(req, res); if (!viewer) return;
   const target = idParam(req, res, 'userId'); const page = paging(req); if (!target) return;
   if (!page) return sendError(res, 400, 'limit must be 1-100 and offset must be 0-10000.');
   const rows = direction === 'followers'
-    ? await sqlClient`SELECT u.user_id,u.username,u.full_name,u.avatar_url,f.created_at FROM app.follows f JOIN app.users u ON u.user_id=f.follower_id WHERE f.following_id=${target}::uuid AND u.status='active' ORDER BY f.created_at DESC LIMIT ${page.limit} OFFSET ${page.offset}`
-    : await sqlClient`SELECT u.user_id,u.username,u.full_name,u.avatar_url,f.created_at FROM app.follows f JOIN app.users u ON u.user_id=f.following_id WHERE f.follower_id=${target}::uuid AND u.status='active' ORDER BY f.created_at DESC LIMIT ${page.limit} OFFSET ${page.offset}`;
+    ? await sqlClient`
+        SELECT u.user_id,NULL::uuid AS profile_id,u.username,u.full_name,u.avatar_url,f.created_at,
+          EXISTS(SELECT 1 FROM app.follows viewer_follow
+            WHERE viewer_follow.follower_id=${viewer}::uuid
+              AND viewer_follow.following_id=u.user_id) AS viewer_follows_user,
+          false AS viewer_follows_profile
+        FROM app.follows f JOIN app.users u ON u.user_id=f.follower_id
+        WHERE f.following_id=${target}::uuid AND u.status='active'
+        ORDER BY f.created_at DESC LIMIT ${page.limit} OFFSET ${page.offset}
+      `
+    : await sqlClient`
+        WITH followed_profiles AS (
+          SELECT u.user_id,NULL::uuid AS profile_id,u.username,u.full_name,u.avatar_url,
+            follow.created_at,
+            EXISTS(SELECT 1 FROM app.follows viewer_follow
+              WHERE viewer_follow.follower_id=${viewer}::uuid
+                AND viewer_follow.following_id=u.user_id) AS viewer_follows_user,
+            false AS viewer_follows_profile
+          FROM app.follows follow
+          JOIN app.users u ON u.user_id=follow.following_id
+          WHERE follow.follower_id=${target}::uuid AND u.status='active'
+          UNION ALL
+          SELECT NULL::uuid AS user_id,profile.profile_id,profile.handle AS username,
+            profile.display_name AS full_name,profile.avatar_url,follow.created_at,
+            false AS viewer_follows_user,
+            EXISTS(SELECT 1 FROM app.social_profile_follows viewer_follow
+              WHERE viewer_follow.follower_id=${viewer}::uuid
+                AND viewer_follow.profile_id=profile.profile_id) AS viewer_follows_profile
+          FROM app.social_profile_follows follow
+          JOIN app.social_profiles profile ON profile.profile_id=follow.profile_id
+          WHERE follow.follower_id=${target}::uuid
+            AND profile.status='active'
+            AND profile.claimed_by_user_id IS NULL
+        )
+        SELECT * FROM followed_profiles
+        ORDER BY created_at DESC
+        LIMIT ${page.limit} OFFSET ${page.offset}
+      `;
   sendSuccess(res, 200, { items: rows, ...page });
 }
 export const listFollowers = (req: AuthRequest, res: Response) => followList(req, res, 'followers');
@@ -545,6 +645,24 @@ export async function deleteCollection(req: AuthRequest, res: Response): Promise
   const id = userId(req, res); const collection = idParam(req, res, 'collectionId'); if (!id || !collection) return;
   const rows = await sqlClient`DELETE FROM app.board_collections WHERE collection_id=${collection}::uuid AND user_id=${id}::uuid RETURNING collection_id`;
   if (!rows[0]) return sendError(res, 404, 'Collection not found.'); res.status(204).end();
+}
+
+export async function listCollectionRepos(req: AuthRequest, res: Response): Promise<void> {
+  const id = userId(req, res); const collection = idParam(req, res, 'collectionId'); if (!id || !collection) return;
+  const owned = await sqlClient`
+    SELECT 1 FROM app.board_collections
+    WHERE collection_id=${collection}::uuid AND user_id=${id}::uuid
+  `;
+  if (!owned.length) return sendError(res, 404, 'Collection not found.');
+  const rows = await sqlClient`
+    SELECT cr.added_at,r.repo_id,r.full_name,r.owner,r.name,r.url,c.description,c.primary_language
+    FROM app.collection_repos cr
+    JOIN app.repos r USING(repo_id)
+    JOIN app.repo_content c USING(repo_id)
+    WHERE cr.collection_id=${collection}::uuid
+    ORDER BY cr.added_at DESC
+  `;
+  sendSuccess(res, 200, { items: rows });
 }
 
 export async function createBoard(req: AuthRequest, res: Response): Promise<void> {

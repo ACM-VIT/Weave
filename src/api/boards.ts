@@ -52,6 +52,19 @@ export async function getBoardRepositories(
   return data.items;
 }
 
+export async function getCollectionRepositories(
+  collectionId: string,
+  token: string,
+  signal?: AbortSignal,
+): Promise<BoardRepositoryRecord[]> {
+  const data = await apiV2<{ items: BoardRepositoryRecord[] }>(
+    `/collections/${encodeURIComponent(collectionId)}/repositories`,
+    { signal },
+    token,
+  );
+  return data.items;
+}
+
 export async function createBoard(_userId: string, boardName: string, token: string) {
   const board = await apiV2<BoardRecord>('/boards', {
     method: 'POST',

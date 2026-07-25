@@ -29,6 +29,10 @@ import { REFERENCE_THEME } from '@/constants/theme';
 import { DEVELOPMENT_PREVIEW_ENABLED } from '@/config/development-preview';
 import { useAuth } from '@/store/AuthContext';
 import { getAvatarColor } from '@/utils/avatar-color';
+import {
+  followStateQueryKey,
+  getProfileFollowIdentity,
+} from '@/utils/follow-state';
 import type { RepositoryData } from '../../data/repositories';
 import DescriptionCard from './DescriptionCard';
 import ReadmeCard from './ReadmeCard';
@@ -78,7 +82,8 @@ function getInitials(owner: string) {
 
 function patchOwnerFollowState(
   cachedFeed: unknown,
-  ownerUserId: string,
+  ownerUserId: string | null,
+  ownerProfileId: string | null,
   following: boolean,
 ): unknown {
   if (!cachedFeed || typeof cachedFeed !== 'object') return cachedFeed;
@@ -95,8 +100,16 @@ function patchOwnerFollowState(
     const items = pageRecord.items.map((item) => {
       if (!item || typeof item !== 'object') return item;
       const repository = item as Record<string, unknown>;
-      if (repository.owner_user_id !== ownerUserId
-        || repository.viewer_follows_owner === following) return item;
+      const matchesOwner = (
+        Boolean(ownerProfileId) && repository.owner_profile_id === ownerProfileId
+      ) || (
+        Boolean(ownerUserId)
+        && (
+          repository.owner_user_id === ownerUserId
+          || repository.owner_profile_claimed_user_id === ownerUserId
+        )
+      );
+      if (!matchesOwner || repository.viewer_follows_owner === following) return item;
       pageChanged = true;
       return { ...repository, viewer_follows_owner: following };
     });
@@ -214,8 +227,9 @@ export function RepositoryScreen({
   const viewerGithubHandle = typeof user?.github_handle === 'string'
     ? user.github_handle.trim().toLocaleLowerCase()
     : '';
-  const isViewerOwner = repository.ownerUserId === user?.user_id
-    || (!repository.ownerUserId && Boolean(viewerGithubHandle) && normalizedOwner === viewerGithubHandle);
+  const claimedOwnerUserId = repository.ownerProfileClaimedUserId ?? repository.ownerUserId;
+  const isViewerOwner = claimedOwnerUserId === user?.user_id
+    || (!claimedOwnerUserId && Boolean(viewerGithubHandle) && normalizedOwner === viewerGithubHandle);
   const ownerFollowStateKnown = typeof repository.viewerFollowsOwner === 'boolean';
   const veryNarrow = pageWidth < 330;
   const veryShort = pageHeight < 620;
@@ -272,12 +286,19 @@ export function RepositoryScreen({
 
   const handleOwnerFollowingChange = (following: boolean) => {
     const viewerUserId = user?.user_id;
-    const ownerUserId = repository.ownerUserId;
-    if (!viewerUserId || !ownerUserId) return;
+    const ownerUserId = repository.ownerProfileClaimedUserId ?? repository.ownerUserId ?? null;
+    const ownerProfileId = repository.ownerProfileId ?? null;
+    if (!viewerUserId || (!ownerUserId && !ownerProfileId)) return;
+    if (ownerUserId) {
+      queryClient.setQueryData(
+        followStateQueryKey(getProfileFollowIdentity(null, ownerUserId)),
+        following,
+      );
+    }
 
     const feedQueryKey = ['feed', viewerUserId] as const;
     queryClient.setQueryData(feedQueryKey, (cachedFeed) =>
-      patchOwnerFollowState(cachedFeed, ownerUserId, following)
+      patchOwnerFollowState(cachedFeed, ownerUserId, ownerProfileId, following)
     );
     void queryClient.invalidateQueries({ queryKey: feedQueryKey, exact: true });
     void checkOnboardingStatus().catch(() => undefined);
@@ -342,6 +363,7 @@ export function RepositoryScreen({
                 neutral
                 onFollowingChange={handleOwnerFollowingChange}
                 stateKnown={ownerFollowStateKnown || DEVELOPMENT_PREVIEW_ENABLED}
+                targetProfileId={repository.ownerProfileId}
                 targetUserId={repository.ownerUserId}
               />
             ) : null}

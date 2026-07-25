@@ -18,6 +18,14 @@ export const RETROACTIVE_LEGACY_TAGS = [
   '0005_add_is_saved',
 ] as const;
 
+// These migrations were merged after some environments had already recorded
+// newer V2 journal timestamps. Drizzle skips older timestamps, so execute the
+// idempotent SQL explicitly before handing control back to the normal migrator.
+export const RETROACTIVE_V2_TAGS = [
+  '0020_repository_collection_actions',
+  '0021_v2_reconciliation_indexes',
+] as const;
+
 // Some parent environments contain the full v2 structures but were created
 // before their exact SQL hashes entered the shared Drizzle journal. These may
 // be adopted only after migrate.ts verifies the corresponding structures.

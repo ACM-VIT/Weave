@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   ActivityIndicator,
   Pressable,
@@ -10,12 +10,14 @@ import {
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
 import { setUserFollowing } from '@/api/connections';
+import { setSocialProfileFollowing } from '@/api/social-profiles';
 import { REFERENCE_THEME } from '@/constants/theme';
-import { followStateQueryKey, getFollowIdentity } from '@/utils/follow-state';
+import { followStateQueryKey, getProfileFollowIdentity } from '@/utils/follow-state';
 import { getStorageItem } from '@/utils/storage';
 
 export type FollowButtonProps = {
   targetUserId?: string | null;
+  targetProfileId?: string | null;
   isFollowing: boolean;
   stateKnown?: boolean;
   compact?: boolean;
@@ -23,6 +25,7 @@ export type FollowButtonProps = {
   localOnly?: boolean;
   disabled?: boolean;
   onFollowingChange?: (following: boolean) => void;
+  onError?: (error: Error) => void;
   style?: StyleProp<ViewStyle>;
   accentColor?: string;
   identityKey?: string | null;
@@ -30,6 +33,7 @@ export type FollowButtonProps = {
 
 export function FollowButton({
   targetUserId,
+  targetProfileId,
   isFollowing,
   stateKnown = true,
   compact = false,
@@ -37,12 +41,18 @@ export function FollowButton({
   localOnly = false,
   disabled = false,
   onFollowingChange,
+  onError,
   style,
   accentColor = REFERENCE_THEME.accent,
   identityKey,
 }: FollowButtonProps) {
   const queryClient = useQueryClient();
-  const followIdentity = getFollowIdentity(targetUserId, identityKey);
+  const targetId = targetProfileId ?? targetUserId;
+  const followIdentity = getProfileFollowIdentity(
+    targetProfileId,
+    targetUserId,
+    identityKey,
+  );
   const queryKey = followStateQueryKey(followIdentity);
   const followStateQuery = useQuery<boolean>({
     queryKey,
@@ -62,19 +72,28 @@ export function FollowButton({
   const mutation = useMutation<void, Error, boolean>({
     mutationFn: async (following) => {
       if (localOnly) return;
-      if (!targetUserId) throw new Error('This owner does not have a linked Weave profile.');
+      if (!targetId) throw new Error('This profile is unavailable.');
       const token = await getStorageItem('access_token');
       if (!token) throw new Error('Your session has expired. Please sign in again.');
-      await setUserFollowing(targetUserId, following, token);
+      if (targetProfileId) {
+        await setSocialProfileFollowing(targetProfileId, following, token);
+      } else {
+        await setUserFollowing(targetId, following, token);
+      }
     },
   });
+  useEffect(() => {
+    if (!mutation.isPending) {
+      queryClient.setQueryData(queryKey, isFollowing);
+    }
+  }, [isFollowing, mutation.isPending, queryClient, queryKey]);
 
-  const targetAvailable = localOnly || (Boolean(targetUserId) && stateKnown);
+  const targetAvailable = localOnly || (Boolean(targetId) && stateKnown);
   const buttonDisabled = disabled || !targetAvailable || mutation.isPending;
   const accessibilityHint = localOnly
     ? 'Preview follow state is kept for this session.'
-    : !targetUserId
-    ? 'This repository owner does not have a linked Weave profile.'
+    : !targetId
+    ? 'This profile is unavailable.'
     : !stateKnown
       ? 'Follow status is unavailable for this repository owner.'
       : failed
@@ -89,9 +108,10 @@ export function FollowButton({
     setFailureState({ identity: followIdentity, failed: false });
 
     mutation.mutate(next, {
-      onError: () => {
+      onError: (error) => {
         queryClient.setQueryData(queryKey, previous);
         setFailureState({ identity: followIdentity, failed: true });
+        onError?.(error);
       },
       onSuccess: () => {
         onFollowingChange?.(next);

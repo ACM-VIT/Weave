@@ -5,7 +5,8 @@
       "board_collections", "board_repos", "boards", "collection_repos", "comments", "follows",
       "reactions", "repo_card_summaries", "repo_content", "repo_engagement",
       "repo_stat_snapshots", "repo_topics", "repos", "saves", "topics",
-      "oauth_codes", "refresh_tokens", "trending_snapshot_items", "trending_snapshots", "user_feed_state",
+      "oauth_codes", "refresh_tokens", "social_profile_follows", "social_profiles",
+      "trending_snapshot_items", "trending_snapshots", "user_feed_state",
       "user_stats", "user_topics", "users"
     ],
     "telemetry": [
@@ -19,8 +20,12 @@
     "ml_outbox_idempotency_key_key", "ml_outbox_ready_idx", "ml_outbox_feedback_predecessor_idx", "app_refresh_tokens_user_idx",
     "app_comments_repo_idx", "app_comments_user_idx", "app_boards_user_idx",
     "app_board_collections_user_idx", "app_saves_user_idx", "app_repo_stats_latest_idx",
+    "app_follows_following_idx", "app_follows_follower_idx",
+    "social_profile_follows_profile_idx", "social_profile_follows_follower_idx",
+    "social_profiles_provider_subject_uidx", "social_profiles_provider_handle_uidx",
+    "social_profiles_claimed_user_uidx", "social_profiles_active_handle_idx",
     "app_reactions_repo_idx", "app_saves_repo_idx", "telemetry_user_repo_engagement_repo_idx",
-    "app_follows_following_idx", "app_follows_follower_idx", "app_repos_owner_github_id_idx",
+    "app_repos_owner_github_id_idx",
     "app_collection_repos_repo_idx", "app_collection_repos_added_idx",
     "repo_card_summaries_one_active_uidx", "repos_full_name_key",
     "repos_github_id_key", "trending_one_active_period_uidx"

@@ -59,6 +59,25 @@ export class PostgresRepositoryPersistence implements RepositoryPersistencePort 
           RETURNING repo_id
         `;
         const repoId = String(rows[0].repo_id);
+        await tx`
+          UPDATE app.social_profiles profile
+          SET provider_subject=${repo.owner_github_id},updated_at=now()
+          WHERE profile.provider='github'
+            AND profile.provider_subject IS NULL
+            AND profile.claimed_by_user_id IS NULL
+            AND lower(profile.handle)=lower(${repo.owner})
+            AND NOT EXISTS (
+              SELECT 1
+              FROM app.social_profiles identified
+              WHERE identified.provider='github'
+                AND identified.provider_subject=${repo.owner_github_id}
+            )
+        `;
+        await tx`
+          INSERT INTO app.social_profiles(provider,provider_subject,handle,profile_kind)
+          VALUES ('github',${repo.owner_github_id},${repo.owner},'unknown')
+          ON CONFLICT DO NOTHING
+        `;
         const changed = previous.length === 0 || previous[0].content_hash !== hash;
         const version = changed ? Number(previous[0]?.content_version ?? 0) + 1 : Number(previous[0].content_version);
         await tx`

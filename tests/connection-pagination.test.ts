@@ -4,6 +4,8 @@ import test from 'node:test';
 import {
   buildFollowMutation,
   collectConnectionIds,
+  connectionFollowState,
+  connectionIdentity,
   getNextConnectionOffset,
   mergeConnectionPages,
   type ConnectionPage,
@@ -47,6 +49,57 @@ test('connection pages are merged in server order without duplicate people', () 
   assert.deepEqual(
     mergeConnectionPages([page([ada, bea], 2, 0), page([bea, cy], 2, 2)]),
     [ada, bea, cy],
+  );
+});
+
+test('connection identity keeps external profiles separate from app users', () => {
+  assert.equal(connectionIdentity({ user_id: 'same-id' }), 'user:same-id');
+  assert.equal(connectionIdentity({ profile_id: 'same-id' }), 'profile:same-id');
+  assert.deepEqual(
+    mergeConnectionPages([
+      {
+        items: [
+          { user_id: 'same-id', username: 'app-user' },
+          { profile_id: 'same-id', username: 'github-owner' },
+        ],
+        limit: 25,
+        offset: 0,
+      },
+    ]),
+    [
+      { user_id: 'same-id', username: 'app-user' },
+      { profile_id: 'same-id', username: 'github-owner' },
+    ],
+  );
+});
+
+test('connection follow state uses the matching registered or external profile field', () => {
+  assert.deepEqual(
+    connectionFollowState({
+      user_id: 'user-id',
+      viewer_follows_user: false,
+      viewer_follows_profile: true,
+    }, false),
+    { following: false, stateKnown: true },
+  );
+  assert.deepEqual(
+    connectionFollowState({
+      profile_id: 'profile-id',
+      viewer_follows_user: false,
+      viewer_follows_profile: true,
+    }, false),
+    { following: true, stateKnown: true },
+  );
+});
+
+test('the viewers own following list is authoritative for external profile rows', () => {
+  assert.deepEqual(
+    connectionFollowState({ profile_id: 'profile-id' }, true),
+    { following: true, stateKnown: true },
+  );
+  assert.deepEqual(
+    connectionFollowState({ profile_id: 'profile-id' }, true, false),
+    { following: false, stateKnown: true },
   );
 });
 

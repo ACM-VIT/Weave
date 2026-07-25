@@ -23,10 +23,14 @@ export type PublicUserProfile = {
   username: string;
   full_name: string | null;
   bio: string | null;
+  github_handle: string | null;
   avatar_url: string | null;
   followers_count: number;
   following_count: number;
   likes_given_count?: number;
+  is_self: boolean;
+  viewer_follows_user: boolean;
+  topics: string[];
 };
 
 export async function getProfileContent(token: string, signal?: AbortSignal): Promise<ProfileContent> {

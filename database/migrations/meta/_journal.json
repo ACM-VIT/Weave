@@ -165,12 +165,19 @@
     {
       "idx": 23,
       "version": "7",
+      "when": 1784738672003,
+      "tag": "0021_external_social_profiles",
+      "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
       "when": 1784770000000,
       "tag": "0021_v2_reconciliation_indexes",
       "breakpoints": true
     },
     {
-      "idx": 24,
+      "idx": 25,
       "version": "7",
       "when": 1784770000001,
       "tag": "0022_repo_owner_github_identity",
