@@ -33,6 +33,22 @@ function value(env: DeploymentEnvironment, name: string): string {
   return env[name]?.trim() ?? '';
 }
 
+function optionalInteger(
+  env: DeploymentEnvironment,
+  name: string,
+  fallback: number,
+  minimum: number,
+  maximum: number,
+): number {
+  const raw = value(env, name);
+  if (!raw) return fallback;
+  const parsed = Number(raw);
+  if (!Number.isInteger(parsed) || parsed < minimum || parsed > maximum) {
+    throw new Error(`${name} must be an integer between ${minimum} and ${maximum}.`);
+  }
+  return parsed;
+}
+
 function isPrivateIpv4(hostname: string): boolean {
   const [first, second] = hostname.split('.').map(Number);
   return first === 0
@@ -98,6 +114,32 @@ export function validateDeploymentEnvironment(env: DeploymentEnvironment = proce
     throw new Error(`Missing required production variables: ${missing.join(', ')}.`);
   }
   resolveRedisUrl(value(env, 'REDIS_URL'), env.NODE_ENV);
+  const outboxActiveInterval = optionalInteger(
+    env, 'OUTBOX_ACTIVE_INTERVAL_MS', 1_000, 100, 60_000,
+  );
+  const outboxIdleInterval = optionalInteger(
+    env, 'OUTBOX_IDLE_INTERVAL_MS', 30_000, 1_000, 300_000,
+  );
+  if (outboxIdleInterval < outboxActiveInterval) {
+    throw new Error('OUTBOX_IDLE_INTERVAL_MS must be at least OUTBOX_ACTIVE_INTERVAL_MS.');
+  }
+  const feedReconciliationInterval = optionalInteger(
+    env, 'FEED_RECONCILIATION_INTERVAL_MS', 15_000, 1_000, 300_000,
+  );
+  const feedReconcileWithin = optionalInteger(
+    env, 'FEED_RECONCILE_WITHIN_MS', 15_000, 1_000, 300_000,
+  );
+  const feedReservationTtl = optionalInteger(
+    env, 'FEED_RESERVATION_TTL_MS', 60_000, 30_000, 900_000,
+  );
+  if (
+    feedReconciliationInterval > feedReconcileWithin
+    || feedReconcileWithin >= feedReservationTtl
+  ) {
+    throw new Error(
+      'Feed reconciliation requires interval <= reconcile window < reservation TTL.',
+    );
+  }
 
   const forbiddenFlags = [
     'ADOPT_LEGACY_SCHEMA',

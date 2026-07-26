@@ -17,11 +17,29 @@ import { validateProductionIntegrations } from '../config/runtimeConfig.js';
 import { applyMlReadinessGate } from './mlReadiness.js';
 import { applyOutboxReadinessGate } from './outboxReadiness.js';
 
+function intervalFromEnvironment(
+  name: string,
+  fallback: number,
+  minimum: number,
+  maximum: number,
+): number {
+  const raw = process.env[name]?.trim();
+  if (!raw) return fallback;
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value < minimum || value > maximum) {
+    throw new Error(`${name} must be an integer between ${minimum} and ${maximum}.`);
+  }
+  return value;
+}
+
 export class ApplicationRuntime {
   readonly flags = getV2FeatureFlags();
   readonly featureErrors = validateFeatureDependencies(this.flags);
   readonly persistence = new PostgresFeedPersistence();
-  readonly queue = new RedisFeedQueue(redisClient);
+  readonly queue = new RedisFeedQueue(
+    redisClient,
+    intervalFromEnvironment('FEED_RESERVATION_TTL_MS', 60_000, 30_000, 900_000),
+  );
   readonly ml = this.flags.ML_V2_RECOMMENDATIONS || this.flags.ML_FEEDBACK_OUTBOX
     ? new MlV2Client()
     : null;
@@ -52,11 +70,27 @@ export class ApplicationRuntime {
           if (row.job_type === 'onboard') await this.generation!.generate(row.aggregate_id, 45, [], 'prewarm');
         } : undefined,
       );
-      this.supervisor.register('ml-outbox', 1_000, () => worker.runOnce());
+      const activeInterval = intervalFromEnvironment('OUTBOX_ACTIVE_INTERVAL_MS', 1_000, 100, 60_000);
+      const idleInterval = intervalFromEnvironment('OUTBOX_IDLE_INTERVAL_MS', 30_000, 1_000, 300_000);
+      this.supervisor.registerAdaptive('ml-outbox', activeInterval, idleInterval, () => worker.runOnce());
     }
     if ((role === 'feed' || role === 'all') && this.flags.FEED_RESERVATIONS) {
-      const worker = new FeedReconciliationWorker(this.persistence, this.queue);
-      this.supervisor.register('feed-reconciliation', 15_000, () => worker.runOnce());
+      const interval = intervalFromEnvironment(
+        'FEED_RECONCILIATION_INTERVAL_MS', 15_000, 1_000, 300_000,
+      );
+      const reconcileWithin = intervalFromEnvironment(
+        'FEED_RECONCILE_WITHIN_MS', 15_000, 1_000, 300_000,
+      );
+      const reservationTtl = intervalFromEnvironment(
+        'FEED_RESERVATION_TTL_MS', 60_000, 30_000, 900_000,
+      );
+      if (interval > reconcileWithin || reconcileWithin >= reservationTtl) {
+        throw new Error(
+          'Feed reconciliation requires interval <= reconcile window < reservation TTL.',
+        );
+      }
+      const worker = new FeedReconciliationWorker(this.persistence, this.queue, reconcileWithin);
+      this.supervisor.register('feed-reconciliation', interval, () => worker.runOnce());
     }
     if ((role === 'maintenance' || role === 'all') && this.flags.DB_SCHEMA_V2_WRITES) {
       const data = new DataReconciliationWorker();
