@@ -65,6 +65,8 @@ const palette = {
   tertiary: REFERENCE_THEME.textTertiary,
   accent: REFERENCE_THEME.accent,
   accentText: '#07130A',
+  saveAccent: '#63E08A',
+  saveAccentText: '#071009',
   overlay: 'rgba(0,0,0,0.70)',
   danger: REFERENCE_THEME.danger,
 };
@@ -324,6 +326,12 @@ export function SavePopup({
     void haptic();
   };
 
+  const beginCollectionCreation = () => {
+    setMessage(null);
+    setIsCreating(true);
+    void haptic();
+  };
+
   const saveDisabled = saveMutation.isPending
     || collectionsQuery.isLoading
     || collectionsQuery.isFetching
@@ -485,31 +493,70 @@ export function SavePopup({
               ) : null}
 
               <View style={styles.footerActions}>
-                <Pressable
-                  accessibilityLabel="Create new collection"
-                  accessibilityRole="button"
-                  onPress={() => { setMessage(null); setIsCreating(true); void haptic(); }}
-                  style={({ pressed }) => [styles.newButton, { borderColor: palette.border }, pressed && styles.pressed]}
-                >
-                  <Plus color={palette.accent} size={18} />
-                  <Text numberOfLines={1} style={[styles.newButtonText, { color: palette.text }]}>New collection</Text>
-                </Pressable>
-                <Pressable
-                  accessibilityRole="button"
-                  accessibilityState={{ disabled: saveDisabled }}
-                  disabled={saveDisabled}
-                  onPress={() => saveMutation.mutate([...selectedIds])}
-                  style={({ pressed }) => [
-                    styles.saveButton,
-                    { backgroundColor: palette.accent },
-                    saveDisabled && styles.disabled,
-                    pressed && styles.pressed,
+                <View
+                  style={[
+                    styles.newButtonFrame,
+                    {
+                      backgroundColor: palette.elevatedStrong,
+                      borderColor: '#55555A',
+                    },
                   ]}
                 >
-                  {saveMutation.isPending ? <ActivityIndicator color={palette.accentText} /> : (
-                    <Text style={[styles.saveText, { color: palette.accentText }]}>Save ({selectedIds.size})</Text>
-                  )}
-                </Pressable>
+                  <View
+                    pointerEvents="none"
+                    style={{
+                      flex: 1,
+                      minHeight: 44,
+                      paddingHorizontal: 10,
+                      flexDirection: 'row',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      gap: 7,
+                    }}
+                  >
+                    <Plus color={palette.accent} size={18} strokeWidth={2.4} />
+                    <Text numberOfLines={1} style={[styles.newButtonText, { color: palette.text }]}>
+                      New collection
+                    </Text>
+                  </View>
+                  <Pressable
+                    accessibilityLabel="Create new collection"
+                    accessibilityRole="button"
+                    onPress={beginCollectionCreation}
+                    style={StyleSheet.absoluteFill}
+                  />
+                </View>
+
+                <View
+                  style={[
+                    styles.saveButtonFrame,
+                    { backgroundColor: palette.saveAccent },
+                    saveDisabled && styles.disabled,
+                  ]}
+                >
+                  <View
+                    pointerEvents="none"
+                    style={{
+                      flex: 1,
+                      minHeight: 44,
+                      paddingHorizontal: 12,
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                    }}
+                  >
+                    {saveMutation.isPending ? <ActivityIndicator color={palette.saveAccentText} /> : (
+                      <Text style={[styles.saveText, { color: palette.saveAccentText }]}>Save</Text>
+                    )}
+                  </View>
+                  <Pressable
+                    accessibilityLabel="Save repository to selected collections"
+                    accessibilityRole="button"
+                    accessibilityState={{ disabled: saveDisabled }}
+                    disabled={saveDisabled}
+                    onPress={() => saveMutation.mutate([...selectedIds])}
+                    style={StyleSheet.absoluteFill}
+                  />
+                </View>
               </View>
             </View>
 
@@ -619,8 +666,21 @@ const styles = StyleSheet.create({
   stateTitle: { fontFamily: 'NataSans-Bold', fontSize: 16, textAlign: 'center' },
   stateBody: { fontFamily: 'NataSans-Regular', fontSize: 12.5, lineHeight: 18, textAlign: 'center' },
   footer: { borderTopWidth: 1, paddingHorizontal: 14, paddingTop: 10, paddingBottom: 14, gap: 9 },
-  footerActions: { flexDirection: 'row', gap: 8 },
-  newButton: { flex: 1, minHeight: 44, borderWidth: 1, borderRadius: 13, paddingHorizontal: 10, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6 },
+  footerActions: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  newButtonFrame: {
+    flex: 1,
+    minHeight: 44,
+    borderWidth: 1.2,
+    borderRadius: 13,
+    overflow: 'hidden',
+  },
+  saveButtonFrame: {
+    flex: 1.12,
+    minHeight: 44,
+    borderRadius: 13,
+    overflow: 'hidden',
+    boxShadow: '0 4px 14px rgba(48,209,88,0.28)',
+  },
   newButtonText: { flexShrink: 1, fontFamily: 'NataSans-SemiBold', fontSize: 12.5 },
   creationOverlay: { position: 'absolute', left: 0, top: 0, right: 0, bottom: 0, zIndex: 20, alignItems: 'center', justifyContent: 'center', padding: 18 },
   creationDim: { backgroundColor: 'rgba(4,6,4,0.78)' },
@@ -636,7 +696,6 @@ const styles = StyleSheet.create({
   createSubmitText: { fontFamily: 'NataSans-SemiBold', fontSize: 13.5 },
   messageRow: { minHeight: 22, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7 },
   messageText: { flexShrink: 1, fontFamily: 'NataSans-Medium', fontSize: 12, textAlign: 'center' },
-  saveButton: { flex: 1.15, minHeight: 44, borderRadius: 13, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 14 },
   saveText: { fontFamily: 'NataSans-Bold', fontSize: 13.5 },
   pressed: { opacity: 0.72, transform: [{ scale: 0.988 }] },
   disabled: { opacity: 0.5 },
