@@ -397,43 +397,47 @@ export function SavePopup({
                       const selected = selectedIds.has(collection.collection_id);
                       const accent = collection.color || palette.accent;
                       return (
-                        <Pressable
-                          accessibilityLabel={`${collection.name}, ${collection.repo_count} repositories`}
-                          accessibilityRole="checkbox"
-                          accessibilityState={{ checked: selected }}
+                        <View
                           key={collection.collection_id}
-                          onPress={() => toggleCollection(collection.collection_id)}
-                          style={({ pressed }) => [
+                          style={[
                             styles.collectionCard,
                             {
                               backgroundColor: selected ? `${accent}16` : palette.elevated,
                               borderColor: selected ? accent : palette.border,
                             },
-                            pressed && styles.pressed,
                           ]}
                         >
-                          <View style={styles.collectionTopRow}>
-                            <View style={[styles.collectionIcon, { backgroundColor: `${accent}20` }]}>
-                              {collection.icon ? (
-                                <Text style={styles.emoji}>{collection.icon}</Text>
-                              ) : (
-                                <FolderHeart color={accent} size={18} />
-                              )}
+                          <View pointerEvents="none" style={styles.collectionCardContent}>
+                            <View style={styles.collectionTopRow}>
+                              <View style={[styles.collectionIcon, { backgroundColor: `${accent}20` }]}>
+                                {collection.icon ? (
+                                  <Text style={styles.emoji}>{collection.icon}</Text>
+                                ) : (
+                                  <FolderHeart color={accent} size={18} />
+                                )}
+                              </View>
+                              <Animated.View style={[
+                                styles.checkbox,
+                                { backgroundColor: selected ? accent : 'transparent', borderColor: selected ? accent : palette.tertiary },
+                              ]}>
+                                {selected ? <Check color="#101510" size={13} strokeWidth={3} /> : null}
+                              </Animated.View>
                             </View>
-                            <Animated.View style={[
-                              styles.checkbox,
-                              { backgroundColor: selected ? accent : 'transparent', borderColor: selected ? accent : palette.tertiary },
-                            ]}>
-                              {selected ? <Check color="#101510" size={13} strokeWidth={3} /> : null}
-                            </Animated.View>
+                            <View style={styles.collectionCopy}>
+                              <Text numberOfLines={1} style={[styles.collectionName, { color: palette.text }]}>{collection.name}</Text>
+                              <Text numberOfLines={1} style={[styles.collectionMeta, { color: palette.secondary }]}>
+                                {collection.repo_count} {collection.repo_count === 1 ? 'repository' : 'repositories'}
+                              </Text>
+                            </View>
                           </View>
-                          <View style={styles.collectionCopy}>
-                            <Text numberOfLines={1} style={[styles.collectionName, { color: palette.text }]}>{collection.name}</Text>
-                            <Text numberOfLines={1} style={[styles.collectionMeta, { color: palette.secondary }]}>
-                              {collection.repo_count} {collection.repo_count === 1 ? 'repository' : 'repositories'}
-                            </Text>
-                          </View>
-                        </Pressable>
+                          <Pressable
+                            accessibilityLabel={`${collection.name}, ${collection.repo_count} repositories`}
+                            accessibilityRole="checkbox"
+                            accessibilityState={{ checked: selected }}
+                            onPress={() => toggleCollection(collection.collection_id)}
+                            style={StyleSheet.absoluteFill}
+                          />
+                        </View>
                       );
                     })}
                   </View>
@@ -620,7 +624,8 @@ const styles = StyleSheet.create({
   skeletonLine: { width: '72%', height: 9, borderRadius: 5 },
   skeletonLineShort: { width: '48%', height: 7, borderRadius: 4 },
   collectionGrid: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between', rowGap: COLLECTION_GRID_GAP },
-  collectionCard: { width: '30%', minHeight: 92, flexGrow: 0, flexShrink: 0, borderWidth: 1.2, borderRadius: 16, padding: 10, gap: 7, boxShadow: '0 4px 14px rgba(0,0,0,0.18)' },
+  collectionCard: { width: '31.5%', minHeight: 92, flexGrow: 0, flexShrink: 0, borderWidth: 1.2, borderRadius: 16, overflow: 'hidden', boxShadow: '0 4px 14px rgba(0,0,0,0.18)' },
+  collectionCardContent: { flex: 1, padding: 10, gap: 7 },
   collectionTopRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   collectionIcon: { width: 32, height: 32, borderRadius: 10, alignItems: 'center', justifyContent: 'center' },
   emoji: { fontSize: 17 },

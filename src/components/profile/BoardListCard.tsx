@@ -22,58 +22,68 @@ export function BoardListCard({
   variant = 'board',
 }: BoardListCardProps) {
   const [hovered, setHovered] = useState(false);
+  const [pressed, setPressed] = useState(false);
   const count = Math.max(0, Number(repositoryCount) || 0);
   const countLabel = `${count} ${count === 1 ? 'repository' : 'repositories'}`;
 
   return (
-    <Pressable
-      accessibilityHint="Opens the repositories saved in this list"
-      accessibilityLabel={`${name}, ${countLabel}`}
-      accessibilityRole="button"
-      onHoverIn={() => setHovered(true)}
-      onHoverOut={() => setHovered(false)}
-      onPress={onPress}
-      style={({ pressed }) => [
+    <View
+      style={[
         styles.card,
         compact ? styles.cardCompact : styles.cardRegular,
         hovered && styles.cardHovered,
         pressed && styles.cardPressed,
       ]}
     >
-      <View style={[styles.cover, compact && styles.coverCompact]}>
-        {variant === 'pinned' ? (
-          <Pin color={APP_THEME.primary} size={compact ? 18 : 22} strokeWidth={1.9} />
-        ) : (
-          <FolderOpen color={APP_THEME.primary} size={compact ? 19 : 23} strokeWidth={1.8} />
-        )}
-      </View>
+      <View pointerEvents="none" style={styles.contentRow}>
+        <View style={[styles.cover, compact && styles.coverCompact]}>
+          {variant === 'pinned' ? (
+            <Pin color={APP_THEME.primary} size={compact ? 18 : 22} strokeWidth={1.9} />
+          ) : (
+            <FolderOpen color={APP_THEME.primary} size={compact ? 19 : 23} strokeWidth={1.8} />
+          )}
+        </View>
 
-      <View style={styles.copy}>
-        <Text numberOfLines={1} style={[styles.name, compact && styles.nameCompact]}>
-          {name}
-        </Text>
-        {description ? (
-          <Text numberOfLines={2} style={[styles.description, compact && styles.descriptionCompact]}>
-            {description}
+        <View style={styles.copy}>
+          <Text numberOfLines={1} style={[styles.name, compact && styles.nameCompact]}>
+            {name}
           </Text>
-        ) : null}
-        <Text style={[styles.count, compact && styles.countCompact]}>{countLabel}</Text>
+          {description ? (
+            <Text numberOfLines={2} style={[styles.description, compact && styles.descriptionCompact]}>
+              {description}
+            </Text>
+          ) : null}
+          <Text style={[styles.count, compact && styles.countCompact]}>{countLabel}</Text>
+        </View>
+
+        <ChevronRight color="#77767C" size={compact ? 17 : 20} strokeWidth={2} />
       </View>
 
-      <ChevronRight color="#5D5C62" size={compact ? 17 : 20} strokeWidth={2} />
-    </Pressable>
+      <Pressable
+        accessibilityHint="Opens the repositories saved in this list"
+        accessibilityLabel={`${name}, ${countLabel}`}
+        accessibilityRole="button"
+        onHoverIn={() => setHovered(true)}
+        onHoverOut={() => setHovered(false)}
+        onPress={onPress}
+        onPressIn={() => setPressed(true)}
+        onPressOut={() => setPressed(false)}
+        style={StyleSheet.absoluteFill}
+      />
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
   card: {
     width: '100%',
-    flexDirection: 'row',
-    alignItems: 'center',
     borderRadius: 18,
     borderCurve: 'continuous',
-    backgroundColor: '#151515',
-    gap: 13,
+    backgroundColor: '#1D1D1F',
+    borderWidth: 1,
+    borderColor: '#2F2F32',
+    overflow: 'hidden',
+    boxShadow: '0 3px 12px rgba(0,0,0,0.18)',
   },
   cardRegular: {
     minHeight: 84,
@@ -86,11 +96,17 @@ const styles = StyleSheet.create({
     paddingVertical: 11,
   },
   cardPressed: {
-    opacity: 0.72,
+    opacity: 0.78,
     transform: [{ scale: 0.992 }],
   },
   cardHovered: {
     backgroundColor: '#1B1B1B',
+  },
+  contentRow: {
+    width: '100%',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
   },
   cover: {
     width: 48,
