@@ -291,7 +291,17 @@ export async function getSocialProfile(req: AuthRequest, res: Response): Promise
           ORDER BY snapshot.observed_at DESC
           LIMIT 1
         ) stats ON true
-        WHERE repo.status='active' AND lower(repo.owner)=lower(profile.handle)
+        WHERE repo.status='active'
+          AND (
+            (
+              repo.owner_github_id IS NOT NULL
+              AND profile.provider_subject=repo.owner_github_id::text
+            )
+            OR (
+              (repo.owner_github_id IS NULL OR profile.provider_subject IS NULL)
+              AND lower(repo.owner)=lower(profile.handle)
+            )
+          )
       ),'[]'::json) AS repositories
     FROM app.social_profiles profile
     LEFT JOIN app.users claimed_user ON claimed_user.user_id=profile.claimed_by_user_id

@@ -213,9 +213,11 @@ export async function claimVerifiedGithubProfile(
     WHERE profile_id=${canonicalId}::uuid
     RETURNING follower_id,created_at
   `;
+  const affectedFollowerIds = new Set<string>();
   let insertedCount = 0;
   for (const relationship of externalFollowers) {
     const followerId = String(relationship.follower_id);
+    affectedFollowerIds.add(followerId);
     if (followerId === claim.userId) {
       await tx`
         UPDATE app.user_stats
@@ -246,6 +248,9 @@ export async function claimVerifiedGithubProfile(
       SET followers_count=followers_count+${insertedCount},updated_at=now()
       WHERE user_id=${claim.userId}::uuid
     `;
+  }
+  for (const followerId of affectedFollowerIds) {
+    await bumpFeedVersion(tx, followerId);
   }
   return canonicalId;
 }

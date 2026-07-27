@@ -170,9 +170,27 @@ integration('registered v2 HTTP paths complete controlled integration flows', as
       UPDATE app.users SET github_handle='renamed-owner' WHERE user_id=${ownerUserId}::uuid
     `;
     await sqlClient`
+      UPDATE app.repos
+      SET owner='renamed-owner'
+      WHERE repo_id=${repoId}::uuid
+    `;
+    await sqlClient`
       UPDATE app.users SET github_id='9002',github_handle='owner',github_identity_verified_at=now()
       WHERE user_id=${spoofOwnerUserId}::uuid
     `;
+
+    const renamedSocialProfile = await fetch(`${base}/api/v2/profiles/${ownerProfileId}`, {
+      headers: authHeaders,
+    });
+    assert.equal(renamedSocialProfile.status, 200);
+    const renamedSocialProfileData = (await renamedSocialProfile.json()) as {
+      data: { repositories: Array<{ repo_id: string }> };
+    };
+    assert.deepEqual(
+      renamedSocialProfileData.data.repositories.map((repository) => repository.repo_id),
+      [repoId],
+      'GitHub owner IDs keep profile repositories connected after a handle rename',
+    );
 
     const ownerProfile = await fetch(`${base}/api/v2/users/${ownerUserId}`, {
       headers: authHeaders,
