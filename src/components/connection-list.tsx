@@ -145,10 +145,10 @@ const ConnectionRow = memo(function ConnectionRow({
   return (
     <View style={[styles.row, compact && styles.rowCompact]}>
       <Pressable
-        accessibilityLabel={`Open ${person.username}'s profile`}
+        accessibilityLabel={`Open ${person.username}'s profile photo`}
         accessibilityRole="button"
         onPress={openProfile}
-        style={({ pressed }) => [styles.profileLink, pressed && styles.pressed]}
+        style={({ pressed }) => [styles.avatarLink, pressed && styles.pressed]}
       >
         {person.avatar_url ? (
           <Image
@@ -174,22 +174,29 @@ const ConnectionRow = memo(function ConnectionRow({
             </Text>
           </View>
         )}
+      </Pressable>
 
-        <View style={styles.personText}>
-          <Text numberOfLines={1} style={[styles.displayName, compact && styles.displayNameCompact]}>
-            {normalizedUsername}
-          </Text>
-          <Text numberOfLines={1} style={styles.username}>
-            {secondaryName}
-          </Text>
-        </View>
+      <Pressable
+        accessibilityLabel={`Open ${person.username}'s profile`}
+        accessibilityRole="button"
+        onPress={openProfile}
+        style={({ pressed }) => [styles.personLink, pressed && styles.pressed]}
+      >
+        <Text numberOfLines={1} style={[styles.displayName, compact && styles.displayNameCompact]}>
+          {normalizedUsername}
+        </Text>
+        <Text numberOfLines={1} style={styles.username}>
+          {secondaryName}
+        </Text>
       </Pressable>
 
       {!isSelf ? (
-        <View style={styles.actionColumn}>
+        <View style={[styles.actionColumn, following && styles.followingActionFrame]}>
           <FollowButton
             compact
             disabled={!stateKnown}
+            followingLabelStyle={styles.followingActionLabel}
+            followingStyle={styles.followingAction}
             isFollowing={following}
             onFollowingChange={handleFollowingChange}
             stateKnown={stateKnown}
@@ -606,26 +613,50 @@ const styles = StyleSheet.create({
     paddingHorizontal: 0,
     gap: 8,
   },
-  profileLink: {
+  avatarLink: {
+    flexShrink: 0,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  personLink: {
     flex: 1,
     minWidth: 0,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
+    justifyContent: 'center',
+    gap: 2,
   },
   actionColumn: {
     width: 88,
+    height: 32,
     flexShrink: 0,
     marginLeft: 'auto',
-    alignItems: 'flex-end',
+    alignItems: 'center',
     justifyContent: 'center',
+    borderRadius: 10,
+    borderCurve: 'continuous',
+    overflow: 'hidden',
+  },
+  followingActionFrame: {
+    borderWidth: 1.5,
+    borderColor: '#63E08A',
+    backgroundColor: 'rgba(99,224,138,0.08)',
+    boxShadow: '0 2px 8px rgba(99,224,138,0.16)',
   },
   followAction: {
-    width: 88,
-    minWidth: 88,
-    height: 30,
-    borderRadius: 6,
-    paddingHorizontal: 10,
+    width: '100%',
+    minWidth: 0,
+    height: '100%',
+    borderRadius: 9,
+    borderCurve: 'continuous',
+    paddingHorizontal: 0,
+  },
+  followingAction: {
+    borderWidth: 0,
+    backgroundColor: 'transparent',
+  },
+  followingActionLabel: {
+    width: '100%',
+    color: '#63E08A',
+    textAlign: 'center',
   },
   avatarFallback: {
     flexShrink: 0,
@@ -640,11 +671,6 @@ const styles = StyleSheet.create({
   },
   avatarTextCompact: {
     fontSize: 12,
-  },
-  personText: {
-    flex: 1,
-    minWidth: 0,
-    gap: 2,
   },
   displayName: {
     color: REFERENCE_THEME.text,
