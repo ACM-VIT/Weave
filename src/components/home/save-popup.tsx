@@ -50,10 +50,7 @@ type SavePopupProps = {
 
 const SHEET_HORIZONTAL_MARGIN = 24;
 const SHEET_MAX_WIDTH = 480;
-const SHEET_BORDER_WIDTH = 1;
-const COLLECTION_LIST_HORIZONTAL_PADDING = 14;
-const COLLECTION_GRID_GAP = 8;
-const COLLECTION_COLUMN_COUNT = 2;
+const COLLECTION_GRID_GAP = 14;
 
 const palette = {
   background: REFERENCE_THEME.surface,
@@ -71,34 +68,16 @@ const palette = {
   danger: REFERENCE_THEME.danger,
 };
 
-function relativeTimestamp(value: string | null) {
-  if (!value) return 'No repositories yet';
-  const timestamp = new Date(value).getTime();
-  if (!Number.isFinite(timestamp)) return 'Recently updated';
-  const seconds = Math.max(0, Math.round((Date.now() - timestamp) / 1000));
-  if (seconds < 60) return 'Updated just now';
-  if (seconds < 3_600) return `Updated ${Math.floor(seconds / 60)}m ago`;
-  if (seconds < 86_400) return `Updated ${Math.floor(seconds / 3_600)}h ago`;
-  if (seconds < 604_800) return `Updated ${Math.floor(seconds / 86_400)}d ago`;
-  return `Updated ${new Date(value).toLocaleDateString()}`;
-}
-
 function collectionQueryKey(repositoryId?: string) {
   return ['save-collections', repositoryId] as const;
 }
 
-function CollectionLayoutPreview({
-  cardWidth,
-  loading = false,
-}: {
-  cardWidth: number;
-  loading?: boolean;
-}) {
+function CollectionLayoutPreview({ loading = false }: { loading?: boolean }) {
   return (
     <View style={styles.loadingList}>
       <View accessibilityLabel="Collection card layout" style={styles.skeletonGrid}>
         {[0, 1, 2, 3].map((item) => (
-          <View key={item} style={[styles.skeleton, { backgroundColor: palette.elevated, borderColor: palette.border, width: cardWidth }]}>
+          <View key={item} style={[styles.skeleton, { backgroundColor: palette.elevated, borderColor: palette.border }]}>
             <View style={styles.skeletonTopRow}>
               <View style={[styles.skeletonIcon, { backgroundColor: palette.elevatedStrong }]} />
               <View style={[styles.skeletonCheck, { borderColor: palette.tertiary }]} />
@@ -174,14 +153,6 @@ export function SavePopup({
   }, [collections, search]);
   const sheetWidth = Math.min(Math.max(width - SHEET_HORIZONTAL_MARGIN, 0), SHEET_MAX_WIDTH);
   const sheetHeight = Math.min(460, modalHeight * 0.82);
-  const collectionGridWidth = Math.max(
-    sheetWidth - (SHEET_BORDER_WIDTH * 2) - (COLLECTION_LIST_HORIZONTAL_PADDING * 2),
-    0,
-  );
-  const collectionCardWidth = Math.max(
-    (collectionGridWidth - (COLLECTION_GRID_GAP * (COLLECTION_COLUMN_COUNT - 1))) / COLLECTION_COLUMN_COUNT,
-    0,
-  );
 
   const haptic = useCallback(async (kind: 'selection' | 'success' = 'selection') => {
     if (process.env.EXPO_OS === 'web') return;
@@ -416,9 +387,9 @@ export function SavePopup({
               style={styles.collectionScroller}
             >
               {collectionsQuery.isLoading && collections.length === 0 ? (
-                <CollectionLayoutPreview cardWidth={collectionCardWidth} loading />
+                <CollectionLayoutPreview loading />
               ) : collectionsQuery.isError && collections.length === 0 ? (
-                <CollectionLayoutPreview cardWidth={collectionCardWidth} />
+                <CollectionLayoutPreview />
               ) : filteredCollections.length ? (
                 <>
                   <View style={styles.collectionGrid}>
@@ -437,7 +408,6 @@ export function SavePopup({
                             {
                               backgroundColor: selected ? `${accent}16` : palette.elevated,
                               borderColor: selected ? accent : palette.border,
-                              width: collectionCardWidth,
                             },
                             pressed && styles.pressed,
                           ]}
@@ -461,9 +431,6 @@ export function SavePopup({
                             <Text numberOfLines={1} style={[styles.collectionName, { color: palette.text }]}>{collection.name}</Text>
                             <Text numberOfLines={1} style={[styles.collectionMeta, { color: palette.secondary }]}>
                               {collection.repo_count} {collection.repo_count === 1 ? 'repository' : 'repositories'}
-                            </Text>
-                            <Text numberOfLines={1} style={[styles.collectionUpdated, { color: palette.tertiary }]}>
-                              {relativeTimestamp(collection.last_updated_at)}
                             </Text>
                           </View>
                         </Pressable>
@@ -610,13 +577,13 @@ export function SavePopup({
                     onPress={() => createMutation.mutate()}
                     style={({ pressed }) => [
                       styles.createSubmit,
-                      { backgroundColor: palette.accent },
+                      { backgroundColor: palette.saveAccent },
                       (!newCollectionName.trim() || createMutation.isPending) && styles.disabled,
                       pressed && styles.pressed,
                     ]}
                   >
-                    {createMutation.isPending ? <ActivityIndicator color={palette.accentText} /> : (
-                      <><Plus color={palette.accentText} size={18} /><Text style={[styles.createSubmitText, { color: palette.accentText }]}>Create and select</Text></>
+                    {createMutation.isPending ? <ActivityIndicator color={palette.saveAccentText} /> : (
+                      <Text style={[styles.createSubmitText, { color: palette.saveAccentText }]}>Create</Text>
                     )}
                   </Pressable>
                 </View>
@@ -645,22 +612,21 @@ const styles = StyleSheet.create({
   collectionList: { padding: 14, gap: 9 },
   loadingList: { minHeight: 190, position: 'relative' },
   previewLoadingOverlay: { position: 'absolute', left: 0, top: 0, right: 0, bottom: 0, alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(29,29,31,0.34)' },
-  skeletonGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: COLLECTION_GRID_GAP },
-  skeleton: { minHeight: 108, flexGrow: 0, flexShrink: 0, borderWidth: 1, borderRadius: 15, padding: 10, gap: 8 },
+  skeletonGrid: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between', rowGap: COLLECTION_GRID_GAP },
+  skeleton: { width: '30%', minHeight: 108, flexGrow: 0, flexShrink: 0, borderWidth: 1, borderRadius: 15, padding: 10, gap: 8 },
   skeletonTopRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   skeletonIcon: { width: 32, height: 32, borderRadius: 10 },
   skeletonCheck: { width: 20, height: 20, borderWidth: 1.4, borderRadius: 7 },
   skeletonLine: { width: '72%', height: 9, borderRadius: 5 },
   skeletonLineShort: { width: '48%', height: 7, borderRadius: 4 },
-  collectionGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: COLLECTION_GRID_GAP },
-  collectionCard: { minHeight: 108, flexGrow: 0, flexShrink: 0, borderWidth: 1.2, borderRadius: 16, padding: 10, gap: 7, boxShadow: '0 4px 14px rgba(0,0,0,0.18)' },
+  collectionGrid: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between', rowGap: COLLECTION_GRID_GAP },
+  collectionCard: { width: '30%', minHeight: 92, flexGrow: 0, flexShrink: 0, borderWidth: 1.2, borderRadius: 16, padding: 10, gap: 7, boxShadow: '0 4px 14px rgba(0,0,0,0.18)' },
   collectionTopRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   collectionIcon: { width: 32, height: 32, borderRadius: 10, alignItems: 'center', justifyContent: 'center' },
   emoji: { fontSize: 17 },
   collectionCopy: { gap: 1 },
   collectionName: { fontFamily: 'NataSans-SemiBold', fontSize: 13.5, lineHeight: 18 },
   collectionMeta: { fontFamily: 'NataSans-Regular', fontSize: 10.5, lineHeight: 14, fontVariant: ['tabular-nums'] },
-  collectionUpdated: { fontFamily: 'NataSans-Regular', fontSize: 9.5, lineHeight: 13 },
   checkbox: { width: 20, height: 20, borderRadius: 7, borderWidth: 1.4, alignItems: 'center', justifyContent: 'center' },
   centerState: { minHeight: 174, paddingHorizontal: 24, alignItems: 'center', justifyContent: 'center', gap: 8 },
   stateTitle: { fontFamily: 'NataSans-Bold', fontSize: 16, textAlign: 'center' },
