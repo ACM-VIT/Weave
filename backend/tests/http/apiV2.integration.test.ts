@@ -15,6 +15,8 @@ const spoofOwnerUserId = '00000000-0000-4000-8000-000000000204';
 const ownerUserId = '00000000-0000-4000-8000-000000000205';
 const ownerProfileId = '00000000-0000-4000-8000-000000000206';
 const externalProfileId = '00000000-0000-4000-8000-000000000207';
+const ingestionCanonicalProfileId = '00000000-0000-4000-8000-000000000208';
+const ingestionDuplicateProfileId = '00000000-0000-4000-8000-000000000209';
 
 async function seed(): Promise<void> {
   await sqlClient`
@@ -487,6 +489,26 @@ integration('registered v2 HTTP paths complete controlled integration flows', as
     const legacy = await fetch(`${base}/api/users/id/${userId}`, { headers: authHeaders });
     assert.equal(legacy.status, 404);
 
+    await sqlClient`
+      INSERT INTO app.social_profiles(
+        profile_id,provider,provider_subject,handle,profile_kind,claimed_by_user_id
+      ) VALUES
+        (${ingestionCanonicalProfileId}::uuid,'github','9003','former-owner','unknown',NULL),
+        (${ingestionDuplicateProfileId}::uuid,'github',NULL,'new-owner','organization',NULL)
+    `;
+    await sqlClient`
+      INSERT INTO app.social_profile_follows(follower_id,profile_id)
+      VALUES (${userId}::uuid,${ingestionDuplicateProfileId}::uuid)
+    `;
+    await sqlClient`
+      UPDATE app.user_stats
+      SET following_count=following_count+1
+      WHERE user_id=${userId}::uuid
+    `;
+    const feedVersionBeforeReconciliation = BigInt((await sqlClient`
+      SELECT feed_version FROM app.user_feed_state WHERE user_id=${userId}::uuid
+    `)[0].feed_version);
+
     const ingestion = await fetch(`${base}/api/internal/v2/ingestion/repositories/upsert`, {
       method: 'POST', headers: { 'x-internal-secret': process.env.INTERNAL_API_SECRET!, 'content-type': 'application/json' },
       body: JSON.stringify({ repositories: [{
@@ -503,6 +525,45 @@ integration('registered v2 HTTP paths complete controlled integration flows', as
       SELECT count(*) AS count FROM app.social_profiles
       WHERE provider='github' AND provider_subject='9003' AND lower(handle)='new-owner'
     `)[0].count), 1);
+    assert.equal(Number((await sqlClient`
+      SELECT count(*) AS count FROM app.social_profiles
+      WHERE profile_id=${ingestionDuplicateProfileId}::uuid
+    `)[0].count), 0);
+    assert.equal(Number((await sqlClient`
+      SELECT count(*) AS count
+      FROM app.social_profile_follows
+      WHERE follower_id=${userId}::uuid
+        AND profile_id=${ingestionCanonicalProfileId}::uuid
+    `)[0].count), 1);
+    assert.equal(
+      BigInt((await sqlClient`
+        SELECT feed_version FROM app.user_feed_state WHERE user_id=${userId}::uuid
+      `)[0].feed_version),
+      feedVersionBeforeReconciliation + 1n,
+    );
+    assert.deepEqual(
+      await feedPersistence.listFollowedRepositoryIds(userId, 10),
+      [ingested.mappings[0].repo_id],
+      'reconciled handle-only follows must include repositories owned by the immutable GitHub ID',
+    );
+    const ingestedOwnerProfile = await fetch(
+      `${base}/api/v2/profiles/${ingestionCanonicalProfileId}`,
+      { headers: authHeaders },
+    );
+    assert.equal(ingestedOwnerProfile.status, 200);
+    const ingestedOwnerProfileData = (await ingestedOwnerProfile.json()) as {
+      data: {
+        handle: string;
+        repositories: Array<{ repo_id: string }>;
+        viewer_follows_profile: boolean;
+      };
+    };
+    assert.equal(ingestedOwnerProfileData.data.handle, 'new-owner');
+    assert.equal(ingestedOwnerProfileData.data.viewer_follows_profile, true);
+    assert.deepEqual(
+      ingestedOwnerProfileData.data.repositories.map((repository) => repository.repo_id),
+      [ingested.mappings[0].repo_id],
+    );
 
     const status = await fetch(`${base}/api/internal/v2/operations/status`, {
       headers: { 'x-internal-secret': process.env.INTERNAL_API_SECRET! },

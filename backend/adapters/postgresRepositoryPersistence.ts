@@ -12,6 +12,7 @@ import {
   buildMlRepositoryFeaturePatch,
   buildMlRepositorySource,
 } from '../services/mlRepositoryPayloadService.js';
+import { reconcileGithubProfileForIngestion } from '../services/socialProfileService.js';
 
 function contentHash(repo: RepositoryUpsert): string {
   const hashable = { ...buildMlRepositorySource(repo, 'pending') } as Record<string, unknown>;
@@ -31,7 +32,19 @@ export class PostgresRepositoryPersistence implements RepositoryPersistencePort 
   async bulkUpsert(input: RepositoryUpsert[]): Promise<RepositoryUpsertResult[]> {
     return sqlClient.begin(async (tx) => {
       const results: RepositoryUpsertResult[] = [];
-      for (const repo of [...input].sort((a, b) => BigInt(a.github_id) < BigInt(b.github_id) ? -1 : 1)) {
+      const repositories = [...input].sort(
+        (a, b) => BigInt(a.github_id) < BigInt(b.github_id) ? -1 : 1,
+      );
+      const ownerIds = [...new Set(repositories.map((repo) => repo.owner_github_id))]
+        .sort((a, b) => BigInt(a) < BigInt(b) ? -1 : 1);
+      for (const ownerId of ownerIds) {
+        await tx`
+          SELECT pg_advisory_xact_lock(
+            hashtextextended(${'github-owner:' + ownerId},0)
+          )
+        `;
+      }
+      for (const repo of repositories) {
         // A repository row does not exist on its first ingestion, so a row lock
         // alone cannot serialize concurrent creators. The transaction-scoped
         // GitHub-ID lock keeps content versions and their outbox payload aligned.
@@ -59,25 +72,10 @@ export class PostgresRepositoryPersistence implements RepositoryPersistencePort 
           RETURNING repo_id
         `;
         const repoId = String(rows[0].repo_id);
-        await tx`
-          UPDATE app.social_profiles profile
-          SET provider_subject=${repo.owner_github_id},updated_at=now()
-          WHERE profile.provider='github'
-            AND profile.provider_subject IS NULL
-            AND profile.claimed_by_user_id IS NULL
-            AND lower(profile.handle)=lower(${repo.owner})
-            AND NOT EXISTS (
-              SELECT 1
-              FROM app.social_profiles identified
-              WHERE identified.provider='github'
-                AND identified.provider_subject=${repo.owner_github_id}
-            )
-        `;
-        await tx`
-          INSERT INTO app.social_profiles(provider,provider_subject,handle,profile_kind)
-          VALUES ('github',${repo.owner_github_id},${repo.owner},'unknown')
-          ON CONFLICT DO NOTHING
-        `;
+        await reconcileGithubProfileForIngestion(tx, {
+          githubId: repo.owner_github_id,
+          githubHandle: repo.owner,
+        });
         const changed = previous.length === 0 || previous[0].content_hash !== hash;
         const version = changed ? Number(previous[0]?.content_version ?? 0) + 1 : Number(previous[0].content_version);
         await tx`

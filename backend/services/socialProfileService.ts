@@ -17,6 +17,11 @@ type VerifiedGithubClaim = {
   avatarUrl?: string | null;
 };
 
+type GithubProfileIdentity = {
+  githubId: string;
+  githubHandle: string;
+};
+
 function domainError(message: string, statusCode: number): Error & { statusCode: number } {
   return Object.assign(new Error(message), { statusCode });
 }
@@ -129,10 +134,126 @@ export async function setSocialProfileFollowing({
   });
 }
 
+export async function reconcileGithubProfileForIngestion(
+  tx: TransactionSql,
+  identity: GithubProfileIdentity,
+): Promise<string | null> {
+  const matches = await tx`
+    SELECT profile_id,provider_subject,handle,claimed_by_user_id
+    FROM app.social_profiles
+    WHERE provider='github'
+      AND (
+        provider_subject=${identity.githubId}
+        OR (
+          provider_subject IS NULL
+          AND claimed_by_user_id IS NULL
+          AND lower(handle)=lower(${identity.githubHandle})
+        )
+      )
+    ORDER BY (provider_subject=${identity.githubId}) DESC,created_at ASC
+    FOR UPDATE
+  `;
+  let canonical = matches.find(
+    (profile) => String(profile.provider_subject ?? '') === identity.githubId,
+  ) ?? matches[0];
+  if (!canonical) {
+    const inserted = await tx`
+      INSERT INTO app.social_profiles(provider,provider_subject,handle,profile_kind)
+      VALUES ('github',${identity.githubId},${identity.githubHandle},'unknown')
+      ON CONFLICT DO NOTHING
+      RETURNING profile_id,provider_subject,handle,claimed_by_user_id
+    `;
+    canonical = inserted[0];
+    return canonical ? String(canonical.profile_id) : null;
+  }
+
+  const canonicalId = String(canonical.profile_id);
+  const duplicateIds = matches
+    .map((profile) => String(profile.profile_id))
+    .filter((profileId) => profileId !== canonicalId);
+  const affectedFollowerIds = new Set<string>();
+
+  if (canonical.provider_subject == null) {
+    const canonicalFollowers = await tx`
+      SELECT follower_id
+      FROM app.social_profile_follows
+      WHERE profile_id=${canonicalId}::uuid
+    `;
+    for (const relationship of canonicalFollowers) {
+      affectedFollowerIds.add(String(relationship.follower_id));
+    }
+  }
+
+  for (const duplicateId of duplicateIds) {
+    const duplicateFollowers = await tx`
+      SELECT follower_id
+      FROM app.social_profile_follows
+      WHERE profile_id=${duplicateId}::uuid
+    `;
+    for (const relationship of duplicateFollowers) {
+      affectedFollowerIds.add(String(relationship.follower_id));
+    }
+    const overlappingFollowers = await tx`
+      SELECT duplicate_follow.follower_id
+      FROM app.social_profile_follows duplicate_follow
+      JOIN app.social_profile_follows canonical_follow
+        ON canonical_follow.follower_id=duplicate_follow.follower_id
+       AND canonical_follow.profile_id=${canonicalId}::uuid
+      WHERE duplicate_follow.profile_id=${duplicateId}::uuid
+    `;
+    for (const overlap of overlappingFollowers) {
+      await tx`
+        UPDATE app.user_stats
+        SET following_count=GREATEST(0,following_count-1),updated_at=now()
+        WHERE user_id=${String(overlap.follower_id)}::uuid
+      `;
+    }
+    await tx`
+      UPDATE app.social_profiles canonical
+      SET display_name=COALESCE(canonical.display_name,duplicate.display_name),
+          avatar_url=COALESCE(canonical.avatar_url,duplicate.avatar_url),
+          profile_kind=CASE
+            WHEN canonical.profile_kind='unknown' THEN duplicate.profile_kind
+            ELSE canonical.profile_kind
+          END,
+          updated_at=now()
+      FROM app.social_profiles duplicate
+      WHERE canonical.profile_id=${canonicalId}::uuid
+        AND duplicate.profile_id=${duplicateId}::uuid
+    `;
+    await tx`
+      INSERT INTO app.social_profile_follows(follower_id,profile_id,created_at)
+      SELECT follower_id,${canonicalId}::uuid,created_at
+      FROM app.social_profile_follows
+      WHERE profile_id=${duplicateId}::uuid
+      ON CONFLICT DO NOTHING
+    `;
+    await tx`DELETE FROM app.social_profile_follows WHERE profile_id=${duplicateId}::uuid`;
+    await tx`DELETE FROM app.social_profiles WHERE profile_id=${duplicateId}::uuid`;
+  }
+
+  await tx`
+    UPDATE app.social_profiles
+    SET provider_subject=${identity.githubId},
+        handle=${identity.githubHandle},
+        updated_at=now()
+    WHERE profile_id=${canonicalId}::uuid
+  `;
+  for (const followerId of affectedFollowerIds) {
+    await bumpFeedVersion(tx, followerId);
+  }
+  return canonicalId;
+}
+
 export async function claimVerifiedGithubProfile(
   tx: TransactionSql,
   claim: VerifiedGithubClaim,
 ): Promise<string> {
+  await tx`
+    SELECT pg_advisory_xact_lock(
+      hashtextextended(${'github-owner:' + claim.githubId},0)
+    )
+  `;
   const matches = await tx`
     SELECT profile_id,provider_subject,handle,claimed_by_user_id
     FROM app.social_profiles
