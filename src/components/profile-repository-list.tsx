@@ -146,11 +146,13 @@ export function ProfileRepositoryList({
       </View>
 
       <FlatList
+        columnWrapperStyle={styles.rowColumns}
         contentContainerStyle={[
           styles.listContent,
           { paddingBottom: contentPaddingBottom },
           filteredRepositories.length === 0 && styles.emptyListContent,
         ]}
+        contentInsetAdjustmentBehavior="automatic"
         data={filteredRepositories}
         initialNumToRender={10}
         ItemSeparatorComponent={() => <View style={styles.separator} />}
@@ -158,29 +160,33 @@ export function ProfileRepositoryList({
         keyboardShouldPersistTaps="handled"
         keyExtractor={(repository) => repository.repo_id}
         ListEmptyComponent={emptyState}
+        numColumns={2}
         onRefresh={userId ? () => void repositoriesQuery.refetch() : undefined}
         refreshing={repositoriesQuery.isRefetching}
         renderItem={({ item }) => (
-          <Pressable
-            accessibilityHint="Opens this repository on GitHub"
-            accessibilityLabel={`Open ${item.full_name}`}
-            accessibilityRole="link"
-            onPress={() => void Linking.openURL(item.url).catch(() => undefined)}
-            style={({ pressed }) => [styles.row, compact && styles.rowCompact, pressed && styles.pressed]}
-          >
-            <View style={[styles.repoIcon, compact && styles.repoIconCompact]}>
-              <FolderGit2 color={REFERENCE_THEME.accentLight} size={compact ? 20 : 23} strokeWidth={1.8} />
-            </View>
-            <View style={styles.copy}>
-              <Text numberOfLines={1} style={[styles.name, compact && styles.nameCompact]}>{item.name}</Text>
-              <Text numberOfLines={1} style={styles.owner}>{item.owner}</Text>
-              <View style={styles.metrics}>
-                <Metric icon={<Star color="#F5C54D" fill="#F5C54D" size={11} />} value={item.star_count} />
-                <Metric icon={<GitFork color={REFERENCE_THEME.textTertiary} size={11} />} value={item.fork_count} />
-                {type === 'likes' ? <Metric icon={<Heart color={REFERENCE_THEME.accentLight} size={11} />} value={item.likes_count} /> : null}
+          <View style={[styles.row, compact && styles.rowCompact]}>
+            <View pointerEvents="none" style={styles.cardContent}>
+              <View style={[styles.repoIcon, compact && styles.repoIconCompact]}>
+                <FolderGit2 color={REFERENCE_THEME.accentLight} size={compact ? 20 : 23} strokeWidth={1.8} />
+              </View>
+              <View style={styles.copy}>
+                <Text numberOfLines={1} style={[styles.name, compact && styles.nameCompact]}>{item.name}</Text>
+                <Text numberOfLines={1} style={styles.owner}>{item.owner}</Text>
+                <View style={styles.metrics}>
+                  <Metric icon={<Star color="#F5C54D" fill="#F5C54D" size={11} />} value={item.star_count} />
+                  <Metric icon={<GitFork color={REFERENCE_THEME.textTertiary} size={11} />} value={item.fork_count} />
+                  {type === 'likes' ? <Metric icon={<Heart color={REFERENCE_THEME.accentLight} size={11} />} value={item.likes_count} /> : null}
+                </View>
               </View>
             </View>
-          </Pressable>
+            <Pressable
+              accessibilityHint="Opens this repository on GitHub"
+              accessibilityLabel={`Open ${item.full_name}`}
+              accessibilityRole="link"
+              onPress={() => void Linking.openURL(item.url).catch(() => undefined)}
+              style={({ pressed }) => [StyleSheet.absoluteFill, pressed && styles.cardPressedOverlay]}
+            />
+          </View>
         )}
         showsVerticalScrollIndicator={false}
         style={styles.list}
@@ -213,12 +219,15 @@ const styles = StyleSheet.create({
   list: { flex: 1 },
   listContent: { paddingHorizontal: 18 },
   emptyListContent: { flexGrow: 1 },
-  separator: { height: 10 },
-  row: { minHeight: 88, borderRadius: 18, borderCurve: 'continuous', paddingHorizontal: 13, paddingVertical: 11, flexDirection: 'row', alignItems: 'center', gap: 12, backgroundColor: REFERENCE_THEME.surface, borderWidth: StyleSheet.hairlineWidth, borderColor: REFERENCE_THEME.separator },
-  rowCompact: { minHeight: 78, paddingHorizontal: 10, gap: 9 },
+  rowColumns: { justifyContent: 'space-between' },
+  separator: { height: 14 },
+  row: { width: '48.3%', minHeight: 144, borderRadius: 18, borderCurve: 'continuous', overflow: 'hidden', backgroundColor: REFERENCE_THEME.surface, borderWidth: StyleSheet.hairlineWidth, borderColor: REFERENCE_THEME.separator, boxShadow: '0 3px 12px rgba(0,0,0,0.18)' },
+  rowCompact: { minHeight: 134 },
+  cardContent: { flex: 1, paddingHorizontal: 13, paddingVertical: 12, gap: 10 },
+  cardPressedOverlay: { backgroundColor: 'rgba(255,255,255,0.06)' },
   repoIcon: { width: 48, height: 48, flexShrink: 0, borderRadius: 14, alignItems: 'center', justifyContent: 'center', backgroundColor: REFERENCE_THEME.control },
   repoIconCompact: { width: 42, height: 42, borderRadius: 12 },
-  copy: { flex: 1, minWidth: 0, gap: 2 },
+  copy: { minWidth: 0, gap: 2 },
   name: { color: REFERENCE_THEME.text, fontFamily: 'NataSans-SemiBold', fontSize: 15, lineHeight: 19 },
   nameCompact: { fontSize: 13, lineHeight: 17 },
   owner: { color: REFERENCE_THEME.textSecondary, fontFamily: 'NataSans-Regular', fontSize: 12, lineHeight: 16 },

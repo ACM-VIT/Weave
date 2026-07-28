@@ -89,7 +89,7 @@ export class PostgresFeedPersistence implements FeedPersistencePort {
               AND profile.provider_subject=repo.owner_github_id::text
             )
             OR (
-              (repo.owner_github_id IS NULL OR profile.provider_subject IS NULL)
+              repo.owner_github_id IS NULL
               AND lower(repo.owner)=lower(profile.handle)
             )
           )
