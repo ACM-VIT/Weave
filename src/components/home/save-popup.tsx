@@ -50,10 +50,7 @@ type SavePopupProps = {
 
 const SHEET_HORIZONTAL_MARGIN = 24;
 const SHEET_MAX_WIDTH = 480;
-const SHEET_BORDER_WIDTH = 1;
-const COLLECTION_LIST_HORIZONTAL_PADDING = 14;
-const COLLECTION_GRID_GAP = 8;
-const COLLECTION_COLUMN_COUNT = 2;
+const COLLECTION_GRID_GAP = 14;
 
 const palette = {
   background: REFERENCE_THEME.surface,
@@ -65,38 +62,22 @@ const palette = {
   tertiary: REFERENCE_THEME.textTertiary,
   accent: REFERENCE_THEME.accent,
   accentText: '#07130A',
+  saveAccent: '#63E08A',
+  saveAccentText: '#071009',
   overlay: 'rgba(0,0,0,0.70)',
   danger: REFERENCE_THEME.danger,
 };
-
-function relativeTimestamp(value: string | null) {
-  if (!value) return 'No repositories yet';
-  const timestamp = new Date(value).getTime();
-  if (!Number.isFinite(timestamp)) return 'Recently updated';
-  const seconds = Math.max(0, Math.round((Date.now() - timestamp) / 1000));
-  if (seconds < 60) return 'Updated just now';
-  if (seconds < 3_600) return `Updated ${Math.floor(seconds / 60)}m ago`;
-  if (seconds < 86_400) return `Updated ${Math.floor(seconds / 3_600)}h ago`;
-  if (seconds < 604_800) return `Updated ${Math.floor(seconds / 86_400)}d ago`;
-  return `Updated ${new Date(value).toLocaleDateString()}`;
-}
 
 function collectionQueryKey(repositoryId?: string) {
   return ['save-collections', repositoryId] as const;
 }
 
-function CollectionLayoutPreview({
-  cardWidth,
-  loading = false,
-}: {
-  cardWidth: number;
-  loading?: boolean;
-}) {
+function CollectionLayoutPreview({ loading = false }: { loading?: boolean }) {
   return (
     <View style={styles.loadingList}>
       <View accessibilityLabel="Collection card layout" style={styles.skeletonGrid}>
         {[0, 1, 2, 3].map((item) => (
-          <View key={item} style={[styles.skeleton, { backgroundColor: palette.elevated, borderColor: palette.border, width: cardWidth }]}>
+          <View key={item} style={[styles.skeleton, { backgroundColor: palette.elevated, borderColor: palette.border }]}>
             <View style={styles.skeletonTopRow}>
               <View style={[styles.skeletonIcon, { backgroundColor: palette.elevatedStrong }]} />
               <View style={[styles.skeletonCheck, { borderColor: palette.tertiary }]} />
@@ -172,14 +153,6 @@ export function SavePopup({
   }, [collections, search]);
   const sheetWidth = Math.min(Math.max(width - SHEET_HORIZONTAL_MARGIN, 0), SHEET_MAX_WIDTH);
   const sheetHeight = Math.min(460, modalHeight * 0.82);
-  const collectionGridWidth = Math.max(
-    sheetWidth - (SHEET_BORDER_WIDTH * 2) - (COLLECTION_LIST_HORIZONTAL_PADDING * 2),
-    0,
-  );
-  const collectionCardWidth = Math.max(
-    (collectionGridWidth - (COLLECTION_GRID_GAP * (COLLECTION_COLUMN_COUNT - 1))) / COLLECTION_COLUMN_COUNT,
-    0,
-  );
 
   const haptic = useCallback(async (kind: 'selection' | 'success' = 'selection') => {
     if (process.env.EXPO_OS === 'web') return;
@@ -324,6 +297,12 @@ export function SavePopup({
     void haptic();
   };
 
+  const beginCollectionCreation = () => {
+    setMessage(null);
+    setIsCreating(true);
+    void haptic();
+  };
+
   const saveDisabled = saveMutation.isPending
     || collectionsQuery.isLoading
     || collectionsQuery.isFetching
@@ -408,9 +387,9 @@ export function SavePopup({
               style={styles.collectionScroller}
             >
               {collectionsQuery.isLoading && collections.length === 0 ? (
-                <CollectionLayoutPreview cardWidth={collectionCardWidth} loading />
+                <CollectionLayoutPreview loading />
               ) : collectionsQuery.isError && collections.length === 0 ? (
-                <CollectionLayoutPreview cardWidth={collectionCardWidth} />
+                <CollectionLayoutPreview />
               ) : filteredCollections.length ? (
                 <>
                   <View style={styles.collectionGrid}>
@@ -418,47 +397,47 @@ export function SavePopup({
                       const selected = selectedIds.has(collection.collection_id);
                       const accent = collection.color || palette.accent;
                       return (
-                        <Pressable
-                          accessibilityLabel={`${collection.name}, ${collection.repo_count} repositories`}
-                          accessibilityRole="checkbox"
-                          accessibilityState={{ checked: selected }}
+                        <View
                           key={collection.collection_id}
-                          onPress={() => toggleCollection(collection.collection_id)}
-                          style={({ pressed }) => [
+                          style={[
                             styles.collectionCard,
                             {
                               backgroundColor: selected ? `${accent}16` : palette.elevated,
                               borderColor: selected ? accent : palette.border,
-                              width: collectionCardWidth,
                             },
-                            pressed && styles.pressed,
                           ]}
                         >
-                          <View style={styles.collectionTopRow}>
-                            <View style={[styles.collectionIcon, { backgroundColor: `${accent}20` }]}>
-                              {collection.icon ? (
-                                <Text style={styles.emoji}>{collection.icon}</Text>
-                              ) : (
-                                <FolderHeart color={accent} size={18} />
-                              )}
+                          <View pointerEvents="none" style={styles.collectionCardContent}>
+                            <View style={styles.collectionTopRow}>
+                              <View style={[styles.collectionIcon, { backgroundColor: `${accent}20` }]}>
+                                {collection.icon ? (
+                                  <Text style={styles.emoji}>{collection.icon}</Text>
+                                ) : (
+                                  <FolderHeart color={accent} size={18} />
+                                )}
+                              </View>
+                              <Animated.View style={[
+                                styles.checkbox,
+                                { backgroundColor: selected ? accent : 'transparent', borderColor: selected ? accent : palette.tertiary },
+                              ]}>
+                                {selected ? <Check color="#101510" size={13} strokeWidth={3} /> : null}
+                              </Animated.View>
                             </View>
-                            <Animated.View style={[
-                              styles.checkbox,
-                              { backgroundColor: selected ? accent : 'transparent', borderColor: selected ? accent : palette.tertiary },
-                            ]}>
-                              {selected ? <Check color="#101510" size={13} strokeWidth={3} /> : null}
-                            </Animated.View>
+                            <View style={styles.collectionCopy}>
+                              <Text numberOfLines={1} style={[styles.collectionName, { color: palette.text }]}>{collection.name}</Text>
+                              <Text numberOfLines={1} style={[styles.collectionMeta, { color: palette.secondary }]}>
+                                {collection.repo_count} {collection.repo_count === 1 ? 'repository' : 'repositories'}
+                              </Text>
+                            </View>
                           </View>
-                          <View style={styles.collectionCopy}>
-                            <Text numberOfLines={1} style={[styles.collectionName, { color: palette.text }]}>{collection.name}</Text>
-                            <Text numberOfLines={1} style={[styles.collectionMeta, { color: palette.secondary }]}>
-                              {collection.repo_count} {collection.repo_count === 1 ? 'repository' : 'repositories'}
-                            </Text>
-                            <Text numberOfLines={1} style={[styles.collectionUpdated, { color: palette.tertiary }]}>
-                              {relativeTimestamp(collection.last_updated_at)}
-                            </Text>
-                          </View>
-                        </Pressable>
+                          <Pressable
+                            accessibilityLabel={`${collection.name}, ${collection.repo_count} repositories`}
+                            accessibilityRole="checkbox"
+                            accessibilityState={{ checked: selected }}
+                            onPress={() => toggleCollection(collection.collection_id)}
+                            style={StyleSheet.absoluteFill}
+                          />
+                        </View>
                       );
                     })}
                   </View>
@@ -485,31 +464,70 @@ export function SavePopup({
               ) : null}
 
               <View style={styles.footerActions}>
-                <Pressable
-                  accessibilityLabel="Create new collection"
-                  accessibilityRole="button"
-                  onPress={() => { setMessage(null); setIsCreating(true); void haptic(); }}
-                  style={({ pressed }) => [styles.newButton, { borderColor: palette.border }, pressed && styles.pressed]}
-                >
-                  <Plus color={palette.accent} size={18} />
-                  <Text numberOfLines={1} style={[styles.newButtonText, { color: palette.text }]}>New collection</Text>
-                </Pressable>
-                <Pressable
-                  accessibilityRole="button"
-                  accessibilityState={{ disabled: saveDisabled }}
-                  disabled={saveDisabled}
-                  onPress={() => saveMutation.mutate([...selectedIds])}
-                  style={({ pressed }) => [
-                    styles.saveButton,
-                    { backgroundColor: palette.accent },
-                    saveDisabled && styles.disabled,
-                    pressed && styles.pressed,
+                <View
+                  style={[
+                    styles.newButtonFrame,
+                    {
+                      backgroundColor: palette.elevatedStrong,
+                      borderColor: '#55555A',
+                    },
                   ]}
                 >
-                  {saveMutation.isPending ? <ActivityIndicator color={palette.accentText} /> : (
-                    <Text style={[styles.saveText, { color: palette.accentText }]}>Save ({selectedIds.size})</Text>
-                  )}
-                </Pressable>
+                  <View
+                    pointerEvents="none"
+                    style={{
+                      flex: 1,
+                      minHeight: 44,
+                      paddingHorizontal: 10,
+                      flexDirection: 'row',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      gap: 7,
+                    }}
+                  >
+                    <Plus color={palette.accent} size={18} strokeWidth={2.4} />
+                    <Text numberOfLines={1} style={[styles.newButtonText, { color: palette.text }]}>
+                      New collection
+                    </Text>
+                  </View>
+                  <Pressable
+                    accessibilityLabel="Create new collection"
+                    accessibilityRole="button"
+                    onPress={beginCollectionCreation}
+                    style={StyleSheet.absoluteFill}
+                  />
+                </View>
+
+                <View
+                  style={[
+                    styles.saveButtonFrame,
+                    { backgroundColor: palette.saveAccent },
+                    saveDisabled && styles.disabled,
+                  ]}
+                >
+                  <View
+                    pointerEvents="none"
+                    style={{
+                      flex: 1,
+                      minHeight: 44,
+                      paddingHorizontal: 12,
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                    }}
+                  >
+                    {saveMutation.isPending ? <ActivityIndicator color={palette.saveAccentText} /> : (
+                      <Text style={[styles.saveText, { color: palette.saveAccentText }]}>Save</Text>
+                    )}
+                  </View>
+                  <Pressable
+                    accessibilityLabel="Save repository to selected collections"
+                    accessibilityRole="button"
+                    accessibilityState={{ disabled: saveDisabled }}
+                    disabled={saveDisabled}
+                    onPress={() => saveMutation.mutate([...selectedIds])}
+                    style={StyleSheet.absoluteFill}
+                  />
+                </View>
               </View>
             </View>
 
@@ -563,13 +581,13 @@ export function SavePopup({
                     onPress={() => createMutation.mutate()}
                     style={({ pressed }) => [
                       styles.createSubmit,
-                      { backgroundColor: palette.accent },
+                      { backgroundColor: palette.saveAccent },
                       (!newCollectionName.trim() || createMutation.isPending) && styles.disabled,
                       pressed && styles.pressed,
                     ]}
                   >
-                    {createMutation.isPending ? <ActivityIndicator color={palette.accentText} /> : (
-                      <><Plus color={palette.accentText} size={18} /><Text style={[styles.createSubmitText, { color: palette.accentText }]}>Create and select</Text></>
+                    {createMutation.isPending ? <ActivityIndicator color={palette.saveAccentText} /> : (
+                      <Text style={[styles.createSubmitText, { color: palette.saveAccentText }]}>Create</Text>
                     )}
                   </Pressable>
                 </View>
@@ -598,29 +616,42 @@ const styles = StyleSheet.create({
   collectionList: { padding: 14, gap: 9 },
   loadingList: { minHeight: 190, position: 'relative' },
   previewLoadingOverlay: { position: 'absolute', left: 0, top: 0, right: 0, bottom: 0, alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(29,29,31,0.34)' },
-  skeletonGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: COLLECTION_GRID_GAP },
-  skeleton: { minHeight: 108, flexGrow: 0, flexShrink: 0, borderWidth: 1, borderRadius: 15, padding: 10, gap: 8 },
+  skeletonGrid: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between', rowGap: COLLECTION_GRID_GAP },
+  skeleton: { width: '30%', minHeight: 108, flexGrow: 0, flexShrink: 0, borderWidth: 1, borderRadius: 15, padding: 10, gap: 8 },
   skeletonTopRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   skeletonIcon: { width: 32, height: 32, borderRadius: 10 },
   skeletonCheck: { width: 20, height: 20, borderWidth: 1.4, borderRadius: 7 },
   skeletonLine: { width: '72%', height: 9, borderRadius: 5 },
   skeletonLineShort: { width: '48%', height: 7, borderRadius: 4 },
-  collectionGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: COLLECTION_GRID_GAP },
-  collectionCard: { minHeight: 108, flexGrow: 0, flexShrink: 0, borderWidth: 1.2, borderRadius: 16, padding: 10, gap: 7, boxShadow: '0 4px 14px rgba(0,0,0,0.18)' },
+  collectionGrid: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between', rowGap: COLLECTION_GRID_GAP },
+  collectionCard: { width: '31.5%', minHeight: 92, flexGrow: 0, flexShrink: 0, borderWidth: 1.2, borderRadius: 16, overflow: 'hidden', boxShadow: '0 4px 14px rgba(0,0,0,0.18)' },
+  collectionCardContent: { flex: 1, padding: 10, gap: 7 },
   collectionTopRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   collectionIcon: { width: 32, height: 32, borderRadius: 10, alignItems: 'center', justifyContent: 'center' },
   emoji: { fontSize: 17 },
   collectionCopy: { gap: 1 },
   collectionName: { fontFamily: 'NataSans-SemiBold', fontSize: 13.5, lineHeight: 18 },
   collectionMeta: { fontFamily: 'NataSans-Regular', fontSize: 10.5, lineHeight: 14, fontVariant: ['tabular-nums'] },
-  collectionUpdated: { fontFamily: 'NataSans-Regular', fontSize: 9.5, lineHeight: 13 },
   checkbox: { width: 20, height: 20, borderRadius: 7, borderWidth: 1.4, alignItems: 'center', justifyContent: 'center' },
   centerState: { minHeight: 174, paddingHorizontal: 24, alignItems: 'center', justifyContent: 'center', gap: 8 },
   stateTitle: { fontFamily: 'NataSans-Bold', fontSize: 16, textAlign: 'center' },
   stateBody: { fontFamily: 'NataSans-Regular', fontSize: 12.5, lineHeight: 18, textAlign: 'center' },
   footer: { borderTopWidth: 1, paddingHorizontal: 14, paddingTop: 10, paddingBottom: 14, gap: 9 },
-  footerActions: { flexDirection: 'row', gap: 8 },
-  newButton: { flex: 1, minHeight: 44, borderWidth: 1, borderRadius: 13, paddingHorizontal: 10, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6 },
+  footerActions: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  newButtonFrame: {
+    flex: 1,
+    minHeight: 44,
+    borderWidth: 1.2,
+    borderRadius: 13,
+    overflow: 'hidden',
+  },
+  saveButtonFrame: {
+    flex: 1.12,
+    minHeight: 44,
+    borderRadius: 13,
+    overflow: 'hidden',
+    boxShadow: '0 4px 14px rgba(48,209,88,0.28)',
+  },
   newButtonText: { flexShrink: 1, fontFamily: 'NataSans-SemiBold', fontSize: 12.5 },
   creationOverlay: { position: 'absolute', left: 0, top: 0, right: 0, bottom: 0, zIndex: 20, alignItems: 'center', justifyContent: 'center', padding: 18 },
   creationDim: { backgroundColor: 'rgba(4,6,4,0.78)' },
@@ -636,7 +667,6 @@ const styles = StyleSheet.create({
   createSubmitText: { fontFamily: 'NataSans-SemiBold', fontSize: 13.5 },
   messageRow: { minHeight: 22, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7 },
   messageText: { flexShrink: 1, fontFamily: 'NataSans-Medium', fontSize: 12, textAlign: 'center' },
-  saveButton: { flex: 1.15, minHeight: 44, borderRadius: 13, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 14 },
   saveText: { fontFamily: 'NataSans-Bold', fontSize: 13.5 },
   pressed: { opacity: 0.72, transform: [{ scale: 0.988 }] },
   disabled: { opacity: 0.5 },

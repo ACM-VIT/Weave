@@ -5,6 +5,7 @@ import {
   StyleSheet,
   Text,
   type StyleProp,
+  type TextStyle,
   type ViewStyle,
 } from 'react-native';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -27,6 +28,8 @@ export type FollowButtonProps = {
   onFollowingChange?: (following: boolean) => void;
   onError?: (error: Error) => void;
   style?: StyleProp<ViewStyle>;
+  followingStyle?: StyleProp<ViewStyle>;
+  followingLabelStyle?: StyleProp<TextStyle>;
   accentColor?: string;
   identityKey?: string | null;
 };
@@ -43,6 +46,8 @@ export function FollowButton({
   onFollowingChange,
   onError,
   style,
+  followingStyle,
+  followingLabelStyle,
   accentColor = REFERENCE_THEME.accent,
   identityKey,
 }: FollowButtonProps) {
@@ -148,6 +153,7 @@ export function FollowButton({
         failed && styles.failedButton,
         buttonDisabled && styles.disabledButton,
         pressed && styles.pressedButton,
+        displayedFollowing && followingStyle,
         style,
       ]}
     >
@@ -163,6 +169,7 @@ export function FollowButton({
             styles.label,
             compact && styles.labelCompact,
             displayedFollowing || neutral ? styles.followingLabel : styles.followLabel,
+            displayedFollowing && followingLabelStyle,
           ]}
         >
           {displayedFollowing ? 'Following' : 'Follow'}
