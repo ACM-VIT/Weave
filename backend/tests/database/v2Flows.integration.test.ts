@@ -123,6 +123,11 @@ integration('v2 database, outbox, and Redis feed flows preserve invariants', asy
     SELECT feed_version FROM app.user_feed_state WHERE user_id=${userId}::uuid
   `)[0].feed_version);
 
+  await sqlClient`
+    UPDATE app.social_profiles
+    SET handle='former-owner',status='deleted'
+    WHERE profile_id=${externalProfileId}::uuid
+  `;
   await ensureIdentityProfile({
     userId: claimantId,
     username: 'owner_user',
@@ -130,10 +135,13 @@ integration('v2 database, outbox, and Redis feed flows preserve invariants', asy
     githubHandle: 'owner',
     githubIdentityVerified: true,
   });
-  assert.equal(String((await sqlClient`
-    SELECT claimed_by_user_id FROM app.social_profiles
+  const claimedProfile = (await sqlClient`
+    SELECT claimed_by_user_id,handle,status FROM app.social_profiles
     WHERE profile_id=${externalProfileId}::uuid
-  `)[0].claimed_by_user_id), claimantId);
+  `)[0];
+  assert.equal(String(claimedProfile.claimed_by_user_id), claimantId);
+  assert.equal(String(claimedProfile.handle), 'owner');
+  assert.equal(String(claimedProfile.status), 'active');
   assert.equal(Number((await sqlClient`
     SELECT count(*) AS count FROM app.social_profile_follows
     WHERE profile_id=${externalProfileId}::uuid

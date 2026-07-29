@@ -363,6 +363,7 @@ export async function claimVerifiedGithubProfile(
         avatar_url=COALESCE(${claim.avatarUrl ?? null},avatar_url),
         profile_kind='user',
         claimed_by_user_id=${claim.userId}::uuid,
+        status='active',
         updated_at=now()
     WHERE profile_id=${canonicalId}::uuid
   `;
