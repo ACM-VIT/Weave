@@ -139,41 +139,78 @@ export async function reconcileGithubProfileForIngestion(
   identity: GithubProfileIdentity,
 ): Promise<string | null> {
   const matches = await tx`
-    SELECT profile_id,provider_subject,handle,claimed_by_user_id
+    SELECT profile_id,provider_subject,handle,claimed_by_user_id,status
     FROM app.social_profiles
     WHERE provider='github'
       AND (
         provider_subject=${identity.githubId}
         OR (
-          provider_subject IS NULL
-          AND claimed_by_user_id IS NULL
+          status='active'
           AND lower(handle)=lower(${identity.githubHandle})
         )
       )
     ORDER BY (provider_subject=${identity.githubId}) DESC,created_at ASC
     FOR UPDATE
   `;
+  const affectedFollowerIds = new Set<string>();
+  const identifiedHandleCollision = matches.find(
+    (profile) =>
+      profile.status === 'active'
+      && profile.provider_subject != null
+      && String(profile.provider_subject) !== identity.githubId
+      && String(profile.handle).toLowerCase() === identity.githubHandle.toLowerCase(),
+  );
+  if (identifiedHandleCollision) {
+    const collisionId = String(identifiedHandleCollision.profile_id);
+    const collisionFollowers = await tx`
+      SELECT follower_id
+      FROM app.social_profile_follows
+      WHERE profile_id=${collisionId}::uuid
+    `;
+    for (const relationship of collisionFollowers) {
+      affectedFollowerIds.add(String(relationship.follower_id));
+    }
+    await tx`
+      UPDATE app.social_profiles
+      SET status='deleted',updated_at=now()
+      WHERE profile_id=${collisionId}::uuid
+    `;
+  }
+
   let canonical = matches.find(
     (profile) => String(profile.provider_subject ?? '') === identity.githubId,
-  ) ?? matches[0];
+  ) ?? matches.find(
+    (profile) =>
+      profile.status === 'active'
+      && profile.provider_subject == null
+      && profile.claimed_by_user_id == null,
+  );
   if (!canonical) {
     const inserted = await tx`
       INSERT INTO app.social_profiles(provider,provider_subject,handle,profile_kind)
       VALUES ('github',${identity.githubId},${identity.githubHandle},'unknown')
       ON CONFLICT DO NOTHING
-      RETURNING profile_id,provider_subject,handle,claimed_by_user_id
+      RETURNING profile_id,provider_subject,handle,claimed_by_user_id,status
     `;
     canonical = inserted[0];
+    for (const followerId of affectedFollowerIds) {
+      await bumpFeedVersion(tx, followerId);
+    }
     return canonical ? String(canonical.profile_id) : null;
   }
 
   const canonicalId = String(canonical.profile_id);
   const duplicateIds = matches
+    .filter(
+      (profile) =>
+        profile.status === 'active'
+        && profile.provider_subject == null
+        && profile.claimed_by_user_id == null,
+    )
     .map((profile) => String(profile.profile_id))
     .filter((profileId) => profileId !== canonicalId);
-  const affectedFollowerIds = new Set<string>();
 
-  if (canonical.provider_subject == null) {
+  if (canonical.provider_subject == null || canonical.status !== 'active') {
     const canonicalFollowers = await tx`
       SELECT follower_id
       FROM app.social_profile_follows
@@ -236,6 +273,7 @@ export async function reconcileGithubProfileForIngestion(
     UPDATE app.social_profiles
     SET provider_subject=${identity.githubId},
         handle=${identity.githubHandle},
+        status='active',
         updated_at=now()
     WHERE profile_id=${canonicalId}::uuid
   `;

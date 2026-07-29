@@ -80,7 +80,9 @@ export const socialProfiles = appSchema.table('social_profiles', {
   uniqueIndex('social_profiles_provider_subject_uidx')
     .on(table.provider, table.providerSubject)
     .where(sql`${table.providerSubject} IS NOT NULL`),
-  uniqueIndex('social_profiles_provider_handle_uidx').on(table.provider, sql`lower(${table.handle})`),
+  uniqueIndex('social_profiles_provider_handle_uidx')
+    .on(table.provider, sql`lower(${table.handle})`)
+    .where(sql`${table.status}='active'`),
   uniqueIndex('social_profiles_claimed_user_uidx')
     .on(table.claimedByUserId)
     .where(sql`${table.claimedByUserId} IS NOT NULL`),

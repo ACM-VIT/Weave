@@ -17,6 +17,8 @@ const ownerProfileId = '00000000-0000-4000-8000-000000000206';
 const externalProfileId = '00000000-0000-4000-8000-000000000207';
 const ingestionCanonicalProfileId = '00000000-0000-4000-8000-000000000208';
 const ingestionDuplicateProfileId = '00000000-0000-4000-8000-000000000209';
+const renamedIngestionProfileId = '00000000-0000-4000-8000-000000000210';
+const recycledHandleProfileId = '00000000-0000-4000-8000-000000000211';
 
 async function seed(): Promise<void> {
   await sqlClient`
@@ -494,7 +496,9 @@ integration('registered v2 HTTP paths complete controlled integration flows', as
         profile_id,provider,provider_subject,handle,profile_kind,claimed_by_user_id
       ) VALUES
         (${ingestionCanonicalProfileId}::uuid,'github','9003','former-owner','unknown',NULL),
-        (${ingestionDuplicateProfileId}::uuid,'github',NULL,'new-owner','organization',NULL)
+        (${ingestionDuplicateProfileId}::uuid,'github',NULL,'new-owner','organization',NULL),
+        (${renamedIngestionProfileId}::uuid,'github','9004','former-recycled-owner','user',NULL),
+        (${recycledHandleProfileId}::uuid,'github','9005','recycled-owner','user',NULL)
     `;
     await sqlClient`
       INSERT INTO app.social_profile_follows(follower_id,profile_id)
@@ -511,16 +515,26 @@ integration('registered v2 HTTP paths complete controlled integration flows', as
 
     const ingestion = await fetch(`${base}/api/internal/v2/ingestion/repositories/upsert`, {
       method: 'POST', headers: { 'x-internal-secret': process.env.INTERNAL_API_SECRET!, 'content-type': 'application/json' },
-      body: JSON.stringify({ repositories: [{
-        github_id: '303', owner_github_id: '9003', full_name: 'new-owner/ingested', owner: 'new-owner', name: 'ingested',
-        url: 'https://github.com/new-owner/ingested', description: 'ingested', languages: [], topics: [],
-        star_count: 1, fork_count: 0, observed_at: new Date().toISOString(),
-      }] }),
+      body: JSON.stringify({ repositories: [
+        {
+          github_id: '303', owner_github_id: '9003', full_name: 'new-owner/ingested', owner: 'new-owner', name: 'ingested',
+          url: 'https://github.com/new-owner/ingested', description: 'ingested', languages: [], topics: [],
+          star_count: 1, fork_count: 0, observed_at: new Date().toISOString(),
+        },
+        {
+          github_id: '304', owner_github_id: '9004', full_name: 'recycled-owner/ingested',
+          owner: 'recycled-owner', name: 'ingested',
+          url: 'https://github.com/recycled-owner/ingested', description: 'ingested', languages: [], topics: [],
+          star_count: 1, fork_count: 0, observed_at: new Date().toISOString(),
+        },
+      ] }),
     });
     assert.equal(ingestion.status, 200);
     const ingested = await ingestion.json() as { mappings: Array<{ github_id: number; repo_id: string }> };
     assert.equal(ingested.mappings[0].github_id, '303');
     assert.match(ingested.mappings[0].repo_id, /^[0-9a-f-]{36}$/);
+    assert.equal(ingested.mappings[1].github_id, '304');
+    assert.match(ingested.mappings[1].repo_id, /^[0-9a-f-]{36}$/);
     assert.equal(Number((await sqlClient`
       SELECT count(*) AS count FROM app.social_profiles
       WHERE provider='github' AND provider_subject='9003' AND lower(handle)='new-owner'
@@ -529,6 +543,33 @@ integration('registered v2 HTTP paths complete controlled integration flows', as
       SELECT count(*) AS count FROM app.social_profiles
       WHERE profile_id=${ingestionDuplicateProfileId}::uuid
     `)[0].count), 0);
+    const recycledHandleProfiles = await sqlClient`
+      SELECT profile_id,provider_subject,status
+      FROM app.social_profiles
+      WHERE profile_id IN (
+        ${renamedIngestionProfileId}::uuid,
+        ${recycledHandleProfileId}::uuid
+      )
+      ORDER BY provider_subject
+    `;
+    assert.deepEqual(
+      recycledHandleProfiles.map((profile) => ({
+        profileId: String(profile.profile_id),
+        providerSubject: String(profile.provider_subject),
+        status: String(profile.status),
+      })),
+      [
+        { profileId: renamedIngestionProfileId, providerSubject: '9004', status: 'active' },
+        { profileId: recycledHandleProfileId, providerSubject: '9005', status: 'deleted' },
+      ],
+      'a recycled handle must not merge two identified GitHub profiles or abort the batch',
+    );
+    assert.equal(Number((await sqlClient`
+      SELECT count(*) AS count
+      FROM app.social_profiles
+      WHERE status='active' AND lower(handle)='recycled-owner'
+        AND provider_subject='9004'
+    `)[0].count), 1);
     assert.equal(Number((await sqlClient`
       SELECT count(*) AS count
       FROM app.social_profile_follows
