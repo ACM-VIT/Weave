@@ -53,7 +53,8 @@
           "resizeMode": "contain"
         }
       ],
-      "@sentry/react-native"
+      "@sentry/react-native",
+      "expo-web-browser"
     ],
     "experiments": {
       "typedRoutes": true,

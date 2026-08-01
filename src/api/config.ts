@@ -2,7 +2,7 @@ import { Platform } from 'react-native';
 import Constants from 'expo-constants';
 import * as Device from 'expo-device';
 
-const LOCAL_BACKEND_PORT = 5000;
+const LOCAL_BACKEND_PORT = 5001;
 
 const withoutTrailingSlash = (url: string): string => url.replace(/\/+$/, '');
 
