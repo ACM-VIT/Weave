@@ -44,7 +44,7 @@ import { getStorageItem } from '@/utils/storage';
 import { FollowButton } from './follow-button';
 
 const QUERY_STALE_TIME = 30_000;
-const ROW_GAP = 10;
+const ROW_GAP = 2;
 const EMPTY_FOLLOW_OVERRIDES = new Map<string, boolean>();
 
 export type ConnectionListProps = {
@@ -116,8 +116,10 @@ const ConnectionRow = memo(function ConnectionRow({
     (next: boolean) => onFollowingChange(person, next),
     [onFollowingChange, person],
   );
-  const avatarSize = compact ? 42 : 48;
+  const avatarSize = compact ? 44 : 48;
   const identity = connectionIdentity(person);
+  const normalizedUsername = person.username.replace(/^@/, '');
+  const secondaryName = person.full_name?.trim() || `@${normalizedUsername}`;
   const openProfile = useCallback(() => {
     router.push({
       pathname: '/user/[username]',
@@ -143,10 +145,10 @@ const ConnectionRow = memo(function ConnectionRow({
   return (
     <View style={[styles.row, compact && styles.rowCompact]}>
       <Pressable
-        accessibilityLabel={`Open ${person.username}'s profile`}
+        accessibilityLabel={`Open ${person.username}'s profile photo`}
         accessibilityRole="button"
         onPress={openProfile}
-        style={({ pressed }) => [styles.profileLink, pressed && styles.pressed]}
+        style={({ pressed }) => [styles.avatarLink, pressed && styles.pressed]}
       >
         {person.avatar_url ? (
           <Image
@@ -172,27 +174,37 @@ const ConnectionRow = memo(function ConnectionRow({
             </Text>
           </View>
         )}
+      </Pressable>
 
-        <View style={styles.personText}>
-          <Text numberOfLines={1} style={[styles.displayName, compact && styles.displayNameCompact]}>
-            {person.full_name || person.username}
-          </Text>
-          <Text numberOfLines={1} style={styles.username}>
-            @{person.username.replace(/^@/, '')}
-          </Text>
-        </View>
+      <Pressable
+        accessibilityLabel={`Open ${person.username}'s profile`}
+        accessibilityRole="button"
+        onPress={openProfile}
+        style={({ pressed }) => [styles.personLink, pressed && styles.pressed]}
+      >
+        <Text numberOfLines={1} style={[styles.displayName, compact && styles.displayNameCompact]}>
+          {normalizedUsername}
+        </Text>
+        <Text numberOfLines={1} style={styles.username}>
+          {secondaryName}
+        </Text>
       </Pressable>
 
       {!isSelf ? (
-        <FollowButton
-          compact={compact}
-          disabled={!stateKnown}
-          isFollowing={following}
-          onFollowingChange={handleFollowingChange}
-          stateKnown={stateKnown}
-          targetProfileId={person.profile_id}
-          targetUserId={person.user_id}
-        />
+        <View style={[styles.actionColumn, following && styles.followingActionFrame]}>
+          <FollowButton
+            compact
+            disabled={!stateKnown}
+            followingLabelStyle={styles.followingActionLabel}
+            followingStyle={styles.followingAction}
+            isFollowing={following}
+            onFollowingChange={handleFollowingChange}
+            stateKnown={stateKnown}
+            style={styles.followAction}
+            targetProfileId={person.profile_id}
+            targetUserId={person.user_id}
+          />
+        </View>
       ) : null}
     </View>
   );
@@ -569,7 +581,7 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   listContent: {
-    paddingHorizontal: 18,
+    paddingHorizontal: 16,
   },
   emptyListContent: {
     flexGrow: 1,
@@ -587,28 +599,64 @@ const styles = StyleSheet.create({
     fontSize: 12,
   },
   row: {
-    height: 76,
-    borderRadius: 18,
-    borderCurve: 'continuous',
-    paddingHorizontal: 13,
+    width: '100%',
+    minHeight: 64,
+    paddingHorizontal: 0,
+    paddingVertical: 8,
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 12,
-    backgroundColor: REFERENCE_THEME.surface,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: REFERENCE_THEME.separator,
+    gap: 8,
+    backgroundColor: 'transparent',
   },
   rowCompact: {
-    height: 68,
-    paddingHorizontal: 10,
-    gap: 9,
+    minHeight: 60,
+    paddingHorizontal: 0,
+    gap: 8,
   },
-  profileLink: {
+  avatarLink: {
+    flexShrink: 0,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  personLink: {
     flex: 1,
     minWidth: 0,
-    flexDirection: 'row',
+    justifyContent: 'center',
+    gap: 2,
+  },
+  actionColumn: {
+    width: 88,
+    height: 32,
+    flexShrink: 0,
+    marginLeft: 'auto',
     alignItems: 'center',
-    gap: 12,
+    justifyContent: 'center',
+    borderRadius: 10,
+    borderCurve: 'continuous',
+    overflow: 'hidden',
+  },
+  followingActionFrame: {
+    borderWidth: 1.5,
+    borderColor: '#63E08A',
+    backgroundColor: 'rgba(99,224,138,0.08)',
+    boxShadow: '0 2px 8px rgba(99,224,138,0.16)',
+  },
+  followAction: {
+    width: '100%',
+    minWidth: 0,
+    height: '100%',
+    borderRadius: 9,
+    borderCurve: 'continuous',
+    paddingHorizontal: 0,
+  },
+  followingAction: {
+    borderWidth: 0,
+    backgroundColor: 'transparent',
+  },
+  followingActionLabel: {
+    width: '100%',
+    color: '#63E08A',
+    textAlign: 'center',
   },
   avatarFallback: {
     flexShrink: 0,
@@ -624,11 +672,6 @@ const styles = StyleSheet.create({
   avatarTextCompact: {
     fontSize: 12,
   },
-  personText: {
-    flex: 1,
-    minWidth: 0,
-    gap: 2,
-  },
   displayName: {
     color: REFERENCE_THEME.text,
     fontFamily: 'NataSans-SemiBold',
@@ -636,8 +679,8 @@ const styles = StyleSheet.create({
     lineHeight: 19,
   },
   displayNameCompact: {
-    fontSize: 13,
-    lineHeight: 17,
+    fontSize: 14,
+    lineHeight: 18,
   },
   username: {
     color: REFERENCE_THEME.textSecondary,

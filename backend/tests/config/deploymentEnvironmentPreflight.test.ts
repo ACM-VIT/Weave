@@ -31,6 +31,11 @@ const productionEnvironment = {
   TRENDING_FALLBACK: 'false',
   TRENDING_INGESTION: 'true',
   WORKER_ROLE: '',
+  OUTBOX_ACTIVE_INTERVAL_MS: '250',
+  OUTBOX_IDLE_INTERVAL_MS: '30000',
+  FEED_RECONCILIATION_INTERVAL_MS: '60000',
+  FEED_RECONCILE_WITHIN_MS: '120000',
+  FEED_RESERVATION_TTL_MS: '300000',
 } as const;
 
 test('deployment preflight accepts the exact mobile callback and public HTTPS targets', () => {
@@ -116,5 +121,24 @@ test('deployment preflight requires the complete V2 path and disables non-ML fal
       TRENDING_FALLBACK: 'true',
     }),
     /TRENDING_FALLBACK=false/i,
+  );
+});
+
+test('deployment preflight rejects polling intervals that can miss expiring reservations', () => {
+  assert.throws(
+    () => validateDeploymentEnvironment({
+      ...productionEnvironment,
+      FEED_RECONCILIATION_INTERVAL_MS: '180000',
+      FEED_RECONCILE_WITHIN_MS: '120000',
+    }),
+    /interval <= reconcile window < reservation TTL/i,
+  );
+  assert.throws(
+    () => validateDeploymentEnvironment({
+      ...productionEnvironment,
+      OUTBOX_ACTIVE_INTERVAL_MS: '30000',
+      OUTBOX_IDLE_INTERVAL_MS: '1000',
+    }),
+    /idle.*at least.*active/i,
   );
 });

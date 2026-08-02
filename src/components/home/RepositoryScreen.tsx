@@ -331,20 +331,24 @@ export function RepositoryScreen({
 
         <View style={[styles.repoDetails, compact && styles.repoDetailsCompact]}>
           <View style={[styles.ownerRow, compact && styles.ownerRowCompact]}>
-            <Pressable
-              accessibilityLabel={`View ${repository.owner}'s profile`}
-              accessibilityRole="link"
-              hitSlop={6}
-              onPress={onOwnerPress}
-              style={({ pressed }) => [
+            <View
+              style={[
                 styles.avatar,
                 compact && styles.avatarCompact,
                 { backgroundColor: avatarColor },
-                pressed && styles.ownerPressed,
               ]}
             >
-              <Text style={styles.avatarText}>{getInitials(repository.owner)}</Text>
-            </Pressable>
+              <Text pointerEvents="none" style={styles.avatarText}>
+                {getInitials(repository.owner)}
+              </Text>
+              <Pressable
+                accessibilityLabel={`View ${repository.owner}'s profile`}
+                accessibilityRole="link"
+                hitSlop={6}
+                onPress={onOwnerPress}
+                style={StyleSheet.absoluteFill}
+              />
+            </View>
             <Pressable
               accessibilityLabel={`View ${repository.owner}'s profile`}
               accessibilityRole="link"
@@ -557,7 +561,6 @@ const styles = StyleSheet.create({
     borderRadius: 14,
   },
   avatarText: {
-    position: 'absolute',
     color: REFERENCE_THEME.text,
     fontFamily: 'NataSans-Bold',
     fontSize: 13,

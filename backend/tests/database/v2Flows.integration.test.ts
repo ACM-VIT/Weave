@@ -58,16 +58,16 @@ async function seed(): Promise<void> {
     INSERT INTO app.user_feed_state (user_id) VALUES (${userId}::uuid),(${claimantId}::uuid)
   `;
   await sqlClient`
-    INSERT INTO app.social_profiles(profile_id,provider,handle,profile_kind)
-    VALUES (${externalProfileId}::uuid,'github','owner','unknown')
+    INSERT INTO app.social_profiles(profile_id,provider,provider_subject,handle,profile_kind)
+    VALUES (${externalProfileId}::uuid,'github','424242','owner','unknown')
   `;
   await sqlClient`
     INSERT INTO app.social_profile_follows(follower_id,profile_id)
     VALUES (${userId}::uuid,${externalProfileId}::uuid)
   `;
   await sqlClient`
-    INSERT INTO app.repos (repo_id,github_id,full_name,owner,name,url,status)
-    VALUES (${repoId}::uuid,101,'owner/repo','owner','repo','https://github.com/owner/repo','active')
+    INSERT INTO app.repos (repo_id,github_id,owner_github_id,full_name,owner,name,url,status)
+    VALUES (${repoId}::uuid,101,424242,'owner/repo','owner','repo','https://github.com/owner/repo','active')
   `;
   await sqlClient`
     INSERT INTO app.repo_content (repo_id,content_hash,description,languages)
@@ -113,6 +113,21 @@ integration('v2 database, outbox, and Redis feed flows preserve invariants', asy
     SELECT onboarding_completed FROM app.users WHERE user_id=${userId}::uuid
   `)[0].onboarding_completed), true);
 
+  const feedPersistenceBeforeClaim = new PostgresFeedPersistence();
+  assert.deepEqual(
+    await feedPersistenceBeforeClaim.listFollowedRepositoryIds(userId, 10),
+    [repoId],
+    'repositories owned by followed external profiles participate in feed generation',
+  );
+  const feedVersionBeforeClaim = BigInt((await sqlClient`
+    SELECT feed_version FROM app.user_feed_state WHERE user_id=${userId}::uuid
+  `)[0].feed_version);
+
+  await sqlClient`
+    UPDATE app.social_profiles
+    SET handle='former-owner',status='deleted'
+    WHERE profile_id=${externalProfileId}::uuid
+  `;
   await ensureIdentityProfile({
     userId: claimantId,
     username: 'owner_user',
@@ -120,10 +135,13 @@ integration('v2 database, outbox, and Redis feed flows preserve invariants', asy
     githubHandle: 'owner',
     githubIdentityVerified: true,
   });
-  assert.equal(String((await sqlClient`
-    SELECT claimed_by_user_id FROM app.social_profiles
+  const claimedProfile = (await sqlClient`
+    SELECT claimed_by_user_id,handle,status FROM app.social_profiles
     WHERE profile_id=${externalProfileId}::uuid
-  `)[0].claimed_by_user_id), claimantId);
+  `)[0];
+  assert.equal(String(claimedProfile.claimed_by_user_id), claimantId);
+  assert.equal(String(claimedProfile.handle), 'owner');
+  assert.equal(String(claimedProfile.status), 'active');
   assert.equal(Number((await sqlClient`
     SELECT count(*) AS count FROM app.social_profile_follows
     WHERE profile_id=${externalProfileId}::uuid
@@ -138,6 +156,14 @@ integration('v2 database, outbox, and Redis feed flows preserve invariants', asy
   assert.equal(Number((await sqlClient`
     SELECT followers_count FROM app.user_stats WHERE user_id=${claimantId}::uuid
   `)[0].followers_count), 1);
+  const feedVersionAfterClaim = BigInt((await sqlClient`
+    SELECT feed_version FROM app.user_feed_state WHERE user_id=${userId}::uuid
+  `)[0].feed_version);
+  assert.equal(
+    feedVersionAfterClaim,
+    feedVersionBeforeClaim + 1n,
+    'claim conversion invalidates each affected follower feed',
+  );
 
   // UUID ordering intentionally opposes client ordering. The latest action
   // must win, and feedback versions must follow the submitted sequence.

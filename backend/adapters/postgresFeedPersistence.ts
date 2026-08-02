@@ -124,19 +124,45 @@ export class PostgresFeedPersistence implements FeedPersistencePort {
     const boundedLimit = Math.max(0, Math.min(normalizedLimit, 500));
     if (boundedLimit === 0) return [];
     const rows = await sqlClient`
-      SELECT DISTINCT repo.repo_id, f.created_at AS followed_at, repo.updated_at
-      FROM app.follows f
-      JOIN app.users followed ON followed.user_id = f.following_id
-      JOIN app.repos repo ON repo.owner_github_id = CASE
-        WHEN followed.github_id ~ '^[1-9][0-9]*$' THEN followed.github_id::bigint
-        ELSE NULL
-      END
-      WHERE f.follower_id = ${userId}::uuid
-        AND followed.status = 'active'
-        AND followed.github_identity_verified_at IS NOT NULL
-        AND followed.github_id IS NOT NULL
-        AND repo.status = 'active'
-      ORDER BY f.created_at DESC, repo.updated_at DESC, repo.repo_id
+      WITH followed_repositories AS (
+        SELECT repo.repo_id,follow.created_at AS followed_at,repo.updated_at
+        FROM app.follows follow
+        JOIN app.users followed ON followed.user_id=follow.following_id
+        JOIN app.repos repo
+          ON repo.owner_github_id::text=followed.github_id
+        WHERE follow.follower_id=${userId}::uuid
+          AND followed.status='active'
+          AND followed.github_identity_verified_at IS NOT NULL
+          AND followed.github_id IS NOT NULL
+          AND repo.status='active'
+
+        UNION ALL
+
+        SELECT repo.repo_id,external_follow.created_at AS followed_at,repo.updated_at
+        FROM app.social_profile_follows external_follow
+        JOIN app.social_profiles profile
+          ON profile.profile_id=external_follow.profile_id
+        JOIN app.repos repo
+          ON (
+            (
+              repo.owner_github_id IS NOT NULL
+              AND profile.provider_subject=repo.owner_github_id::text
+            )
+            OR (
+              repo.owner_github_id IS NULL
+              AND lower(repo.owner)=lower(profile.handle)
+            )
+          )
+        WHERE external_follow.follower_id=${userId}::uuid
+          AND profile.provider='github'
+          AND profile.status='active'
+          AND profile.claimed_by_user_id IS NULL
+          AND repo.status='active'
+      )
+      SELECT repo_id,max(followed_at) AS followed_at,max(updated_at) AS updated_at
+      FROM followed_repositories
+      GROUP BY repo_id
+      ORDER BY max(followed_at) DESC,max(updated_at) DESC,repo_id
       LIMIT ${boundedLimit}
     `;
     return rows.map((row) => String(row.repo_id));

@@ -182,6 +182,13 @@
       "when": 1784770000001,
       "tag": "0022_repo_owner_github_identity",
       "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1785292200000,
+      "tag": "0023_active_social_profile_handles",
+      "breakpoints": true
     }
   ]
 }
