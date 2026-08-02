@@ -16,6 +16,14 @@ import { FeedShadowService } from '../services/feedShadowService.js';
 import { validateProductionIntegrations } from '../config/runtimeConfig.js';
 import { applyMlReadinessGate } from './mlReadiness.js';
 import { applyOutboxReadinessGate } from './outboxReadiness.js';
+import { PersonaRepairService } from '../services/personaRepairService.js';
+import { PostgresRepositoryPersistence } from '../adapters/postgresRepositoryPersistence.js';
+import { TrendingIngestionWorker } from '../workers/trendingIngestionWorker.js';
+
+function positiveInterval(value: string | undefined, fallback: number): number {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 60_000 ? parsed : fallback;
+}
 
 export class ApplicationRuntime {
   readonly flags = getV2FeatureFlags();
@@ -26,7 +34,14 @@ export class ApplicationRuntime {
     ? new MlV2Client()
     : null;
   readonly generation = this.ml && this.flags.ML_V2_RECOMMENDATIONS
-    ? new FeedGenerationService(this.persistence, this.queue, this.ml)
+    ? new FeedGenerationService(
+      this.persistence,
+      this.queue,
+      this.ml,
+      600,
+      15_000,
+      new PersonaRepairService(this.persistence, this.ml),
+    )
     : null;
   readonly shadow = this.ml ? new FeedShadowService(this.persistence, this.ml) : null;
   readonly outbox = new OutboxService();
@@ -36,7 +51,6 @@ export class ApplicationRuntime {
     this.generation
       ? (userId, limit, excluded) => this.generation!.generate(userId, Math.max(45, limit), excluded)
       : undefined,
-    this.flags.TRENDING_FALLBACK,
     1_500,
     25,
     process.env.JWT_SECRET,
@@ -63,6 +77,14 @@ export class ApplicationRuntime {
       const retention = new RetentionWorker();
       this.supervisor.register('data-reconciliation', 300_000, () => data.runOnce());
       this.supervisor.register('retention', 86_400_000, () => retention.runOnce());
+      if (this.flags.TRENDING_INGESTION) {
+        const trending = new TrendingIngestionWorker(new PostgresRepositoryPersistence());
+        this.supervisor.register(
+          'github-trending-ingestion',
+          positiveInterval(process.env.TRENDING_INGESTION_INTERVAL_MS, 21_600_000),
+          () => trending.runOnce(),
+        );
+      }
     }
   }
 

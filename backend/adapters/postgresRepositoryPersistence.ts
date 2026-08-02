@@ -153,13 +153,18 @@ export class PostgresRepositoryPersistence implements RepositoryPersistencePort 
           VALUES (${input.snapshot_id}::uuid,${repo.rank},${mapping.repo_id}::uuid,${repo.score ?? null},
             ${JSON.stringify({ star_count: repo.star_count ?? 0, fork_count: repo.fork_count ?? 0 })}::jsonb)
         `;
-        const payload = { job_id: crypto.randomUUID(), repo_id: mapping.repo_id,
-          feature_version: Date.parse(input.computed_at), features: buildMlRepositoryFeaturePatch(repo) };
-        await tx`
-          INSERT INTO telemetry.ml_outbox (job_type,aggregate_id,idempotency_key,payload)
-          VALUES ('repo_refresh',${mapping.repo_id}::uuid,${`repo_refresh:${input.snapshot_id}:${mapping.repo_id}`},${JSON.stringify(payload)}::jsonb)
-          ON CONFLICT (idempotency_key) DO NOTHING
-        `;
+        // New or content-changed repositories already have a repo_index job from
+        // bulkUpsert containing the same discovery features. A refresh must never
+        // overtake that index operation and target a point that does not exist.
+        if (!mapping.changed) {
+          const payload = { job_id: crypto.randomUUID(), repo_id: mapping.repo_id,
+            feature_version: Date.parse(input.computed_at), features: buildMlRepositoryFeaturePatch(repo) };
+          await tx`
+            INSERT INTO telemetry.ml_outbox (job_type,aggregate_id,idempotency_key,payload)
+            VALUES ('repo_refresh',${mapping.repo_id}::uuid,${`repo_refresh:${input.snapshot_id}:${mapping.repo_id}`},${JSON.stringify(payload)}::jsonb)
+            ON CONFLICT (idempotency_key) DO NOTHING
+          `;
+        }
       }
       await tx`UPDATE app.trending_snapshots SET active=false WHERE period=${input.period} AND snapshot_id<>${input.snapshot_id}::uuid`;
       const rows = await tx`

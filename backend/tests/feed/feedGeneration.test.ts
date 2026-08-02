@@ -7,6 +7,7 @@ import type { FeedPersistencePort } from '../../ports/feedPersistencePort.js';
 import type { RecommendationPort } from '../../ports/recommendationPort.js';
 import type { FeedQueuePort } from '../../redis/feedQueue.js';
 import { FeedGenerationService } from '../../services/feedGenerationService.js';
+import { MlRecommendationError } from '../../services/mlService.js';
 
 const userId = '00000000-0000-4000-8000-000000000001';
 const socialRepoId = '00000000-0000-4000-8000-000000000002';
@@ -42,9 +43,12 @@ function projection(repoId: string): RepositoryProjection {
 }
 
 class GenerationPersistence implements FeedPersistencePort {
+  inactive = new Set<string>();
   async getFeedVersion() { return 1n; }
   async listFollowedRepositoryIds() { return [socialRepoId]; }
-  async listActiveRepositories(repoIds: string[]) { return repoIds.map(projection); }
+  async listActiveRepositories(repoIds: string[]) {
+    return repoIds.filter((repoId) => !this.inactive.has(repoId)).map(projection);
+  }
   async getServeByRequest(): Promise<StoredServe | null> { return null; }
   async createServe(_input: CreateServeInput): Promise<StoredServe> { throw new Error('unused'); }
   async getTrendingFallback(): Promise<RepositoryProjection[]> { return []; }
@@ -52,9 +56,13 @@ class GenerationPersistence implements FeedPersistencePort {
 
 class GenerationQueue implements FeedQueuePort {
   replaced = false;
+  entries: Array<{ repo_id: string }> = [];
   async acquireGenerationLock() { return true; }
   async releaseGenerationLock() {}
-  async replace() { this.replaced = true; }
+  async replace(_userId: string, _version: bigint, entries: Array<{ repo_id: string }>) {
+    this.replaced = true;
+    this.entries = entries;
+  }
   async reserve(): Promise<never> { throw new Error('unused'); }
   async refill(): Promise<never> { throw new Error('unused'); }
   async commit() { return true; }
@@ -96,4 +104,50 @@ test('feed generation sends followed-owner repositories as bounded ML context', 
   assert.equal(result, 'generated');
   assert.deepEqual(recommendations.request?.social_repo_ids, [socialRepoId]);
   assert.equal(queue.replaced, true);
+});
+
+test('feed generation repairs a missing ML persona and retries exactly once', async () => {
+  const persistence = new GenerationPersistence();
+  const queue = new GenerationQueue();
+  const recommendations = new CapturingRecommendations();
+  let calls = 0;
+  const originalGenerate = recommendations.generate.bind(recommendations);
+  recommendations.generate = async (input) => {
+    calls++;
+    if (calls === 1) {
+      throw new MlRecommendationError(
+        'User vector unavailable', 503, 'persona_unavailable', 'User vector unavailable',
+      );
+    }
+    return originalGenerate(input);
+  };
+  let repairs = 0;
+
+  const result = await new FeedGenerationService(
+    persistence,
+    queue,
+    recommendations,
+    600,
+    15_000,
+    { repair: async () => { repairs++; } },
+  ).generate(userId, 45);
+
+  assert.equal(result, 'generated');
+  assert.equal(calls, 2);
+  assert.equal(repairs, 1);
+});
+
+test('feed generation drops stale ML repository IDs while preserving valid personalized ranking', async () => {
+  const persistence = new GenerationPersistence();
+  persistence.inactive.add(socialRepoId);
+  const queue = new GenerationQueue();
+
+  const result = await new FeedGenerationService(
+    persistence,
+    queue,
+    new CapturingRecommendations(),
+  ).generate(userId, 45);
+
+  assert.equal(result, 'generated');
+  assert.deepEqual(queue.entries.map((entry) => entry.repo_id), [otherRepoId]);
 });

@@ -6,6 +6,7 @@ import type {
 } from '../contracts/feed.v2.js';
 import type { FeedPersistencePort } from '../ports/feedPersistencePort.js';
 import { sqlClient } from '../db/index.js';
+import { buildMlOnboardingJob, hasMlEmbeddingContext } from '../services/mlOnboardingService.js';
 
 function projection(row: Record<string, unknown>): RepositoryProjection {
   return {
@@ -57,6 +58,65 @@ export class PostgresFeedPersistence implements FeedPersistencePort {
       RETURNING feed_version
     `;
     return BigInt(rows[0].feed_version);
+  }
+
+  async getMlOnboardingJob(userId: string) {
+    const rows = await sqlClient`
+      SELECT username,full_name,bio,github_handle,avatar_url,interests,skills,tech_stack,
+             profile_version,onboarding_completed
+      FROM app.users
+      WHERE user_id=${userId}::uuid AND status='active'
+      LIMIT 1
+    `;
+    const row = rows[0];
+    if (!row || row.onboarding_completed !== true) return null;
+    const job = buildMlOnboardingJob(userId, Number(row.profile_version), {
+      username: row.username == null ? null : String(row.username),
+      fullName: row.full_name == null ? null : String(row.full_name),
+      bio: row.bio == null ? null : String(row.bio),
+      githubUsername: row.github_handle == null ? null : String(row.github_handle),
+      avatarUrl: row.avatar_url == null ? null : String(row.avatar_url),
+      interests: Array.isArray(row.interests) ? row.interests.map(String) : [],
+      skills: Array.isArray(row.skills) ? row.skills.map(String) : [],
+      techStack: Array.isArray(row.tech_stack) ? row.tech_stack.map(String) : [],
+    });
+    return hasMlEmbeddingContext(job.profile) ? job : null;
+  }
+
+  async getRecentPersonalizedEntries(
+    userId: string,
+    feedVersion: bigint,
+    limit: number,
+    excludeRepoIds: string[],
+  ) {
+    const rows = await sqlClient`
+      WITH candidates AS (
+        SELECT item.repo_id,item.score,item.source,item.model_version,item.summary_id,serve.generation_id,
+               serve.created_at,item.position,
+               row_number() OVER (
+                 PARTITION BY item.repo_id ORDER BY serve.created_at DESC,item.position ASC
+               ) AS repo_rank
+        FROM telemetry.feed_serves serve
+        JOIN telemetry.feed_serve_items item USING(serve_id)
+        JOIN app.repos repo ON repo.repo_id=item.repo_id AND repo.status='active'
+        WHERE serve.user_id=${userId}::uuid
+          AND serve.feed_version=${feedVersion.toString()}::bigint
+          AND serve.source='personalized'
+          AND NOT (item.repo_id=ANY(${excludeRepoIds}::uuid[]))
+      )
+      SELECT repo_id,score,source,model_version,summary_id,generation_id
+      FROM candidates WHERE repo_rank=1
+      ORDER BY created_at DESC,position ASC
+      LIMIT ${Math.max(1, Math.min(100, limit))}
+    `;
+    return rows.map((row) => ({
+      repo_id: String(row.repo_id),
+      score: Number(row.score ?? 0),
+      source: String(row.source),
+      model_version: String(row.model_version),
+      summary_id: row.summary_id == null ? null : String(row.summary_id),
+      ...(row.generation_id == null ? {} : { generation_id: String(row.generation_id) }),
+    }));
   }
 
   async listFollowedRepositoryIds(userId: string, limit: number): Promise<string[]> {

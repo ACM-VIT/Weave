@@ -29,6 +29,7 @@ const productionEnvironment = {
   ML_FEEDBACK_OUTBOX: 'true',
   ML_QDRANT_ONLY: 'true',
   TRENDING_FALLBACK: 'false',
+  TRENDING_INGESTION: 'true',
   WORKER_ROLE: '',
 } as const;
 

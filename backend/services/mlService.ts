@@ -13,6 +13,52 @@ import type {
 import { getMlRuntimeConfig, type MlRuntimeConfig } from '../config/ml.js';
 import { isValidUuid } from '../utils/validators.js';
 
+export type MlRecommendationFailureKind =
+  | 'persona_unavailable'
+  | 'authentication'
+  | 'service_unavailable'
+  | 'contract';
+
+export class MlRecommendationError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+    readonly kind: MlRecommendationFailureKind,
+    readonly detail?: string,
+    readonly retryAfterMs?: number,
+  ) {
+    super(message);
+    this.name = 'MlRecommendationError';
+  }
+}
+
+function responseDetail(body: unknown): string | undefined {
+  if (typeof body === 'string') return body.trim() || undefined;
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return undefined;
+  const value = body as Record<string, unknown>;
+  for (const key of ['detail', 'error', 'message', 'code']) {
+    if (typeof value[key] === 'string' && value[key].trim()) return value[key].trim();
+  }
+  return undefined;
+}
+
+function recommendationFailureKind(status: number, body: unknown): MlRecommendationFailureKind {
+  const detail = `${responseDetail(body) ?? ''} ${JSON.stringify(body ?? '')}`.toLowerCase();
+  const mentionsPersona = /(user|persona|profile)/.test(detail);
+  const mentionsVector = /(vector|embedding)/.test(detail);
+  const mentionsMissing = /(missing|unavailable|not[ _-]?found|does not exist)/.test(detail);
+  if (mentionsPersona && mentionsVector && mentionsMissing) return 'persona_unavailable';
+  if (status === 401 || status === 403) return 'authentication';
+  if (status === 408 || status === 425 || status === 429 || status >= 500) {
+    return 'service_unavailable';
+  }
+  return 'contract';
+}
+
+export function isMissingPersonaRecommendationError(error: unknown): boolean {
+  return error instanceof MlRecommendationError && error.kind === 'persona_unavailable';
+}
+
 export class MlV2Client implements RecommendationPort, OutboxTransportPort {
   private consecutiveGenerateFailures = 0;
   private circuitOpenedAt = 0;
@@ -48,7 +94,7 @@ export class MlV2Client implements RecommendationPort, OutboxTransportPort {
       if (text) {
         try { body = JSON.parse(text); }
         catch {
-          if (responseFormat === 'required-json') throw new Error('ML returned invalid JSON.');
+          if (responseFormat === 'required-json' && response.ok) throw new Error('ML returned invalid JSON.');
           body = text;
         }
       }
@@ -70,8 +116,23 @@ export class MlV2Client implements RecommendationPort, OutboxTransportPort {
       throw new Error('ML recommendation circuit is open.');
     }
     try {
-      const { status, body } = await this.request('/api/v2/recommendations/generate', input, input.generation_id);
-      if (status < 200 || status >= 300) throw new Error(`ML recommendation request failed with status ${status}.`);
+      const { status, body, retryAfterMs } = await this.request(
+        '/api/v2/recommendations/generate',
+        input,
+        input.generation_id,
+      );
+      if (status < 200 || status >= 300) {
+        const detail = responseDetail(body);
+        throw new MlRecommendationError(
+          detail
+            ? `ML recommendation request failed with status ${status}: ${detail}`
+            : `ML recommendation request failed with status ${status}.`,
+          status,
+          recommendationFailureKind(status, body),
+          detail,
+          retryAfterMs,
+        );
+      }
       const value = body as MlRecommendationResponse;
       if (!value || value.schema_version !== 2 || value.generation_id !== input.generation_id
         || value.user_id !== input.user_id || value.feed_version !== input.feed_version
@@ -94,8 +155,12 @@ export class MlV2Client implements RecommendationPort, OutboxTransportPort {
       this.circuitOpenedAt = 0;
       return value;
     } catch (error) {
-      this.consecutiveGenerateFailures++;
-      if (this.consecutiveGenerateFailures >= this.circuitFailureThreshold) this.circuitOpenedAt = Date.now();
+      const tripsCircuit = !(error instanceof MlRecommendationError)
+        || error.kind === 'service_unavailable';
+      if (tripsCircuit) {
+        this.consecutiveGenerateFailures++;
+        if (this.consecutiveGenerateFailures >= this.circuitFailureThreshold) this.circuitOpenedAt = Date.now();
+      }
       throw error;
     }
   }

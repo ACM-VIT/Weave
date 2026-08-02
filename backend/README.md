@@ -100,7 +100,7 @@ The frontend cannot import or mutate repository metadata. It records likes, save
 }
 ```
 
-The response contains `serve_id`, `feed_version`, `source`, `model_version`, `items`, and `next_cursor`. Reusing the same `feed_request_id` is an idempotent replay and returns the same persisted serve. Pass a non-null `next_cursor` with a new `feed_request_id` to consume the next queue page. Cursors are opaque, signed, and bound to the user, session, feed version, and next position; invalid or stale cursors return `400`. `limit` is 1-25. If ML or Redis is unavailable, the backend serves a durable PostgreSQL fallback when possible.
+The response contains `serve_id`, `feed_version`, `source`, `model_version`, `items`, and `next_cursor`. Reusing the same `feed_request_id` is an idempotent replay and returns the same persisted serve. Pass a non-null `next_cursor` with a new `feed_request_id` to consume the next queue page. Cursors are opaque, signed, and bound to the user, session, feed version, and next position; invalid or stale cursors return `400`. `limit` is 1-25. Home feed fails closed: if live generation is unavailable, it may reuse only a previously served personalized ranking for the same user and feed version. It never substitutes a generic or trending list.
 
 ### Interactions
 
@@ -192,6 +192,12 @@ The response is `{mappings:[{github_id,repo_id,content_version,changed}]}`. The 
 ### Trending snapshot
 
 `POST /api/internal/v2/ingestion/trending/snapshots` accepts `{snapshot_id,period,computed_at,source,repositories}` where repository entries use the upsert shape plus unique non-negative `rank` and optional `score`. Activation is atomic: incomplete snapshots never become frontend-visible.
+
+The maintenance worker also builds a canonical GitHub trending candidate snapshot immediately on startup and every `TRENDING_INGESTION_INTERVAL_MS` (six hours by default) when `TRENDING_INGESTION=true`. These repositories expand the indexed candidate corpus; the home feed still requires the ML service to rank that corpus against the current user persona.
+
+Run the same bounded ingestion once with `npm run ingest:trending`; the command closes its database pool before exiting and is safe to retry because the daily snapshot ID is deterministic.
+
+To repair persona vectors after an ML collection restore or drift event, first dry-run `npm run reindex:personas -- --campaign=<incident-id>`, then repeat with `--execute`. The campaign key makes reruns idempotent and queues only completed users with real embedding context.
 
 ## Backend-to-ML API
 

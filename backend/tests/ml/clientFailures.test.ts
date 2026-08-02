@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { createServer, type RequestListener, type Server } from 'node:http';
 import test from 'node:test';
 
-import { MlV2Client } from '../../services/mlService.js';
+import { MlRecommendationError, MlV2Client } from '../../services/mlService.js';
 
 async function withServer(handler: RequestListener, run: (url: string) => Promise<void>): Promise<void> {
   const server: Server = createServer(handler);
@@ -136,6 +136,39 @@ test('ML recommendation client rejects an empty successful result', async () => 
       context: { cold_start: false },
     }), /contained no items/);
   });
+});
+
+test('missing user vectors are classified for persona repair and do not open the service circuit', async () => {
+  let requests = 0;
+  await withServer((_req, response) => {
+    requests++;
+    response.writeHead(503, { 'content-type': 'application/json' });
+    response.end(JSON.stringify({ detail: 'User profile vector is unavailable' }));
+  }, async (url) => {
+    const previousThreshold = process.env.ML_CIRCUIT_FAILURE_THRESHOLD;
+    process.env.ML_CIRCUIT_FAILURE_THRESHOLD = '1';
+    try {
+      const client = new MlV2Client({
+        baseUrl: url, internalSecret: 'test', timeoutMs: 500, maxResponseBytes: 10_000,
+      });
+      for (let attempt = 0; attempt < 2; attempt++) {
+        await assert.rejects(client.generate({
+          schema_version: 2,
+          generation_id: `00000000-0000-4000-8000-00000000000${attempt + 1}`,
+          user_id: '00000000-0000-4000-8000-000000000010',
+          feed_version: 1,
+          limit: 10,
+          exclude_repo_ids: [],
+          context: { cold_start: false },
+        }), (error: unknown) => error instanceof MlRecommendationError
+          && error.kind === 'persona_unavailable');
+      }
+    } finally {
+      if (previousThreshold === undefined) delete process.env.ML_CIRCUIT_FAILURE_THRESHOLD;
+      else process.env.ML_CIRCUIT_FAILURE_THRESHOLD = previousThreshold;
+    }
+  });
+  assert.equal(requests, 2);
 });
 
 test('ML recommendation client rejects non-canonical repository IDs', async () => {

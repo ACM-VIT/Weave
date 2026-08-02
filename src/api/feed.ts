@@ -40,10 +40,23 @@ export async function fetchFeed(token: string, cursor: string | null = null) {
         nextCursor: data.next_cursor,
       };
     } catch (error) {
-      const status = (error as { status?: number }).status;
-      if (status !== 409 || attempt === 2) throw error;
+      const failure = error as {
+        status?: number;
+        code?: string;
+        retryable?: boolean;
+        retryAfter?: string;
+      };
+      const shouldRetry = failure.status === 409
+        || (failure.status === 503
+          && failure.code === 'PERSONALIZED_FEED_UNAVAILABLE'
+          && failure.retryable === true);
+      if (!shouldRetry || attempt === 2) throw error;
       const retryAfter = Number((error as { retryAfter?: string }).retryAfter ?? 1);
-      await new Promise((resolve) => setTimeout(resolve, Math.max(100, retryAfter * 1_000)));
+      const exponentialDelay = 1_000 * 2 ** attempt;
+      await new Promise((resolve) => setTimeout(
+        resolve,
+        Math.min(5_000, Math.max(100, retryAfter * 1_000, exponentialDelay)),
+      ));
     }
   }
   throw new Error('Feed retry loop completed without a response.');

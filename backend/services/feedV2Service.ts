@@ -14,6 +14,15 @@ export class FeedRequestInProgressError extends Error {
   }
 }
 
+export class PersonalizedFeedUnavailableError extends Error {
+  readonly code = 'PERSONALIZED_FEED_UNAVAILABLE';
+
+  constructor(readonly cause?: unknown) {
+    super('Your personalized recommendations are still being prepared.');
+    this.name = 'PersonalizedFeedUnavailableError';
+  }
+}
+
 function responseFromServe(serve: Awaited<ReturnType<FeedPersistencePort['createServe']>>): FeedResponseV2 {
   return {
     serve_id: serve.serve_id,
@@ -31,7 +40,6 @@ export class FeedV2Service {
     private readonly persistence: FeedPersistencePort,
     private readonly queue: FeedQueuePort,
     private readonly generateOnMiss?: (userId: string, limit: number, excludeRepoIds: string[]) => Promise<unknown>,
-    private readonly fallbackEnabled = true,
     private readonly reservationWaitMs = 1_500,
     private readonly reservationPollMs = 25,
     cursorSecret?: string,
@@ -99,9 +107,10 @@ export class FeedV2Service {
       queueAvailable = false;
       reservation = { token, requestId: request.feed_request_id, items: [] };
       incrementMetric('feed_v2_redis_failures_total');
-      console.error('[FeedV2Service] Redis unavailable; serving durable fallback:', error);
+      console.error('[FeedV2Service] Redis unavailable; evaluating durable personalized recovery:', error);
     }
 
+    let generationError: unknown;
     if (queueAvailable && reservation.items.length === 0 && this.generateOnMiss) {
       try {
         const outcome = await this.generateOnMiss(userId, request.limit, []);
@@ -116,28 +125,30 @@ export class FeedV2Service {
         if (error instanceof ReservationOwnedError) {
           return this.waitForServe(userId, request.feed_request_id);
         }
-        console.error('[FeedV2Service] Generation failed; evaluating fallback:', error);
+        console.error('[FeedV2Service] Generation failed; evaluating durable personalized recovery:', error);
+        generationError = error;
         reservation = { token, requestId: request.feed_request_id, items: [] };
       }
     }
 
     let entries = reservation.items;
     incrementMetric(entries.length > 0 ? 'feed_v2_cache_hits_total' : 'feed_v2_cache_misses_total');
-    let source: FeedSource = 'personalized';
-    if (entries.length === 0) {
-      if (request.cursor === null) {
-        if (!this.fallbackEnabled) throw new Error('Feed queue is empty and trending fallback is disabled.');
-        const fallback = await this.persistence.getTrendingFallback(
-          request.limit,
-          [],
-          userId,
-        );
-        entries = fallback.map((repo) => ({
-          repo_id: repo.repo_id, score: 0, source: 'fallback', model_version: 'backend-fallback', summary_id: repo.summary_id,
-        }));
-        source = 'fallback';
-        incrementMetric('feed_v2_fallback_total');
+    const source: FeedSource = 'personalized';
+    if (entries.length === 0 && request.cursor === null
+      && this.persistence.getRecentPersonalizedEntries) {
+      entries = await this.persistence.getRecentPersonalizedEntries(
+        userId,
+        version,
+        request.limit,
+        [],
+      );
+      if (entries.length > 0) incrementMetric('feed_v2_durable_personalized_reuse_total');
+    }
+    if (entries.length === 0 && request.cursor === null) {
+      if (queueAvailable) {
+        await this.queue.release(userId, version, request.feed_request_id, token);
       }
+      throw new PersonalizedFeedUnavailableError(generationError);
     }
 
     const projections = await this.persistence.listActiveRepositories(

@@ -170,7 +170,7 @@ npm run build:android:artifact
 The command embeds and verifies
 `EXPO_PUBLIC_BACKEND_URL=https://weave-backend.krishang.dev/api`, preflights the
 live GitHub and Google OAuth broker contract, and updates
-`artifacts/Weave-v2.0.0-internal-QA.apk`. It defaults to `arm64-v8a` and reuses
+`artifacts/Weave-v2.0.0-internal-QA.apk`. It defaults to `armeabi-v7a,arm64-v8a` and reuses
 native Gradle outputs across ordinary frontend changes. EAS is not part of the
 Weave release workflow.
 

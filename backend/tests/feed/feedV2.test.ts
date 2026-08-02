@@ -1,11 +1,20 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import type { CreateServeInput, RepositoryProjection, StoredServe } from '../../contracts/feed.v2.js';
+import type {
+  CreateServeInput,
+  RecommendationEntry,
+  RepositoryProjection,
+  StoredServe,
+} from '../../contracts/feed.v2.js';
 import type { FeedPersistencePort } from '../../ports/feedPersistencePort.js';
 import type { FeedQueuePort, FeedReservation } from '../../redis/feedQueue.js';
 import { ReservationOwnedError } from '../../redis/feedQueue.js';
-import { FeedRequestInProgressError, FeedV2Service } from '../../services/feedV2Service.js';
+import {
+  FeedRequestInProgressError,
+  FeedV2Service,
+  PersonalizedFeedUnavailableError,
+} from '../../services/feedV2Service.js';
 
 const repo: RepositoryProjection = {
   repo_id: '00000000-0000-4000-8000-000000000001', full_name: 'owner/repo', description: null,
@@ -23,6 +32,7 @@ class FakePersistence implements FeedPersistencePort {
   missesBeforeServe = 0;
   fallbackCalls = 0;
   fallbackViewerId: string | undefined;
+  recentPersonalized: RecommendationEntry[] = [];
   async getFeedVersion() { return this.version; }
   async listFollowedRepositoryIds() { return []; }
   async getServeByRequest(_userId?: string, requestId?: string) {
@@ -35,6 +45,7 @@ class FakePersistence implements FeedPersistencePort {
     this.fallbackViewerId = viewerUserId;
     return [repo];
   }
+  async getRecentPersonalizedEntries() { return this.recentPersonalized; }
   async createServe(input: CreateServeInput) {
     this.serve = {
       ...input, serve_id: '00000000-0000-4000-8000-000000000099', created_at: new Date(0).toISOString(),
@@ -77,19 +88,42 @@ test('v2 feed reserves, persists, commits, and replays the same serve', async ()
   assert.equal(queue.released, 0);
 });
 
-test('v2 feed persists trending fallback when Redis is unavailable', async () => {
+test('v2 feed reuses only current-version personalized entries when Redis is unavailable', async () => {
   const persistence = new FakePersistence();
   const queue = new FakeQueue();
+  persistence.recentPersonalized = [{
+    repo_id: repo.repo_id,
+    score: 0.9,
+    source: 'semantic',
+    model_version: 'm1',
+    summary_id: null,
+    generation_id: '00000000-0000-4000-8000-000000000098',
+  }];
   queue.reserve = async () => { throw new Error('redis offline'); };
   const response = await new FeedV2Service(persistence, queue).getFeed(
     '00000000-0000-4000-8000-000000000030',
     { feed_request_id: '00000000-0000-4000-8000-000000000011',
       session_id: '00000000-0000-4000-8000-000000000020', limit: 10, cursor: null },
   );
-  assert.equal(response.source, 'fallback');
+  assert.equal(response.source, 'personalized');
   assert.equal(response.items[0].repo_id, repo.repo_id);
-  assert.equal(persistence.fallbackViewerId, '00000000-0000-4000-8000-000000000030');
+  assert.equal(persistence.fallbackCalls, 0);
   assert.equal(queue.committed, 0);
+});
+
+test('v2 feed fails closed instead of showing generic repositories', async () => {
+  const persistence = new FakePersistence();
+  const queue = new FakeQueue();
+  queue.reserve = async () => { throw new Error('redis offline'); };
+  await assert.rejects(
+    new FeedV2Service(persistence, queue).getFeed(
+      '00000000-0000-4000-8000-000000000030',
+      { feed_request_id: '00000000-0000-4000-8000-000000000017',
+        session_id: '00000000-0000-4000-8000-000000000020', limit: 10, cursor: null },
+    ),
+    PersonalizedFeedUnavailableError,
+  );
+  assert.equal(persistence.fallbackCalls, 0);
 });
 
 test('reservation ownership waits for and replays the durable serve', async () => {
@@ -112,7 +146,7 @@ test('reservation ownership waits for and replays the durable serve', async () =
   persistence.missesBeforeServe = 1;
   queue.reserve = async () => { throw new ReservationOwnedError(); };
 
-  const response = await new FeedV2Service(persistence, queue, undefined, true, 10, 0).getFeed(
+  const response = await new FeedV2Service(persistence, queue, undefined, 10, 0).getFeed(
     persistence.serve.user_id,
     { feed_request_id: persistence.serve.feed_request_id, session_id: persistence.serve.session_id, limit: 10, cursor: null },
   );
@@ -125,7 +159,7 @@ test('reservation ownership never falls back or creates a competing serve', asyn
   const queue = new FakeQueue();
   queue.reserve = async () => { throw new ReservationOwnedError(); };
   await assert.rejects(
-    new FeedV2Service(persistence, queue, undefined, true, 1, 0).getFeed(
+    new FeedV2Service(persistence, queue, undefined, 1, 0).getFeed(
       '00000000-0000-4000-8000-000000000030',
       { feed_request_id: '00000000-0000-4000-8000-000000000014',
         session_id: '00000000-0000-4000-8000-000000000020', limit: 10, cursor: null },
@@ -167,7 +201,7 @@ test('generation keeps reservation ownership and concurrent retries replay perso
   const service = new FeedV2Service(persistence, queue, async () => {
     generationStarted();
     await finish;
-  }, true, 1_000, 1);
+  }, 1_000, 1);
   const userId = '00000000-0000-4000-8000-000000000030';
   const request = {
     feed_request_id: '00000000-0000-4000-8000-000000000015',
@@ -206,7 +240,6 @@ test('coalesced generation waits for the lock owner to populate the queue', asyn
     persistence,
     queue,
     async () => 'coalesced',
-    true,
     1_500,
     1,
     'unit-test-feed-cursor-secret',
@@ -237,7 +270,7 @@ test('signed cursor consumes remaining queue pages and preserves global position
   });
   queue.depth = async () => available.length;
   const service = new FeedV2Service(
-    persistence, queue, undefined, true, 1_500, 25, 'unit-test-feed-cursor-secret',
+    persistence, queue, undefined, 1_500, 25, 'unit-test-feed-cursor-secret',
   );
   const userId = '00000000-0000-4000-8000-000000000030';
   const sessionId = '00000000-0000-4000-8000-000000000020';
@@ -264,7 +297,7 @@ test('feed cursor rejects tampering and stale feed versions', async () => {
   queue.reserve = async (_user, _version, requestId, _limit, token) => ({ requestId, token, items: remaining.splice(0, 1) });
   queue.depth = async () => 1;
   const service = new FeedV2Service(
-    persistence, queue, undefined, true, 1_500, 25, 'unit-test-feed-cursor-secret',
+    persistence, queue, undefined, 1_500, 25, 'unit-test-feed-cursor-secret',
   );
   const userId = '00000000-0000-4000-8000-000000000030';
   const sessionId = '00000000-0000-4000-8000-000000000020';

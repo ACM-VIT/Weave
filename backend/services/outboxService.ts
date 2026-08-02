@@ -68,6 +68,31 @@ export class OutboxService {
                 < (candidate.payload->>'feedback_version')::numeric
           )
         )
+        AND (
+          candidate.job_type<>'repo_refresh'
+          OR (
+            EXISTS (
+              SELECT 1 FROM telemetry.ml_outbox delivered_index
+              WHERE delivered_index.aggregate_id=candidate.aggregate_id
+                AND delivered_index.job_type='repo_index'
+                AND delivered_index.status='delivered'
+            )
+            AND NOT EXISTS (
+              SELECT 1 FROM telemetry.ml_outbox predecessor_index
+              WHERE predecessor_index.aggregate_id=candidate.aggregate_id
+                AND predecessor_index.job_type='repo_index'
+                AND predecessor_index.created_at<=candidate.created_at
+                AND predecessor_index.status<>'delivered'
+                AND NOT EXISTS (
+                  SELECT 1 FROM telemetry.ml_outbox successor_index
+                  WHERE successor_index.aggregate_id=predecessor_index.aggregate_id
+                    AND successor_index.job_type='repo_index'
+                    AND successor_index.status='delivered'
+                    AND successor_index.created_at>=predecessor_index.created_at
+                )
+            )
+          )
+        )
         ORDER BY
           CASE candidate.job_type
             WHEN 'onboard' THEN 0
@@ -167,5 +192,35 @@ export class OutboxService {
       `;
       return updated.length === 1;
     });
+  }
+
+  async reconcileSupersededRepositoryJobs(limit = 100): Promise<number> {
+    const boundedLimit = Math.max(1, Math.min(1_000, Math.trunc(limit)));
+    const rows = await sqlClient`
+      WITH repairable AS (
+        SELECT dead.outbox_id
+        FROM telemetry.ml_outbox dead
+        WHERE dead.status='dead'
+          AND dead.job_type IN ('repo_index','repo_refresh')
+          AND EXISTS (
+            SELECT 1 FROM telemetry.ml_outbox successor
+            WHERE successor.aggregate_id=dead.aggregate_id
+              AND successor.job_type IN ('repo_index','repo_refresh')
+              AND successor.status='delivered'
+              AND successor.created_at>=dead.created_at
+              AND successor.outbox_id<>dead.outbox_id
+          )
+        ORDER BY dead.created_at
+        LIMIT ${boundedLimit}
+        FOR UPDATE SKIP LOCKED
+      )
+      UPDATE telemetry.ml_outbox dead
+      SET status='superseded',claim_token=NULL,claimed_at=NULL,
+          last_error='Historical repository job superseded by a delivered canonical successor.'
+      FROM repairable
+      WHERE dead.outbox_id=repairable.outbox_id
+      RETURNING dead.outbox_id
+    `;
+    return rows.length;
   }
 }
