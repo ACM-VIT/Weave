@@ -1,17 +1,87 @@
 export const README_MAX_CHARACTERS = 50_000;
-export const README_PREVIEW_MAX_CHARACTERS = 720;
-export const README_COMPACT_PREVIEW_MAX_CHARACTERS = 420;
+export const README_PREVIEW_MAX_CHARACTERS = 250;
+export const README_COMPACT_PREVIEW_MAX_CHARACTERS = 160;
+// Generated summaries may be richer than the visible card. Accept the complete
+// generated field first, then bound only its presentation in the card viewport.
+export const README_CARD_SUMMARY_MAX_CHARACTERS = 1_200;
+export const README_SUMMARY_PENDING = 'Summary is being generated';
 
 const README_FALLBACK = 'No README content is available for this repository.';
-const README_SUMMARY_FALLBACK = 'No summary available.';
+
+const LEGACY_MISSING_CONTENT_SENTINELS = new Set([
+  'n a',
+  'no readme available',
+  'no readme content available',
+  'no readme content is available',
+  'no readme content is available for this repository',
+  'no readme is available',
+  'no summary available',
+  'no summary is available',
+  'none',
+  'not available',
+  'null',
+  'readme is being generated',
+  'readme not available',
+  'readme unavailable',
+  'summary is being generated',
+  'summary not available',
+  'summary unavailable',
+  'undefined',
+]);
 
 export type PreparedReadmePreview = {
   isTruncated: boolean;
   markdown: string;
+  source: 'summary' | 'description' | 'pending';
 };
 
+export type PrepareReadmePreviewOptions = {
+  summary?: string | null;
+  description?: string | null;
+  fullReadme?: string | null;
+  maximumCharacters?: number;
+};
+
+function sentinelKey(value: string): string {
+  return value
+    .normalize('NFKC')
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, ' ')
+    .trim();
+}
+
+export function normalizeOptionalRepositoryText(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+
+  const content = value.trim();
+  if (!content || LEGACY_MISSING_CONTENT_SENTINELS.has(sentinelKey(content))) {
+    return null;
+  }
+  return content;
+}
+
 function normalizedContent(value?: string | null): string {
-  return value?.trim() ?? '';
+  return normalizeOptionalRepositoryText(value) ?? '';
+}
+
+function comparableMarkdownText(value: string): string {
+  return value
+    .normalize('NFKC')
+    .replace(/!\[([^\]]*)\]\([^)]*\)/g, '$1')
+    .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
+    .replace(/<[^>]*>/g, ' ')
+    .replace(/^ {0,3}(?:#{1,6}\s+|>\s?|[-+*]\s+|\d+[.)]\s+)/gm, '')
+    .replace(/[`*_~]/g, '')
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, ' ')
+    .trim();
+}
+
+function isUsableSummary(summary: string, fullReadme: string): boolean {
+  if (!summary || summary.length > README_CARD_SUMMARY_MAX_CHARACTERS) return false;
+  if (!fullReadme) return true;
+
+  return comparableMarkdownText(summary) !== comparableMarkdownText(fullReadme);
 }
 
 function safeSliceEnd(content: string, maximumCharacters: number): number {
@@ -73,6 +143,15 @@ function truncateMarkdown(
   return `${preview}${fenceClosure}\n\n${marker}`;
 }
 
+function truncateCardPreview(content: string, maximumCharacters: number): string {
+  const end = safeSliceEnd(content, maximumCharacters);
+  const preview = content.slice(0, end).trimEnd();
+  const openFence = findOpenMarkdownFence(preview);
+  if (openFence) return `${preview}\n${openFence}\n\n...`;
+
+  return `${preview.replace(/[.!?]+$/u, '')}...`;
+}
+
 export function prepareReadmeForDisplay(readmeText?: string | null): string {
   const content = normalizedContent(readmeText) || README_FALLBACK;
   if (content.length <= README_MAX_CHARACTERS) return content;
@@ -83,23 +162,41 @@ export function prepareReadmeForDisplay(readmeText?: string | null): string {
   );
 }
 
-export function prepareReadmePreview(
-  readmeSummary?: string | null,
-  readmeFull?: string | null,
+export function prepareReadmePreview({
+  summary,
+  description,
+  fullReadme,
   maximumCharacters = README_PREVIEW_MAX_CHARACTERS,
-): PreparedReadmePreview {
-  const content =
-    normalizedContent(readmeSummary) ||
-    normalizedContent(readmeFull) ||
-    README_SUMMARY_FALLBACK;
-  const safeMaximum = Math.max(Math.floor(maximumCharacters), 1);
+}: PrepareReadmePreviewOptions): PreparedReadmePreview {
+  const normalizedSummary = normalizedContent(summary);
+  const normalizedDescription = normalizedContent(description);
+  const normalizedFullReadme = normalizedContent(fullReadme);
+  const hasUsableSummary = isUsableSummary(
+    normalizedSummary,
+    normalizedFullReadme,
+  );
+  const source = hasUsableSummary
+    ? 'summary'
+    : normalizedDescription
+      ? 'description'
+      : 'pending';
+  const content = source === 'summary'
+    ? normalizedSummary
+    : source === 'description'
+      ? normalizedDescription
+      : README_SUMMARY_PENDING;
+  const safeMaximum = Math.max(
+    Math.min(Math.floor(maximumCharacters), README_PREVIEW_MAX_CHARACTERS),
+    1,
+  );
 
   if (content.length <= safeMaximum) {
-    return { isTruncated: false, markdown: content };
+    return { isTruncated: false, markdown: content, source };
   }
 
   return {
     isTruncated: true,
-    markdown: truncateMarkdown(content, safeMaximum, '\u2026'),
+    markdown: truncateCardPreview(content, safeMaximum),
+    source,
   };
 }

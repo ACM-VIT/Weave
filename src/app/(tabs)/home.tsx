@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, useMemo } from 'react';
+import { useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import {
   ActivityIndicator,
   AppState,
@@ -20,12 +20,22 @@ import { DEVELOPMENT_PREVIEW_ENABLED } from '@/config/development-preview';
 import { REFERENCE_THEME } from '@/constants/theme';
 import { router, type Href } from 'expo-router';
 import { DEVELOPMENT_REPOSITORIES } from '@/data/development-repositories';
-import { useInfiniteQuery, useQueryClient } from '@tanstack/react-query';
+import {
+  useInfiniteQuery,
+  useQueryClient,
+  type InfiniteData,
+} from '@tanstack/react-query';
 import * as SecureStore from '../../utils/storage';
-import { fetchFeed } from '@/api/feed';
-import { type FeedbackAction } from '@/api/activity';
+import { fetchFeed, type FeedPage } from '@/api/feed';
+import { type ActivityInput } from '@/api/activity';
 import { useAuth } from '@/store/AuthContext';
 import { getActivityOutbox } from '@/services/activityOutboxClient';
+import {
+  getFeedItemIdentity,
+  mapFeedRepository,
+  patchFeedReaction,
+  patchFeedSaved,
+} from '@/utils/feed-repository';
 
 const WEB_FEED_LIST_STYLE =
   Platform.OS === 'web'
@@ -34,80 +44,11 @@ const WEB_FEED_LIST_STYLE =
 const VIEWABILITY_CONFIG = { itemVisiblePercentThreshold: 50 } as const;
 const ACTIVITY_FLUSH_INTERVAL_MS = 8_000;
 
-// Helper to map backend ML JSON to the frontend RepositoryData format
-function mapBackendToFrontend(backendItem: any): RepositoryData | null {
-  const repoId = typeof backendItem.repo_id === 'string' ? backendItem.repo_id : '';
-  const repoFullName = typeof backendItem.full_name === 'string'
-    ? backendItem.full_name
-    : typeof backendItem.github_repo === 'string'
-      ? backendItem.github_repo
-      : '';
-  const separator = repoFullName.indexOf('/');
-  if (!repoId || separator <= 0 || separator === repoFullName.length - 1) return null;
-  const owner = repoFullName.slice(0, separator);
-  const title = repoFullName.slice(separator + 1);
-  const canonicalGithubUrl = `https://github.com/${owner}/${title}`;
-  const backendUrl = typeof backendItem.url === 'string'
-    ? backendItem.url
-    : typeof backendItem.html_url === 'string'
-      ? backendItem.html_url
-      : '';
-  const rawLanguages = backendItem.languages ?? backendItem.language_used ?? [];
-  const techStack = Array.isArray(rawLanguages)
-    ? rawLanguages.map((language) =>
-        typeof language === 'string' ? language : language?.name
-      ).filter(Boolean)
-    : Object.keys(rawLanguages || {});
-
-  return {
-    id: repoId,
-    serveId: backendItem.serve_id ?? null,
-    feedPosition: backendItem.position ?? null,
-    viewerReaction: backendItem.viewer_reaction === 'like' || backendItem.viewer_reaction === 'dislike'
-      ? backendItem.viewer_reaction : null,
-    viewerSaved: backendItem.viewer_saved === true,
-    title,
-    owner,
-    githubUrl: backendUrl.startsWith('https://github.com/') ? backendUrl : canonicalGithubUrl,
-    ownerUserId: typeof backendItem.owner_user_id === 'string'
-      ? backendItem.owner_user_id
-      : null,
-    ownerBio: typeof backendItem.owner_bio === 'string'
-      ? backendItem.owner_bio
-      : typeof backendItem.owner_profile?.bio === 'string'
-        ? backendItem.owner_profile.bio
-        : null,
-    ownerProfileId: typeof backendItem.owner_profile_id === 'string'
-      ? backendItem.owner_profile_id
-      : null,
-    ownerProfileClaimedUserId: typeof backendItem.owner_profile_claimed_user_id === 'string'
-      ? backendItem.owner_profile_claimed_user_id
-      : null,
-    viewerFollowsOwner: typeof backendItem.viewer_follows_owner === 'boolean'
-      ? backendItem.viewer_follows_owner
-      : null,
-    description: backendItem.description || '',
-    readmeSummary: backendItem.readme_summary || backendItem.summary || 'No summary available.',
-    readmeFull: backendItem.readme_md || backendItem.readme || 'No readme available.',
-    stats: {
-      stars: (backendItem.star_count ?? 0).toString(),
-      views: (backendItem.views_count ?? 0).toString(),
-      bugs: (backendItem.open_issues_count ?? backendItem.pr_count ?? 0).toString(),
-      forks: (backendItem.fork_count ?? 0).toString(),
-      likes: (backendItem.likes_count ?? backendItem.saves_count ?? 0).toString(),
-      comments: (backendItem.comments_count ?? backendItem.comment_count ?? 0).toString(),
-    },
-    updatedText: backendItem.updated_at 
-      ? `updated ${new Date(backendItem.updated_at).toLocaleDateString()}` 
-      : 'updated recently',
-    techStack,
-  };
-}
-
 export default function HomeScreen() {
-  const { user, checkOnboardingStatus } = useAuth();
+  const { user } = useAuth();
   const queryClient = useQueryClient();
   const feedQueryKey = useMemo(() => ['feed', user?.user_id] as const, [user?.user_id]);
+  const feedInvalidationGenerationRef = useRef(0);
   const activityOutbox = user?.user_id && !DEVELOPMENT_PREVIEW_ENABLED
     ? getActivityOutbox(user.user_id)
     : null;
@@ -119,6 +60,10 @@ export default function HomeScreen() {
   });
   const pageWidth = viewport.width;
   const pageHeight = viewport.height;
+
+  useEffect(() => {
+    feedInvalidationGenerationRef.current = 0;
+  }, [user?.user_id]);
   
   const flushActivityBatch = useCallback(async () => {
     if (!activityOutbox) return { delivered: 0, invalidatedFeed: false, deferred: false };
@@ -143,10 +88,15 @@ export default function HomeScreen() {
     isError,
     error,
     refetch,
+    isRefetching,
   } = useInfiniteQuery({
     queryKey: feedQueryKey,
     queryFn: fetchFeedPage,
     enabled: Boolean(user?.user_id) && !DEVELOPMENT_PREVIEW_ENABLED,
+    staleTime: Infinity,
+    refetchOnMount: false,
+    refetchOnReconnect: false,
+    refetchOnWindowFocus: false,
     getNextPageParam: (lastPage) => lastPage.nextCursor ?? undefined,
     initialPageParam: null as string | null,
   });
@@ -154,27 +104,29 @@ export default function HomeScreen() {
   const feedItems = useMemo(() => {
     if (DEVELOPMENT_PREVIEW_ENABLED) {
       return DEVELOPMENT_REPOSITORIES.map((repository, index) => ({
-        feedId: `development-${repository.id}-${index}`,
+        feedId: getFeedItemIdentity(repository, index),
         repository,
       }));
     }
     return data?.pages
       .flatMap((page) => page.items)
-      .map(mapBackendToFrontend)
+      .map(mapFeedRepository)
       .filter((repository): repository is RepositoryData => repository !== null)
       .map((repository, index) => ({
-        feedId: `${repository.id}-${index}-${repository.viewerReaction ?? 'none'}-${repository.viewerSaved ? 'saved' : 'unsaved'}`,
+        feedId: getFeedItemIdentity(repository, index),
         repository,
       })) || [];
   }, [data?.pages]);
 
-  const handleQueueActivity = useCallback((event: {
-    repo_id: string;
-    action: FeedbackAction;
-    dwell_seconds?: number;
-    serve_id?: string | null;
-    position?: number | null;
-  }, flushNow?: boolean) => {
+  const handleQueueActivity = useCallback((event: ActivityInput, flushNow?: boolean) => {
+    queryClient.setQueryData<InfiniteData<FeedPage, string | null>>(
+      feedQueryKey,
+      (cachedFeed) => patchFeedReaction(cachedFeed, {
+        repoId: event.repo_id,
+        serveId: event.serve_id,
+        position: event.position,
+      }, event.action),
+    );
     if (!activityOutbox) return;
 
     void activityOutbox.enqueue(event).then(async () => {
@@ -182,7 +134,22 @@ export default function HomeScreen() {
         await flushActivityBatch();
       }
     }).catch(() => undefined);
-  }, [activityOutbox, flushActivityBatch]);
+  }, [activityOutbox, feedQueryKey, flushActivityBatch, queryClient]);
+
+  const handleSavedChange = useCallback((
+    repository: RepositoryData,
+    saved: boolean,
+  ) => {
+    feedInvalidationGenerationRef.current += 1;
+    queryClient.setQueryData<InfiniteData<FeedPage, string | null>>(
+      feedQueryKey,
+      (cachedFeed) => patchFeedSaved(cachedFeed, {
+        repoId: repository.id,
+        serveId: repository.serveId,
+        position: repository.feedPosition,
+      }, saved),
+    );
+  }, [feedQueryKey, queryClient]);
 
   const openOwnerProfile = useCallback((repository: RepositoryData) => {
     const normalizedOwner = repository.owner.trim().toLocaleLowerCase();
@@ -213,11 +180,8 @@ export default function HomeScreen() {
 
   useEffect(() => {
     if (!activityOutbox) return;
-    const unsubscribe = activityOutbox.subscribe(async ({ invalidatedFeed }) => {
-      if (!invalidatedFeed) return;
-      await queryClient.cancelQueries({ queryKey: feedQueryKey, exact: true });
-      await queryClient.resetQueries({ queryKey: feedQueryKey, exact: true });
-      await checkOnboardingStatus();
+    const unsubscribe = activityOutbox.subscribe(({ invalidatedFeed }) => {
+      if (invalidatedFeed) feedInvalidationGenerationRef.current += 1;
     });
     void flushActivityBatch().catch(() => undefined);
 
@@ -233,7 +197,17 @@ export default function HomeScreen() {
       subscription.remove();
       unsubscribe();
     };
-  }, [activityOutbox, checkOnboardingStatus, feedQueryKey, flushActivityBatch, queryClient]);
+  }, [activityOutbox, flushActivityBatch]);
+
+  const handleDeliberateRefresh = useCallback(async () => {
+    await flushActivityBatch().catch(() => undefined);
+    const generationAtStart = feedInvalidationGenerationRef.current;
+    const result = await refetch();
+    if (!result.isError
+      && feedInvalidationGenerationRef.current === generationAtStart) {
+      feedInvalidationGenerationRef.current = 0;
+    }
+  }, [flushActivityBatch, refetch]);
 
   const [viewableItems, setViewableItems] = useState<string[]>([]);
   const onViewableItemsChanged = useCallback(({ viewableItems }: any) => {
@@ -302,6 +276,7 @@ export default function HomeScreen() {
               pageWidth={pageWidth}
               pageHeight={pageHeight}
               onQueueActivity={handleQueueActivity}
+              onSavedChange={(saved) => handleSavedChange(item.repository, saved)}
               onOwnerPress={() => openOwnerProfile(item.repository)}
               isViewable={viewableItems.includes(item.feedId)}
             />
@@ -309,6 +284,8 @@ export default function HomeScreen() {
           style={[styles.feedList, { height: pageHeight }, WEB_FEED_LIST_STYLE]}
           contentContainerStyle={styles.feedListContent}
           showsVerticalScrollIndicator={false}
+          onRefresh={handleDeliberateRefresh}
+          refreshing={isRefetching && !isFetchingNextPage}
           snapToInterval={pageHeight}
           snapToAlignment="start"
           decelerationRate="fast"
@@ -321,10 +298,13 @@ export default function HomeScreen() {
             index,
           })}
           onEndReached={() => {
-            if (hasNextPage && !isFetchingNextPage) {
+            if (hasNextPage
+              && !isFetchingNextPage
+              && !isRefetching
+              && feedInvalidationGenerationRef.current === 0) {
               void flushActivityBatch()
-                .then(({ invalidatedFeed }) => {
-                  if (!invalidatedFeed) return fetchNextPage();
+                .then(() => {
+                  if (feedInvalidationGenerationRef.current === 0) return fetchNextPage();
                 })
                 .catch(() => undefined);
             }

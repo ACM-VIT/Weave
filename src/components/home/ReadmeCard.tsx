@@ -27,8 +27,9 @@ import {
 
 type RepositoryData = {
   title: string;
-  readmeSummary: string;
-  readmeFull: string;
+  description: string;
+  readmeSummary: string | null;
+  readmeFull: string | null;
   techStack?: string[];
 };
 
@@ -295,12 +296,18 @@ export default function ReadmeCard({
     ? README_COMPACT_PREVIEW_MAX_CHARACTERS
     : README_PREVIEW_MAX_CHARACTERS;
   const preview = useMemo(
-    () => prepareReadmePreview(
-      repository.readmeSummary,
-      repository.readmeFull,
+    () => prepareReadmePreview({
+      summary: repository.readmeSummary,
+      description: repository.description,
+      fullReadme: repository.readmeFull,
+      maximumCharacters: previewLimit,
+    }),
+    [
       previewLimit,
-    ),
-    [previewLimit, repository.readmeFull, repository.readmeSummary],
+      repository.description,
+      repository.readmeFull,
+      repository.readmeSummary,
+    ],
   );
   const typedSummary = useTypewriterText(preview.markdown, {
     delay: 140,
@@ -315,13 +322,6 @@ export default function ReadmeCard({
     () => marked.parse(animatedSummary, { async: false, gfm: true }) as string,
     [animatedSummary],
   );
-  const normalizedSummary = repository.readmeSummary.trim();
-  const normalizedFullReadme = repository.readmeFull.trim();
-  const hasMoreContent = preview.isTruncated || (
-    normalizedFullReadme.length > 0 && normalizedFullReadme !== normalizedSummary
-  );
-  const actionLabel = hasMoreContent ? 'Read more' : 'View README';
-
   useEffect(() => {
     if (!isActive || hasAnimated.current) return;
 
@@ -466,7 +466,7 @@ export default function ReadmeCard({
         </View>
         <AnimatedPressable
           accessibilityHint="Opens the complete README in a scrollable view"
-          accessibilityLabel={`${actionLabel} for ${repository.title}`}
+          accessibilityLabel={`View README for ${repository.title}`}
           accessibilityRole="button"
           hitSlop={6}
           onPress={onReadFullPress}
@@ -485,7 +485,7 @@ export default function ReadmeCard({
           ]}
         >
           <Text style={[styles.readFullText, compact && styles.readFullTextCompact]}>
-            {actionLabel}
+            View README
           </Text>
           <ChevronRight
             size={compact ? 10 : 11}

@@ -31,7 +31,7 @@ function acknowledgement(events: QueuedActivity[]): InteractionBatchResultV2 {
 
 const prepare = (input: ActivityInput): QueuedActivity => input as QueuedActivity;
 
-test('durable outbox persists before sending, chunks at 50, and retains a feed reset for remount', async () => {
+test('durable outbox persists before sending, chunks at 50, and retains deferred regeneration state', async () => {
   const initial = Array.from({ length: 121 }, (_, index) => event(index, index === 0 ? 'like' : 'impression'));
   let stored = [...initial];
   const batchSizes: number[] = [];
@@ -53,10 +53,10 @@ test('durable outbox persists before sending, chunks at 50, and retains a feed r
   assert.equal(result.invalidatedFeed, true);
   assert.deepEqual(stored, []);
 
-  const retainedReset = new Promise<boolean>((resolve) => {
+  const retainedInvalidation = new Promise<boolean>((resolve) => {
     outbox.subscribe((outcome) => resolve(outcome.invalidatedFeed));
   });
-  assert.equal(await retainedReset, true);
+  assert.equal(await retainedInvalidation, true);
 });
 
 test('durable outbox shares a single network flush and keeps events after an offline failure', async () => {

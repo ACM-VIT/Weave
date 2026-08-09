@@ -276,7 +276,6 @@ export function SavePopup({
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: collectionQueryKey(repoId) }),
         queryClient.invalidateQueries({ queryKey: ['savedRepos'] }),
-        queryClient.invalidateQueries({ queryKey: ['feed'] }),
         queryClient.invalidateQueries({ queryKey: ['profile-content'] }),
       ]);
       void checkOnboardingStatus().catch(() => undefined);

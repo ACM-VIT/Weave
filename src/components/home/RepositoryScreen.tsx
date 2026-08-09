@@ -1,5 +1,5 @@
 import React from 'react';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useQueryClient } from '@tanstack/react-query';
 import {
   Pressable,
   Linking,
@@ -18,7 +18,6 @@ import {
   ExternalLink,
   GitFork,
   MessageCircle,
-  Pin,
   Share as ShareIcon,
   Star,
   ThumbsDown,
@@ -39,11 +38,6 @@ import ReadmeCard from './ReadmeCard';
 import type { FeedbackAction } from '../../api/activity';
 import { FEEDBACK_ACTIONS } from '../../constants/feedbackActions';
 import { FollowButton } from '../follow-button';
-import {
-  loadPinnedRepositories,
-  pinnedRepositoryKey,
-  setRepositoryPinned,
-} from '../../services/pinnedRepositoryStorage';
 
 type QueueActivity = (
   event: { repo_id: string; action: FeedbackAction; dwell_seconds?: number },
@@ -194,30 +188,18 @@ export function RepositoryScreen({
   const { user, checkOnboardingStatus } = useAuth();
   const queryClient = useQueryClient();
   const compact = pageWidth < 360 || pageHeight < 720;
-  const serverLiked = repository.viewerReaction === 'like';
-  const serverDisliked = repository.viewerReaction === 'dislike';
-  const [liked, setLiked] = React.useState(serverLiked);
-  const [disliked, setDisliked] = React.useState(serverDisliked);
-  const pinKey = pinnedRepositoryKey(repository);
-  const pinnedRepositoriesQuery = useQuery({
-    queryKey: ['pinned-repositories', user?.user_id],
-    enabled: Boolean(user?.user_id),
-    queryFn: () => loadPinnedRepositories(user!.user_id),
-    staleTime: Infinity,
+  const serverReaction = repository.viewerReaction ?? null;
+  const reactionStateKey = `${repository.serveId ?? 'repository'}:${repository.id}:${repository.feedPosition ?? 'unknown'}`;
+  const [localReactionState, setLocalReactionState] = React.useState({
+    key: reactionStateKey,
+    reaction: serverReaction,
   });
-  const storedPinned = pinnedRepositoriesQuery.data?.some((item) => item.key === pinKey) === true;
-  const pinStateKey = `${pinKey}:${storedPinned}`;
-  const [localPinState, setLocalPinState] = React.useState({ key: pinStateKey, pinned: storedPinned });
-  const pinned = localPinState.key === pinStateKey ? localPinState.pinned : storedPinned;
-  const pinMutation = useMutation<void, Error, boolean>({
-    mutationFn: async (nextPinned) => {
-      if (!user?.user_id) throw new Error('Sign in to pin repositories.');
-      await setRepositoryPinned(user.user_id, repository, nextPinned);
-    },
-    onSettled: () => {
-      void queryClient.invalidateQueries({ queryKey: ['pinned-repositories', user?.user_id] });
-    },
-  });
+  const reaction = localReactionState.key === reactionStateKey
+    ? localReactionState.reaction
+    : serverReaction;
+  const serverLiked = serverReaction === 'like';
+  const liked = reaction === 'like';
+  const disliked = reaction === 'dislike';
 
   const initialLikes = Number(repository.stats.likes || 0) || 0;
   const likeCount = Math.max(0, initialLikes + Number(liked) - Number(serverLiked));
@@ -254,34 +236,22 @@ export function RepositoryScreen({
 
   const toggleLike = () => {
     if (liked) {
-      setLiked(false);
+      setLocalReactionState({ key: reactionStateKey, reaction: null });
       onQueueActivity?.({ repo_id: repository.id, action: FEEDBACK_ACTIONS.unlike }, true);
       return;
     }
-    setLiked(true);
-    setDisliked(false);
+    setLocalReactionState({ key: reactionStateKey, reaction: 'like' });
     onQueueActivity?.({ repo_id: repository.id, action: FEEDBACK_ACTIONS.like }, true);
   };
 
   const toggleDislike = () => {
     if (disliked) {
-      setDisliked(false);
+      setLocalReactionState({ key: reactionStateKey, reaction: null });
       onQueueActivity?.({ repo_id: repository.id, action: FEEDBACK_ACTIONS.undislike }, true);
       return;
     }
-    setDisliked(true);
-    setLiked(false);
+    setLocalReactionState({ key: reactionStateKey, reaction: 'dislike' });
     onQueueActivity?.({ repo_id: repository.id, action: FEEDBACK_ACTIONS.dislike }, true);
-  };
-
-  const togglePinned = () => {
-    if (pinMutation.isPending || !user?.user_id) return;
-    const previous = pinned;
-    const next = !previous;
-    setLocalPinState({ key: pinStateKey, pinned: next });
-    pinMutation.mutate(next, {
-      onError: () => setLocalPinState({ key: pinStateKey, pinned: previous }),
-    });
   };
 
   const handleOwnerFollowingChange = (following: boolean) => {
@@ -300,7 +270,11 @@ export function RepositoryScreen({
     queryClient.setQueryData(feedQueryKey, (cachedFeed) =>
       patchOwnerFollowState(cachedFeed, ownerUserId, ownerProfileId, following)
     );
-    void queryClient.invalidateQueries({ queryKey: feedQueryKey, exact: true });
+    void queryClient.invalidateQueries({
+      queryKey: feedQueryKey,
+      exact: true,
+      refetchType: 'none',
+    });
     void checkOnboardingStatus().catch(() => undefined);
   };
 
@@ -480,16 +454,6 @@ export function RepositoryScreen({
           iconSize={26}
           label="Save"
           onPress={onSavePress}
-        />
-        <ActionButton
-          accessibilityLabel={pinned ? 'Unpin repository' : 'Pin repository'}
-          active={pinned}
-          activeColor="#1EE15B"
-          dense={veryShort}
-          icon={Pin}
-          iconSize={26}
-          label="Pin"
-          onPress={togglePinned}
         />
         <ActionButton
           accessibilityLabel="Open repository on GitHub"

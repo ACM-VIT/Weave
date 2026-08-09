@@ -13,8 +13,8 @@ export type RepositoryData = {
   ownerProfileClaimedUserId?: string | null;
   viewerFollowsOwner?: boolean | null;
   description: string;
-  readmeSummary: string;
-  readmeFull: string;
+  readmeSummary: string | null;
+  readmeFull: string | null;
   stats: {
     stars: string;
     views: string;

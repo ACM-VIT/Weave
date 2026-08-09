@@ -234,7 +234,7 @@ export default function OtherUserProfileRoute() {
       },
     );
     void queryClient.invalidateQueries({ queryKey: ['connections'] });
-    void queryClient.invalidateQueries({ queryKey: ['feed'] });
+    void queryClient.invalidateQueries({ queryKey: ['feed'], refetchType: 'none' });
     void checkOnboardingStatus().catch(() => undefined);
   };
 

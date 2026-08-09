@@ -28,7 +28,7 @@ interface ReadmePopupProps {
   isVisible: boolean;
   onClose: () => void;
   title: string;
-  readmeText: string;
+  readmeText: string | null;
 }
 
 const POPUP_OPEN_DURATION = 200;
@@ -313,7 +313,7 @@ export function ReadmePopup({ isVisible, onClose, title, readmeText }: ReadmePop
           <View style={styles.header}>
             <View style={styles.headerTitle}>
               <BookOpen size={14} color={REFERENCE_THEME.accentLight} strokeWidth={2} />
-              <Text style={styles.headerText}>README Summary</Text>
+              <Text style={styles.headerText}>README</Text>
             </View>
             <Pressable
               accessibilityLabel="Close"

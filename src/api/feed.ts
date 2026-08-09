@@ -1,10 +1,50 @@
 import { apiV2Raw } from './client';
 import { createUuid, getAppSessionId } from '../utils/uuid';
 
+export type FeedRepositoryPayload = {
+  repo_id: string;
+  full_name: string;
+  owner_user_id: string | null;
+  owner_profile_id: string | null;
+  owner_profile_claimed_user_id: string | null;
+  owner_bio: string | null;
+  // Short repository subtitle displayed below the repository name.
+  description: string | null;
+  languages: string[];
+  star_count: number;
+  fork_count: number;
+  likes_count: number;
+  comments_count: number;
+  views_count: number;
+  open_issues_count: number;
+  // Active generated README-derived summary for the larger feed card.
+  summary: string | null;
+  readme_md: string | null;
+  updated_at: string | null;
+  viewer_reaction: 'like' | 'dislike' | null;
+  viewer_saved: boolean;
+  viewer_follows_owner: boolean;
+  position: number;
+  serve_id: string;
+  feed_version: string;
+  // Legacy aliases may accompany a V2 payload during rollout. They stay
+  // distinct so complete README content can never be mistaken for a summary.
+  github_repo?: string;
+  url?: string;
+  html_url?: string;
+  language_used?: string[] | Record<string, unknown>;
+  readme_summary?: string | null;
+  readme?: string | null;
+  owner_profile?: { bio?: string | null } | null;
+  pr_count?: number;
+  saves_count?: number;
+  comment_count?: number;
+};
+
 type FeedItemV2 = {
   repo_id: string;
   position: number;
-  repository: Record<string, unknown>;
+  repository: Omit<FeedRepositoryPayload, 'feed_version' | 'position' | 'repo_id' | 'serve_id'>;
 };
 
 type FeedResponseV2 = {
@@ -14,7 +54,15 @@ type FeedResponseV2 = {
   next_cursor: string | null;
 };
 
-export async function fetchFeed(token: string, cursor: string | null = null) {
+export type FeedPage = {
+  items: FeedRepositoryPayload[];
+  nextCursor: string | null;
+};
+
+export async function fetchFeed(
+  token: string,
+  cursor: string | null = null,
+): Promise<FeedPage> {
   const feedRequestId = createUuid();
   const body = {
     feed_request_id: feedRequestId,
