@@ -58,12 +58,12 @@ export function UserFooter({ repository, isSmallPhone }: { repository: Repositor
           </View>
           <View style={styles.statItem}>
             <Bug size={isSmallPhone ? 13 : 15} color="#4ADE80" strokeWidth={2} />
-            <Text style={[styles.statText, isSmallPhone && { fontSize: 10 }]}>{repository.stats.bugs}</Text>
+            <Text style={[styles.statText, isSmallPhone && { fontSize: 10 }]}>{repository.stats.openIssues}</Text>
           </View>
         </View>
         <View style={[styles.dateRow, isSmallPhone && { marginTop: 4 }]}>
           <Clock size={isSmallPhone ? 10 : 14} color="#A49898" strokeWidth={1.6} />
-          <Text style={[styles.dateText, isSmallPhone && { fontSize: 9 }]}>{repository.updatedText}</Text>
+          <Text style={[styles.dateText, isSmallPhone && { fontSize: 9 }]}>{repository.updatedAt ?? 'updated recently'}</Text>
         </View>
       </View>
     </View>

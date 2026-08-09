@@ -1,6 +1,6 @@
 import React, { useMemo, useState } from "react"
 import { ActivityIndicator, Modal, Pressable, ScrollView, Text, TextInput, View, useWindowDimensions } from "react-native"
-import { FolderPlus, LogOut, Square, SquarePen } from "lucide-react-native"
+import { FolderPlus, LogOut, SquarePen } from "lucide-react-native"
 import { router, type Href } from "expo-router"
 import { useSafeAreaInsets } from "react-native-safe-area-context"
 import { useQuery } from "@tanstack/react-query"
@@ -14,10 +14,6 @@ import { getStorageItem } from "@/utils/storage"
 import { formatCompactCount } from "@/utils/format-count"
 import { isValidUsername, USERNAME_GUIDANCE } from "@/utils/username"
 import { loadPinnedRepositories } from "@/services/pinnedRepositoryStorage"
-
-type TabName = "Lists" | "Repositories"
-
-const COLORS = { background: "#000000", card: "#151515", selected: "#68686B", white: "#F7F7F8", muted: "#77767C", green: "#63E08A", purple: "#9B4FE4" }
 
 function requestError(error: unknown, fallback: string) {
   if (error instanceof TypeError) return `Unable to connect to the local backend at ${API_URL}.`
@@ -46,7 +42,6 @@ export default function ProfileScreen() {
   const [draft, setDraft] = useState({ name, job, username })
   const [isSaving, setIsSaving] = useState(false)
   const [editError, setEditError] = useState("")
-  const [activeTab, setActiveTab] = useState<TabName>("Lists")
   const [statSheetType, setStatSheetType] = useState<ProfileStatType | null>(null)
   const profileContentQuery = useQuery({
     queryKey: ["profile-content", user?.user_id],
@@ -64,20 +59,13 @@ export default function ProfileScreen() {
     queryFn: () => loadPinnedRepositories(user!.user_id),
     staleTime: Infinity,
   })
-  const repositories = profileContentQuery.data?.repositories ?? []
   const contentErrors = profileContentQuery.data?.errors ?? {}
   const pinnedRepositories = pinnedRepositoriesQuery.data ?? []
-  const displayedBoards = useMemo(
-    () => [...(profileContentQuery.data?.boards ?? [])].sort((first, second) =>
+  const displayedLists = useMemo(
+    () => [...(profileContentQuery.data?.lists ?? [])].sort((first, second) =>
       first.name.localeCompare(second.name, undefined, { sensitivity: "base" })
     ),
-    [profileContentQuery.data?.boards],
-  )
-  const displayedCollections = useMemo(
-    () => [...(profileContentQuery.data?.collections ?? [])].sort((first, second) =>
-      first.name.localeCompare(second.name, undefined, { sensitivity: "base" })
-    ),
-    [profileContentQuery.data?.collections],
+    [profileContentQuery.data?.lists],
   )
 
   const openEditor = () => {
@@ -150,7 +138,6 @@ export default function ProfileScreen() {
 
   const cardHeight = isCompact ? 40 : isTablet ? 54 : 50
   const contentGap = isCompact ? 10 : isTablet ? 16 : 13
-  const sectionGap = isCompact ? 10 : isTablet ? 14 : 12
   const tabContentHeight = isCompact ? 280 : isTablet ? 420 : 340
   const avatarLetter = username.trim().charAt(0).toUpperCase() || name.charAt(0).toUpperCase() || "?"
   const usernameText = username ? `@${username}` : ""
@@ -199,7 +186,7 @@ export default function ProfileScreen() {
     </View>
   )
 
-  const listContent = contentState ?? (activeTab === "Lists" ? <View key="lists" style={{ minHeight: tabContentHeight, gap: contentGap }}>
+  const listContent = contentState ?? <View key="lists" style={{ minHeight: tabContentHeight, gap: contentGap }}>
     <BoardListCard
       compact={isCompact}
       name="Pinned"
@@ -211,32 +198,26 @@ export default function ProfileScreen() {
       variant="pinned"
     />
     <View style={{ gap: contentGap }}>
-      {contentErrors.boards ? sectionError("Unable to load your boards.") : displayedBoards.map((item) => <BoardListCard
-        key={item.board_id}
+      {contentErrors.boards ? sectionError("Unable to load some legacy Lists.") : null}
+      {contentErrors.collections ? sectionError("Unable to load your Lists.") : null}
+      {displayedLists.map((item) => <BoardListCard
+        key={`${item.source}:${item.id}`}
         compact={isCompact}
         description={item.description}
         name={item.name}
-        onPress={() => router.push(boardHref({
-          boardId: item.board_id,
-          boardName: item.name,
-          ...(item.description ? { boardDescription: item.description } : {}),
-        }))}
-        repositoryCount={item.repo_count}
-      />)}
-      {contentErrors.collections ? sectionError("Unable to load your collections.") : displayedCollections.map((item) => <BoardListCard
-        key={item.collection_id}
-        compact={isCompact}
-        description={item.description}
-        name={item.name}
-        onPress={() => router.push(boardHref({
-          collectionId: item.collection_id,
+        onPress={() => router.push(boardHref(item.source === "collection" ? {
+          collectionId: item.id,
           collectionType: "collection",
           boardName: item.name,
           ...(item.description ? { boardDescription: item.description } : {}),
+        } : {
+          boardId: item.id,
+          boardName: item.name,
+          ...(item.description ? { boardDescription: item.description } : {}),
         }))}
-        repositoryCount={item.repo_count}
+        repositoryCount={item.repositoryCount}
       />)}
-      {!contentErrors.boards && !contentErrors.collections && displayedBoards.length === 0 && displayedCollections.length === 0 ? <View className="items-center justify-center py-9 px-6 gap-4">
+      {!contentErrors.boards && !contentErrors.collections && displayedLists.length === 0 ? <View className="items-center justify-center py-9 px-6 gap-4">
         <View className="w-[68px] h-[68px] rounded-[22px] bg-[#151515] border border-[#252525] items-center justify-center" style={{ borderCurve: "continuous" }}>
           <FolderPlus size={29} color="#63E08A" strokeWidth={1.7} />
         </View>
@@ -246,17 +227,7 @@ export default function ProfileScreen() {
         </View>
       </View> : null}
     </View>
-  </View> : <View key="repositories" style={{ minHeight: tabContentHeight, gap: sectionGap }}>
-    <Text className="text-[#63E08A] font-nataMedium" style={{ fontSize: isCompact ? 13 : 16 }}>Saved Repositories</Text>
-    <View style={{ gap: contentGap }}>
-      {contentErrors.repositories ? sectionError("Unable to load your saved repositories.") : repositories.map((item) => <View key={item.repo_id} className="w-full flex-row items-center bg-[#151515]" style={{ height: cardHeight, paddingHorizontal: "5%", borderRadius: 16, gap: "4%", borderCurve: "continuous" }}>
-        <Square size={isCompact ? 15 : 18} color="#B8B7BD" />
-        <Text numberOfLines={1} className="flex-1 text-white font-nata" style={{ fontSize: isCompact ? 13 : 16 }}>{item.full_name || item.name}</Text>
-        <Text className="text-[#FFD600] font-nata" style={{ fontSize: isCompact ? 11 : 13 }}>★ <Text className="text-[#77767C]">{formatCompactCount(item.star_count)}</Text></Text>
-      </View>)}
-      {!contentErrors.repositories && repositories.length === 0 ? <Text className="text-[#77767C] font-nata text-center py-5">No saved repositories yet.</Text> : null}
-    </View>
-  </View>)
+  </View>
 
   return (
     <ScrollView
@@ -304,9 +275,7 @@ export default function ProfileScreen() {
           </View>
 
           <View className="w-full" style={{ gap: isTablet ? 22 : 18 }}>
-            <View className="w-full flex-row bg-[#151515]" style={{ borderRadius: 13, padding: 3, borderCurve: "continuous" }}>
-              {(["Lists", "Repositories"] as const).map((tab) => <Pressable key={tab} onPress={() => setActiveTab(tab)} className="w-1/2 items-center justify-center" style={{ height: isCompact ? 34 : 42, borderRadius: 10, backgroundColor: activeTab === tab ? COLORS.selected : "transparent", borderCurve: "continuous" }}><Text className={activeTab === tab ? "text-white font-nataSemiBold" : "text-[#99989E] font-nataSemiBold"} style={{ fontSize: isCompact ? 12 : 14 }}>{tab}</Text></Pressable>)}
-            </View>
+            <Text className="text-white font-nataBold" style={{ fontSize: isCompact ? 18 : 22 }}>Lists</Text>
             {listContent}
           </View>
         </View>

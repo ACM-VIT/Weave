@@ -13,6 +13,7 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
   Bookmark,
+  ChevronRight,
   CircleAlert,
   Eye,
   ExternalLink,
@@ -56,10 +57,10 @@ type ActionButtonProps = {
   onPress: () => void;
 };
 
-function formatCount(value?: string) {
+function formatCount(value?: number | string) {
   if (!value) return '0';
   const parsed = Number(value);
-  if (!Number.isFinite(parsed)) return value;
+  if (!Number.isFinite(parsed)) return String(value);
   if (parsed >= 1_000_000) return `${(parsed / 1_000_000).toFixed(parsed >= 10_000_000 ? 0 : 1).replace(/\.0$/, '')}M`;
   if (parsed >= 1_000) return `${(parsed / 1_000).toFixed(parsed >= 10_000 ? 0 : 1).replace(/\.0$/, '')}K`;
   return String(parsed);
@@ -169,6 +170,7 @@ export function RepositoryScreen({
   onSharePress,
   onCommentPress,
   onOwnerPress,
+  onRepositoryPress,
   onQueueActivity,
 }: {
   pageWidth: number;
@@ -182,6 +184,7 @@ export function RepositoryScreen({
   onSharePress: () => void;
   onCommentPress: () => void;
   onOwnerPress?: () => void;
+  onRepositoryPress?: () => void;
   onQueueActivity?: QueueActivity;
 }) {
   const insets = useSafeAreaInsets();
@@ -279,7 +282,7 @@ export function RepositoryScreen({
   };
 
   const openGithubRepository = async () => {
-    const url = repository.githubUrl ?? `https://github.com/${repository.owner}/${repository.title}`;
+    const url = repository.githubUrl;
     try {
       await Linking.openURL(url);
       onQueueActivity?.({ repo_id: repository.id, action: FEEDBACK_ACTIONS.githubOpen }, true);
@@ -347,17 +350,33 @@ export function RepositoryScreen({
             ) : null}
           </View>
 
-          <Text
-            style={[
-              styles.repoTitle,
+          <Pressable
+            accessibilityHint="Opens the repository detail inside Weave"
+            accessibilityLabel={`View ${repository.name} repository details`}
+            accessibilityRole="link"
+            disabled={!onRepositoryPress}
+            onPress={onRepositoryPress}
+            style={({ pressed }) => [
+              styles.repoTitleButton,
               styles.repoTitleSpacing,
-              compact && styles.repoTitleCompact,
               compact && styles.repoTitleSpacingCompact,
+              pressed && styles.ownerPressed,
             ]}
-            numberOfLines={2}
           >
-            {repository.title}
-          </Text>
+            <Text
+              style={[styles.repoTitle, compact && styles.repoTitleCompact]}
+              numberOfLines={2}
+            >
+              {repository.name}
+            </Text>
+            {onRepositoryPress ? (
+              <ChevronRight
+                color={REFERENCE_THEME.textSecondary}
+                size={compact ? 17 : 19}
+                strokeWidth={2}
+              />
+            ) : null}
+          </Pressable>
           <ScrollView
             style={[
               styles.descriptionScroller,
@@ -404,9 +423,9 @@ export function RepositoryScreen({
               <Eye size={16} color={REFERENCE_THEME.text} strokeWidth={1.9} />
               <Text style={styles.statText}>{formatCount(repository.stats.views)}</Text>
             </View>
-            <View accessibilityLabel={`${formatCount(repository.stats.bugs)} open issues`} style={styles.statButton}>
+            <View accessibilityLabel={`${formatCount(repository.stats.openIssues)} open issues`} style={styles.statButton}>
               <CircleAlert size={16} color={REFERENCE_THEME.text} strokeWidth={1.9} />
-              <Text style={styles.statText}>{formatCount(repository.stats.bugs)}</Text>
+              <Text style={styles.statText}>{formatCount(repository.stats.openIssues)}</Text>
             </View>
           </View>
         </View>
@@ -460,7 +479,7 @@ export function RepositoryScreen({
           dense={veryShort}
           icon={ExternalLink}
           iconSize={26}
-          label="GitHub"
+          label="Open on GitHub"
           onPress={openGithubRepository}
         />
         <ActionButton
@@ -509,6 +528,13 @@ const styles = StyleSheet.create({
   repoDetailsCompact: {
     paddingTop: 5,
     gap: 8,
+  },
+  repoTitleButton: {
+    alignItems: 'center',
+    alignSelf: 'flex-start',
+    flexDirection: 'row',
+    gap: 4,
+    maxWidth: '100%',
   },
   avatar: {
     width: 37,

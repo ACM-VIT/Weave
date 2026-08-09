@@ -1,10 +1,11 @@
 import React from 'react';
 import { Pressable, Text, View } from 'react-native';
 import Svg, { Path } from 'react-native-svg';
-import { Repo } from '../../types';
+import type { RepositoryDetail } from '@/models/repository';
+import { formatCompactCount } from '@/utils/format-count';
 
 interface TrendingRepoCardProps {
-  repo: Repo;
+  repo: RepositoryDetail;
   rank?: number;
   onPress?: () => void;
 }
@@ -88,7 +89,7 @@ export default function TrendingRepoCard({ repo, rank, onPress }: TrendingRepoCa
       </View>
       <View style={{ width: 48, flexDirection: 'row', alignItems: 'center', gap: 4, flexShrink: 0 }}>
         <StarIcon />
-        <Text style={{ color: 'rgba(235, 235, 245, 0.45)', fontSize: 12 }}>{repo.stars}</Text>
+        <Text style={{ color: 'rgba(235, 235, 245, 0.45)', fontSize: 12 }}>{formatCompactCount(repo.stats.stars)}</Text>
       </View>
     </Pressable>
   );

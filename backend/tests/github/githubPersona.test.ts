@@ -271,10 +271,17 @@ test('GitHub persona REST fetch uses one timeout signal, caps owned public repos
       assert.ok(signal);
       signal.addEventListener('abort', () => reject(signal.reason), { once: true });
     });
-    await assert.rejects(
-      fetchGitHubPublicPersona('octocat', { timeoutMs: 5 }),
-      (error: unknown) => error instanceof GitHubApiError && error.statusCode === 504,
-    );
+    // AbortSignal.timeout() uses an unref'ed timer in Node 22, so keep this isolated
+    // test process alive until the timeout assertion settles.
+    const keepAlive = setTimeout(() => undefined, 100);
+    try {
+      await assert.rejects(
+        fetchGitHubPublicPersona('octocat', { timeoutMs: 5 }),
+        (error: unknown) => error instanceof GitHubApiError && error.statusCode === 504,
+      );
+    } finally {
+      clearTimeout(keepAlive);
+    }
   } finally {
     globalThis.fetch = originalFetch;
     if (originalToken === undefined) Reflect.deleteProperty(process.env, 'GITHUB_TOKEN');

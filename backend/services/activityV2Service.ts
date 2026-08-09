@@ -9,9 +9,17 @@ import { FEEDBACK_WEIGHTS } from '../config/feedback.js';
 import { sqlClient } from '../db/index.js';
 import type postgres from 'postgres';
 import { buildMlFeedbackEvent } from './mlFeedbackPayloadService.js';
-import { setRepositorySaved } from './savedRepositoryService.js';
+import {
+  getRepositoryMembershipSavedState,
+  setRepositorySaved,
+} from './savedRepositoryService.js';
 
 export type ReactionState = 'like' | 'dislike' | null;
+
+export function isMembershipManagedSaveEvent(event: InteractionEventV2): boolean {
+  return (event.event_type === 'save' || event.event_type === 'unsave')
+    && event.context.save_state_source === 'list_membership';
+}
 
 export function transitionReaction(current: ReactionState, event: InteractionEventType): ReactionState {
   if (event === 'like') return 'like';
@@ -131,12 +139,21 @@ export async function processInteractionBatchV2InTransaction(
             WHERE user_id=${userId}::uuid
           `;
         }
-      } else if (event.event_type === 'save' || event.event_type === 'unsave') {
+      } else if ((event.event_type === 'save' || event.event_type === 'unsave')
+        && !isMembershipManagedSaveEvent(event)) {
+        // app.saves is the materialized union of List memberships. A delayed
+        // client event must observe that union instead of applying its stale
+        // target state and resurrecting a repository after final removal.
+        const membershipSaved = await getRepositoryMembershipSavedState(
+          tx,
+          userId,
+          event.repo_id,
+        );
         stateChanged = await setRepositorySaved(
           tx,
           userId,
           event.repo_id,
-          event.event_type === 'save',
+          membershipSaved,
         );
       } else if (event.event_type === 'impression') {
         // The event insert above is the idempotency boundary, so retries never

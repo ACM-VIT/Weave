@@ -65,7 +65,7 @@ export default function DescriptionCard({
   compact = false,
   availableWidth,
 }: DescriptionCardProps) {
-  const technologies = repository.techStack ?? [];
+  const technologies = repository.languages;
   const veryNarrow = availableWidth < 240;
   const circleSize = compact
     ? clamp(availableWidth * 0.14, 31, 38)

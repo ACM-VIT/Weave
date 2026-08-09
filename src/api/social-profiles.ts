@@ -1,4 +1,5 @@
 import { apiV2, apiV2Raw } from './client';
+import type { RepositoryApiPayload } from './repositories';
 
 export type SocialProfile = {
   profile_id: string;
@@ -18,15 +19,7 @@ export type SocialProfile = {
   likes_given_count: number;
   viewer_follows_profile: boolean;
   is_self: boolean;
-  repositories: {
-    repo_id: string;
-    full_name: string;
-    name: string;
-    url: string;
-    description: string | null;
-    star_count: number;
-    fork_count: number;
-  }[];
+  repositories: RepositoryApiPayload[];
 };
 
 export async function getSocialProfile(

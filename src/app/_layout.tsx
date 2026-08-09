@@ -1,14 +1,25 @@
 import '@/global.css';
-import { useEffect } from 'react';
-import { Stack, useRouter, useSegments } from "expo-router";
+import { useEffect, useRef } from 'react';
+import {
+  Stack,
+  type Href,
+  usePathname,
+  useRouter,
+  useSegments,
+} from 'expo-router';
 import Head from 'expo-router/head';
 import { useFonts } from 'expo-font';
 import * as SplashScreen from 'expo-splash-screen';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { QueryClient, QueryClientProvider, useQueryClient } from '@tanstack/react-query';
 import * as Sentry from '@sentry/react-native';
 
 import { AuthProvider, useAuth } from '../store/AuthContext';
+import {
+  pendingProtectedRepositoryRoute,
+  postAuthenticationRoute,
+} from '../utils/auth-routing';
+import type { RepositoryRouteHref } from '../utils/repository-links';
 
 // Keep the splash screen visible while we fetch resources
 SplashScreen.preventAutoHideAsync();
@@ -23,12 +34,26 @@ Sentry.init({
 
 function RootLayoutNav() {
   const { user, isLoading } = useAuth();
+  const pathname = usePathname();
   const segments = useSegments();
   const router = useRouter();
+  const queryClient = useQueryClient();
+  const pendingProtectedRouteRef = useRef<RepositoryRouteHref | null>(null);
+  const previousViewerRef = useRef<string | null | undefined>(undefined);
 
   useEffect(() => {
     Sentry.setUser(user?.user_id ? { id: user.user_id } : null);
   }, [user?.user_id]);
+
+  useEffect(() => {
+    if (isLoading) return;
+    const viewerUserId = user?.user_id ?? null;
+    if (previousViewerRef.current !== undefined
+      && previousViewerRef.current !== viewerUserId) {
+      queryClient.clear();
+    }
+    previousViewerRef.current = viewerUserId;
+  }, [isLoading, queryClient, user?.user_id]);
 
   useEffect(() => {
     if (isLoading) return;
@@ -37,6 +62,13 @@ function RootLayoutNav() {
     const inOnboardingGroup = segments[0] === 'onboarding';
     const rootSegment = segments[0] as string | undefined;
     const inPublicRoute = rootSegment === 'terms' || rootSegment === 'privacy';
+    const routeRequiresAuthentication = !inAuthGroup && !inPublicRoute;
+
+    if (routeRequiresAuthentication
+      && (!user || user.onboarding_completed === false)) {
+      const protectedRoute = pendingProtectedRepositoryRoute(pathname);
+      if (protectedRoute) pendingProtectedRouteRef.current = protectedRoute;
+    }
 
     if (!user && !inAuthGroup && !inPublicRoute) {
       router.replace('/(auth)/login');
@@ -44,10 +76,12 @@ function RootLayoutNav() {
       if (user.onboarding_completed === false && !inOnboardingGroup) {
         router.replace('/onboarding/create-profile');
       } else if (user.onboarding_completed === true && (inAuthGroup || inOnboardingGroup)) {
-        router.replace('/(tabs)/home');
+        const destination = postAuthenticationRoute(pendingProtectedRouteRef.current);
+        pendingProtectedRouteRef.current = null;
+        router.replace(destination as Href);
       }
     }
-  }, [user, isLoading, segments, router]);
+  }, [user, isLoading, pathname, segments, router]);
 
   return <Stack screenOptions={{ headerShown: false }} />;
 }

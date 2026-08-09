@@ -1,9 +1,6 @@
-import { useState } from 'react';
 import {
   ActivityIndicator,
-  Alert,
   FlatList,
-  Linking,
   Pressable,
   StyleSheet,
   Text,
@@ -18,13 +15,12 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
   getBoardRepositories,
   getCollectionRepositories,
-  type BoardRepositoryRecord,
 } from '@/api/boards';
 import RepoCard from '@/components/explore/RepoCard';
-import { REFERENCE_THEME } from '@/constants/theme';
-import { loadPinnedRepositories, type PinnedRepository } from '@/services/pinnedRepositoryStorage';
+import { loadPinnedRepositories } from '@/services/pinnedRepositoryStorage';
 import { useAuth } from '@/store/AuthContext';
-import type { Repo } from '@/types';
+import { repositoryHref } from '@/utils/repository-links';
+import { mapPinnedRepository } from '@/utils/repository-mapper';
 import { getStorageItem } from '@/utils/storage';
 
 type BoardRouteParams = {
@@ -37,43 +33,6 @@ type BoardRouteParams = {
 
 function firstParam(value: string | string[] | undefined): string {
   return (Array.isArray(value) ? value[0] : value)?.trim() ?? '';
-}
-
-function toRepositoryCard(repository: BoardRepositoryRecord): Repo {
-  const owner = repository.owner.trim() || 'Unknown owner';
-
-  return {
-    id: repository.repo_id,
-    name: repository.name,
-    description: repository.description ?? 'No description provided.',
-    stars: '',
-    forks: '',
-    author: owner,
-    avatarColor: REFERENCE_THEME.accentDark,
-    avatarInitial: owner.slice(0, 2).toUpperCase(),
-    language: repository.primary_language ?? undefined,
-    url: repository.url,
-  };
-}
-
-function pinnedToRepositoryCard(repository: PinnedRepository): Repo {
-  return {
-    id: repository.key,
-    name: repository.name,
-    description: repository.description,
-    stars: '',
-    forks: '',
-    author: repository.owner,
-    avatarColor: REFERENCE_THEME.accentDark,
-    avatarInitial: repository.owner.slice(0, 2).toUpperCase(),
-    language: repository.primaryLanguage ?? undefined,
-    url: repository.url,
-  };
-}
-
-function repositoryUrl(repository: Repo): string {
-  if (repository.url) return repository.url;
-  return `https://github.com/${encodeURIComponent(repository.author)}/${encodeURIComponent(repository.name)}`;
 }
 
 export default function BoardScreen() {
@@ -89,7 +48,6 @@ export default function BoardScreen() {
   const boardName = firstParam(params.boardName) || 'List';
   const boardDescription = firstParam(params.boardDescription);
   const isCompact = width < 360;
-  const [openingRepositoryId, setOpeningRepositoryId] = useState<string | null>(null);
 
   const repositoriesQuery = useQuery({
     queryKey: isPinnedCollection
@@ -106,14 +64,15 @@ export default function BoardScreen() {
     queryFn: async ({ signal }) => {
       if (isPinnedCollection) {
         if (!user?.user_id) throw new Error('Sign in to view pinned repositories.');
-        return (await loadPinnedRepositories(user.user_id)).map(pinnedToRepositoryCard);
+        return (await loadPinnedRepositories(user.user_id))
+          .map(mapPinnedRepository)
+          .filter((repository) => repository !== null);
       }
       const token = await getStorageItem('access_token');
       if (!token) throw new Error('Your session has expired. Please log in again.');
-      const repositories = isRepositoryCollection
+      return isRepositoryCollection
         ? await getCollectionRepositories(collectionId, token, signal)
         : await getBoardRepositories(boardId, token, signal);
-      return repositories.map(toRepositoryCard);
     },
   });
 
@@ -124,19 +83,8 @@ export default function BoardScreen() {
     else router.replace('/(tabs)/profile');
   };
 
-  const openRepository = async (repository: Repo) => {
-    if (openingRepositoryId) return;
-    setOpeningRepositoryId(repository.id);
-    try {
-      await Linking.openURL(repositoryUrl(repository));
-    } catch {
-      Alert.alert(
-        'Unable to open repository',
-        'We could not open this repository in your browser. Please try again.',
-      );
-    } finally {
-      setOpeningRepositoryId(null);
-    }
+  const openRepository = (repositoryId: string) => {
+    router.push(repositoryHref(repositoryId));
   };
 
   const repositoryCountLabel = repositoriesQuery.isSuccess
@@ -256,9 +204,9 @@ export default function BoardScreen() {
             </View>
           }
           renderItem={({ item }) => (
-            <View style={openingRepositoryId === item.id ? styles.opening : undefined}>
+            <View>
               <RepoCard
-                onPress={() => void openRepository(item)}
+                onPress={() => openRepository(item.id)}
                 repo={item}
                 showMetrics={false}
               />

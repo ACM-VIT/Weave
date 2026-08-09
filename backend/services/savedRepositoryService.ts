@@ -1,5 +1,37 @@
 import type postgres from 'postgres';
 
+export function hasAnyRepositoryMembership(
+  collectionMembership: boolean,
+  boardMembership: boolean,
+): boolean {
+  return collectionMembership || boardMembership;
+}
+
+export async function getRepositoryMembershipSavedState(
+  tx: postgres.TransactionSql,
+  userId: string,
+  repoId: string,
+): Promise<boolean> {
+  const rows = await tx`
+    SELECT EXISTS(
+      SELECT 1
+      FROM app.collection_repos membership
+      JOIN app.board_collections collection USING(collection_id)
+      WHERE membership.repo_id=${repoId}::uuid AND collection.user_id=${userId}::uuid
+    ) AS collection_membership,
+    EXISTS(
+      SELECT 1
+      FROM app.board_repos membership
+      JOIN app.boards board USING(board_id)
+      WHERE membership.repo_id=${repoId}::uuid AND board.user_id=${userId}::uuid
+    ) AS board_membership
+  `;
+  return hasAnyRepositoryMembership(
+    rows[0]?.collection_membership === true,
+    rows[0]?.board_membership === true,
+  );
+}
+
 export async function setRepositorySaved(
   tx: postgres.TransactionSql,
   userId: string,

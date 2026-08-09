@@ -15,7 +15,12 @@ import {
 } from 'react-native';
 import { BlurView } from 'expo-blur';
 import * as Haptics from 'expo-haptics';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import {
+  useMutation,
+  useQuery,
+  useQueryClient,
+  type InfiniteData,
+} from '@tanstack/react-query';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
   Check,
@@ -28,20 +33,28 @@ import {
 } from 'lucide-react-native';
 
 import {
-  createSaveCollection,
-  getSaveCollections,
-  saveRepositoryToCollections,
-  type SaveCollection,
-} from '@/api/repository-actions';
+  createRepositoryList,
+  getRepositoryLists,
+  listMembershipKey,
+  repositoryListsQueryKey,
+  syncRepositoryLists,
+  type ListDto,
+} from '@/api/lists';
+import { prepareQueuedActivity, toInteractionEventV2 } from '@/api/activity';
+import { repositoryDetailQueryKey } from '@/api/repositories';
+import type { FeedPage } from '@/api/feed';
+import type { RepositoryDetail } from '@/models/repository';
 import { REFERENCE_THEME } from '@/constants/theme';
 import { useModalScrollLock } from '@/hooks/use-modal-scroll-lock';
 import { useAuth } from '@/store/AuthContext';
+import { feedQueryKey, patchFeedSaved } from '@/utils/feed-repository';
 import * as SecureStore from '@/utils/storage';
 
 type SavePopupProps = {
   isVisible: boolean;
   onClose: () => void;
   onSaved?: (saved: boolean) => void;
+  onListMembershipsChanged?: (listIds: string[], saved: boolean) => void;
   repoId?: string;
   repoName?: string;
   serveId?: string | null;
@@ -68,14 +81,10 @@ const palette = {
   danger: REFERENCE_THEME.danger,
 };
 
-function collectionQueryKey(repositoryId?: string) {
-  return ['save-collections', repositoryId] as const;
-}
-
-function CollectionLayoutPreview({ loading = false }: { loading?: boolean }) {
+function ListLayoutPreview({ loading = false }: { loading?: boolean }) {
   return (
     <View style={styles.loadingList}>
-      <View accessibilityLabel="Collection card layout" style={styles.skeletonGrid}>
+      <View accessibilityLabel="List card layout" style={styles.skeletonGrid}>
         {[0, 1, 2, 3].map((item) => (
           <View key={item} style={[styles.skeleton, { backgroundColor: palette.elevated, borderColor: palette.border }]}>
             <View style={styles.skeletonTopRow}>
@@ -88,7 +97,7 @@ function CollectionLayoutPreview({ loading = false }: { loading?: boolean }) {
         ))}
       </View>
       {loading ? (
-        <View accessibilityLabel="Loading collections" accessibilityLiveRegion="polite" style={styles.previewLoadingOverlay}>
+        <View accessibilityLabel="Loading Lists" accessibilityLiveRegion="polite" style={styles.previewLoadingOverlay}>
           <ActivityIndicator color={palette.accent} size="small" />
         </View>
       ) : null}
@@ -100,6 +109,7 @@ export function SavePopup({
   isVisible,
   onClose,
   onSaved,
+  onListMembershipsChanged,
   repoId,
   repoName,
   serveId,
@@ -107,7 +117,9 @@ export function SavePopup({
 }: SavePopupProps) {
   const { height, width } = useWindowDimensions();
   const insets = useSafeAreaInsets();
-  const { checkOnboardingStatus } = useAuth();
+  const { checkOnboardingStatus, user } = useAuth();
+  const viewerUserId = user?.user_id;
+  const selectionScope = `${viewerUserId ?? 'anonymous'}:${repoId ?? 'missing'}`;
   const queryClient = useQueryClient();
   const [modalHeight] = useState(height);
   const [translateY] = useState(() => new Animated.Value(height));
@@ -115,42 +127,47 @@ export function SavePopup({
   const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const createInputRef = useRef<TextInput>(null);
   const [search, setSearch] = useState('');
-  const [localSelectedIds, setLocalSelectedIds] = useState<Set<string>>(new Set());
-  const [hasLocalChanges, setHasLocalChanges] = useState(false);
+  const [localSelection, setLocalSelection] = useState(() => ({
+    scope: selectionScope,
+    selectedIds: new Set<string>(),
+    hasChanges: false,
+  }));
   const [isCreating, setIsCreating] = useState(false);
-  const [newCollectionName, setNewCollectionName] = useState('');
+  const [newListName, setNewListName] = useState('');
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
   useModalScrollLock(isVisible);
 
-  const collectionsQuery = useQuery({
-    queryKey: collectionQueryKey(repoId),
+  const listsQuery = useQuery({
+    queryKey: repositoryListsQueryKey(repoId, viewerUserId),
     queryFn: async ({ signal }) => {
       if (!repoId) throw new Error('Repository information is missing.');
       const token = await SecureStore.getItemAsync('access_token');
-      if (!token) throw new Error('Sign in to manage repository collections.');
-      return getSaveCollections(repoId, token, signal);
+      if (!token) throw new Error('Sign in to manage repository Lists.');
+      return getRepositoryLists(repoId, token, signal);
     },
-    enabled: isVisible && Boolean(repoId),
+    enabled: isVisible && Boolean(repoId && viewerUserId),
     staleTime: 0,
     refetchOnMount: 'always',
     retry: 1,
     retryDelay: 500,
   });
 
-  const collections = useMemo(() => collectionsQuery.data ?? [], [collectionsQuery.data]);
+  const lists = useMemo(() => listsQuery.data ?? [], [listsQuery.data]);
   const serverSelectedIds = useMemo(
-    () => new Set(collections.filter((collection) => collection.selected).map((collection) => collection.collection_id)),
-    [collections],
+    () => new Set(lists.filter((list) => list.selected).map(listMembershipKey)),
+    [lists],
   );
-  const selectedIds = hasLocalChanges ? localSelectedIds : serverSelectedIds;
-  const filteredCollections = useMemo(() => {
+  const hasLocalChanges = localSelection.scope === selectionScope
+    && localSelection.hasChanges;
+  const selectedIds = hasLocalChanges ? localSelection.selectedIds : serverSelectedIds;
+  const filteredLists = useMemo(() => {
     const query = search.trim().toLocaleLowerCase();
-    if (!query) return collections;
-    return collections.filter((collection) =>
-      collection.name.toLocaleLowerCase().includes(query)
+    if (!query) return lists;
+    return lists.filter((list) =>
+      list.name.toLocaleLowerCase().includes(query)
     );
-  }, [collections, search]);
+  }, [lists, search]);
   const sheetWidth = Math.min(Math.max(width - SHEET_HORIZONTAL_MARGIN, 0), SHEET_MAX_WIDTH);
   const sheetHeight = Math.min(460, modalHeight * 0.82);
 
@@ -181,12 +198,11 @@ export function SavePopup({
       setSearch('');
       setMessage(null);
       setIsCreating(false);
-      setNewCollectionName('');
-      setLocalSelectedIds(new Set());
-      setHasLocalChanges(false);
+      setNewListName('');
+      setLocalSelection({ scope: selectionScope, selectedIds: new Set(), hasChanges: false });
       onClose();
     });
-  }, [modalHeight, onClose, overlayOpacity, translateY]);
+  }, [modalHeight, onClose, overlayOpacity, selectionScope, translateY]);
 
   useEffect(() => {
     if (!isVisible) return;
@@ -222,90 +238,149 @@ export function SavePopup({
 
   const createMutation = useMutation({
     mutationFn: async () => {
-      const name = newCollectionName.trim();
-      if (!name) throw new Error('Collection name is required.');
+      const name = newListName.trim();
+      if (!name) throw new Error('List name is required.');
       const token = await SecureStore.getItemAsync('access_token');
-      if (!token) throw new Error('Sign in to create a collection.');
-      return createSaveCollection({ name }, token);
+      if (!token) throw new Error('Sign in to create a List.');
+      return createRepositoryList({ name }, token);
     },
-    onSuccess: async (collection) => {
-      setHasLocalChanges(true);
-      setLocalSelectedIds(new Set([...selectedIds, collection.collection_id]));
+    onSuccess: async (list) => {
+      setLocalSelection({
+        scope: selectionScope,
+        selectedIds: new Set([...selectedIds, listMembershipKey(list)]),
+        hasChanges: true,
+      });
       setIsCreating(false);
-      setNewCollectionName('');
-      setMessage({ type: 'success', text: `${collection.name} created and selected.` });
+      setNewListName('');
+      setMessage({ type: 'success', text: `${list.name} created and selected.` });
       await haptic('success');
-      await queryClient.invalidateQueries({ queryKey: collectionQueryKey(repoId) });
+      await queryClient.invalidateQueries({
+        queryKey: repositoryListsQueryKey(repoId, viewerUserId),
+      });
     },
-    onError: (error) => setMessage({ type: 'error', text: error instanceof Error ? error.message : 'Could not create collection.' }),
+    onError: (error) => setMessage({ type: 'error', text: error instanceof Error ? error.message : 'Could not create List.' }),
   });
 
   const saveMutation = useMutation({
-    mutationFn: async (collectionIds: string[]) => {
+    mutationFn: async ({
+      listIds,
+      event,
+    }: {
+      listIds: string[];
+      event: ReturnType<typeof toInteractionEventV2>;
+    }) => {
       if (!repoId) throw new Error('Repository information is missing.');
       const token = await SecureStore.getItemAsync('access_token');
       if (!token) throw new Error('Sign in to save repositories.');
-      return saveRepositoryToCollections(repoId, collectionIds, token, {
-        serve_id: serveId,
-        position,
-      });
+      return syncRepositoryLists(repoId, listIds, token, event);
     },
-    onMutate: async (collectionIds) => {
-      const key = collectionQueryKey(repoId);
+    onMutate: async ({ listIds }) => {
+      const key = repositoryListsQueryKey(repoId, viewerUserId);
       await queryClient.cancelQueries({ queryKey: key });
-      const previous = queryClient.getQueryData<SaveCollection[]>(key);
-      queryClient.setQueryData<SaveCollection[]>(key, (current = []) => current.map((collection) => ({
-        ...collection,
-        selected: collectionIds.includes(collection.collection_id),
+      const previous = queryClient.getQueryData<ListDto[]>(key);
+      queryClient.setQueryData<ListDto[]>(key, (current = []) => current.map((list) => ({
+        ...list,
+        selected: listIds.includes(listMembershipKey(list)),
       })));
       return { previous };
     },
-    onError: (error, _ids, context) => {
-      if (context?.previous) queryClient.setQueryData(collectionQueryKey(repoId), context.previous);
+    onError: (error, _input, context) => {
+      if (context?.previous) {
+        queryClient.setQueryData(
+          repositoryListsQueryKey(repoId, viewerUserId),
+          context.previous,
+        );
+      }
       setMessage({ type: 'error', text: error instanceof Error ? error.message : 'Could not save repository.' });
     },
-    onSuccess: async (result) => {
+    onSuccess: async (result, _input, context) => {
+      const previouslySelectedLists = context?.previous
+        ?.filter((list) => list.selected)
+        ?? [];
+      const selectedLists = lists.filter((list) => result.selectedListIds.includes(listMembershipKey(list)));
+      const changedLists = [...new Map(
+        [...previouslySelectedLists, ...selectedLists]
+          .map((list) => [listMembershipKey(list), list]),
+      ).values()];
       setMessage({
         type: 'success',
         text: result.saved
-          ? `Saved to ${result.collection_ids.length} ${result.collection_ids.length === 1 ? 'collection' : 'collections'}.`
-          : 'Removed from collections.',
+          ? `Saved to ${result.selectedListIds.length} ${result.selectedListIds.length === 1 ? 'List' : 'Lists'}.`
+          : 'Removed from Lists.',
       });
+      if (repoId) {
+        queryClient.setQueryData<RepositoryDetail>(
+          repositoryDetailQueryKey(repoId, viewerUserId),
+          (current) => current ? {
+            ...current,
+            selectedListIds: result.selectedListIds,
+            viewerSaved: result.saved,
+          } : current,
+        );
+        queryClient.setQueryData<InfiniteData<FeedPage, string | null>>(
+          feedQueryKey(viewerUserId),
+          (current) => patchFeedSaved(current, { repoId }, result.saved),
+        );
+      }
       onSaved?.(result.saved);
+      onListMembershipsChanged?.(result.selectedListIds, result.saved);
       await haptic('success');
       await Promise.all([
-        queryClient.invalidateQueries({ queryKey: collectionQueryKey(repoId) }),
-        queryClient.invalidateQueries({ queryKey: ['savedRepos'] }),
-        queryClient.invalidateQueries({ queryKey: ['profile-content'] }),
+        queryClient.invalidateQueries({
+          queryKey: repositoryListsQueryKey(repoId, viewerUserId),
+        }),
+        queryClient.invalidateQueries({
+          queryKey: repositoryDetailQueryKey(repoId ?? '', viewerUserId),
+          refetchType: 'none',
+        }),
+        queryClient.invalidateQueries({
+          queryKey: ['savedRepos', viewerUserId],
+          exact: true,
+        }),
+        queryClient.invalidateQueries({
+          queryKey: ['profile-stat-repositories', 'saved', viewerUserId],
+          exact: true,
+        }),
+        queryClient.invalidateQueries({
+          queryKey: ['profile-content', viewerUserId],
+          exact: true,
+        }),
+        ...changedLists.map((list) => queryClient.invalidateQueries({
+          queryKey: [
+            list.source === 'collection' ? 'collection-repositories' : 'board-repositories',
+            list.id,
+          ],
+        })),
       ]);
       void checkOnboardingStatus().catch(() => undefined);
-      setHasLocalChanges(false);
+      setLocalSelection({
+        scope: selectionScope,
+        selectedIds: new Set(result.selectedListIds),
+        hasChanges: false,
+      });
       closeTimer.current = setTimeout(closeAnimated, 900);
     },
   });
 
-  const toggleCollection = (collectionId: string) => {
-    setHasLocalChanges(true);
+  const toggleList = (listId: string) => {
     setMessage(null);
-    setLocalSelectedIds(() => {
-      const next = new Set(selectedIds);
-      if (next.has(collectionId)) next.delete(collectionId);
-      else next.add(collectionId);
-      return next;
-    });
+    const next = new Set(selectedIds);
+    if (next.has(listId)) next.delete(listId);
+    else next.add(listId);
+    setLocalSelection({ scope: selectionScope, selectedIds: next, hasChanges: true });
     void haptic();
   };
 
-  const beginCollectionCreation = () => {
+  const beginListCreation = () => {
     setMessage(null);
     setIsCreating(true);
     void haptic();
   };
 
   const saveDisabled = saveMutation.isPending
-    || collectionsQuery.isLoading
-    || collectionsQuery.isFetching
-    || collectionsQuery.isError;
+    || listsQuery.isLoading
+    || listsQuery.isFetching
+    || listsQuery.isError;
 
   if (!isVisible) return null;
 
@@ -349,7 +424,7 @@ export function SavePopup({
               <View style={styles.headerText}>
                 <Text style={[styles.title, { color: palette.text }]}>Save repository</Text>
                 <Text numberOfLines={1} style={[styles.subtitle, { color: palette.secondary }]}>
-                  {repoName ? `Add ${repoName} to one or more collections` : 'Choose one or more collections'}
+                  {repoName ? `Add ${repoName} to one or more Lists` : 'Choose one or more Lists'}
                 </Text>
               </View>
               <Pressable accessibilityLabel="Close" accessibilityRole="button" hitSlop={8} onPress={closeAnimated} style={[styles.closeButton, { backgroundColor: palette.elevated }]}>
@@ -360,9 +435,9 @@ export function SavePopup({
             <View style={[styles.search, { backgroundColor: palette.elevated, borderColor: palette.border }]}>
               <Search color={palette.tertiary} size={19} />
               <TextInput
-                accessibilityLabel="Search collections"
+                accessibilityLabel="Search Lists"
                 onChangeText={setSearch}
-                placeholder="Search collections"
+                placeholder="Search Lists"
                 placeholderTextColor={palette.tertiary}
                 style={[styles.searchInput, { color: palette.text }]}
                 value={search}
@@ -385,19 +460,20 @@ export function SavePopup({
               showsVerticalScrollIndicator
               style={styles.collectionScroller}
             >
-              {collectionsQuery.isLoading && collections.length === 0 ? (
-                <CollectionLayoutPreview loading />
-              ) : collectionsQuery.isError && collections.length === 0 ? (
-                <CollectionLayoutPreview />
-              ) : filteredCollections.length ? (
+              {listsQuery.isLoading && lists.length === 0 ? (
+                <ListLayoutPreview loading />
+              ) : listsQuery.isError && lists.length === 0 ? (
+                <ListLayoutPreview />
+              ) : filteredLists.length ? (
                 <>
                   <View style={styles.collectionGrid}>
-                    {filteredCollections.map((collection) => {
-                      const selected = selectedIds.has(collection.collection_id);
-                      const accent = collection.color || palette.accent;
+                    {filteredLists.map((list) => {
+                      const membershipId = listMembershipKey(list);
+                      const selected = selectedIds.has(membershipId);
+                      const accent = list.color || palette.accent;
                       return (
                         <View
-                          key={collection.collection_id}
+                          key={membershipId}
                           style={[
                             styles.collectionCard,
                             {
@@ -409,8 +485,8 @@ export function SavePopup({
                           <View pointerEvents="none" style={styles.collectionCardContent}>
                             <View style={styles.collectionTopRow}>
                               <View style={[styles.collectionIcon, { backgroundColor: `${accent}20` }]}>
-                                {collection.icon ? (
-                                  <Text style={styles.emoji}>{collection.icon}</Text>
+                                {list.icon ? (
+                                  <Text style={styles.emoji}>{list.icon}</Text>
                                 ) : (
                                   <FolderHeart color={accent} size={18} />
                                 )}
@@ -423,17 +499,17 @@ export function SavePopup({
                               </Animated.View>
                             </View>
                             <View style={styles.collectionCopy}>
-                              <Text numberOfLines={1} style={[styles.collectionName, { color: palette.text }]}>{collection.name}</Text>
+                              <Text numberOfLines={1} style={[styles.collectionName, { color: palette.text }]}>{list.name}</Text>
                               <Text numberOfLines={1} style={[styles.collectionMeta, { color: palette.secondary }]}>
-                                {collection.repo_count} {collection.repo_count === 1 ? 'repository' : 'repositories'}
+                                {list.repositoryCount} {list.repositoryCount === 1 ? 'repository' : 'repositories'}
                               </Text>
                             </View>
                           </View>
                           <Pressable
-                            accessibilityLabel={`${collection.name}, ${collection.repo_count} repositories`}
+                            accessibilityLabel={`${list.name}, ${list.repositoryCount} repositories`}
                             accessibilityRole="checkbox"
                             accessibilityState={{ checked: selected }}
-                            onPress={() => toggleCollection(collection.collection_id)}
+                            onPress={() => toggleList(membershipId)}
                             style={StyleSheet.absoluteFill}
                           />
                         </View>
@@ -445,7 +521,7 @@ export function SavePopup({
                 <View style={styles.centerState}>
                   <Sparkles color={palette.accent} size={30} />
                   <Text style={[styles.stateTitle, { color: palette.text }]}>
-                    {search ? 'No matching collections' : 'Create your first collection'}
+                    {search ? 'No matching Lists' : 'Create your first List'}
                   </Text>
                   <Text style={[styles.stateBody, { color: palette.secondary }]}>
                     {search ? 'Try another search term.' : 'Organize repositories by project, topic, or inspiration.'}
@@ -486,13 +562,13 @@ export function SavePopup({
                   >
                     <Plus color={palette.accent} size={18} strokeWidth={2.4} />
                     <Text numberOfLines={1} style={[styles.newButtonText, { color: palette.text }]}>
-                      New collection
+                      New List
                     </Text>
                   </View>
                   <Pressable
-                    accessibilityLabel="Create new collection"
+                    accessibilityLabel="Create new List"
                     accessibilityRole="button"
-                    onPress={beginCollectionCreation}
+                    onPress={beginListCreation}
                     style={StyleSheet.absoluteFill}
                   />
                 </View>
@@ -519,11 +595,20 @@ export function SavePopup({
                     )}
                   </View>
                   <Pressable
-                    accessibilityLabel="Save repository to selected collections"
+                    accessibilityLabel="Save repository to selected Lists"
                     accessibilityRole="button"
                     accessibilityState={{ disabled: saveDisabled }}
                     disabled={saveDisabled}
-                    onPress={() => saveMutation.mutate([...selectedIds])}
+                    onPress={() => {
+                      if (!repoId) return;
+                      const event = toInteractionEventV2(prepareQueuedActivity({
+                        repo_id: repoId,
+                        action: selectedIds.size > 0 ? 'save' : 'unsave',
+                        serve_id: serveId ?? null,
+                        position: position ?? null,
+                      }));
+                      saveMutation.mutate({ listIds: [...selectedIds], event });
+                    }}
                     style={StyleSheet.absoluteFill}
                   />
                 </View>
@@ -534,54 +619,54 @@ export function SavePopup({
               <View accessibilityViewIsModal style={styles.creationOverlay}>
                 <BlurView intensity={18} tint="dark" style={StyleSheet.absoluteFill} />
                 <Pressable
-                  accessibilityLabel="Cancel collection creation"
+                  accessibilityLabel="Cancel List creation"
                   accessibilityRole="button"
                   disabled={createMutation.isPending}
-                  onPress={() => { setIsCreating(false); setNewCollectionName(''); setMessage(null); }}
+                  onPress={() => { setIsCreating(false); setNewListName(''); setMessage(null); }}
                   style={[StyleSheet.absoluteFill, styles.creationDim]}
                 />
                 <View style={[styles.createPanel, { backgroundColor: palette.elevatedStrong, borderColor: palette.border }]}>
                   <View style={styles.createHeader}>
                     <View style={styles.createHeading}>
-                      <Text style={[styles.createTitle, { color: palette.text }]}>New collection</Text>
-                      <Text style={[styles.createSubtitle, { color: palette.secondary }]}>Give this collection a clear name.</Text>
+                      <Text style={[styles.createTitle, { color: palette.text }]}>New List</Text>
+                      <Text style={[styles.createSubtitle, { color: palette.secondary }]}>Give this List a clear name.</Text>
                     </View>
                     <Pressable
-                      accessibilityLabel="Cancel collection creation"
+                      accessibilityLabel="Cancel List creation"
                       accessibilityRole="button"
                       disabled={createMutation.isPending}
                       hitSlop={8}
-                      onPress={() => { setIsCreating(false); setNewCollectionName(''); setMessage(null); }}
+                      onPress={() => { setIsCreating(false); setNewListName(''); setMessage(null); }}
                       style={[styles.createClose, { backgroundColor: palette.elevated }]}
                     >
                       <X color={palette.secondary} size={18} />
                     </Pressable>
                   </View>
                   <TextInput
-                    accessibilityLabel="Collection name"
+                    accessibilityLabel="List name"
                     editable={!createMutation.isPending}
                     ref={createInputRef}
                     maxLength={100}
-                    onChangeText={(value) => { setNewCollectionName(value); if (message) setMessage(null); }}
-                    onSubmitEditing={() => { if (newCollectionName.trim() && !createMutation.isPending) createMutation.mutate(); }}
-                    placeholder="Collection name"
+                    onChangeText={(value) => { setNewListName(value); if (message) setMessage(null); }}
+                    onSubmitEditing={() => { if (newListName.trim() && !createMutation.isPending) createMutation.mutate(); }}
+                    placeholder="List name"
                     placeholderTextColor={palette.tertiary}
                     returnKeyType="done"
                     style={[styles.createInput, { backgroundColor: palette.elevated, color: palette.text, borderColor: palette.border }]}
-                    value={newCollectionName}
+                    value={newListName}
                   />
                   {message?.type === 'error' ? (
                     <Text accessibilityLiveRegion="polite" selectable style={[styles.createError, { color: palette.danger }]}>{message.text}</Text>
                   ) : null}
                   <Pressable
                     accessibilityRole="button"
-                    accessibilityState={{ disabled: !newCollectionName.trim() || createMutation.isPending }}
-                    disabled={!newCollectionName.trim() || createMutation.isPending}
+                    accessibilityState={{ disabled: !newListName.trim() || createMutation.isPending }}
+                    disabled={!newListName.trim() || createMutation.isPending}
                     onPress={() => createMutation.mutate()}
                     style={({ pressed }) => [
                       styles.createSubmit,
                       { backgroundColor: palette.saveAccent },
-                      (!newCollectionName.trim() || createMutation.isPending) && styles.disabled,
+                      (!newListName.trim() || createMutation.isPending) && styles.disabled,
                       pressed && styles.pressed,
                     ]}
                   >

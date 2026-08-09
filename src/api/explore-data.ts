@@ -1,7 +1,8 @@
-import type { Repo, TabName } from '../types';
+import type { RepositoryDetail } from '@/models/repository';
+import type { TabName } from '../types';
 
 export type ExploreRepoPage = {
-  items: Repo[];
+  items: RepositoryDetail[];
   nextOffset?: number;
 };
 
@@ -17,8 +18,8 @@ export function getNextExploreOffset(tab: TabName, offset: number, itemCount: nu
     : undefined;
 }
 
-export function mergeExplorePages(pages: ExploreRepoPage[]): Repo[] {
-  const repos = new Map<string, Repo>();
+export function mergeExplorePages(pages: ExploreRepoPage[]): RepositoryDetail[] {
+  const repos = new Map<string, RepositoryDetail>();
   pages.forEach((page) => page.items.forEach((repo) => repos.set(repo.id, repo)));
   return [...repos.values()];
 }

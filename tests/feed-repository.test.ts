@@ -7,6 +7,7 @@ import {
   mapFeedRepository,
   patchFeedReaction,
   patchFeedSaved,
+  reconcileFeedItemSavedState,
 } from '../src/utils/feed-repository';
 import { prepareReadmePreview } from '../src/utils/readme';
 
@@ -172,4 +173,27 @@ test('saved state patches in place without changing the served item identity', (
   assert.equal(saved?.pages[0].items[0].repo_id, target.repo_id);
   assert.equal(saved?.pages[0].items[0].serve_id, target.serve_id);
   assert.equal(saved?.pages[0].items[0].position, target.position);
+});
+
+test('feed item local saved state follows changes from the same repository cache entry', () => {
+  const repositoryId = '10000000-0000-4000-8000-000000000001';
+  const optimistic = {
+    repositoryId,
+    serverSaved: false,
+    saved: true,
+  };
+
+  const acknowledged = reconcileFeedItemSavedState(optimistic, repositoryId, true);
+  assert.deepEqual(acknowledged, {
+    repositoryId,
+    serverSaved: true,
+    saved: true,
+  });
+
+  const externallyRemoved = reconcileFeedItemSavedState(acknowledged, repositoryId, false);
+  assert.deepEqual(externallyRemoved, {
+    repositoryId,
+    serverSaved: false,
+    saved: false,
+  });
 });

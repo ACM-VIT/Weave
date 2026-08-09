@@ -1,0 +1,77 @@
+import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
+import test from 'node:test';
+
+const internalSurfaceFiles = [
+  'src/app/(tabs)/explore.tsx',
+  'src/app/(tabs)/home.tsx',
+  'src/app/board.tsx',
+  'src/app/user/[username].tsx',
+  'src/components/liked-repositories-screen.tsx',
+  'src/components/profile-repository-list.tsx',
+] as const;
+
+test('internal repository surfaces route to Weave rather than opening GitHub', async () => {
+  for (const path of internalSurfaceFiles) {
+    const source = await readFile(new URL(`../${path}`, import.meta.url), 'utf8');
+    assert.match(source, /repositoryHref\(/, `${path} must use the canonical repository route`);
+    assert.doesNotMatch(source, /Linking\.openURL/, `${path} must not open GitHub directly`);
+  }
+});
+
+test('the dynamic repository route renders the canonical detail screen', async () => {
+  const source = await readFile(
+    new URL('../src/app/repository/[repoId].tsx', import.meta.url),
+    'utf8',
+  );
+  assert.match(source, /RepositoryDetailScreen/);
+  assert.match(source, /repoId/);
+});
+
+test('feed and Trending cards delegate repository presses to internal navigation', async () => {
+  const feedItem = await readFile(
+    new URL('../src/components/home/RepositoryFeedItem.tsx', import.meta.url),
+    'utf8',
+  );
+  const trendingCard = await readFile(
+    new URL('../src/components/explore/TrendingRepoCard.tsx', import.meta.url),
+    'utf8',
+  );
+
+  assert.match(feedItem, /onRepositoryPress=\{onRepositoryPress\}/);
+  assert.doesNotMatch(feedItem, /Linking\.openURL/);
+  assert.match(trendingCard, /onPress=\{onPress\}/);
+  assert.doesNotMatch(trendingCard, /Linking\.openURL/);
+});
+
+test('every intentional GitHub escape has an explicit visible Open on GitHub action', async () => {
+  for (const path of [
+    'src/components/home/RepositoryScreen.tsx',
+    'src/components/repository-detail-screen.tsx',
+    'src/components/home/share-repository-sheet.tsx',
+  ]) {
+    const source = await readFile(new URL(`../${path}`, import.meta.url), 'utf8');
+    assert.match(source, /Linking\.openURL/, `${path} must contain the intentional external open`);
+    assert.match(source, />Open on GitHub<|label="Open on GitHub"/, `${path} must visibly label the external action`);
+  }
+});
+
+test('README GitHub links use the shared explicit confirmation policy', async () => {
+  for (const path of [
+    'src/components/home/ReadmeCard.tsx',
+    'src/components/home/ReadmePopup.tsx',
+  ]) {
+    const source = await readFile(new URL(`../${path}`, import.meta.url), 'utf8');
+    assert.match(source, /openReadmeExternalLink\(href\)/, `${path} must use the README link policy`);
+    assert.doesNotMatch(source, /Linking\.openURL/, `${path} must not bypass the confirmation policy`);
+  }
+
+  const policy = await readFile(
+    new URL('../src/utils/readme-external-link.ts', import.meta.url),
+    'utf8',
+  );
+  assert.match(policy, /isGithubReadmeLink\(href\)/);
+  assert.match(policy, /Alert\.alert\(/);
+  assert.match(policy, /text: 'Open on GitHub'/);
+  assert.match(policy, /hostname === 'github\.com'/);
+});

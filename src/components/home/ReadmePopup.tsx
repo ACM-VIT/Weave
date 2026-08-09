@@ -4,7 +4,6 @@ import React, { useEffect, useMemo, useRef } from 'react';
 import {
   Animated,
   Easing,
-  Linking,
   Modal,
   Pressable,
   ScrollView,
@@ -23,6 +22,7 @@ import { marked } from 'marked';
 import { REFERENCE_THEME } from '@/constants/theme';
 import { useTypewriterText } from '@/hooks/use-typewriter-text';
 import { prepareReadmeForDisplay } from '@/utils/readme';
+import { openReadmeExternalLink } from '@/utils/readme-external-link';
 
 interface ReadmePopupProps {
   isVisible: boolean;
@@ -340,7 +340,7 @@ export function ReadmePopup({ isVisible, onClose, title, readmeText }: ReadmePop
                 renderersProps={{
                   a: {
                     onPress: (_event, href) => {
-                      if (/^(https?:|mailto:)/i.test(href)) void Linking.openURL(href);
+                      openReadmeExternalLink(href);
                     },
                   },
                 }}

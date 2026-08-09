@@ -31,11 +31,13 @@ import { type ActivityInput } from '@/api/activity';
 import { useAuth } from '@/store/AuthContext';
 import { getActivityOutbox } from '@/services/activityOutboxClient';
 import {
+  feedQueryKey as getFeedQueryKey,
   getFeedItemIdentity,
   mapFeedRepository,
   patchFeedReaction,
   patchFeedSaved,
 } from '@/utils/feed-repository';
+import { repositoryHref } from '@/utils/repository-links';
 
 const WEB_FEED_LIST_STYLE =
   Platform.OS === 'web'
@@ -47,7 +49,7 @@ const ACTIVITY_FLUSH_INTERVAL_MS = 8_000;
 export default function HomeScreen() {
   const { user } = useAuth();
   const queryClient = useQueryClient();
-  const feedQueryKey = useMemo(() => ['feed', user?.user_id] as const, [user?.user_id]);
+  const feedQueryKey = useMemo(() => getFeedQueryKey(user?.user_id), [user?.user_id]);
   const feedInvalidationGenerationRef = useRef(0);
   const activityOutbox = user?.user_id && !DEVELOPMENT_PREVIEW_ENABLED
     ? getActivityOutbox(user.user_id)
@@ -278,6 +280,7 @@ export default function HomeScreen() {
               onQueueActivity={handleQueueActivity}
               onSavedChange={(saved) => handleSavedChange(item.repository, saved)}
               onOwnerPress={() => openOwnerProfile(item.repository)}
+              onRepositoryPress={() => router.push(repositoryHref(item.repository.id))}
               isViewable={viewableItems.includes(item.feedId)}
             />
           )}

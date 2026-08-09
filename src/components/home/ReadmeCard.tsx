@@ -2,7 +2,6 @@ import React, { useEffect, useMemo, useRef } from 'react';
 import {
   Animated,
   Easing,
-  Linking,
   Pressable,
   StyleSheet,
   Text,
@@ -19,6 +18,7 @@ import { marked } from 'marked';
 
 import { REFERENCE_THEME } from '@/constants/theme';
 import { useTypewriterText } from '@/hooks/use-typewriter-text';
+import { openReadmeExternalLink } from '@/utils/readme-external-link';
 import {
   prepareReadmePreview,
   README_COMPACT_PREVIEW_MAX_CHARACTERS,
@@ -26,11 +26,10 @@ import {
 } from '@/utils/readme';
 
 type RepositoryData = {
-  title: string;
+  name: string;
   description: string;
   readmeSummary: string | null;
   readmeFull: string | null;
-  techStack?: string[];
 };
 
 type ReadmeCardProps = {
@@ -70,8 +69,7 @@ const ignoredMarkdownTags = [
 const markdownTextProps = { selectable: true } as const;
 
 function openSafeMarkdownLink(_event: GestureResponderEvent, href: string) {
-  if (!/^(https?:|mailto:)/i.test(href)) return;
-  void Linking.openURL(href).catch(() => undefined);
+  openReadmeExternalLink(href);
 }
 
 const markdownRenderersProps = {
@@ -466,7 +464,7 @@ export default function ReadmeCard({
         </View>
         <AnimatedPressable
           accessibilityHint="Opens the complete README in a scrollable view"
-          accessibilityLabel={`View README for ${repository.title}`}
+          accessibilityLabel={`View README for ${repository.name}`}
           accessibilityRole="button"
           hitSlop={6}
           onPress={onReadFullPress}

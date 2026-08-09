@@ -80,8 +80,8 @@ async function writePayload(userId: string, payload: string): Promise<void> {
   await writeNativePayload(userId, payload);
 }
 
-export function pinnedRepositoryKey(repository: Pick<RepositoryData, 'id' | 'owner' | 'title'>) {
-  return `${repository.id}:${repository.owner}/${repository.title}`;
+export function pinnedRepositoryKey(repository: Pick<RepositoryData, 'id' | 'owner' | 'name'>) {
+  return `${repository.id}:${repository.owner}/${repository.name}`;
 }
 
 export async function loadPinnedRepositories(userId: string): Promise<PinnedRepository[]> {
@@ -102,12 +102,12 @@ export async function setRepositoryPinned(
       ? [{
           key,
           repositoryId: repository.id,
-          name: repository.title,
+          name: repository.name,
           owner: repository.owner,
           description: repository.description || 'No description provided.',
-          primaryLanguage: repository.techStack?.[0] ?? null,
+          primaryLanguage: repository.primaryLanguage ?? repository.languages[0] ?? null,
           url: repository.githubUrl
-            ?? `https://github.com/${encodeURIComponent(repository.owner)}/${encodeURIComponent(repository.title)}`,
+            ?? `https://github.com/${encodeURIComponent(repository.owner)}/${encodeURIComponent(repository.name)}`,
           pinnedAt: new Date().toISOString(),
         }, ...withoutRepository]
       : withoutRepository;

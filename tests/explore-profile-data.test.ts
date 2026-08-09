@@ -7,18 +7,16 @@ import {
   mergeExplorePages,
 } from '../src/api/explore-data';
 import { settleProfileContent } from '../src/api/profile-data';
-import type { Repo } from '../src/types';
+import type { RepositoryDetail } from '../src/models/repository';
+import { mapRepositoryDetail } from '../src/utils/repository-mapper';
 
-function repo(id: string, name = id): Repo {
-  return {
-    id,
-    name,
-    stars: '0',
-    forks: '0',
-    author: 'weave',
-    avatarColor: '#000000',
-    avatarInitial: 'W',
-  };
+function repo(id: string, name = id): RepositoryDetail {
+  const repository = mapRepositoryDetail({
+    repo_id: id,
+    full_name: `weave/${name}`,
+  });
+  assert.ok(repository);
+  return repository;
 }
 
 test('Latest pagination advances only after a complete API page', () => {
@@ -42,11 +40,31 @@ test('Profile content preserves successful sections when one endpoint fails', as
   const content = await settleProfileContent({
     boards: Promise.resolve({ items: [{ board_id: 'board', name: 'Backend', repo_count: 2 }] }),
     collections: Promise.reject(new Error('collections unavailable')),
-    repositories: Promise.resolve({ items: [{ repo_id: 'repo', name: 'api', full_name: 'weave/api', star_count: 8 }] }),
   });
 
-  assert.equal(content.boards.length, 1);
-  assert.deepEqual(content.collections, []);
-  assert.equal(content.repositories.length, 1);
+  assert.equal(content.lists.length, 1);
+  assert.equal(content.lists[0].id, 'board');
+  assert.equal(content.lists[0].source, 'legacy-board');
   assert.deepEqual(content.errors, { collections: 'collections unavailable' });
+});
+
+test('Profile exposes Boards and Collections through one product List DTO', async () => {
+  const content = await settleProfileContent({
+    boards: Promise.resolve({ items: [{ board_id: 'board', name: 'Legacy', repo_count: 1 }] }),
+    collections: Promise.resolve({ items: [{
+      collection_id: 'list',
+      name: 'Read later',
+      repo_count: 2,
+      board_count: 0,
+      selected: false,
+    }] }),
+  });
+
+  assert.deepEqual(
+    content.lists.map(({ id, source, repositoryCount }) => ({ id, source, repositoryCount })),
+    [
+      { id: 'board', source: 'legacy-board', repositoryCount: 1 },
+      { id: 'list', source: 'collection', repositoryCount: 2 },
+    ],
+  );
 });

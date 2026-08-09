@@ -20,6 +20,7 @@ import { scheduleOnRN } from 'react-native-worklets';
 
 import type { RepositoryData } from '../../data/repositories';
 import type { FeedbackAction } from '../../api/activity';
+import { reconcileFeedItemSavedState } from '@/utils/feed-repository';
 import {
   DWELL_VISIBILITY_THRESHOLD_MS,
   FEEDBACK_ACTIONS,
@@ -58,6 +59,7 @@ export function RepositoryFeedItem({
   pageHeight,
   isViewable = false,
   onOwnerPress,
+  onRepositoryPress,
   onQueueActivity,
   onSavedChange,
 }: {
@@ -66,6 +68,7 @@ export function RepositoryFeedItem({
   pageHeight: number;
   isViewable?: boolean;
   onOwnerPress?: () => void;
+  onRepositoryPress?: () => void;
   onSavedChange?: (saved: boolean) => void;
   onQueueActivity?: (
     event: {
@@ -86,7 +89,21 @@ export function RepositoryFeedItem({
   const [isAppActive, setIsAppActive] = useState(
     AppState.currentState !== 'background' && AppState.currentState !== 'inactive',
   );
-  const [isSaved, setIsSaved] = useState(repository.viewerSaved === true);
+  const serverSaved = repository.viewerSaved === true;
+  const [savedState, setSavedState] = useState(() => ({
+    repositoryId: repository.id,
+    serverSaved,
+    saved: serverSaved,
+  }));
+  const reconciledSavedState = reconcileFeedItemSavedState(
+    savedState,
+    repository.id,
+    serverSaved,
+  );
+  if (reconciledSavedState !== savedState) {
+    setSavedState(reconciledSavedState);
+  }
+  const isSaved = reconciledSavedState.saved;
   const [commentCount, setCommentCount] = useState(
     Number(repository.stats.comments || 0) || 0
   );
@@ -183,9 +200,9 @@ export function RepositoryFeedItem({
   }, [closeSaveReveal]);
 
   const handleSavedChange = React.useCallback((saved: boolean) => {
-    setIsSaved(saved);
+    setSavedState({ repositoryId: repository.id, serverSaved, saved });
     onSavedChange?.(saved);
-  }, [onSavedChange]);
+  }, [onSavedChange, repository.id, serverSaved]);
 
   const saveSwipeGesture = React.useMemo(() => Gesture.Pan()
     .enabled(Platform.OS !== 'web' && !overlaysOpen && !isSaveRevealOpen)
@@ -283,6 +300,7 @@ export function RepositoryFeedItem({
               isSaved={isSaved}
               onCommentPress={() => setIsCommentsVisible(true)}
               onOwnerPress={onOwnerPress}
+              onRepositoryPress={onRepositoryPress}
               onQueueActivity={queueRepositoryActivity}
               onReadFullPress={() => {
                 queueRepositoryActivity(
@@ -315,10 +333,10 @@ export function RepositoryFeedItem({
         isVisible={isSaveVisible}
         onClose={() => setIsSaveVisible(false)}
         onSaved={handleSavedChange}
-        repoId={repository.id}
-        repoName={repository.title}
-        serveId={repository.serveId}
         position={repository.feedPosition}
+        repoId={repository.id}
+        repoName={repository.name}
+        serveId={repository.serveId}
       />
       <ShareRepositorySheet
         isVisible={isShareVisible}
@@ -330,9 +348,8 @@ export function RepositoryFeedItem({
         repositoryId={repository.id}
         repositoryDetails={{
           id: repository.id,
-          name: repository.title,
-          fullName: `${repository.owner}/${repository.title}`,
-          githubUrl: repository.githubUrl ?? `https://github.com/${repository.owner}/${repository.title}`,
+          fullName: repository.fullName,
+          githubUrl: repository.githubUrl,
           description: repository.description,
         }}
       />
@@ -347,7 +364,7 @@ export function RepositoryFeedItem({
         isVisible={isReadmeVisible}
         onClose={() => setIsReadmeVisible(false)}
         readmeText={repository.readmeFull}
-        title={repository.title}
+        title={repository.name}
       />
     </View>
   );

@@ -2,7 +2,6 @@ import { useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   FlatList,
-  Linking,
   Pressable,
   StyleSheet,
   Text,
@@ -10,60 +9,33 @@ import {
   View,
   useWindowDimensions,
 } from 'react-native';
+import { router } from 'expo-router';
 import { useQuery } from '@tanstack/react-query';
 import { FolderGit2, GitFork, Heart, RotateCcw, Search, Star, X } from 'lucide-react-native';
 
 import { apiV2 } from '@/api/client';
+import type { RepositoryApiPayload } from '@/api/repositories';
 import { REFERENCE_THEME } from '@/constants/theme';
+import type { RepositoryDetail } from '@/models/repository';
 import { formatCompactCount } from '@/utils/format-count';
+import { repositoryHref } from '@/utils/repository-links';
+import { mapRepositoryList } from '@/utils/repository-mapper';
 import { getStorageItem } from '@/utils/storage';
 
 export type ProfileRepositoryType = 'likes' | 'saved';
-
-type RepositoryRecord = {
-  repo_id: string;
-  name: string;
-  owner: string;
-  full_name: string;
-  url: string;
-  description: string;
-  star_count: number;
-  fork_count: number;
-  likes_count: number;
-};
-
-type RawRepository = Record<string, unknown>;
-
-function normalizeRepository(repository: RawRepository): RepositoryRecord {
-  const fullName = String(repository.full_name ?? 'Unknown repository');
-  const [fallbackOwner = 'Unknown owner', fallbackName = fullName] = fullName.split('/');
-  const owner = String(repository.owner ?? repository.owner_id ?? fallbackOwner);
-  const name = String(repository.name ?? repository.repo_name ?? fallbackName);
-  return {
-    repo_id: String(repository.repo_id),
-    name,
-    owner,
-    full_name: fullName,
-    url: String(repository.url ?? repository.github_repo_url ?? `https://github.com/${owner}/${name}`),
-    description: String(repository.description ?? 'No description provided.'),
-    star_count: Number(repository.star_count ?? 0) || 0,
-    fork_count: Number(repository.fork_count ?? repository.forks_count ?? 0) || 0,
-    likes_count: Number(repository.likes_count ?? 0) || 0,
-  };
-}
 
 async function loadRepositories(
   type: ProfileRepositoryType,
   userId: string,
   signal?: AbortSignal,
-): Promise<RepositoryRecord[]> {
+): Promise<RepositoryDetail[]> {
   const token = await getStorageItem('access_token');
   if (!token) throw new Error('Your session has expired. Please sign in again.');
   const path = type === 'likes'
     ? `/users/${encodeURIComponent(userId)}/likes-given?limit=100&offset=0`
     : '/repositories/saved?limit=100&offset=0';
-  const data = await apiV2<{ items: RawRepository[] }>(path, { signal }, token);
-  return (Array.isArray(data.items) ? data.items : []).map(normalizeRepository);
+  const data = await apiV2<{ items: RepositoryApiPayload[] }>(path, { signal }, token);
+  return mapRepositoryList(Array.isArray(data.items) ? data.items : []);
 }
 
 export function ProfileRepositoryList({
@@ -158,7 +130,7 @@ export function ProfileRepositoryList({
         ItemSeparatorComponent={() => <View style={styles.separator} />}
         keyboardDismissMode="on-drag"
         keyboardShouldPersistTaps="handled"
-        keyExtractor={(repository) => repository.repo_id}
+        keyExtractor={(repository) => repository.id}
         ListEmptyComponent={emptyState}
         numColumns={2}
         onRefresh={userId ? () => void repositoriesQuery.refetch() : undefined}
@@ -173,17 +145,17 @@ export function ProfileRepositoryList({
                 <Text numberOfLines={1} style={[styles.name, compact && styles.nameCompact]}>{item.name}</Text>
                 <Text numberOfLines={1} style={styles.owner}>{item.owner}</Text>
                 <View style={styles.metrics}>
-                  <Metric icon={<Star color="#F5C54D" fill="#F5C54D" size={11} />} value={item.star_count} />
-                  <Metric icon={<GitFork color={REFERENCE_THEME.textTertiary} size={11} />} value={item.fork_count} />
-                  {type === 'likes' ? <Metric icon={<Heart color={REFERENCE_THEME.accentLight} size={11} />} value={item.likes_count} /> : null}
+                  <Metric icon={<Star color="#F5C54D" fill="#F5C54D" size={11} />} value={item.stats.stars} />
+                  <Metric icon={<GitFork color={REFERENCE_THEME.textTertiary} size={11} />} value={item.stats.forks} />
+                  {type === 'likes' ? <Metric icon={<Heart color={REFERENCE_THEME.accentLight} size={11} />} value={item.stats.likes} /> : null}
                 </View>
               </View>
             </View>
             <Pressable
-              accessibilityHint="Opens this repository on GitHub"
-              accessibilityLabel={`Open ${item.full_name}`}
+              accessibilityHint="Opens this repository in Weave"
+              accessibilityLabel={`Open ${item.fullName}`}
               accessibilityRole="link"
-              onPress={() => void Linking.openURL(item.url).catch(() => undefined)}
+              onPress={() => router.push(repositoryHref(item.id))}
               style={({ pressed }) => [StyleSheet.absoluteFill, pressed && styles.cardPressedOverlay]}
             />
           </View>

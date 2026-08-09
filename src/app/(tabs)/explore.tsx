@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react';
-import { ActivityIndicator, Linking, Pressable, ScrollView, StatusBar, Text, View } from 'react-native';
+import { ActivityIndicator, Pressable, ScrollView, StatusBar, Text, View } from 'react-native';
+import { router } from 'expo-router';
 import { useInfiniteQuery } from '@tanstack/react-query';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { fetchExploreRepos, mergeExplorePages } from '../../api/explore';
@@ -7,14 +8,11 @@ import RepoCard from '../../components/explore/RepoCard';
 import SearchBar from '../../components/explore/SearchBar';
 import TabBar from '../../components/explore/TabBar';
 import TrendingRepoCard from '../../components/explore/TrendingRepoCard';
-import { Repo, TabName } from '../../types';
-import { useAuth } from '../../store/AuthContext';
-import { getStorageItem } from '../../utils/storage';
-import { getActivityOutbox } from '../../services/activityOutboxClient';
+import type { RepositoryDetail } from '@/models/repository';
+import { repositoryHref } from '@/utils/repository-links';
+import { TabName } from '../../types';
 
 export default function ExploreScreen() {
-  const { user } = useAuth();
-  const activityOutbox = user?.user_id ? getActivityOutbox(user.user_id) : null;
   const insets = useSafeAreaInsets();
   const [activeTab, setActiveTab] = useState<TabName>('Latest');
   const [searchQuery, setSearchQuery] = useState('');
@@ -46,7 +44,7 @@ export default function ExploreScreen() {
     return repos.filter((repo) => {
       return (
         repo.name.toLowerCase().includes(q) ||
-        repo.author.toLowerCase().includes(q) ||
+        repo.owner.toLowerCase().includes(q) ||
         repo.description?.toLowerCase().includes(q)
       );
     });
@@ -60,19 +58,8 @@ export default function ExploreScreen() {
     setSearchQuery('');
   };
 
-  const handleRepoPress = async (repo: Repo) => {
-    const fallbackUrl = `https://github.com/${repo.author}/${repo.name}`;
-    const url = repo.url?.startsWith('https://github.com/') ? repo.url : fallbackUrl;
-    try {
-      await Linking.openURL(url);
-      if (!activityOutbox) return;
-      await activityOutbox.enqueue({ repo_id: repo.id, action: 'github_open' });
-      const token = await getStorageItem('access_token');
-      if (!token) return;
-      await activityOutbox.flush(token);
-    } catch {
-      // The durable event remains queued when delivery is offline or interrupted.
-    }
+  const handleRepoPress = (repo: RepositoryDetail) => {
+    router.push(repositoryHref(repo.id));
   };
 
   const feedbackMessage = isError && repos.length === 0

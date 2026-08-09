@@ -142,7 +142,7 @@ Comment bodies are 1-5000 trimmed characters.
 |---|---|---|
 | `GET /api/v2/collections` | `repository_id?` | Current user's collections, repository counts, timestamps, and optional membership state |
 | `POST /api/v2/collections` | `{name,description?,icon?,color?}` | Creates collection |
-| `POST /api/v2/collections/save` | `{repositoryId,collectionIds[]}` | Atomically synchronizes a repository across owned collections |
+| `POST /api/v2/collections/save` | `{repositoryId,collectionIds[],boardIds[],event?}` | Atomically synchronizes a repository across all owned product Lists; a stable save/unsave event records feedback only when the saved union changes |
 | `PUT /api/v2/collections/:collectionId` | `{name,description?,icon?,color?}` | Replaces mutable fields |
 | `DELETE /api/v2/collections/:collectionId` | none | Deletes collection; boards become ungrouped |
 | `GET /api/v2/boards` | none | Current user's boards and repo counts |
