@@ -1,7 +1,10 @@
 import type { RepositoryApiPayload } from '@/api/repositories';
 import type { RepositoryDetail, RepositoryStats, RepositoryStatus } from '@/models/repository';
 import type { PinnedRepository } from '@/services/pinnedRepositoryCodec';
-import { normalizeOptionalRepositoryText } from '@/utils/readme';
+import {
+  normalizeOptionalRepositoryText,
+  normalizeRepositoryCardSummary,
+} from '@/utils/readme';
 
 function text(value: unknown): string {
   return typeof value === 'string' ? value.trim() : '';
@@ -105,6 +108,12 @@ export function mapRepositoryDetail(
     ? payload.viewer_reaction
     : null;
   const updatedAt = nullableText(payload.updated_at);
+  const readmeFull = normalizeOptionalRepositoryText(payload.readme_md)
+    ?? normalizeOptionalRepositoryText(payload.readme);
+  const summarySource = payload.summary_source === 'generated'
+    || payload.summary_source === 'description_fallback'
+    ? payload.summary_source
+    : null;
 
   return {
     id,
@@ -116,10 +125,19 @@ export function mapRepositoryDetail(
     status: repositoryStatus(payload.status),
     description: normalizeOptionalRepositoryText(payload.description) ?? '',
     summaryId: nullableText(payload.summary_id),
-    readmeSummary: normalizeOptionalRepositoryText(payload.summary)
-      ?? normalizeOptionalRepositoryText(payload.readme_summary),
-    readmeFull: normalizeOptionalRepositoryText(payload.readme_md)
-      ?? normalizeOptionalRepositoryText(payload.readme),
+    readmeSummary: normalizeRepositoryCardSummary(
+      normalizeOptionalRepositoryText(payload.summary)
+        ?? normalizeOptionalRepositoryText(payload.readme_summary),
+      readmeFull,
+    ),
+    readmeFull,
+    readmeSourcePath: nullableText(payload.readme_source_path),
+    readmeDefaultBranch: nullableText(payload.readme_default_branch),
+    readmeBaseUrl: nullableText(payload.readme_base_url),
+    summaryHighlights: stringArray(payload.summary_highlights),
+    summaryPromptVersion: nullableText(payload.summary_prompt_version),
+    summaryFormatVersion: nullableText(payload.summary_format_version),
+    summarySource,
     languages,
     topics: stringArray(payload.topics),
     primaryLanguage: nullableText(payload.primary_language) ?? languages[0] ?? null,

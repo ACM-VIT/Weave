@@ -160,13 +160,44 @@ export const repoContent = appSchema.table('repo_content', {
   repoId: uuid('repo_id').primaryKey().references(() => appRepos.repoId, { onDelete: 'cascade' }),
   description: text('description'),
   readme: text('readme'),
+  readmeSourcePath: text('readme_source_path'),
+  readmeDefaultBranch: text('readme_default_branch'),
+  readmeBaseUrl: text('readme_base_url'),
   primaryLanguage: text('primary_language'),
   languages: jsonb('languages').$type<string[]>().notNull().default([]),
   contentHash: text('content_hash').notNull(),
   contentVersion: integer('content_version').notNull().default(1),
   sourceUpdatedAt: timestamp('source_updated_at', { withTimezone: true }),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
-});
+}, (table) => [
+  check('repo_content_readme_metadata_check', sql`
+    (${table.readmeSourcePath} IS NULL OR (
+      btrim(${table.readmeSourcePath}) = ${table.readmeSourcePath}
+      AND btrim(${table.readmeSourcePath}) <> ''
+      AND char_length(${table.readmeSourcePath}) <= 1024
+      AND ${table.readmeSourcePath} !~ '^/'
+      AND right(${table.readmeSourcePath},1) <> '/'
+      AND position('//' in ${table.readmeSourcePath}) = 0
+      AND position(chr(92) in ${table.readmeSourcePath}) = 0
+      AND ${table.readmeSourcePath} !~ '(^|/)[.]{1,2}(/|$)'
+    ))
+    AND (${table.readmeDefaultBranch} IS NULL OR (
+      btrim(${table.readmeDefaultBranch}) = ${table.readmeDefaultBranch}
+      AND btrim(${table.readmeDefaultBranch}) <> ''
+      AND char_length(${table.readmeDefaultBranch}) <= 256
+      AND ${table.readmeDefaultBranch} !~ '^/'
+      AND right(${table.readmeDefaultBranch},1) <> '/'
+      AND position('//' in ${table.readmeDefaultBranch}) = 0
+      AND position(chr(92) in ${table.readmeDefaultBranch}) = 0
+      AND ${table.readmeDefaultBranch} !~ '(^|/)[.]{1,2}(/|$)'
+    ))
+    AND (${table.readmeBaseUrl} IS NULL OR (
+      char_length(${table.readmeBaseUrl}) <= 2048
+      AND ${table.readmeBaseUrl}
+        ~ '^https://raw[.]githubusercontent[.]com/[^/[:space:]?#]+/[^/[:space:]?#]+/refs/heads/[^[:space:]?#]+/$'
+    ))
+  `),
+]);
 
 export const repoStatSnapshots = appSchema.table('repo_stat_snapshots', {
   snapshotId: uuid('snapshot_id').defaultRandom().primaryKey(),
@@ -196,11 +227,42 @@ export const repoCardSummaries = appSchema.table('repo_card_summaries', {
   summaryId: uuid('summary_id').defaultRandom().primaryKey(),
   repoId: uuid('repo_id').notNull().references(() => appRepos.repoId, { onDelete: 'cascade' }),
   contentVersion: integer('content_version').notNull(),
+  promptVersion: text('prompt_version').notNull(),
   modelVersion: text('model_version').notNull(),
+  formatVersion: text('format_version').notNull(),
   summary: text('summary').notNull(),
+  highlights: jsonb('highlights').$type<string[]>().notNull().default([]),
+  summarySource: text('source').notNull(),
   active: boolean('active').notNull().default(false),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
-}, (table) => [index('repo_card_summaries_repo_active_idx').on(table.repoId, table.active)]);
+}, (table) => [
+  index('repo_card_summaries_repo_active_idx').on(table.repoId, table.active),
+  uniqueIndex('repo_card_summaries_versioned_uidx').on(
+    table.repoId,
+    table.contentVersion,
+    table.promptVersion,
+    table.modelVersion,
+    table.formatVersion,
+  ),
+  check('repo_card_summaries_active_length_check', sql`
+    (${table.summarySource} = 'legacy' AND NOT ${table.active})
+    OR (
+      ${table.summarySource} <> 'legacy'
+      AND char_length(btrim(${table.summary})) BETWEEN 1 AND 360
+    )
+  `),
+  check('repo_card_summaries_versions_check', sql`
+    btrim(${table.promptVersion}) <> ''
+    AND btrim(${table.modelVersion}) <> ''
+    AND btrim(${table.formatVersion}) <> ''
+  `),
+  check('repo_card_summaries_highlights_check', sql`
+    jsonb_typeof(${table.highlights})='array' AND jsonb_array_length(${table.highlights})<=3
+  `),
+  check('repo_card_summaries_source_check', sql`
+    ${table.summarySource} IN ('generated','description_fallback','legacy')
+  `),
+]);
 
 export const reactions = appSchema.table('reactions', {
   userId: uuid('user_id').notNull().references(() => appUsers.userId, { onDelete: 'cascade' }),
@@ -368,6 +430,7 @@ export const mlOutbox = telemetrySchema.table('ml_outbox', {
   aggregateId: uuid('aggregate_id').notNull(),
   idempotencyKey: text('idempotency_key').notNull().unique(),
   payload: jsonb('payload').$type<Record<string, unknown>>().notNull(),
+  responsePayload: jsonb('response_payload').$type<Record<string, unknown>>(),
   status: text('status').notNull().default('pending'),
   attempts: integer('attempts').notNull().default(0),
   availableAt: timestamp('available_at', { withTimezone: true }).notNull().defaultNow(),

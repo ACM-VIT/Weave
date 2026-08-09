@@ -16,19 +16,26 @@ import { BookOpen, X } from 'lucide-react-native';
 import { BlurView } from 'expo-blur';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useReducedMotion } from 'react-native-reanimated';
-import RenderHtml, { defaultSystemFonts } from 'react-native-render-html';
-import { marked } from 'marked';
+import RenderHtml, {
+  defaultSystemFonts,
+  type CustomTagRendererRecord,
+} from 'react-native-render-html';
 
 import { REFERENCE_THEME } from '@/constants/theme';
-import { useTypewriterText } from '@/hooks/use-typewriter-text';
 import { prepareReadmeForDisplay } from '@/utils/readme';
 import { openReadmeExternalLink } from '@/utils/readme-external-link';
+import {
+  renderReadmeMarkdown,
+  type ReadmeImageContext,
+} from '@/utils/readme-images';
+import { SafeReadmeImageRenderer } from './SafeReadmeImage';
 
 interface ReadmePopupProps {
   isVisible: boolean;
   onClose: () => void;
   title: string;
   readmeText: string | null;
+  readmeSource: ReadmeImageContext;
 }
 
 const POPUP_OPEN_DURATION = 200;
@@ -42,6 +49,10 @@ const markdownFonts = [
   'NataSans-SemiBold',
   'NataSans-Bold',
 ];
+
+const markdownRenderers: CustomTagRendererRecord = {
+  img: SafeReadmeImageRenderer,
+};
 
 const markdownTagStyles = {
   body: {
@@ -149,7 +160,13 @@ const markdownTagStyles = {
   },
 } as const;
 
-export function ReadmePopup({ isVisible, onClose, title, readmeText }: ReadmePopupProps) {
+export function ReadmePopup({
+  isVisible,
+  onClose,
+  title,
+  readmeText,
+  readmeSource,
+}: ReadmePopupProps) {
   const { width, height } = useWindowDimensions();
   const insets = useSafeAreaInsets();
   const reduceMotion = useReducedMotion();
@@ -157,19 +174,9 @@ export function ReadmePopup({ isVisible, onClose, title, readmeText }: ReadmePop
   const contentProgress = useMemo(() => new Animated.Value(0), []);
   const closingRef = useRef(false);
   const content = useMemo(() => prepareReadmeForDisplay(readmeText), [readmeText]);
-  const typedContent = useTypewriterText(content, {
-    delay: 110,
-    duration: 1_100,
-    enabled: isVisible,
-    maxAnimatedCharacters: 1_200,
-    reducedMotion: reduceMotion,
-  });
-  const animatedContent = typedContent.isTyping
-    ? `${typedContent.text}${typedContent.cursorVisible ? ' ▍' : '  '}`
-    : typedContent.text;
   const markdownHtml = useMemo(
-    () => marked.parse(animatedContent, { async: false, gfm: true }) as string,
-    [animatedContent],
+    () => renderReadmeMarkdown(content, readmeSource),
+    [content, readmeSource],
   );
   const cardAnimationStyle = useMemo(() => ({
     opacity,
@@ -336,7 +343,22 @@ export function ReadmePopup({ isVisible, onClose, title, readmeText }: ReadmePop
                 contentWidth={cardWidth - 44}
                 defaultTextProps={{ selectable: true }}
                 enableExperimentalMarginCollapsing
-                ignoredDomTags={['script', 'style', 'iframe', 'object', 'embed', 'form', 'input', 'button']}
+                ignoredDomTags={[
+                  'script',
+                  'style',
+                  'iframe',
+                  'object',
+                  'embed',
+                  'form',
+                  'input',
+                  'button',
+                  'link',
+                  'meta',
+                  'video',
+                  'audio',
+                  'source',
+                ]}
+                renderers={markdownRenderers}
                 renderersProps={{
                   a: {
                     onPress: (_event, href) => {

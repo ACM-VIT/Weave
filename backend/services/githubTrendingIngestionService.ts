@@ -23,6 +23,7 @@ interface GitHubSearchRepository {
   created_at: string;
   updated_at: string;
   pushed_at: string;
+  default_branch: string;
   archived?: boolean;
   fork?: boolean;
 }
@@ -34,6 +35,44 @@ interface GitHubSearchResponse {
 interface GitHubReadmeResponse {
   content?: string;
   encoding?: string;
+  path?: string;
+  download_url?: string | null;
+}
+
+class GitHubTrendingRequestError extends Error {
+  constructor(readonly status: number, message: string) {
+    super(message);
+    this.name = 'GitHubTrendingRequestError';
+  }
+}
+
+function safeSlashPath(value: string | undefined, maximum: number): value is string {
+  if (!value || value.length > maximum || value !== value.trim()
+    || value.startsWith('/') || value.endsWith('/') || value.includes('\\')) return false;
+  return value.split('/').every((segment) => segment.length > 0 && segment !== '.' && segment !== '..');
+}
+
+function safeReadmeBaseUrl(
+  downloadUrl: string | null | undefined,
+  repo: GitHubSearchRepository,
+  sourcePath: string | undefined,
+): string | null {
+  if (!downloadUrl || !safeSlashPath(sourcePath, 1_024)
+    || !safeSlashPath(repo.default_branch, 256)) return null;
+  try {
+    const parsed = new URL(downloadUrl);
+    if (parsed.protocol !== 'https:' || parsed.hostname !== 'raw.githubusercontent.com'
+      || parsed.username || parsed.password || parsed.search || parsed.hash) return null;
+    const pathSegments = sourcePath.split('/').filter(Boolean);
+    const branchSegments = repo.default_branch.split('/').filter(Boolean);
+    if (pathSegments.length < 1 || branchSegments.length < 1
+      || [...pathSegments, ...branchSegments].some((segment) => segment === '.' || segment === '..')) return null;
+    const directory = pathSegments.slice(0, -1).map(encodeURIComponent).join('/');
+    const branch = branchSegments.map(encodeURIComponent).join('/');
+    return `https://raw.githubusercontent.com/${encodeURIComponent(repo.owner.login)}/${encodeURIComponent(repo.name)}/refs/heads/${branch}/${directory ? `${directory}/` : ''}`;
+  } catch {
+    return null;
+  }
 }
 
 export interface GitHubTrendingOptions {
@@ -130,7 +169,10 @@ export class GitHubTrendingIngestionService {
     });
     if (!response.ok) {
       const detail = (await response.text()).slice(0, 500);
-      throw new Error(`GitHub trending ingestion failed with ${response.status}${detail ? `: ${detail}` : ''}`);
+      throw new GitHubTrendingRequestError(
+        response.status,
+        `GitHub trending ingestion failed with ${response.status}${detail ? `: ${detail}` : ''}`,
+      );
     }
     return response.json() as Promise<T>;
   }
@@ -145,13 +187,32 @@ export class GitHubTrendingIngestionService {
     const owner = encodeURIComponent(repo.owner.login);
     const name = encodeURIComponent(repo.name);
     const [languages, readme] = await Promise.all([
-      this.request<Record<string, number>>(`/repos/${owner}/${name}/languages`)
-        .catch((): Record<string, number> => ({})),
+      this.request<Record<string, number>>(`/repos/${owner}/${name}/languages`),
       this.request<GitHubReadmeResponse>(`/repos/${owner}/${name}/readme`)
-        .catch((): GitHubReadmeResponse => ({})),
+        .catch((error: unknown): GitHubReadmeResponse | null => {
+          if (error instanceof GitHubTrendingRequestError && error.status === 404) return null;
+          throw error;
+        }),
     ]);
-    const decodedReadme = readme.encoding === 'base64' && readme.content
-      ? Buffer.from(readme.content.replace(/\s/g, ''), 'base64').toString('utf8').slice(0, 200_000)
+    const encodedReadme = readme?.content;
+    if (readme && (readme.encoding !== 'base64' || typeof encodedReadme !== 'string')) {
+      throw new Error(`GitHub returned malformed README content for ${repo.full_name}.`);
+    }
+    const decodedReadmeCandidate = readme
+      ? Buffer.from(encodedReadme!.replace(/\s/g, ''), 'base64').toString('utf8')
+      : null;
+    if (decodedReadmeCandidate !== null && decodedReadmeCandidate.length > 1_000_000) {
+      throw new Error(`GitHub README exceeds the canonical 1,000,000-character ingestion limit for ${repo.full_name}.`);
+    }
+    const decodedReadme = decodedReadmeCandidate;
+    const readmeSourcePath = decodedReadme !== null && safeSlashPath(readme?.path, 1_024)
+      ? readme!.path
+      : null;
+    const readmeDefaultBranch = decodedReadme !== null && safeSlashPath(repo.default_branch, 256)
+      ? repo.default_branch
+      : null;
+    const readmeBaseUrl = decodedReadme !== null && readmeSourcePath && readmeDefaultBranch
+      ? safeReadmeBaseUrl(readme?.download_url, repo, readmeSourcePath)
       : null;
     const now = this.now();
     return {
@@ -164,6 +225,9 @@ export class GitHubTrendingIngestionService {
       url: repo.html_url,
       description: repo.description ?? null,
       readme: decodedReadme,
+      readme_source_path: readmeSourcePath,
+      readme_default_branch: readmeDefaultBranch,
+      readme_base_url: readmeBaseUrl,
       readme_length: decodedReadme?.length ?? 0,
       primary_language: repo.language ?? null,
       languages: Object.keys(languages),
@@ -198,11 +262,23 @@ export class GitHubTrendingIngestionService {
       .sort((a, b) => b.score - a.score || b.repo.stargazers_count - a.repo.stargazers_count)
       .slice(0, this.limit);
     if (ranked.length === 0) throw new Error('GitHub returned no eligible trending repositories.');
-    const enriched = await mapConcurrent(
+    const enrichmentAttempts = await mapConcurrent(
       ranked,
       this.enrichmentConcurrency,
-      async ({ repo, score }) => ({ repo: await this.enrich(repo, observedAt), score }),
+      async ({ repo, score }) => {
+        try {
+          return { repo: await this.enrich(repo, observedAt), score };
+        } catch (error) {
+          const detail = error instanceof Error ? error.message : String(error);
+          console.warn(`[GitHubTrendingIngestion] Excluding ${repo.full_name}: ${detail}`);
+          return null;
+        }
+      },
     );
+    const enriched = enrichmentAttempts.filter((value): value is NonNullable<typeof value> => value !== null);
+    if (enriched.length === 0) {
+      throw new Error('GitHub returned no enrichable trending repositories.');
+    }
     const period = `github-daily-${isoDate(now)}`;
     return {
       snapshot_id: deterministicSnapshotId(period),

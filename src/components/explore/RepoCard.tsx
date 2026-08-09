@@ -7,6 +7,7 @@ import { APP_THEME, REFERENCE_THEME } from '@/constants/theme';
 import type { RepositoryDetail } from '@/models/repository';
 import { getAvatarColor } from '@/utils/avatar-color';
 import { formatCompactCount } from '@/utils/format-count';
+import { README_SUMMARY_PENDING } from '@/utils/readme';
 
 interface RepoCardProps {
   repo: RepositoryDetail;
@@ -76,6 +77,7 @@ export default function RepoCard({
   variant = 'default',
   compact = false,
 }: RepoCardProps): React.JSX.Element {
+  const cardSummary = repo.readmeSummary || repo.description || README_SUMMARY_PENDING;
   if (variant === 'profile') {
     return (
       <Pressable
@@ -104,7 +106,7 @@ export default function RepoCard({
             >
               {repo.name}
             </Text>
-            {repo.description ? (
+            {cardSummary ? (
               <Text
                 numberOfLines={compact ? 2 : 3}
                 style={[
@@ -112,7 +114,7 @@ export default function RepoCard({
                   compact && styles.profileCardDescriptionCompact,
                 ]}
               >
-                {repo.description}
+                {cardSummary}
               </Text>
             ) : null}
           </View>
@@ -163,6 +165,8 @@ export default function RepoCard({
         {repo.name}
       </Text>
       <Text
+        ellipsizeMode="tail"
+        numberOfLines={4}
         style={{
           color: 'rgba(235, 235, 245, 0.55)',
           fontSize: 11.5,
@@ -170,7 +174,7 @@ export default function RepoCard({
           marginTop: 5,
         }}
       >
-        {repo.description}
+        {cardSummary}
       </Text>
       {showMetrics ? (
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 11, marginTop: 8 }}>

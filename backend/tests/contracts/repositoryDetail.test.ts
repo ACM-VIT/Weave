@@ -25,8 +25,15 @@ test('repository detail mapper keeps summary, README, viewer state, and Lists di
     description: 'Short repository description.',
     summary_id: '00000000-0000-4000-8000-000000000004',
     summary: 'Generated concise summary.',
+    summary_highlights: ['Internal navigation'],
+    summary_prompt_version: 'repo-card-summary-v1',
     summary_model_version: 'summary-v2',
+    summary_format_version: 'repo-card-summary-json-v1',
+    summary_source: 'generated',
     readme_md: '# Complete README\n\nThis remains the full document.',
+    readme_source_path: 'docs/README.md',
+    readme_default_branch: 'main',
+    readme_base_url: 'https://raw.githubusercontent.com/owner/repository/refs/heads/main/docs/',
     primary_language: 'TypeScript',
     languages: ['TypeScript', 'SQL'],
     topics: ['expo', 'react-native'],
@@ -56,6 +63,13 @@ test('repository detail mapper keeps summary, README, viewer state, and Lists di
   assert.equal(detail.owner_github_id, '7');
   assert.equal(detail.summary, 'Generated concise summary.');
   assert.equal(detail.readme_md, '# Complete README\n\nThis remains the full document.');
+  assert.deepEqual(detail.summary_highlights, ['Internal navigation']);
+  assert.equal(detail.summary_prompt_version, 'repo-card-summary-v1');
+  assert.equal(detail.summary_format_version, 'repo-card-summary-json-v1');
+  assert.equal(detail.summary_source, 'generated');
+  assert.equal(detail.readme_source_path, 'docs/README.md');
+  assert.equal(detail.readme_default_branch, 'main');
+  assert.equal(detail.readme_base_url, 'https://raw.githubusercontent.com/owner/repository/refs/heads/main/docs/');
   assert.equal(detail.viewer_reaction, 'like');
   assert.equal(detail.viewer_saved, true);
   assert.deepEqual(detail.selected_list_ids, [
@@ -85,6 +99,9 @@ test('repository detail mapper normalizes absent viewer and optional content sta
 
   assert.equal(detail.summary, null);
   assert.equal(detail.readme_md, null);
+  assert.deepEqual(detail.summary_highlights, []);
+  assert.equal(detail.summary_source, null);
+  assert.equal(detail.readme_base_url, null);
   assert.equal(detail.viewer_reaction, null);
   assert.equal(detail.viewer_saved, false);
   assert.deepEqual(detail.languages, []);

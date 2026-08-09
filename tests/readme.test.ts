@@ -3,8 +3,10 @@ import test from 'node:test';
 
 import {
   normalizeOptionalRepositoryText,
+  normalizeRepositoryCardSummary,
   prepareReadmeForDisplay,
   prepareReadmePreview,
+  README_CARD_SUMMARY_MAX_CHARACTERS,
   README_MAX_CHARACTERS,
   README_SUMMARY_PENDING,
 } from '../src/utils/readme';
@@ -20,10 +22,9 @@ test('README display uses a safe fallback for empty input', () => {
   );
 });
 
-test('README display bounds untrusted repository content', () => {
-  const prepared = prepareReadmeForDisplay('x'.repeat(README_MAX_CHARACTERS + 100));
-  assert.equal(prepared.startsWith('x'.repeat(README_MAX_CHARACTERS)), true);
-  assert.equal(prepared.endsWith('[README truncated for safe display]'), true);
+test('README display preserves the complete canonical document', () => {
+  const canonicalReadme = `# Complete README\n\n${'x'.repeat(README_MAX_CHARACTERS + 100)}`;
+  assert.equal(prepareReadmeForDisplay(canonicalReadme), canonicalReadme);
 });
 
 test('repository text normalization rejects legacy placeholder sentinels', () => {
@@ -59,23 +60,23 @@ test('README preview prefers a concise active summary and trims it', () => {
   );
 });
 
-test('a substantial generated README summary stays distinct and is bounded for the card', () => {
+test('a concise generated discovery summary stays distinct and is bounded for the card', () => {
   const generatedSummary = [
-    'This project helps teams build reliable applications with a focused development workflow.',
-    'It combines reusable modules, clear configuration, and practical tooling for daily work.',
-    'The architecture keeps product concerns separate while preserving an approachable contributor experience.',
-  ].join(' ').repeat(4);
+    'This project helps product teams build reliable applications with a focused development workflow.',
+    'It is designed for developers who want reusable modules and clear configuration.',
+    'Its strongest differentiator is keeping product concerns separate without making contribution difficult.',
+  ].join(' ');
   const prepared = prepareReadmePreview({
     summary: generatedSummary,
     description: 'A one-line repository subtitle.',
     fullReadme: '# Complete README\n\nThe complete document remains available only in the detail view.',
   });
 
-  assert.equal(generatedSummary.length > 720, true);
+  assert.equal(generatedSummary.length >= 220, true);
+  assert.equal(generatedSummary.length <= 300, true);
   assert.equal(prepared.source, 'summary');
-  assert.equal(prepared.isTruncated, true);
-  assert.equal(prepared.markdown.startsWith('This project helps teams'), true);
-  assert.equal(prepared.markdown.endsWith('...'), true);
+  assert.equal(prepared.isTruncated, false);
+  assert.equal(prepared.markdown.startsWith('This project helps product teams'), true);
   assert.equal(prepared.markdown.includes('one-line repository subtitle'), false);
   assert.equal(prepared.markdown.includes('Complete README'), false);
 });
@@ -152,6 +153,27 @@ test('full README content cannot masquerade as the card summary', () => {
   );
 });
 
+test('a label cannot disguise a complete or long contiguous README copy', () => {
+  const fullReadme = [
+    '# Project overview',
+    '',
+    'This repository coordinates release evidence for product teams working across mobile and backend services.',
+    'It keeps test results, ownership notes, and deployment checkpoints together so reviewers can understand a change before it ships.',
+  ].join('\n');
+  const copiedReadme = fullReadme
+    .replace(/^#\s+/m, '')
+    .replace(/\n+/g, ' ');
+
+  const prepared = prepareReadmePreview({
+    summary: `Project overview: ${copiedReadme} Available on GitHub.`,
+    description: 'A safe repository description.',
+    fullReadme,
+  });
+
+  assert.equal(prepared.source, 'description');
+  assert.equal(prepared.markdown, 'A safe repository description.');
+});
+
 test('long README-shaped content is rejected instead of truncated as a summary', () => {
   const completeReadme = `# Complete README\n\n${'Installation, configuration, and usage details. '.repeat(30)}`;
   const prepared = prepareReadmePreview({
@@ -177,6 +199,42 @@ test('long README-shaped content is rejected instead of truncated as a summary',
   );
 });
 
+test('summaries over the hard V2 bound are rejected before presentation', () => {
+  const overLimit = 'A'.repeat(README_CARD_SUMMARY_MAX_CHARACTERS + 1);
+  assert.equal(normalizeRepositoryCardSummary(overLimit), null);
+  assert.deepEqual(
+    prepareReadmePreview({
+      summary: overLimit,
+      description: 'Bounded repository description.',
+    }),
+    {
+      isTruncated: false,
+      markdown: 'Bounded repository description.',
+      source: 'description',
+    },
+  );
+});
+
+test('installation commands and copied README passages are rejected as summaries', () => {
+  const fullReadme = [
+    '# Project',
+    '',
+    'This exact source passage explains the project and repeats enough words to be an unsafe card summary copied directly from the canonical document.',
+  ].join('\n');
+
+  assert.equal(
+    normalizeRepositoryCardSummary('Run npm install and npm run dev to start the project.'),
+    null,
+  );
+  assert.equal(
+    normalizeRepositoryCardSummary(
+      'This exact source passage explains the project and repeats enough words to be an unsafe card summary copied directly from the canonical document.',
+      fullReadme,
+    ),
+    null,
+  );
+});
+
 test('README preview truncates at a natural boundary and reports overflow', () => {
   const prepared = prepareReadmePreview({
     summary: 'A polished introduction with useful context. A second sentence should not be split awkwardly. Extra detail follows here.',
@@ -190,16 +248,18 @@ test('README preview truncates at a natural boundary and reports overflow', () =
   assert.equal(prepared.markdown.includes('Extra detail'), false);
 });
 
-test('README preview closes a truncated fenced code block', () => {
+test('README-shaped fenced code is never presented as a card summary', () => {
   const prepared = prepareReadmePreview({
     summary: `\`\`\`ts\n${'const value = example();\n'.repeat(10)}\`\`\``,
+    description: 'A safe description fallback.',
     maximumCharacters: 90,
   });
-  const fences = prepared.markdown.match(/^\`\`\`/gm) ?? [];
 
-  assert.equal(prepared.isTruncated, true);
-  assert.equal(fences.length, 2);
-  assert.equal(prepared.markdown.endsWith('\n\n...'), true);
+  assert.deepEqual(prepared, {
+    isTruncated: false,
+    markdown: 'A safe description fallback.',
+    source: 'description',
+  });
 });
 
 test('README preview never leaves a dangling emoji surrogate', () => {

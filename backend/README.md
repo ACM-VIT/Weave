@@ -39,7 +39,7 @@ Public API errors use:
 
 Feed, interaction, ingestion, and operations v2 endpoints return their versioned contract directly. Authentication uses `Authorization: Bearer <accessToken>`. The access token lasts 15 minutes. Refresh tokens are rotated in a secure HTTP-only cookie scoped to `/api/auth`. Internal routes require `x-internal-secret`; during rotation they accept `INTERNAL_API_SECRET_PREVIOUS` as well.
 
-All timestamps are ISO 8601 UTC. All IDs described as UUIDs must be valid UUID strings. Request bodies are limited to 256 KB. List endpoints accept `limit=1..100` and `offset=0..10000` unless stated otherwise.
+All timestamps are ISO 8601 UTC. All IDs described as UUIDs must be valid UUID strings. Request bodies are limited to 256 KB, except canonical internal ingestion, whose JSON parser is applied only after internal-secret authentication and is limited to 8 MiB. List endpoints accept `limit=1..100` and `offset=0..10000` unless stated otherwise.
 
 ## Frontend API
 
@@ -214,6 +214,49 @@ The backend is the client and ML implements these internal endpoints. Every requ
 
 ML must return 2xx only after durable acceptance. Use `429` or `503` for retryable pressure/failure and an optional `Retry-After`; use other 4xx responses for terminal contract errors. The backend outbox retries with capped jitter, leases jobs with `SKIP LOCKED`, and moves terminal/expired work to `dead` for operator replay.
 
+### Concise summary backfill
+
+Roll out the Phase 3 contract in this order:
+
+1. Stop the old outbox worker before changing ML. Confirm no `repo_index` row
+   remains `claimed`; leave pending rows durable in PostgreSQL. An old worker
+   would accept a strict ML `2xx` and mark it delivered without storing the
+   returned summary artifact.
+2. Deploy the backward-compatible ML release first and canary the strict
+   repository-index response, including its bounded versioned `card_summary`.
+   Do not allow repository-index jobs to drain through an older backend during
+   this compatibility window, because that backend cannot persist the artifact.
+3. Apply migration `0024_repository_summary_artifacts`, run `schema:audit`, and
+   deploy the matching backend/outbox worker. The migration deliberately makes
+   legacy or ambiguous summary rows inactive; do not reverse that normalization.
+4. Start only the new outbox worker. Verify a live isolated ingestion canary stores `response_payload` and an
+   active current-version summary. Only then enqueue the bounded, dry-run-reviewed
+   summary backfill below. Do not run a production backfill as part of deployment.
+
+Repository summary reindexing is dry-run only unless `--execute` is supplied,
+and every run requires a stable campaign name. To inspect only active repository
+content versions that do not have a matching active card summary:
+
+```bash
+npm run reindex:ml -- --campaign=phase3-card-summary-v1 --summary-backfill
+```
+
+After reviewing the report against fixtures or isolated local services, enqueue
+the same idempotent campaign explicitly:
+
+```bash
+npm run reindex:ml -- --campaign=phase3-card-summary-v1 --summary-backfill --execute
+```
+
+Re-running the command with the same campaign does not duplicate outbox jobs.
+An active `description_fallback` remains eligible for a later campaign until a
+generated summary is active. ML identifies that bounded fallback with
+`model_version: "repository-description-fallback-v1"`, so a recovered provider
+can insert and activate a distinct generated tuple. Use a new campaign ID for
+an intentional fallback-upgrade pass; the original campaign remains immutable.
+Do not point this command at production without a separately approved migration
+and rollout window.
+
 Recommendation response shape:
 
 ```json
@@ -310,7 +353,7 @@ after a newer canonical job for that repository has been delivered.
 
 Databases with the known parent-journal history are upgraded directly: the migrator executes and records the retroactive `0004_add_likes_given` and `0005_add_is_saved` SQL before `0008`. Do not set `ADOPT_LEGACY_SCHEMA` for that normal upgrade. The one-time `ADOPT_LEGACY_SCHEMA=1` escape hatch is only for an audited schema whose baseline Drizzle history is genuinely absent or incomplete. The migrator structurally verifies each legacy/v2 migration before recording its hash and refuses adoption when a required table, column, grant, view, or role is missing. Exercise it on a clone and run `schema:audit` before using it against the target.
 
-For verification use `npm run build`, `npm test`, database integration with `RUN_DATABASE_INTEGRATION=1`, parent-history migration integration with `RUN_MIGRATION_UPGRADE_INTEGRATION=1`, and HTTP integration with `RUN_HTTP_INTEGRATION=1`. The integration suite uses Redis database 14 by default and clears only that test database.
+For verification use `npm run build`, `npm test`, database integration with `RUN_DATABASE_INTEGRATION=1`, parent-history migration integration with `RUN_MIGRATION_UPGRADE_INTEGRATION=1`, seeded Phase 3 migration/reapply integration with `RUN_REPOSITORY_SUMMARY_MIGRATION_INTEGRATION=1`, and HTTP integration with `RUN_HTTP_INTEGRATION=1`. Migration integration is destructive and refuses non-local PostgreSQL; use only an isolated local database. The integration suite uses Redis database 14 by default and clears only that test database.
 
 For a strict ML collection rebuild, run `npm run reindex:ml -- --campaign=<id>`
 first as a dry run, then repeat with `--execute` only after reviewing the counts

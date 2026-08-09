@@ -6,7 +6,7 @@ import { RedisFeedQueue } from '../redis/feedQueue.js';
 import { MlV2Client } from '../services/mlService.js';
 import { FeedGenerationService } from '../services/feedGenerationService.js';
 import { FeedV2Service } from '../services/feedV2Service.js';
-import { OutboxService } from '../services/outboxService.js';
+import { OutboxService, resolveOutboxLeaseMs } from '../services/outboxService.js';
 import { OutboxWorker } from '../workers/outboxWorker.js';
 import { FeedReconciliationWorker } from '../workers/feedReconciliationWorker.js';
 import { DataReconciliationWorker } from '../workers/dataReconciliationWorker.js';
@@ -77,6 +77,7 @@ export class ApplicationRuntime {
 
   constructor(readonly role: 'api' | 'outbox' | 'feed' | 'maintenance' | 'all' = 'api') {
     if ((role === 'outbox' || role === 'all') && this.flags.ML_FEEDBACK_OUTBOX && this.ml) {
+      resolveOutboxLeaseMs();
       const worker = new OutboxWorker(
         this.outbox,
         this.ml,

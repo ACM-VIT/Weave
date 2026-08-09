@@ -3,6 +3,7 @@ import { Pressable, Text, View } from 'react-native';
 import Svg, { Path } from 'react-native-svg';
 import type { RepositoryDetail } from '@/models/repository';
 import { formatCompactCount } from '@/utils/format-count';
+import { README_SUMMARY_PENDING } from '@/utils/readme';
 
 interface TrendingRepoCardProps {
   repo: RepositoryDetail;
@@ -40,6 +41,7 @@ function StarIcon(): React.JSX.Element {
 }
 
 export default function TrendingRepoCard({ repo, rank, onPress }: TrendingRepoCardProps): React.JSX.Element {
+  const cardSummary = repo.readmeSummary || repo.description || README_SUMMARY_PENDING;
   return (
     <Pressable
       onPress={onPress}
@@ -84,7 +86,7 @@ export default function TrendingRepoCard({ repo, rank, onPress }: TrendingRepoCa
             marginTop: 2,
           }}
         >
-          {repo.description}
+          {cardSummary}
         </Text>
       </View>
       <View style={{ width: 48, flexDirection: 'row', alignItems: 'center', gap: 4, flexShrink: 0 }}>

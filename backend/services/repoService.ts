@@ -3,6 +3,7 @@ import { repos, trendingRepos } from '../db/schema.js';
 import { eq, desc, sql } from 'drizzle-orm';
 import type { RepoInsert, RepoUpdate, PaginationParams } from '../types/index.js';
 import redisClient from '../config/redis.js';
+import { summarizeDescription } from './summaryService.js';
 
 // Deduplication map to prevent cache stampede (thundering herd)
 const inflightTrendingRequests = new Map<number, Promise<any>>();
@@ -50,7 +51,7 @@ export async function getTrendingRepos(limitCount: number = 10) {
         description: repo.description,
         language_used: repo.primary_language ? [repo.primary_language] : [],
         topics: repo.topics || [],
-        readme_summary: repo.readme,
+        readme_summary: summarizeDescription(repo.description),
         star_count: repo.star_count,
         forks_count: repo.fork_count,
         daily_stars: repo.daily_stars,

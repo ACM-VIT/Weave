@@ -99,6 +99,8 @@ export interface GitHubRepositoryResponse {
 export interface GitHubReadmeResponse {
   content: string;
   encoding: string;
+  path?: string;
+  download_url?: string | null;
 }
 
 export interface GitHubUserProfile {

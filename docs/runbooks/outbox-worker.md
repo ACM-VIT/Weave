@@ -11,7 +11,11 @@ repository refresh jobs to the authenticated ML v2 endpoints.
   to add a worker process.
 - Keep `ML_FEEDBACK_OUTBOX=true` and `DB_SCHEMA_V2_WRITES=true`.
 - Set `ML_DELIVERY_TIMEOUT_MS=30000`; health/recommendation reads retain the
-  shorter `ML_TIMEOUT_MS=5000` bound.
+  shorter `ML_TIMEOUT_MS=5000` bound. Repository summary generation and
+  embedding use `ML_REPOSITORY_INDEX_TIMEOUT_MS=240000`.
+- Set `OUTBOX_LEASE_MS=300000`. Startup/claiming fails closed if the lease is
+  less than 60 seconds longer than the repository-index timeout. Abandoned-claim
+  reconciliation reads the same value, so any override remains consistent.
 - Keep `ML_V2_RECOMMENDATIONS=true`; production readiness must remain red until
   the ingestion canary returns a non-empty set of canonical backend `repo_id`
   UUIDs.
@@ -45,8 +49,11 @@ node dist/worker.js --role=outbox
 ```
 
 The script passes `--role=outbox`; an explicitly supplied `WORKER_ROLE` must
-match. Each run claims at most five rows, one immediately before each delivery,
-so the 60-second database lease never expires behind an older queued request.
+match. Each run claims one row immediately before delivery, so the configured
+database lease never expires behind an older queued request. The systemd unit
+gives the container 300 seconds after `SIGTERM` (plus 30 seconds of supervisor
+margin), which exceeds the 240-second repository-index request bound and lets
+the single active row finish before shutdown.
 `SIGTERM` completes the active run and closes Redis/PostgreSQL connections.
 Avoid `SIGKILL`, which can leave the current row claimed until reconciliation
 releases its lease.

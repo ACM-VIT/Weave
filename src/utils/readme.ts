@@ -1,9 +1,7 @@
-export const README_MAX_CHARACTERS = 50_000;
-export const README_PREVIEW_MAX_CHARACTERS = 250;
-export const README_COMPACT_PREVIEW_MAX_CHARACTERS = 160;
-// Generated summaries may be richer than the visible card. Accept the complete
-// generated field first, then bound only its presentation in the card viewport.
-export const README_CARD_SUMMARY_MAX_CHARACTERS = 1_200;
+export const README_MAX_CHARACTERS = 1_000_000;
+export const README_PREVIEW_MAX_CHARACTERS = 360;
+export const README_COMPACT_PREVIEW_MAX_CHARACTERS = 260;
+export const README_CARD_SUMMARY_MAX_CHARACTERS = 360;
 export const README_SUMMARY_PENDING = 'Summary is being generated';
 
 const README_FALLBACK = 'No README content is available for this repository.';
@@ -77,11 +75,67 @@ function comparableMarkdownText(value: string): string {
     .trim();
 }
 
-function isUsableSummary(summary: string, fullReadme: string): boolean {
-  if (!summary || summary.length > README_CARD_SUMMARY_MAX_CHARACTERS) return false;
-  if (!fullReadme) return true;
+function summaryLooksLikeReadme(summary: string): boolean {
+  return /(?:^|\n)\s{0,3}(?:#{1,6}\s|```|~~~|(?:installation|getting started|usage|license|contributing|table of contents)\s*:?$)/im.test(summary)
+    || /(?:```|~~~|\b(?:npm|pnpm|yarn|pipx?|brew|cargo)\s+(?:install|add|run)\b)/i.test(summary)
+    || summary.split(/\n{2,}/).length > 1;
+}
 
-  return comparableMarkdownText(summary) !== comparableMarkdownText(fullReadme);
+function summaryCopiesReadme(summary: string, fullReadme: string): boolean {
+  if (!fullReadme) return false;
+  const comparableSummary = comparableMarkdownText(summary);
+  const comparableReadme = comparableMarkdownText(fullReadme);
+  if (!comparableSummary || !comparableReadme) return false;
+  if (comparableSummary === comparableReadme) return true;
+  if (comparableSummary.length >= 80 && comparableReadme.includes(comparableSummary)) {
+    return true;
+  }
+
+  // A legacy row may wrap the complete README with a label or short suffix.
+  // Reject that shape even when the wrapper prevents an exact equality match.
+  if (comparableReadme.length >= 40 && comparableSummary.includes(comparableReadme)) {
+    return true;
+  }
+
+  // Sample overlapping 80-character windows. With a 20-character stride,
+  // every copied passage of at least 99 normalized characters contains a
+  // complete sampled window, while keeping comparison work bounded for a
+  // canonical README that can be up to one million characters.
+  const copiedWindowLength = 80;
+  const copiedWindowStride = 20;
+  for (
+    let start = 0;
+    start + copiedWindowLength <= comparableSummary.length;
+    start += copiedWindowStride
+  ) {
+    if (comparableReadme.includes(
+      comparableSummary.slice(start, start + copiedWindowLength),
+    )) {
+      return true;
+    }
+  }
+
+  const finalWindowStart = comparableSummary.length - copiedWindowLength;
+  return finalWindowStart > 0 && comparableReadme.includes(
+    comparableSummary.slice(finalWindowStart),
+  );
+}
+
+export function normalizeRepositoryCardSummary(
+  summary: unknown,
+  fullReadme?: string | null,
+): string | null {
+  const normalizedSummary = normalizeOptionalRepositoryText(summary);
+  const normalizedFullReadme = normalizedContent(fullReadme);
+  if (
+    !normalizedSummary
+    || normalizedSummary.length > README_CARD_SUMMARY_MAX_CHARACTERS
+    || summaryLooksLikeReadme(normalizedSummary)
+    || summaryCopiesReadme(normalizedSummary, normalizedFullReadme)
+  ) {
+    return null;
+  }
+  return normalizedSummary;
 }
 
 function safeSliceEnd(content: string, maximumCharacters: number): number {
@@ -113,53 +167,14 @@ function safeSliceEnd(content: string, maximumCharacters: number): number {
   return wordBoundary >= minimumNaturalBoundary ? wordBoundary : limit;
 }
 
-function findOpenMarkdownFence(content: string): string | null {
-  let openFence: string | null = null;
-
-  for (const line of content.split('\n')) {
-    const match = /^ {0,3}(`{3,}|~{3,})/.exec(line);
-    if (!match) continue;
-
-    const fence = match[1];
-    if (!openFence) {
-      openFence = fence;
-    } else if (fence[0] === openFence[0] && fence.length >= openFence.length) {
-      openFence = null;
-    }
-  }
-
-  return openFence;
-}
-
-function truncateMarkdown(
-  content: string,
-  maximumCharacters: number,
-  marker: string,
-): string {
-  const end = safeSliceEnd(content, maximumCharacters);
-  const preview = content.slice(0, end).trimEnd();
-  const openFence = findOpenMarkdownFence(preview);
-  const fenceClosure = openFence ? `\n${openFence}` : '';
-  return `${preview}${fenceClosure}\n\n${marker}`;
-}
-
 function truncateCardPreview(content: string, maximumCharacters: number): string {
   const end = safeSliceEnd(content, maximumCharacters);
   const preview = content.slice(0, end).trimEnd();
-  const openFence = findOpenMarkdownFence(preview);
-  if (openFence) return `${preview}\n${openFence}\n\n...`;
-
   return `${preview.replace(/[.!?]+$/u, '')}...`;
 }
 
 export function prepareReadmeForDisplay(readmeText?: string | null): string {
-  const content = normalizedContent(readmeText) || README_FALLBACK;
-  if (content.length <= README_MAX_CHARACTERS) return content;
-  return truncateMarkdown(
-    content,
-    README_MAX_CHARACTERS,
-    '[README truncated for safe display]',
-  );
+  return normalizedContent(readmeText) || README_FALLBACK;
 }
 
 export function prepareReadmePreview({
@@ -168,13 +183,10 @@ export function prepareReadmePreview({
   fullReadme,
   maximumCharacters = README_PREVIEW_MAX_CHARACTERS,
 }: PrepareReadmePreviewOptions): PreparedReadmePreview {
-  const normalizedSummary = normalizedContent(summary);
   const normalizedDescription = normalizedContent(description);
   const normalizedFullReadme = normalizedContent(fullReadme);
-  const hasUsableSummary = isUsableSummary(
-    normalizedSummary,
-    normalizedFullReadme,
-  );
+  const normalizedSummary = normalizeRepositoryCardSummary(summary, normalizedFullReadme) ?? '';
+  const hasUsableSummary = Boolean(normalizedSummary);
   const source = hasUsableSummary
     ? 'summary'
     : normalizedDescription

@@ -17,9 +17,17 @@ export type FeedRepositoryPayload = {
   comments_count: number;
   views_count: number;
   open_issues_count: number;
-  // Active generated README-derived summary for the larger feed card.
+  // Active concise V2 summary artifact for the larger feed card.
   summary: string | null;
   readme_md: string | null;
+  readme_source_path?: string | null;
+  readme_default_branch?: string | null;
+  readme_base_url?: string | null;
+  summary_highlights?: string[];
+  summary_prompt_version?: string | null;
+  summary_model_version?: string | null;
+  summary_format_version?: string | null;
+  summary_source?: 'generated' | 'description_fallback' | null;
   updated_at: string | null;
   viewer_reaction: 'like' | 'dislike' | null;
   viewer_saved: boolean;

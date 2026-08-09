@@ -43,9 +43,10 @@ export default function ExploreScreen() {
 
     return repos.filter((repo) => {
       return (
-        repo.name.toLowerCase().includes(q) ||
-        repo.owner.toLowerCase().includes(q) ||
-        repo.description?.toLowerCase().includes(q)
+        repo.name.toLowerCase().includes(q)
+        || repo.owner.toLowerCase().includes(q)
+        || repo.description?.toLowerCase().includes(q)
+        || repo.readmeSummary?.toLowerCase().includes(q)
       );
     });
   }, [repos, trimmedSearchQuery]);

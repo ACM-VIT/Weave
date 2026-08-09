@@ -55,9 +55,11 @@ async function seed(): Promise<void> {
   `;
   await sqlClient`
     INSERT INTO app.repo_content (
-      repo_id,content_hash,description,readme,primary_language,languages
+      repo_id,content_hash,description,readme,readme_source_path,
+      readme_default_branch,readme_base_url,primary_language,languages
     ) VALUES (
       ${repoId}::uuid,'http-test','repo','# HTTP Repo\n\nComplete README content.',
+      'docs/README.md','main','https://raw.githubusercontent.com/owner/http-repo/refs/heads/main/docs/',
       'TypeScript','["TypeScript","SQL"]'::jsonb
     )
   `;
@@ -78,8 +80,12 @@ async function seed(): Promise<void> {
   `;
   await sqlClient`
     INSERT INTO app.repo_card_summaries(
-      repo_id,content_version,model_version,summary,active
-    ) VALUES(${repoId}::uuid,1,'http-summary-v1','Concise generated repository summary.',true)
+      repo_id,content_version,prompt_version,model_version,format_version,
+      summary,highlights,source,active
+    ) VALUES(
+      ${repoId}::uuid,1,'repo-card-summary-v1','http-summary-v1','repo-card-summary-json-v1',
+      'Concise generated repository summary.','["Internal navigation"]'::jsonb,'generated',true
+    )
   `;
   await sqlClient`
     INSERT INTO app.trending_snapshots (snapshot_id,period,source,computed_at,complete,active,activated_at)
@@ -158,6 +164,9 @@ integration('registered v2 HTTP paths complete controlled integration flows', as
           owner_user_id: string | null;
           owner_profile_id: string | null;
           viewer_follows_owner: boolean;
+          summary_prompt_version: string | null;
+          readme_source_path: string | null;
+          readme_base_url: string | null;
         };
       }>;
     };
@@ -166,6 +175,22 @@ integration('registered v2 HTTP paths complete controlled integration flows', as
     assert.equal(served.items[0].repository.owner_user_id, ownerUserId);
     assert.equal(served.items[0].repository.owner_profile_id, ownerProfileId);
     assert.equal(served.items[0].repository.viewer_follows_owner, false);
+    assert.equal(served.items[0].repository.summary_prompt_version, 'repo-card-summary-v1');
+    assert.equal(served.items[0].repository.readme_source_path, 'docs/README.md');
+    assert.equal(
+      served.items[0].repository.readme_base_url,
+      'https://raw.githubusercontent.com/owner/http-repo/refs/heads/main/docs/',
+    );
+    await sqlClient`
+      UPDATE telemetry.feed_serve_items SET summary_id=NULL
+      WHERE serve_id=${served.serve_id}::uuid
+    `;
+    const replayWithLegacyMissingSummary = await feedPersistence.getServeByRequest(userId, feedRequestId);
+    assert.match(replayWithLegacyMissingSummary?.items[0].summary_id ?? '', /^[0-9a-f-]{36}$/);
+    assert.equal(
+      replayWithLegacyMissingSummary?.items[0].repository.summary,
+      'Concise generated repository summary.',
+    );
 
     const interaction = await fetch(`${base}/api/v2/interactions/batch`, {
       method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
@@ -192,7 +217,14 @@ integration('registered v2 HTTP paths complete controlled integration flows', as
         owner_display_name: string | null;
         description: string | null;
         summary: string | null;
+        summary_highlights: string[];
+        summary_prompt_version: string | null;
+        summary_format_version: string | null;
+        summary_source: string | null;
         readme_md: string | null;
+        readme_source_path: string | null;
+        readme_default_branch: string | null;
+        readme_base_url: string | null;
         languages: string[];
         topics: string[];
         star_count: number;
@@ -211,7 +243,17 @@ integration('registered v2 HTTP paths complete controlled integration flows', as
     assert.equal(repositoryDetailData.data.owner_display_name, 'owner');
     assert.equal(repositoryDetailData.data.description, 'repo');
     assert.equal(repositoryDetailData.data.summary, 'Concise generated repository summary.');
+    assert.deepEqual(repositoryDetailData.data.summary_highlights, ['Internal navigation']);
+    assert.equal(repositoryDetailData.data.summary_prompt_version, 'repo-card-summary-v1');
+    assert.equal(repositoryDetailData.data.summary_format_version, 'repo-card-summary-json-v1');
+    assert.equal(repositoryDetailData.data.summary_source, 'generated');
     assert.equal(repositoryDetailData.data.readme_md, '# HTTP Repo\n\nComplete README content.');
+    assert.equal(repositoryDetailData.data.readme_source_path, 'docs/README.md');
+    assert.equal(repositoryDetailData.data.readme_default_branch, 'main');
+    assert.equal(
+      repositoryDetailData.data.readme_base_url,
+      'https://raw.githubusercontent.com/owner/http-repo/refs/heads/main/docs/',
+    );
     assert.deepEqual(repositoryDetailData.data.languages, ['TypeScript', 'SQL']);
     assert.deepEqual(repositoryDetailData.data.topics, ['phase-two']);
     assert.equal(repositoryDetailData.data.star_count, 12);
@@ -224,7 +266,12 @@ integration('registered v2 HTTP paths complete controlled integration flows', as
     type ViewerAwareRepositoryListItem = {
       repo_id: string;
       summary: string | null;
+      summary_prompt_version: string | null;
+      summary_source: string | null;
       readme_md: string | null;
+      readme_source_path: string | null;
+      readme_default_branch: string | null;
+      readme_base_url: string | null;
       languages: string[];
       topics: string[];
       viewer_reaction: 'like' | 'dislike' | null;
@@ -242,6 +289,11 @@ integration('registered v2 HTTP paths complete controlled integration flows', as
     assert.equal(exploreItem.repo_id, repoId);
     assert.equal(exploreItem.summary, 'Concise generated repository summary.');
     assert.equal(exploreItem.readme_md, '# HTTP Repo\n\nComplete README content.');
+    assert.equal(exploreItem.summary_prompt_version, 'repo-card-summary-v1');
+    assert.equal(exploreItem.summary_source, 'generated');
+    assert.equal(exploreItem.readme_source_path, 'docs/README.md');
+    assert.equal(exploreItem.readme_default_branch, 'main');
+    assert.equal(exploreItem.readme_base_url, 'https://raw.githubusercontent.com/owner/http-repo/refs/heads/main/docs/');
     assert.deepEqual(exploreItem.languages, ['TypeScript', 'SQL']);
     assert.deepEqual(exploreItem.topics, ['phase-two']);
     assert.equal(exploreItem.viewer_reaction, 'like');
@@ -259,6 +311,8 @@ integration('registered v2 HTTP paths complete controlled integration flows', as
     assert.equal(trendingItem.repo_id, repoId);
     assert.equal(trendingItem.summary, 'Concise generated repository summary.');
     assert.equal(trendingItem.readme_md, '# HTTP Repo\n\nComplete README content.');
+    assert.equal(trendingItem.summary_prompt_version, 'repo-card-summary-v1');
+    assert.equal(trendingItem.readme_source_path, 'docs/README.md');
     assert.deepEqual(trendingItem.languages, ['TypeScript', 'SQL']);
     assert.deepEqual(trendingItem.topics, ['phase-two']);
     assert.equal(trendingItem.viewer_reaction, 'like');
@@ -860,6 +914,9 @@ integration('registered v2 HTTP paths complete controlled integration flows', as
         {
           github_id: '303', owner_github_id: '9003', full_name: 'new-owner/ingested', owner: 'new-owner', name: 'ingested',
           url: 'https://github.com/new-owner/ingested', description: 'ingested', languages: [], topics: [],
+          readme: '# Canonical README\n\n![Preview](./media/preview.png)',
+          readme_source_path: 'docs/README.md', readme_default_branch: 'main',
+          readme_base_url: 'https://raw.githubusercontent.com/new-owner/ingested/refs/heads/main/docs/',
           star_count: 1, fork_count: 0, observed_at: new Date().toISOString(),
         },
         {
@@ -876,6 +933,17 @@ integration('registered v2 HTTP paths complete controlled integration flows', as
     assert.match(ingested.mappings[0].repo_id, /^[0-9a-f-]{36}$/);
     assert.equal(ingested.mappings[1].github_id, '304');
     assert.match(ingested.mappings[1].repo_id, /^[0-9a-f-]{36}$/);
+    const ingestedContent = (await sqlClient`
+      SELECT readme,readme_source_path,readme_default_branch,readme_base_url
+      FROM app.repo_content WHERE repo_id=${ingested.mappings[0].repo_id}::uuid
+    `)[0];
+    assert.equal(String(ingestedContent.readme), '# Canonical README\n\n![Preview](./media/preview.png)');
+    assert.equal(String(ingestedContent.readme_source_path), 'docs/README.md');
+    assert.equal(String(ingestedContent.readme_default_branch), 'main');
+    assert.equal(
+      String(ingestedContent.readme_base_url),
+      'https://raw.githubusercontent.com/new-owner/ingested/refs/heads/main/docs/',
+    );
     assert.equal(Number((await sqlClient`
       SELECT count(*) AS count FROM app.social_profiles
       WHERE provider='github' AND provider_subject='9003' AND lower(handle)='new-owner'

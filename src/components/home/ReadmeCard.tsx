@@ -6,30 +6,30 @@ import {
   StyleSheet,
   Text,
   View,
-  type GestureResponderEvent,
 } from 'react-native';
 import { BookOpen, ChevronRight } from 'lucide-react-native';
 import { useReducedMotion } from 'react-native-reanimated';
-import RenderHtml, {
-  defaultSystemFonts,
-  type RenderersProps,
-} from 'react-native-render-html';
-import { marked } from 'marked';
 
 import { REFERENCE_THEME } from '@/constants/theme';
 import { useTypewriterText } from '@/hooks/use-typewriter-text';
-import { openReadmeExternalLink } from '@/utils/readme-external-link';
+import { extractReadmePreviewImage } from '@/utils/readme-images';
 import {
   prepareReadmePreview,
   README_COMPACT_PREVIEW_MAX_CHARACTERS,
   README_PREVIEW_MAX_CHARACTERS,
 } from '@/utils/readme';
+import { SafeReadmeImage } from './SafeReadmeImage';
 
 type RepositoryData = {
   name: string;
   description: string;
   readmeSummary: string | null;
   readmeFull: string | null;
+  fullName: string;
+  githubUrl: string;
+  readmeSourcePath: string | null;
+  readmeDefaultBranch: string | null;
+  readmeBaseUrl: string | null;
 };
 
 type ReadmeCardProps = {
@@ -41,240 +41,6 @@ type ReadmeCardProps = {
 };
 
 const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
-
-const markdownFonts = [
-  ...defaultSystemFonts,
-  'NataSans-Regular',
-  'NataSans-SemiBold',
-  'NataSans-Bold',
-];
-
-const ignoredMarkdownTags = [
-  'script',
-  'style',
-  'iframe',
-  'object',
-  'embed',
-  'form',
-  'input',
-  'button',
-  'link',
-  'meta',
-  'video',
-  'audio',
-  'source',
-  'img',
-];
-
-const markdownTextProps = { selectable: true } as const;
-
-function openSafeMarkdownLink(_event: GestureResponderEvent, href: string) {
-  openReadmeExternalLink(href);
-}
-
-const markdownRenderersProps = {
-  a: { onPress: openSafeMarkdownLink },
-  ol: {
-    markerTextStyle: {
-      color: REFERENCE_THEME.accentLight,
-      fontFamily: 'NataSans-SemiBold',
-    },
-  },
-  ul: {
-    markerTextStyle: {
-      color: REFERENCE_THEME.accentLight,
-      fontFamily: 'NataSans-SemiBold',
-    },
-  },
-} satisfies Partial<RenderersProps>;
-
-const markdownTagStyles = {
-  body: {
-    color: REFERENCE_THEME.textStrong,
-    fontFamily: 'NataSans-Regular',
-    fontSize: 13.5,
-    lineHeight: 21,
-  },
-  p: {
-    marginTop: 0,
-    marginBottom: 10,
-  },
-  h1: {
-    color: REFERENCE_THEME.text,
-    fontFamily: 'NataSans-Bold',
-    fontSize: 18.5,
-    lineHeight: 25,
-    marginTop: 4,
-    marginBottom: 9,
-  },
-  h2: {
-    color: REFERENCE_THEME.text,
-    fontFamily: 'NataSans-Bold',
-    fontSize: 16.5,
-    lineHeight: 23,
-    marginTop: 7,
-    marginBottom: 8,
-  },
-  h3: {
-    color: REFERENCE_THEME.text,
-    fontFamily: 'NataSans-SemiBold',
-    fontSize: 15,
-    lineHeight: 22,
-    marginTop: 6,
-    marginBottom: 7,
-  },
-  h4: {
-    color: REFERENCE_THEME.text,
-    fontFamily: 'NataSans-SemiBold',
-    fontSize: 14,
-    lineHeight: 21,
-    marginTop: 5,
-    marginBottom: 6,
-  },
-  h5: {
-    color: REFERENCE_THEME.textStrong,
-    fontFamily: 'NataSans-SemiBold',
-    fontSize: 13.5,
-    lineHeight: 20,
-    marginTop: 4,
-    marginBottom: 5,
-  },
-  h6: {
-    color: REFERENCE_THEME.textSecondary,
-    fontFamily: 'NataSans-SemiBold',
-    fontSize: 12.5,
-    lineHeight: 19,
-    marginTop: 4,
-    marginBottom: 5,
-  },
-  a: {
-    color: REFERENCE_THEME.accentLight,
-    textDecorationLine: 'underline' as const,
-  },
-  strong: {
-    color: REFERENCE_THEME.text,
-    fontFamily: 'NataSans-Bold',
-  },
-  em: {
-    color: REFERENCE_THEME.textStrong,
-    fontStyle: 'italic' as const,
-  },
-  blockquote: {
-    marginTop: 2,
-    marginBottom: 10,
-    marginHorizontal: 0,
-    paddingVertical: 7,
-    paddingHorizontal: 11,
-    borderLeftWidth: 2,
-    borderLeftColor: REFERENCE_THEME.accent,
-    borderRadius: 6,
-    backgroundColor: 'rgba(48,209,88,0.055)',
-    color: REFERENCE_THEME.textSecondary,
-  },
-  ul: {
-    marginTop: 0,
-    marginBottom: 10,
-    paddingLeft: 8,
-  },
-  ol: {
-    marginTop: 0,
-    marginBottom: 10,
-    paddingLeft: 8,
-  },
-  li: {
-    marginBottom: 4,
-  },
-  code: {
-    borderRadius: 5,
-    paddingHorizontal: 5,
-    paddingVertical: 1,
-    backgroundColor: 'rgba(135,228,158,0.10)',
-    color: '#DDF8E4',
-    fontFamily: 'monospace',
-    fontSize: 12,
-  },
-  pre: {
-    marginTop: 2,
-    marginBottom: 10,
-    padding: 11,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: 'rgba(135,228,158,0.18)',
-    borderRadius: 9,
-    backgroundColor: '#101311',
-    color: '#E9F5EC',
-    fontFamily: 'monospace',
-    fontSize: 11.5,
-    lineHeight: 18,
-  },
-  hr: {
-    marginVertical: 12,
-    borderColor: REFERENCE_THEME.separator,
-  },
-} as const;
-
-const compactMarkdownTagStyles = {
-  ...markdownTagStyles,
-  body: {
-    ...markdownTagStyles.body,
-    fontSize: 11.5,
-    lineHeight: 17,
-  },
-  p: {
-    ...markdownTagStyles.p,
-    marginBottom: 6,
-  },
-  h1: {
-    ...markdownTagStyles.h1,
-    fontSize: 15,
-    lineHeight: 20,
-    marginTop: 2,
-    marginBottom: 5,
-  },
-  h2: {
-    ...markdownTagStyles.h2,
-    fontSize: 14,
-    lineHeight: 19,
-    marginTop: 3,
-    marginBottom: 5,
-  },
-  h3: {
-    ...markdownTagStyles.h3,
-    fontSize: 13,
-    lineHeight: 18,
-    marginTop: 3,
-    marginBottom: 4,
-  },
-  h4: {
-    ...markdownTagStyles.h4,
-    fontSize: 12.5,
-    lineHeight: 18,
-    marginTop: 2,
-    marginBottom: 4,
-  },
-  code: {
-    ...markdownTagStyles.code,
-    fontSize: 10.5,
-  },
-  pre: {
-    ...markdownTagStyles.pre,
-    padding: 8,
-    fontSize: 10,
-    lineHeight: 15,
-    marginBottom: 6,
-  },
-  ul: {
-    ...markdownTagStyles.ul,
-    marginBottom: 6,
-  },
-  ol: {
-    ...markdownTagStyles.ol,
-    marginBottom: 6,
-  },
-  li: {
-    ...markdownTagStyles.li,
-    marginBottom: 2,
-  },
-} as const;
 
 export default function ReadmeCard({
   repository,
@@ -316,10 +82,25 @@ export default function ReadmeCard({
   const animatedSummary = typedSummary.isTyping
     ? `${typedSummary.text}${typedSummary.cursorVisible ? ' ▍' : '  '}`
     : typedSummary.text;
-  const markdownHtml = useMemo(
-    () => marked.parse(animatedSummary, { async: false, gfm: true }) as string,
-    [animatedSummary],
+  const previewImage = useMemo(
+    () => extractReadmePreviewImage(repository.readmeFull, {
+      fullName: repository.fullName,
+      githubUrl: repository.githubUrl,
+      readmeBaseUrl: repository.readmeBaseUrl,
+      readmeDefaultBranch: repository.readmeDefaultBranch,
+      readmeSourcePath: repository.readmeSourcePath,
+    }),
+    [
+      repository.fullName,
+      repository.githubUrl,
+      repository.readmeBaseUrl,
+      repository.readmeDefaultBranch,
+      repository.readmeFull,
+      repository.readmeSourcePath,
+    ],
   );
+  const showPreviewImage = !compact && availableWidth >= 320 && Boolean(previewImage);
+  const previewImageWidth = Math.min(112, Math.max(88, availableWidth * 0.3));
   useEffect(() => {
     if (!isActive || hasAnimated.current) return;
 
@@ -426,18 +207,30 @@ export default function ReadmeCard({
 
       <View style={[styles.body, compact && styles.bodyCompact]}>
         <View style={[styles.markdownViewport, compact && styles.markdownViewportCompact]}>
-          <Animated.View style={{ opacity: summaryProgress }}>
-            <RenderHtml
-              contentWidth={Math.max(availableWidth - (compact ? 28 : 36), 1)}
-              defaultTextProps={markdownTextProps}
-              enableCSSInlineProcessing={false}
-              enableExperimentalMarginCollapsing
-              ignoredDomTags={ignoredMarkdownTags}
-              renderersProps={markdownRenderersProps}
-              source={{ html: markdownHtml }}
-              systemFonts={markdownFonts}
-              tagsStyles={compact ? compactMarkdownTagStyles : markdownTagStyles}
-            />
+          <Animated.View
+            style={[styles.summaryRow, { opacity: summaryProgress }]}
+          >
+            <Text
+              ellipsizeMode="tail"
+              numberOfLines={compact ? 6 : 7}
+              selectable
+              style={[
+                styles.summaryText,
+                compact && styles.summaryTextCompact,
+                showPreviewImage && styles.summaryTextWithImage,
+              ]}
+            >
+              {animatedSummary}
+            </Text>
+            {showPreviewImage && previewImage ? (
+              <SafeReadmeImage
+                alt={previewImage.alt}
+                compact
+                key={previewImage.url}
+                maximumWidth={previewImageWidth}
+                url={previewImage.url}
+              />
+            ) : null}
           </Animated.View>
           <Animated.View
             pointerEvents="none"
@@ -555,7 +348,26 @@ const styles = StyleSheet.create({
   },
   markdownViewportCompact: {
     minHeight: 54,
-    maxHeight: 88,
+    maxHeight: 104,
+  },
+  summaryRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 10,
+  },
+  summaryText: {
+    flexShrink: 1,
+    color: REFERENCE_THEME.textStrong,
+    fontFamily: 'NataSans-Regular',
+    fontSize: 13.5,
+    lineHeight: 21,
+  },
+  summaryTextCompact: {
+    fontSize: 11.5,
+    lineHeight: 17,
+  },
+  summaryTextWithImage: {
+    flex: 1,
   },
   skeleton: {
     position: 'absolute',

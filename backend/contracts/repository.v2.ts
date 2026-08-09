@@ -33,8 +33,15 @@ export interface RepositoryDetailV2 {
   description: string | null;
   summary_id: string | null;
   summary: string | null;
+  summary_highlights: string[];
+  summary_prompt_version: string | null;
   summary_model_version: string | null;
+  summary_format_version: string | null;
+  summary_source: 'generated' | 'description_fallback' | null;
   readme_md: string | null;
+  readme_source_path: string | null;
+  readme_default_branch: string | null;
+  readme_base_url: string | null;
   primary_language: string | null;
   languages: string[];
   topics: string[];

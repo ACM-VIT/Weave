@@ -21,6 +21,7 @@ const candidate = {
   created_at: '2026-07-15T00:00:00.000Z',
   updated_at: '2026-08-02T00:00:00.000Z',
   pushed_at: '2026-08-01T00:00:00.000Z',
+  default_branch: 'main',
   archived: false,
   fork: false,
 };
@@ -37,7 +38,12 @@ test('trending ingestion builds a deterministic enriched candidate corpus for ML
       return Response.json({ TypeScript: 1000, Python: 200 });
     }
     if (url.pathname.endsWith('/readme')) {
-      return Response.json({ encoding: 'base64', content: Buffer.from('# Persona engine').toString('base64') });
+      return Response.json({
+        encoding: 'base64',
+        content: Buffer.from('# Persona engine\n\n![Preview](./assets/preview.png)').toString('base64'),
+        path: 'docs/README.md',
+        download_url: 'https://raw.githubusercontent.com/weave/persona-engine/main/docs/README.md',
+      });
     }
     return new Response('not found', { status: 404 });
   };
@@ -61,8 +67,11 @@ test('trending ingestion builds a deterministic enriched candidate corpus for ML
     name: 'persona-engine',
     url: 'https://github.com/weave/persona-engine',
     description: 'Personalized discovery',
-    readme: '# Persona engine',
-    readme_length: 16,
+    readme: '# Persona engine\n\n![Preview](./assets/preview.png)',
+    readme_source_path: 'docs/README.md',
+    readme_default_branch: 'main',
+    readme_base_url: 'https://raw.githubusercontent.com/weave/persona-engine/refs/heads/main/docs/',
+    readme_length: 50,
     primary_language: 'TypeScript',
     languages: ['TypeScript', 'Python'],
     topics: ['recommendation-system'],
@@ -91,4 +100,112 @@ test('trending ingestion fails closed when GitHub provides no eligible repositor
     now: () => NOW,
   });
   await assert.rejects(service.buildSnapshot(), /no eligible trending repositories/i);
+});
+
+test('trending ingestion excludes an oversized README instead of publishing a destructive null update', async () => {
+  const fetchImpl: typeof fetch = async (input) => {
+    const path = new URL(String(input)).pathname;
+    if (path === '/search/repositories') return Response.json({ items: [candidate] });
+    if (path.endsWith('/languages')) return Response.json({ TypeScript: 1 });
+    if (path.endsWith('/readme')) return Response.json({
+      encoding: 'base64',
+      content: Buffer.from('x'.repeat(1_000_001)).toString('base64'),
+      path: 'README.md',
+      download_url: 'https://raw.githubusercontent.com/weave/persona-engine/main/README.md',
+    });
+    return new Response('not found', { status: 404 });
+  };
+  const service = new GitHubTrendingIngestionService({
+    token: 'test-token', fetchImpl, now: () => NOW,
+  });
+  await assert.rejects(service.buildSnapshot(), /no enrichable trending repositories/i);
+});
+
+test('trending ingestion excludes retryable README failures so prior canonical content cannot be cleared', async () => {
+  const fetchImpl: typeof fetch = async (input) => {
+    const path = new URL(String(input)).pathname;
+    if (path === '/search/repositories') return Response.json({ items: [candidate] });
+    if (path.endsWith('/languages')) return Response.json({ TypeScript: 1 });
+    if (path.endsWith('/readme')) return new Response('temporarily unavailable', { status: 503 });
+    return new Response('not found', { status: 404 });
+  };
+  const service = new GitHubTrendingIngestionService({
+    token: 'test-token', fetchImpl, now: () => NOW,
+  });
+  await assert.rejects(service.buildSnapshot(), /no enrichable trending repositories/i);
+});
+
+test('trending ingestion treats only a confirmed README 404 as intentional absence', async () => {
+  const fetchImpl: typeof fetch = async (input) => {
+    const path = new URL(String(input)).pathname;
+    if (path === '/search/repositories') return Response.json({ items: [candidate] });
+    if (path.endsWith('/languages')) return Response.json({ TypeScript: 1 });
+    if (path.endsWith('/readme')) return new Response('not found', { status: 404 });
+    return new Response('not found', { status: 404 });
+  };
+  const snapshot = await new GitHubTrendingIngestionService({
+    token: 'test-token', fetchImpl, now: () => NOW,
+  }).buildSnapshot();
+  assert.equal(snapshot.repositories[0].readme, null);
+  assert.equal(snapshot.repositories[0].readme_length, 0);
+  assert.equal(snapshot.repositories[0].readme_source_path, null);
+});
+
+test('trending ingestion excludes a malformed successful README response instead of clearing content', async () => {
+  const fetchImpl: typeof fetch = async (input) => {
+    const path = new URL(String(input)).pathname;
+    if (path === '/search/repositories') return Response.json({ items: [candidate] });
+    if (path.endsWith('/languages')) return Response.json({ TypeScript: 1 });
+    if (path.endsWith('/readme')) return Response.json({ path: 'README.md' });
+    return new Response('not found', { status: 404 });
+  };
+  const service = new GitHubTrendingIngestionService({
+    token: 'test-token', fetchImpl, now: () => NOW,
+  });
+  await assert.rejects(service.buildSnapshot(), /no enrichable trending repositories/i);
+});
+
+test('trending ingestion excludes language-fetch failures rather than erasing known languages', async () => {
+  const fetchImpl: typeof fetch = async (input) => {
+    const path = new URL(String(input)).pathname;
+    if (path === '/search/repositories') return Response.json({ items: [candidate] });
+    if (path.endsWith('/languages')) return new Response('temporarily unavailable', { status: 503 });
+    if (path.endsWith('/readme')) return Response.json({
+      encoding: 'base64',
+      content: Buffer.from('# Canonical README').toString('base64'),
+      path: 'README.md',
+      download_url: 'https://raw.githubusercontent.com/weave/persona-engine/main/README.md',
+    });
+    return new Response('not found', { status: 404 });
+  };
+  const service = new GitHubTrendingIngestionService({
+    token: 'test-token', fetchImpl, now: () => NOW,
+  });
+  await assert.rejects(service.buildSnapshot(), /no enrichable trending repositories/i);
+});
+
+test('trending ingestion trusts README media bases only from clean raw.githubusercontent.com URLs', async () => {
+  for (const downloadUrl of [
+    'https://raw.githubusercontent.com.evil.example/weave/persona-engine/main/docs/README.md',
+    'https://raw.githubusercontent.com/weave/persona-engine/main/docs/README.md?token=secret',
+    'https://user:secret@raw.githubusercontent.com/weave/persona-engine/main/docs/README.md',
+  ]) {
+    const fetchImpl: typeof fetch = async (input) => {
+      const path = new URL(String(input)).pathname;
+      if (path === '/search/repositories') return Response.json({ items: [candidate] });
+      if (path.endsWith('/languages')) return Response.json({ TypeScript: 1 });
+      if (path.endsWith('/readme')) return Response.json({
+        encoding: 'base64',
+        content: Buffer.from('# Safe canonical Markdown').toString('base64'),
+        path: 'docs/README.md',
+        download_url: downloadUrl,
+      });
+      return new Response('not found', { status: 404 });
+    };
+    const snapshot = await new GitHubTrendingIngestionService({
+      token: 'test-token', fetchImpl, now: () => NOW,
+    }).buildSnapshot();
+    assert.equal(snapshot.repositories[0].readme, '# Safe canonical Markdown');
+    assert.equal(snapshot.repositories[0].readme_base_url, null);
+  }
 });

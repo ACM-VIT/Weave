@@ -25,7 +25,14 @@ test('canonical mapper retains viewer-aware detail fields and numeric metadata',
     summary_id: 'summary-1',
     summary: 'A concise, active repository summary.',
     summary_model_version: 'summary-v2',
+    summary_prompt_version: 'repo-card-summary-v2',
+    summary_format_version: 'repo-card-summary.v2',
+    summary_source: 'generated',
+    summary_highlights: ['Personalized discovery', 'List-based saving'],
     readme_md: '# Weave\n\nComplete README content.',
+    readme_source_path: 'docs/README.md',
+    readme_default_branch: 'main',
+    readme_base_url: 'https://raw.githubusercontent.com/ACM-VIT/weave/refs/heads/main/docs/',
     primary_language: 'TypeScript',
     languages: ['TypeScript', { name: 'Swift' }, 'TypeScript'],
     topics: [{ slug: 'open-source' }, 'social'],
@@ -65,6 +72,16 @@ test('canonical mapper retains viewer-aware detail fields and numeric metadata',
   assert.equal(repository.status, 'active');
   assert.equal(repository.readmeSummary, 'A concise, active repository summary.');
   assert.equal(repository.readmeFull, '# Weave\n\nComplete README content.');
+  assert.equal(repository.readmeSourcePath, 'docs/README.md');
+  assert.equal(repository.readmeDefaultBranch, 'main');
+  assert.equal(
+    repository.readmeBaseUrl,
+    'https://raw.githubusercontent.com/ACM-VIT/weave/refs/heads/main/docs/',
+  );
+  assert.deepEqual(repository.summaryHighlights, ['Personalized discovery', 'List-based saving']);
+  assert.equal(repository.summaryPromptVersion, 'repo-card-summary-v2');
+  assert.equal(repository.summaryFormatVersion, 'repo-card-summary.v2');
+  assert.equal(repository.summarySource, 'generated');
   assert.deepEqual(repository.languages, ['TypeScript', 'Swift']);
   assert.deepEqual(repository.topics, ['open-source', 'social']);
   assert.deepEqual(repository.stats, {

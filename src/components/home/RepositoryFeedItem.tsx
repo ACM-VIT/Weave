@@ -360,12 +360,21 @@ export function RepositoryFeedItem({
         onCommentCountChange={setCommentCount}
         repoId={repository.id}
       />
-      <ReadmePopup
-        isVisible={isReadmeVisible}
-        onClose={() => setIsReadmeVisible(false)}
-        readmeText={repository.readmeFull}
-        title={repository.name}
-      />
+      {isReadmeVisible ? (
+        <ReadmePopup
+          isVisible
+          onClose={() => setIsReadmeVisible(false)}
+          readmeText={repository.readmeFull}
+          readmeSource={{
+            fullName: repository.fullName,
+            githubUrl: repository.githubUrl,
+            readmeBaseUrl: repository.readmeBaseUrl,
+            readmeDefaultBranch: repository.readmeDefaultBranch,
+            readmeSourcePath: repository.readmeSourcePath,
+          }}
+          title={repository.name}
+        />
+      ) : null}
     </View>
   );
 }

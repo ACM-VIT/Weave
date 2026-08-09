@@ -363,6 +363,13 @@ export function RepositoryDetailScreen({ repositoryId }: { repositoryId: string 
         isVisible={readmeVisible}
         onClose={() => setReadmeVisible(false)}
         readmeText={repository.readmeFull}
+        readmeSource={{
+          fullName: repository.fullName,
+          githubUrl: repository.githubUrl,
+          readmeBaseUrl: repository.readmeBaseUrl,
+          readmeDefaultBranch: repository.readmeDefaultBranch,
+          readmeSourcePath: repository.readmeSourcePath,
+        }}
         title={repository.name}
       />
     </View>

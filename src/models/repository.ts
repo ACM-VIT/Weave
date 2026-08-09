@@ -31,6 +31,13 @@ export type RepositoryDetail = {
   summaryId: string | null;
   readmeSummary: string | null;
   readmeFull: string | null;
+  readmeSourcePath: string | null;
+  readmeDefaultBranch: string | null;
+  readmeBaseUrl: string | null;
+  summaryHighlights: string[];
+  summaryPromptVersion: string | null;
+  summaryFormatVersion: string | null;
+  summarySource: 'generated' | 'description_fallback' | null;
   languages: string[];
   topics: string[];
   primaryLanguage: string | null;

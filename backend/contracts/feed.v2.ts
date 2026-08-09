@@ -30,7 +30,15 @@ export interface RepositoryProjection {
   open_issues_count: number;
   summary_id: string | null;
   summary: string | null;
+  summary_highlights: string[];
+  summary_prompt_version: string | null;
+  summary_model_version: string | null;
+  summary_format_version: string | null;
+  summary_source: 'generated' | 'description_fallback' | null;
   readme_md: string | null;
+  readme_source_path: string | null;
+  readme_default_branch: string | null;
+  readme_base_url: string | null;
   updated_at: string | null;
   viewer_reaction: 'like' | 'dislike' | null;
   viewer_saved: boolean;

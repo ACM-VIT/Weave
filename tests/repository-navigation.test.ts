@@ -57,14 +57,18 @@ test('every intentional GitHub escape has an explicit visible Open on GitHub act
 });
 
 test('README GitHub links use the shared explicit confirmation policy', async () => {
-  for (const path of [
-    'src/components/home/ReadmeCard.tsx',
-    'src/components/home/ReadmePopup.tsx',
-  ]) {
-    const source = await readFile(new URL(`../${path}`, import.meta.url), 'utf8');
-    assert.match(source, /openReadmeExternalLink\(href\)/, `${path} must use the README link policy`);
-    assert.doesNotMatch(source, /Linking\.openURL/, `${path} must not bypass the confirmation policy`);
-  }
+  const popup = await readFile(
+    new URL('../src/components/home/ReadmePopup.tsx', import.meta.url),
+    'utf8',
+  );
+  assert.match(popup, /openReadmeExternalLink\(href\)/);
+  assert.doesNotMatch(popup, /Linking\.openURL/);
+
+  const card = await readFile(
+    new URL('../src/components/home/ReadmeCard.tsx', import.meta.url),
+    'utf8',
+  );
+  assert.doesNotMatch(card, /RenderHtml|Linking\.openURL/);
 
   const policy = await readFile(
     new URL('../src/utils/readme-external-link.ts', import.meta.url),

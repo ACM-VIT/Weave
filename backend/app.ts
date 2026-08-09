@@ -1,4 +1,4 @@
-import express, { type Request, type Response, type NextFunction } from 'express';
+import express, { type NextFunction, type Request, type Response } from 'express';
 import cors from 'cors';
 import authRoutes from './routes/authRoutes.js';
 import cookieParser from 'cookie-parser';
@@ -11,6 +11,10 @@ import { readiness } from './controllers/operationsController.js';
 import { requestTelemetry } from './middlewares/requestTelemetryMiddleware.js';
 import { authRateLimit, securityHeaders } from './middlewares/securityMiddleware.js';
 import { isCorsOriginAllowed } from './security/originPolicy.js';
+import {
+  jsonBodyLimitLabel,
+  scopedJsonBodyParser,
+} from './middlewares/scopedJsonBodyMiddleware.js';
 
 const app = express();
 app.disable('x-powered-by');
@@ -44,7 +48,9 @@ app.use(
     credentials: true,
   })
 );
-app.use(express.json({ limit: '256kb' }));
+// The ingestion router applies its larger parser only after internal-secret
+// authentication. Public/authenticated endpoints keep this tighter envelope.
+app.use(scopedJsonBodyParser);
 app.use(cookieParser());
 app.use(securityHeaders);
 app.use(requestTelemetry);
@@ -67,13 +73,13 @@ app.use('/api/internal/v2/ingestion', ingestionRoutes);
 app.use('/api/internal/v2/operations', operationsRoutes);
 
 // Global error handler.
-app.use((err: Error & { code?: string; type?: string }, _req: Request, res: Response, _next: NextFunction) => {
+app.use((err: Error & { code?: string; type?: string }, req: Request, res: Response, _next: NextFunction) => {
   if (err.code === 'CORS_ORIGIN_DENIED') {
     res.status(403).json({ error: 'Request origin is not allowed.' });
     return;
   }
   if (err.type === 'entity.too.large') {
-    res.status(413).json({ error: 'Request payload exceeds 256 KB.' });
+    res.status(413).json({ error: `Request payload exceeds ${jsonBodyLimitLabel(req)}.` });
     return;
   }
   console.error('Unhandled error:', err);

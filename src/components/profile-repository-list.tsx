@@ -18,6 +18,7 @@ import type { RepositoryApiPayload } from '@/api/repositories';
 import { REFERENCE_THEME } from '@/constants/theme';
 import type { RepositoryDetail } from '@/models/repository';
 import { formatCompactCount } from '@/utils/format-count';
+import { README_SUMMARY_PENDING } from '@/utils/readme';
 import { repositoryHref } from '@/utils/repository-links';
 import { mapRepositoryList } from '@/utils/repository-mapper';
 import { getStorageItem } from '@/utils/storage';
@@ -69,6 +70,7 @@ export function ProfileRepositoryList({
       repository.name.toLocaleLowerCase().includes(query)
       || repository.owner.toLocaleLowerCase().includes(query)
       || repository.description.toLocaleLowerCase().includes(query)
+      || repository.readmeSummary?.toLocaleLowerCase().includes(query)
     );
   }, [repositoriesQuery.data, search]);
 
@@ -144,6 +146,9 @@ export function ProfileRepositoryList({
               <View style={styles.copy}>
                 <Text numberOfLines={1} style={[styles.name, compact && styles.nameCompact]}>{item.name}</Text>
                 <Text numberOfLines={1} style={styles.owner}>{item.owner}</Text>
+                <Text numberOfLines={2} style={styles.summary}>
+                  {item.readmeSummary || item.description || README_SUMMARY_PENDING}
+                </Text>
                 <View style={styles.metrics}>
                   <Metric icon={<Star color="#F5C54D" fill="#F5C54D" size={11} />} value={item.stats.stars} />
                   <Metric icon={<GitFork color={REFERENCE_THEME.textTertiary} size={11} />} value={item.stats.forks} />
@@ -193,8 +198,8 @@ const styles = StyleSheet.create({
   emptyListContent: { flexGrow: 1 },
   rowColumns: { justifyContent: 'space-between' },
   separator: { height: 14 },
-  row: { width: '48.3%', minHeight: 144, borderRadius: 18, borderCurve: 'continuous', overflow: 'hidden', backgroundColor: REFERENCE_THEME.surface, borderWidth: StyleSheet.hairlineWidth, borderColor: REFERENCE_THEME.separator, boxShadow: '0 3px 12px rgba(0,0,0,0.18)' },
-  rowCompact: { minHeight: 134 },
+  row: { width: '48.3%', minHeight: 168, borderRadius: 18, borderCurve: 'continuous', overflow: 'hidden', backgroundColor: REFERENCE_THEME.surface, borderWidth: StyleSheet.hairlineWidth, borderColor: REFERENCE_THEME.separator, boxShadow: '0 3px 12px rgba(0,0,0,0.18)' },
+  rowCompact: { minHeight: 158 },
   cardContent: { flex: 1, paddingHorizontal: 13, paddingVertical: 12, gap: 10 },
   cardPressedOverlay: { backgroundColor: 'rgba(255,255,255,0.06)' },
   repoIcon: { width: 48, height: 48, flexShrink: 0, borderRadius: 14, alignItems: 'center', justifyContent: 'center', backgroundColor: REFERENCE_THEME.control },
@@ -203,6 +208,7 @@ const styles = StyleSheet.create({
   name: { color: REFERENCE_THEME.text, fontFamily: 'NataSans-SemiBold', fontSize: 15, lineHeight: 19 },
   nameCompact: { fontSize: 13, lineHeight: 17 },
   owner: { color: REFERENCE_THEME.textSecondary, fontFamily: 'NataSans-Regular', fontSize: 12, lineHeight: 16 },
+  summary: { minHeight: 30, marginTop: 2, color: REFERENCE_THEME.textSecondary, fontFamily: 'NataSans-Regular', fontSize: 10.5, lineHeight: 15 },
   metrics: { marginTop: 3, flexDirection: 'row', alignItems: 'center', gap: 12 },
   metric: { flexDirection: 'row', alignItems: 'center', gap: 4 },
   metricText: { color: REFERENCE_THEME.textTertiary, fontFamily: 'NataSans-Regular', fontSize: 10.5, fontVariant: ['tabular-nums'] },
