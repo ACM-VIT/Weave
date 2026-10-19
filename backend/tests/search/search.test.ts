@@ -20,8 +20,9 @@ test('Redis snapshots support pagination across API instances, TTL expiry and vi
     async setex(key: string, seconds: number, value: string) { entries.set(key, { value, expires: now + seconds * 1000 }); },
   };
   let semanticCalls = 0;
+  const store = new RedisSearchSnapshotStore(redis);
   const makeInstance = () => new SearchService(persistence(), async req => { semanticCalls++; return body(req); },
-    () => now, new RedisSearchSnapshotStore(redis));
+    () => now, { get: key => store.get(key), set: (key, snapshot) => store.set(key, snapshot) });
   const req = request({ limit: 1 });
   const first = await makeInstance().search('viewer', req);
   const second = await makeInstance().search('viewer', { ...req, cursor: first.next_cursor });
@@ -35,6 +36,9 @@ test('Redis snapshots support pagination across API instances, TTL expiry and vi
 test('search input is versioned, bounded, literal-filtered and cursor-bounded', () => {
   for (const value of [{ query: 'a' },{ query: 'a'.repeat(513) },{ limit: 51 },{ group: 'topics' },{ schema_version: 1 },{ filters: { topic: 'x' } },{ exclude_repo_ids: ['owner/repo'] },{ cursor: 'a'.repeat(101) }]) assert.throws(() => request(value));
   assert.equal(request({ query: '  hi  ' }).query,'hi');
+  for (const group of [['all'], [], {}, { toString: 'all' }, { toString: null }, 1, true, null]) {
+    assert.throws(() => request({ group }), error => error instanceof Error && 'statusCode' in error && error.statusCode === 400);
+  }
 });
 
 test('semantic response rejects envelope mismatches and discards malformed IDs, scores and duplicates', () => {

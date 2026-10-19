@@ -23,6 +23,7 @@ import {
 import RepoCard from '@/components/explore/RepoCard';
 import { REFERENCE_THEME } from '@/constants/theme';
 import { loadPinnedRepositories, type PinnedRepository } from '@/services/pinnedRepositoryStorage';
+import { listRepositoryQueryKey } from '@/services/accountQueryCache';
 import { useAuth } from '@/store/AuthContext';
 import type { Repo } from '@/types';
 import { getStorageItem } from '@/utils/storage';
@@ -92,16 +93,9 @@ export default function BoardScreen() {
   const [openingRepositoryId, setOpeningRepositoryId] = useState<string | null>(null);
 
   const repositoriesQuery = useQuery({
-    queryKey: isPinnedCollection
-      ? ['pinned-repositories', user?.user_id]
-      : isRepositoryCollection
-        ? ['collection-repositories', collectionId]
-        : ['board-repositories', boardId],
-    enabled: isPinnedCollection
-      ? Boolean(user?.user_id)
-      : isRepositoryCollection
-        ? Boolean(collectionId)
-        : Boolean(boardId),
+    queryKey: listRepositoryQueryKey(isPinnedCollection ? 'pinned' : isRepositoryCollection ? 'collection' : 'board',
+      user?.user_id, isPinnedCollection ? '' : isRepositoryCollection ? collectionId : boardId),
+    enabled: Boolean(user?.user_id) && (isPinnedCollection || Boolean(isRepositoryCollection ? collectionId : boardId)),
     staleTime: 30_000,
     queryFn: async ({ signal }) => {
       if (isPinnedCollection) {

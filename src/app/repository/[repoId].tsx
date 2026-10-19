@@ -5,8 +5,8 @@ import { useQuery } from '@tanstack/react-query';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { apiV2 } from '@/api/client';
 import { REFERENCE_THEME as theme } from '@/constants/theme';
-import { FEEDBACK_ACTIONS } from '@/constants/feedbackActions';
 import { getActivityOutbox } from '@/services/activityOutboxClient';
+import { openRepositoryOnGitHub } from '@/services/repositoryGithubOpen';
 import { useAuth } from '@/store/AuthContext';
 import { formatCompactCount } from '@/utils/format-count';
 import { getStorageItem } from '@/utils/storage';
@@ -46,20 +46,10 @@ export default function RepositoryScreen() {
   const openOnGitHub = async () => {
     if (!repo?.url) return;
     setOpenError(false);
-    try {
-      await Linking.openURL(repo.url);
-    } catch {
-      setOpenError(true);
-      return;
-    }
-    if (!activityOutbox) return;
-    try {
-      await activityOutbox.enqueue({ repo_id: repoId, action: FEEDBACK_ACTIONS.githubOpen });
-      const token = await getStorageItem('access_token');
-      if (token) await activityOutbox.flush(token);
-    } catch {
-      // Persisted events remain queued when delivery is offline or interrupted.
-    }
+    const opened = await openRepositoryOnGitHub(repoId, repo.url, {
+      open: url => Linking.openURL(url), outbox: activityOutbox, token: () => getStorageItem('access_token'),
+    });
+    setOpenError(!opened);
   };
 
   return <ScrollView

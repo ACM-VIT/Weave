@@ -13,6 +13,7 @@ import { parseSearchRequest, SearchService, type SearchRef } from '../../service
 import { semanticSearch } from '../../controllers/searchController.js';
 import redisClient from '../../config/redis.js';
 import { RedisSearchSnapshotStore } from '../../adapters/redisSearchSnapshotStore.js';
+import { SearchRequestGuard } from '../../services/searchRequestGuard.js';
 
 test.after(async () => { redisClient.disconnect(); });
 
@@ -22,6 +23,56 @@ const [viewer,other,claimed,external,repo,deleted,archived,unknown,ownCollection
 const repo2 = ids[13];
 const persistence = new PostgresSearchPersistence();
 const request = (extra = {}) => parseSearchRequest({schema_version:2,search_id:crypto.randomUUID(),query:'phase4needle',...extra});
+
+integration('shared Redis reuses identical first pages, coalesces instances, caps creation and rechecks privacy', async () => {
+  const account = crypto.randomUUID();
+  let lexicalCalls = 0; let semanticCalls = 0; let visible = true;
+  const fakePersistence = {
+    lexical: async () => { lexicalCalls++; await new Promise(resolve => setTimeout(resolve, 50)); return [repo, repo2].map(id => ({ id, exact: false })); },
+    people: async () => [], lists: async () => [],
+    hydrate: async (_viewer: string, refs: SearchRef[]) => visible ? refs.map(ref => ({ ...ref, data: {} })) : [],
+  };
+  const instance = () => new SearchService(fakePersistence, async req => {
+    semanticCalls++; return { schema_version: 2, search_id: req.search_id, embedding_version: 'test', items: [] };
+  }, Date.now, new RedisSearchSnapshotStore(redisClient));
+  const req = request({ group: 'repositories', limit: 1 });
+  const [first, repeated] = await Promise.all([
+    instance().search(account, req), instance().search(account, { ...req, search_id: crypto.randomUUID() }),
+  ]);
+  assert.equal(lexicalCalls, 1); assert.equal(semanticCalls, 1);
+  assert.equal(first.next_cursor, repeated.next_cursor);
+  assert.deepEqual(repeated.items, first.items);
+  visible = false;
+  assert.deepEqual((await instance().search(account, req)).items, [], 'cached ranking must not cache authorized rows');
+  visible = true;
+  await instance().search(crypto.randomUUID(), req);
+  assert.equal(lexicalCalls, 2, 'different viewers cannot reuse each other’s ranking');
+  for (let n = 1; n < 20; n++) await instance().search(account, { ...req, query: `unique ${n}` });
+  const callsAtLimit = lexicalCalls;
+  await assert.rejects(instance().search(account, { ...req, query: 'over creation limit' }), error =>
+    error instanceof Error && 'statusCode' in error && error.statusCode === 429);
+  assert.equal(lexicalCalls, callsAtLimit, 'snapshot cap is enforced before database/ML work');
+  await instance().search(account, req); // Existing rankings remain usable at the creation limit.
+  await redisClient.del(`search:v2:creates:${account}`);
+});
+
+integration('shared Redis enforces per-viewer concurrency and request windows and releases leases', async () => {
+  const account = crypto.randomUUID();
+  const a = new SearchRequestGuard(redisClient); const b = new SearchRequestGuard(redisClient);
+  const first = await a.acquire(account); const second = await b.acquire(account);
+  await assert.rejects(a.acquire(account), /Too many/);
+  await first();
+  const third = await b.acquire(account);
+  await third(); await second();
+  assert.equal(await redisClient.zcard(`search:v2:active:${account}`), 0);
+  await redisClient.del(`search:v2:requests:${account}`);
+  for (let n = 0; n < 60; n++) { const release = await a.acquire(account); await release(); }
+  await assert.rejects(b.acquire(account), /Too many/);
+  const releaseOther = await b.acquire(crypto.randomUUID()); await releaseOther();
+  await redisClient.del(`search:v2:requests:${account}`);
+  const afterWindow = await b.acquire(account); await afterWindow();
+  await redisClient.del(`search:v2:requests:${account}`);
+});
 
 integration('isolated PostgreSQL search: hydration, people deduplication, List privacy, filters and reversible migration', async () => {
   const url = new URL(process.env.DATABASE_URL!);
@@ -121,6 +172,14 @@ integration('isolated PostgreSQL search: hydration, people deduplication, List p
     try {
       assert.equal((await fetch(`${base}/search`, { method: 'POST' })).status, 401);
       assert.equal((await fetch(`${base}/search`, { method: 'POST', headers, body: JSON.stringify({ ...request(), query: 'x' }) })).status, 400);
+      for (const group of [['all'], {}, { toString: null }]) {
+        assert.equal((await fetch(`${base}/search`, { method: 'POST', headers, body: JSON.stringify({ ...request(), group }) })).status, 400);
+      }
+      await redisClient.set(`search:v2:requests:${viewer}`, '60', 'EX', 60);
+      const limited = await fetch(`${base}/search`, { method: 'POST', headers, body: JSON.stringify(request()) });
+      assert.equal(limited.status, 429);
+      assert.equal(limited.headers.get('retry-after'), '60');
+      await redisClient.del(`search:v2:requests:${viewer}`);
       const response = await fetch(`${base}/search`, { method: 'POST', headers, body: JSON.stringify(request({ group: 'lists' })) });
       assert.equal(response.status, 200);
       const payload = await response.json() as { data: { items: SearchRef[] } };
