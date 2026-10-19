@@ -5,6 +5,8 @@ import { useQuery } from '@tanstack/react-query';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { apiV2 } from '@/api/client';
 import { REFERENCE_THEME as theme } from '@/constants/theme';
+import { FEEDBACK_ACTIONS } from '@/constants/feedbackActions';
+import { getActivityOutbox } from '@/services/activityOutboxClient';
 import { useAuth } from '@/store/AuthContext';
 import { formatCompactCount } from '@/utils/format-count';
 import { getStorageItem } from '@/utils/storage';
@@ -26,6 +28,7 @@ export default function RepositoryScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const { user } = useAuth();
+  const activityOutbox = user?.user_id ? getActivityOutbox(user.user_id) : null;
   const [openError, setOpenError] = useState(false);
   const repository = useQuery({
     queryKey: ['repository', user?.user_id, repoId],
@@ -40,6 +43,24 @@ export default function RepositoryScreen() {
   });
   const repo = repository.data;
   const missing = repository.error && 'status' in repository.error && repository.error.status === 404;
+  const openOnGitHub = async () => {
+    if (!repo?.url) return;
+    setOpenError(false);
+    try {
+      await Linking.openURL(repo.url);
+    } catch {
+      setOpenError(true);
+      return;
+    }
+    if (!activityOutbox) return;
+    try {
+      await activityOutbox.enqueue({ repo_id: repoId, action: FEEDBACK_ACTIONS.githubOpen });
+      const token = await getStorageItem('access_token');
+      if (token) await activityOutbox.flush(token);
+    } catch {
+      // Persisted events remain queued when delivery is offline or interrupted.
+    }
+  };
 
   return <ScrollView
     style={{ flex: 1, backgroundColor: theme.background }}
@@ -66,10 +87,7 @@ export default function RepositoryScreen() {
       <Text selectable accessibilityRole="header" style={{ color: theme.text, fontSize: 28, fontWeight: '700' }}>{repo.full_name}</Text>
       <Text selectable style={{ color: theme.textSecondary, fontSize: 15, lineHeight: 23 }}>{repo.description || 'No description provided.'}</Text>
       {repo.url ? <Pressable accessibilityRole="link" accessibilityLabel="Open on GitHub"
-        onPress={() => {
-          setOpenError(false);
-          void Linking.openURL(repo.url).catch(() => setOpenError(true));
-        }}
+        onPress={() => void openOnGitHub()}
         style={({ pressed }) => ({ minHeight: 44, justifyContent: 'center', opacity: pressed ? 0.6 : 1 })}>
         <Text style={{ color: theme.accent, fontSize: 16 }}>Open on GitHub</Text>
       </Pressable> : null}
