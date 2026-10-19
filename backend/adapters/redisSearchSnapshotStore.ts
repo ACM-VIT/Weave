@@ -20,7 +20,7 @@ export class RedisSearchSnapshotStore implements SearchSnapshotStore {
     await this.redis.setex(`search:v2:snapshot:${key}`, 120, JSON.stringify(snapshot));
   }
 
-  async getOrCreate(binding: string, viewer: string, build: () => Promise<SearchSnapshot>) {
+  async getOrCreate(binding: string, viewer: string, build: () => Promise<SearchSnapshot>, signal?: AbortSignal) {
     if (!this.redis.set || !this.redis.eval) throw new Error('Shared search coordination requires Redis commands.');
     const cacheKey = `search:v2:first:${crypto.createHash('sha256').update(binding).digest('hex')}`;
     const lockKey = `${cacheKey}:lock`;
@@ -31,6 +31,7 @@ export class RedisSearchSnapshotStore implements SearchSnapshotStore {
       return key && snapshot && snapshot.expires > Date.now() ? { key, snapshot } : undefined;
     };
     for (let attempt = 0; attempt < 60; attempt++) {
+      signal?.throwIfAborted();
       const hit = await cached();
       if (hit) return hit;
       if (await this.redis.set(lockKey, token, 'PX', 10_000, 'NX')) {
@@ -53,7 +54,7 @@ export class RedisSearchSnapshotStore implements SearchSnapshotStore {
           await this.redis.eval("if redis.call('GET',KEYS[1])==ARGV[1] then return redis.call('DEL',KEYS[1]) end; return 0", 1, lockKey, token);
         }
       }
-      await delay(50);
+      await delay(50, undefined, { signal });
     }
     throw new SearchRateLimitError('Search is busy. Try again shortly.');
   }

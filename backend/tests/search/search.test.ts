@@ -92,3 +92,19 @@ test('expired cursors and cancelled requests do not reuse or return stale snapsh
   const abort = new AbortController(); abort.abort();
   await assert.rejects(service.search('viewer',request(),abort.signal));
 });
+
+test('cancelled shared snapshot waiters stop polling immediately', async () => {
+  const redis = {
+    async get() { return null; },
+    async setex() {},
+    async set() { return null; },
+    async eval() { return 0; },
+  };
+  const store = new RedisSearchSnapshotStore(redis);
+  const abort = new AbortController();
+  const waiting = store.getOrCreate('same-search', 'viewer', async () => {
+    throw new Error('the cancelled waiter must never build');
+  }, abort.signal);
+  setTimeout(() => abort.abort(), 10);
+  await assert.rejects(waiting, error => error instanceof Error && error.name === 'AbortError');
+});

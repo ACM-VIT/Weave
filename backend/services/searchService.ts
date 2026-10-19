@@ -22,7 +22,7 @@ export type SearchSnapshot = { binding: string; refs: SearchRef[]; mode: 'hybrid
 export interface SearchSnapshotStore {
   get(key: string): Promise<SearchSnapshot | undefined>;
   set(key: string, snapshot: SearchSnapshot): Promise<void>;
-  getOrCreate?(binding: string, viewer: string, build: () => Promise<SearchSnapshot>): Promise<{ key: string; snapshot: SearchSnapshot }>;
+  getOrCreate?(binding: string, viewer: string, build: () => Promise<SearchSnapshot>, signal?: AbortSignal): Promise<{ key: string; snapshot: SearchSnapshot }>;
 }
 export class SearchRateLimitError extends Error { readonly statusCode = 429; }
 
@@ -127,7 +127,7 @@ export class SearchService {
         return { binding, refs, mode: semantic.ok ? 'hybrid' as const : 'lexical' as const, expires: this.now()+120_000 };
       };
       if (this.snapshots.getOrCreate) {
-        ({ key, snapshot } = await this.snapshots.getOrCreate(binding, viewer, build));
+        ({ key, snapshot } = await this.snapshots.getOrCreate(binding, viewer, build, signal));
       } else {
         snapshot = await build();
         key = crypto.randomUUID();
