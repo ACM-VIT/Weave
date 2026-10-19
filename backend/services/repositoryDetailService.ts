@@ -90,15 +90,18 @@ export function mapRepositoryDetailRow(row: Record<string, unknown>): Repository
   };
 }
 
-export async function getRepositoryDetail(
+export async function getRepositoryDetails(
   viewerUserId: string,
-  repositoryId: string,
-): Promise<RepositoryDetailV2 | null> {
+  repositoryIds: string[],
+  includeReadme = true,
+  filters: { languages: string[]; topics: string[] } = { languages: [], topics: [] },
+): Promise<RepositoryDetailV2[]> {
+  if (!repositoryIds.length) return [];
   const rows = await sqlClient`
     SELECT
       repo.repo_id,repo.github_id,repo.full_name,repo.owner,repo.owner_github_id,
       repo.name,repo.url,repo.status,repo.created_at,repo.updated_at,
-      content.description,content.readme AS readme_md,content.readme_source_path,
+      content.description,CASE WHEN ${includeReadme} THEN content.readme ELSE NULL END AS readme_md,content.readme_source_path,
       content.readme_default_branch,content.readme_base_url,content.primary_language,
       COALESCE(content.languages,'[]'::jsonb) AS languages,
       content.content_version,content.updated_at AS content_updated_at,content.source_updated_at,
@@ -195,8 +198,14 @@ export async function getRepositoryDetail(
         WHERE membership.repo_id=repo.repo_id AND board.user_id=${viewerUserId}::uuid
       ) selection
     ) selected_lists ON true
-    WHERE repo.repo_id=${repositoryId}::uuid AND repo.status='active'
-    LIMIT 1
+    WHERE repo.repo_id=ANY(${repositoryIds}::uuid[]) AND repo.status='active'
+      AND (${filters.languages.length === 0} OR content.primary_language=ANY(${filters.languages}::text[]))
+      AND (${filters.topics.length === 0} OR EXISTS (SELECT 1 FROM app.repo_topics rt JOIN app.topics t USING(topic_id)
+        WHERE rt.repo_id=repo.repo_id AND t.slug=ANY(${filters.topics}::text[])))
   `;
-  return rows[0] ? mapRepositoryDetailRow(rows[0]) : null;
+  return rows.map(mapRepositoryDetailRow);
+}
+
+export async function getRepositoryDetail(viewerUserId: string, repositoryId: string): Promise<RepositoryDetailV2 | null> {
+  return (await getRepositoryDetails(viewerUserId, [repositoryId]))[0] ?? null;
 }

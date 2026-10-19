@@ -20,6 +20,7 @@ export type RepositoryStats = {
  * the repository's canonical identity.
  */
 export type RepositoryDetail = {
+  trend?: { rank: number; score: number | null; features: Record<string, unknown>; period: string; capturedAt: string | null };
   id: string;
   githubId: string | null;
   fullName: string;

@@ -3,7 +3,7 @@ import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 
 const internalSurfaceFiles = [
-  'src/app/(tabs)/explore.tsx',
+  'src/models/search.ts',
   'src/app/(tabs)/home.tsx',
   'src/app/board.tsx',
   'src/app/user/[username].tsx',
@@ -17,6 +17,12 @@ test('internal repository surfaces route to Weave rather than opening GitHub', a
     assert.match(source, /repositoryHref\(/, `${path} must use the canonical repository route`);
     assert.doesNotMatch(source, /Linking\.openURL/, `${path} must not open GitHub directly`);
   }
+});
+
+test('Explore uses the shared internal search result router', async () => {
+  const source = await readFile(new URL('../src/app/(tabs)/explore.tsx', import.meta.url), 'utf8');
+  assert.match(source, /router\.push\(searchResultHref\(item\)\)/);
+  assert.doesNotMatch(source, /Linking\.openURL/);
 });
 
 test('the dynamic repository route renders the canonical detail screen', async () => {

@@ -149,7 +149,7 @@ export class PostgresRepositoryPersistence implements RepositoryPersistencePort 
         await tx`
           INSERT INTO app.trending_snapshot_items (snapshot_id,position,repo_id,score,features)
           VALUES (${input.snapshot_id}::uuid,${repo.rank},${mapping.repo_id}::uuid,${repo.score ?? null},
-            ${JSON.stringify({ star_count: repo.star_count ?? 0, fork_count: repo.fork_count ?? 0 })}::jsonb)
+            ${JSON.stringify(buildMlRepositoryFeaturePatch(repo))}::jsonb)
         `;
         // New or content-changed repositories already have a repo_index job from
         // bulkUpsert containing the same discovery features. A refresh must never

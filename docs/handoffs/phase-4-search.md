@@ -1,0 +1,50 @@
+# Phase 4: Explore search and Trending
+
+## Boundary and search contract
+
+Expo → authenticated Node `POST /api/v2/search` → authenticated internal ML `POST /api/v2/search/repositories` → Qdrant. ML returns canonical repository UUIDs and finite cosine scores, plus schema/search/embedding version metadata. Node returns normal canonical PostgreSQL card records; document text and vectors never come from ML.
+
+Node request: `schema_version: 2`, UUID `search_id`, trimmed `query` (2–512 characters), `group` (`all`, `repositories`, `people`, `lists`), `limit` (1–50; default 24), optional UUID `exclude_repo_ids` (max 500), optional `filters` (`languages`, `topics`, max 10 each), nullable opaque `cursor`. Language is exact primary language; topics are lowercase canonical slugs. OR within each filter, AND across filter kinds. Filters apply to repositories; people/List searches retain their own fields and privacy. Unsupported fields/types fail with 400. Literal `%`, `_` and backslashes are escaped in lexical queries.
+
+Response: `{schema_version:2, search_id, mode:"hybrid"|"lexical", items:[{type:"repository"|"person"|"list",id,data}], next_cursor}`. Repository `data` uses the established canonical repository DTO with full README omitted for cards. Person data includes either `user_id` or `profile_id` for the existing internal user route. List data uses the Phase 2 `ListDto` with `source: "collection" | "legacy-board"`; the internal `/board` route handles both.
+
+## Ranking, hydration and fallback
+
+Retrieve up to 100 lexical candidates and 100 semantic candidates. Lexical sorting prefers exact repository name/full name, then name prefix, then trigram similarity and UUID. Combine by equal-weight reciprocal-rank fusion (`k=60`, contribution `1/(60+one-based-rank)`). Exact lexical names always precede fused non-exact results. UUID breaks ties. Semantic scores are validated but not numerically added to lexical similarity scores, whose scales differ. Unknown/malformed UUIDs, non-finite/out-of-range scores and duplicate IDs cannot become cards. PostgreSQL batch hydration rechecks active repository status and language/topic filters, restores candidate order, and omits deleted/unknown records.
+
+Node's ML transport uses the existing internal secret/configured base URL, a 1.8-second timeout, no redirects/retries, and bounded response size. Missing config, timeout, auth/transport error or malformed response envelope degrades to lexical search. The UI says “Semantic search is unavailable. Showing keyword matches.” ML uses a four-second service deadline and its existing bounded embedding executor. The query uses the frozen repository encoder; summary generation is never involved.
+
+All interleaves repository, person and List groups without guessing intent. Pagination snapshots hold only ordered typed IDs for two minutes, capped at 256 snapshots per Node process. Cursors bind viewer, search ID, query, group, filters and exclusions. Subsequent pages retain ranking even if ML goes down. PostgreSQL revalidates each page and tops up removed records. Expired/evicted/mismatched cursors return 410; restart search. Candidate windows are intentionally bounded (up to 200 repositories, 100 people, 100 Lists), not exhaustive corpus pagination. Multiple Node instances currently require sticky routing; process restart/eviction invalidates cursors. A shared cursor store is a future operational improvement, not a Phase 5 implementation.
+
+## People and List privacy
+
+Active users match username, display name, GitHub handle, bio and active claimed social-profile handles/names. Active unclaimed user/unknown social profiles match handle/display name. Organizations remain repository-owner profiles rather than People. Claimed profiles are represented only by their active canonical user; duplicate verified GitHub identities are suppressed. Private/suspended people are not resurrected through social profiles.
+
+Collections remain owner-only, matching Phase 2. Legacy Boards appear to their owner at any visibility, and to others only when public. Private and unlisted Lists are never search-discoverable. Active owner status and visibility are checked again while hydrating every page. No new collection visibility semantics were invented.
+
+## Migration
+
+`0025_explore_search.sql` is journaled, idempotent and transactional. It enables shared `pg_trgm`, adds partial active-repository/active-user/active-social-profile/public-Board GIN trigram indexes, repository description and Collection text GIN indexes, and a Board owner index. The content table has no active-status field; active eligibility remains in its joined repository. The migration resolves the installed extension namespace (including Supabase’s extensions schema) and creates a schema-qualified `app.explore_similarity` wrapper, avoiding a runtime search-path dependency. The backend role receives namespace usage and execute on the trigram similarity function; no table privileges are added. Rollback removes the wrapper and indexes, retaining shared extension access. No PostgreSQL vector columns are added. `database/rollbacks/0025_explore_search.sql` removes only the new indexes idempotently and retains shared `pg_trgm` safely. Startup migrations must precede search traffic. These GIN index builds are transactional/non-concurrent and may require a maintenance window on a large production corpus; no production migration was run.
+
+ML adds a topic keyword index to the existing Qdrant schema/bootstrap contract. Reconcile existing collection indexes through the existing operational workflow before serving topic-filtered queries in strict-index Qdrant configurations. No Qdrant production changes were made.
+
+## UI and docs
+
+Spotify-style supported filter pills preserve input; unsupported Issues/PRs/Discussions/Commits remain hidden by user choice. React Query consumes AbortSignals for the debounce timer and HTTP transport; minimum length two, 300ms debounce, explicit Load more. Clear is immediate and restores focus. Web IME composition pauses requests. NetInfo supplies offline state/reconnect behavior. Private query text stays transient in native state. Every result routes internally.
+
+Trending has one FlatList scroll owner, large medal-colored actual top-three ranks, compact later rows and bounded summaries. Mapping preserves backend score/features, stars/forks, language, period and computation timestamp. Zero-based stored positions become one-based displayed ranks. Snapshot writes now retain the existing normalized ingestion feature patch instead of discarding all but stars/forks. Period controls appear only with multiple populated backend periods; active/deleted eligibility is checked. Latest preserves its repository-card grid, also virtualized.
+
+Documentation read: Expo SDK 56 Router (`https://docs.expo.dev/versions/v56.0.0/sdk/router/`), SDK 56 Expo UI (`https://docs.expo.dev/versions/v56.0.0/sdk/ui/`), SDK 56 Expo fetch/runtime (`https://docs.expo.dev/versions/v56.0.0/sdk/expo/`), Expo Router data loaders (`https://docs.expo.dev/router/web/data-loaders/`, web-only; native uses existing React Query), and SDK 56's React Native 0.85 list-performance/networking docs (`https://reactnative.dev/docs/0.85/optimizing-flatlist-configuration`, `https://reactnative.dev/docs/0.85/network`). SDK 56 patch dependencies were reconciled through `expo install --fix`; NetInfo was installed with `expo install`.
+
+## Verification evidence
+
+Both worktrees began clean. Both end on `codex/product-fixes-v2`. Commands used Node 22.23.2 and `uv sync --locked --python 3.12` / Python 3.12.13. The uv lockfile remains unchanged. Local PostgreSQL was initialized under `/tmp/weave-phase4-pg` on loopback port 55484; Qdrant retrieval tests use `:memory:`. No production PostgreSQL, Redis, Qdrant or ML endpoint was used.
+
+- App: full lint and typecheck pass; 136 tests pass.
+- Expo: SDK dependency check passes; all-platform export produces iOS/Android/web bundles (Expo logs a forced process exit after completing export). Doctor passes 20/21 checks, with the existing unmaintained `react-native-render-html` warning. Sentry also reports missing build-project configuration in this local environment.
+- Backend: production TypeScript build and full test command pass (139 passed, 8 opt-in integration tests skipped). The separate Phase 4 PostgreSQL/local HTTP integration command passes all 10 tests, including actual batch hydration ranking, malformed/unknown/deleted IDs, claimed profile deduplication, owner/public List privacy, pagination revalidation, reversible/idempotent migrations and a real 1.8-second ML timeout.
+- ML: 229 relevant retrieval/contract/runtime/hardening/architecture/feedback tests pass, including the opt-in real frozen-encoder conceptual query with in-memory Qdrant. Only dependency deprecation warnings remain.
+- Browser: headless installed Chrome, local authenticated Node product routes and isolated PostgreSQL. Exercised Trending virtualization/ranks, mixed All results, query-preserving filters, People and List internal navigation, empty/minimum-query states, offline/reconnect, HTTP error/retry recovery, clear/focus and 320px layout. No page errors. Phone captures and machine-readable checks are in `artifacts/phase-4/`. No native-device screen-reader or on-device IME run was available; native navigation has mapper/routing tests, and web composition is explicitly guarded.
+- Strict UI static audit reports zero findings. Both repositories pass `git diff --check`.
+
+Remaining operational limits: two-minute per-process cursor snapshots need sticky routing across Node replicas; cursor eviction/restarts require restarting search. Candidate windows are bounded. Model weights must be cached/warmed for consistently meeting the short semantic timeout. Production pg_trgm migration and Qdrant topic-index reconciliation remain deployment prerequisites and were intentionally not executed. npm installation reports dependency security advisories; broad dependency/security migrations are outside Phase 4. No push, deployment or Phase 5 work was performed.

@@ -509,7 +509,11 @@ export async function getRepositoryShare(req: AuthRequest, res: Response): Promi
 
 export async function listTrending(req: AuthRequest, res: Response): Promise<void> {
   const viewer = userId(req, res); if (!viewer) return;
-  const period = typeof req.query.period === 'string' ? req.query.period : 'daily';
+  const available = await sqlClient`SELECT s.period,max(s.computed_at) AS captured_at FROM app.trending_snapshots s
+    WHERE s.active AND s.complete AND s.period IN ('daily','weekly','monthly') AND EXISTS (SELECT 1 FROM app.trending_snapshot_items i JOIN app.repos r USING(repo_id)
+      WHERE i.snapshot_id=s.snapshot_id AND r.status='active') GROUP BY s.period ORDER BY s.period`;
+  const period = typeof req.query.period === 'string' ? req.query.period : String(available.find(row => row.period === 'daily')?.period ?? available[0]?.period ?? 'daily');
+  if (!['daily','weekly','monthly'].includes(period)) return sendError(res,400,'Invalid trending period.');
   const rows = await sqlClient`SELECT i.position,i.score,i.features,r.repo_id,r.github_id,r.owner_github_id,
     r.full_name,r.owner,r.name,r.url,r.status,r.created_at,r.updated_at,
     c.description,c.primary_language,c.languages,c.readme AS readme_md,c.readme_source_path,
@@ -546,8 +550,9 @@ export async function listTrending(req: AuthRequest, res: Response): Promise<voi
       ON viewer_reaction.repo_id=r.repo_id AND viewer_reaction.user_id=${viewer}::uuid
     LEFT JOIN app.saves viewer_save
       ON viewer_save.repo_id=r.repo_id AND viewer_save.user_id=${viewer}::uuid
-    WHERE s.active AND s.complete AND s.period=${period} ORDER BY i.position LIMIT 100`;
-  sendSuccess(res, 200, { period, items: rows });
+    WHERE s.snapshot_id=(SELECT latest.snapshot_id FROM app.trending_snapshots latest WHERE latest.active AND latest.complete
+      AND latest.period=${period} ORDER BY latest.computed_at DESC,latest.snapshot_id LIMIT 1) AND r.status='active' ORDER BY i.position LIMIT 100`;
+  sendSuccess(res, 200, { period, available_periods: available.map(row => row.period), captured_at: available.find(row => row.period === period)?.captured_at ?? null, items: rows });
 }
 
 export async function listSaved(req: AuthRequest, res: Response): Promise<void> {
