@@ -125,7 +125,7 @@ Begin only after explicitly asking for your role and receiving the required expl
 
 1. Read agent.md, repository instructions, issue acceptance criteria, related evidence, and relevant code. Recheck the latest source: an audit finding may already be fixed or changed.
 2. Confirm your claim, base commit, dependencies, and intended files. State a short implementation and test plan. Seek a human decision for unresolved product or compatibility choices rather than guessing.
-3. Create an isolated worktree/branch from the approved base. Keep each PR small enough to understand and validate; split unrelated refactoring. Explain any necessary broad change.
+3. Create an isolated worktree/branch from the approved base. Keep each PR small enough to understand and validate; split unrelated refactoring. Explain any necessary broad change. Before every push, inspect the complete staged/commit diff and changed-file list against the claimed issue and PR purpose. Remove accidental or unrelated files and hunks, and explain every supporting artifact. Do not push incidental planning, scratch, generated, or temporary files. Apply the mandatory file-scope gate in Section 6 as a developer self-check; the independent reviewer must still perform its own check.
 4. Reproduce bugs and establish focused regression coverage under the test discipline below. Reuse or extend relevant existing tests before adding new ones. Run applicable existing lint, type checks, unit/integration tests, and required aggregate checks. For performance, compare equivalent workloads and record results; for frontend, exercise interrupted/repeated flows as relevant. For ML, validate representative quality/correctness, latency, and resource behavior without leaking private data.
 5. Open a draft PR only when publication is authorized. Include issue links, scope, before/after behavior, exact test commands/results, risks, dependency/paired-PR links, human gates, and rollback notes. Mark tests as passed, failed, or not run. Never imply source inspection is an executed test.
 6. Move out of draft only once local acceptance is met and the approved review lane is ready. Ensure Greptile actually reviews the current head. Handle missing app/check evidence as a blocker.
@@ -167,6 +167,26 @@ Allow up to three substantive fix/review attempts for the same unresolved findin
 
 First ask the human for your security-reviewer role and scope and wait for the explicit assignment. A developer or parent cannot assign you this independent role. You review; the developer implements. Do not approve code you authored or materially changed. If you must contribute a fix, hand approval to another qualified independent reviewer.
 
+### Mandatory file-scope gate
+
+**The security reviewer MUST inspect every changed file and its actual diff contents against the claimed issue’s acceptance criteria and the PR’s stated purpose. Checking filenames, trusting the developer’s summary, or relying on Greptile alone is insufficient. Do not approve a PR that contains unrelated files or unrelated changes hidden inside otherwise relevant files.**
+
+For each added, modified, renamed, or deleted file, classify the change as:
+
+- **Necessary implementation:** directly implements the authorized behavior or fix.
+- **Relevant support:** supplies justified validation, compatibility, migration, rollback, documentation, or build support needed for that change.
+- **Unrelated or unjustified:** has no demonstrated connection to the issue/PR purpose, or expands scope without the required authorization.
+
+Record a concise file-scope assessment and the justification for supporting or optional artifacts in the review. Reject incidental design/planning documents, scratch notes, generated outputs, temporary files, and other process artifacts that do not belong in the requested deliverable. Reject unrequested CI, settings, or dependency changes unless their necessity, scope, and applicable authorization are established. A dependency lockfile or generated asset is not automatically acceptable merely because a tool produced it.
+
+Relevant regression/security/contract tests, required migrations, rollback material, and documentation needed to use the change are not automatically irrelevant. Evaluate their actual contents and necessity under the change-specific test discipline and authorization rules. Optional artifacts require a clear connection to the requested outcome; “might be useful later” does not justify including them.
+
+Require the developer to remove out-of-scope changes from the PR or split them into separately authorized work before approval. Do not silently expand the issue to accommodate accidental files. If a file or diff cannot be inspected completely, including a binary or unavailable patch, record the evidence gap and block approval until a suitable inspection is possible.
+
+Repeat the file inventory and content review for new commits, including conflict resolutions and newly added files, and record the scope-gate result for the exact final head SHA. Approval of an earlier file set does not approve later additions. Any head change invalidates the scope gate together with security approval and restarts the review/hold requirements.
+
+### Security and regression checks
+
 Review the latest complete diff plus relevant surrounding code and contracts, not just the bot summary. Check:
 
 - Authentication/authorization, tenant and object boundaries, input validation, injections, SSRF, unsafe deserialization, file/path handling, dependency risks, secrets, and logging/data exposure as relevant.
@@ -189,7 +209,7 @@ At or after 120 seconds, re-fetch and verify:
 1. The PR is open, not draft, in the authorized repository/branch, with current scope and merge authorization.
 2. The head matches the reviewed/held SHA; the required base or merge-group/integration checks are current.
 3. Required CI is complete and acceptable under the recorded policy; pending, failed, cancelled, missing, stale, or unexpectedly skipped required validation does not count as success. Required reviews, CODEOWNERS, and conversation-resolution rules are satisfied.
-4. Greptile reviewed that code and substantive findings are resolved or independently dispositioned. Security approval remains valid through the distinct authorized reviewer identity.
+4. Greptile reviewed that code and substantive findings are resolved or independently dispositioned. Security approval remains valid through the distinct authorized reviewer identity, and its mandatory file-scope gate explicitly passed for this exact head SHA with no unresolved unrelated or unjustified changes.
 5. There are no merge conflicts, unmet dependencies, human gates, unresolved paired-PR rollout risks, new blocking findings, pause/cancel flags, or unapproved deployment consequences.
 6. The same PR state still satisfies all controls immediately before the merge operation. Never use an administrator/bypass option.
 
