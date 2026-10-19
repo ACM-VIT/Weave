@@ -189,6 +189,13 @@
       "when": 1785292200000,
       "tag": "0023_active_social_profile_handles",
       "breakpoints": true
+    },
+    {
+      "idx": 27,
+      "version": "7",
+      "when": 1792368000000,
+      "tag": "0024_explore_search",
+      "breakpoints": true
     }
   ]
 }

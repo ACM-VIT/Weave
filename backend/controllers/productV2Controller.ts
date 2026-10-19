@@ -448,7 +448,25 @@ export async function getRepositoryShare(req: AuthRequest, res: Response): Promi
 }
 
 export async function listTrending(req: AuthRequest, res: Response): Promise<void> {
-  const period = typeof req.query.period === 'string' ? req.query.period : 'daily';
+  if (req.query.period !== undefined
+    && (typeof req.query.period !== 'string' || !['daily','weekly','monthly'].includes(req.query.period))) {
+    return sendError(res, 400, 'Invalid trending period.');
+  }
+  const available = await sqlClient`
+    SELECT DISTINCT ON (s.period) s.period,s.snapshot_id,s.computed_at AS captured_at
+    FROM app.trending_snapshots s
+    WHERE s.active AND s.complete AND s.period IN ('daily','weekly','monthly')
+      AND EXISTS (
+        SELECT 1 FROM app.trending_snapshot_items i JOIN app.repos r USING(repo_id)
+        JOIN app.repo_content c USING(repo_id) JOIN app.repo_engagement e USING(repo_id)
+        WHERE i.snapshot_id=s.snapshot_id AND r.status='active'
+      )
+    ORDER BY s.period,s.computed_at DESC,s.snapshot_id
+  `;
+  const period = typeof req.query.period === 'string' && available.some(row => row.period === req.query.period)
+    ? req.query.period
+    : String(available.find(row => row.period === 'daily')?.period ?? available[0]?.period ?? 'daily');
+  const snapshot = available.find(row => row.period === period);
   const rows = await sqlClient`SELECT i.position,i.score,i.features,r.repo_id,r.github_id,r.full_name,r.owner,r.name,r.url,
     c.description,c.primary_language,c.languages,e.likes_count,e.comments_count,e.views_count,
     COALESCE(stat.star_count,0) AS star_count,COALESCE(stat.fork_count,0) AS fork_count,
@@ -459,8 +477,14 @@ export async function listTrending(req: AuthRequest, res: Response): Promise<voi
       WHERE x.repo_id=r.repo_id ORDER BY observed_at DESC LIMIT 1) stat ON true
     LEFT JOIN LATERAL (SELECT summary FROM app.repo_card_summaries x
       WHERE x.repo_id=r.repo_id AND active ORDER BY created_at DESC LIMIT 1) summary ON true
-    WHERE s.active AND s.complete AND s.period=${period} ORDER BY i.position LIMIT 100`;
-  sendSuccess(res, 200, { period, items: rows });
+    WHERE s.snapshot_id=${snapshot?.snapshot_id ?? null}::uuid AND r.status='active'
+    ORDER BY i.position LIMIT 100`;
+  sendSuccess(res, 200, {
+    period,
+    available_periods: available.map(row => row.period),
+    captured_at: snapshot ? new Date(snapshot.captured_at).toISOString() : null,
+    items: rows,
+  });
 }
 
 export async function listSaved(req: AuthRequest, res: Response): Promise<void> {

@@ -1,10 +1,12 @@
 import { Router } from 'express';
 import { requireAuth } from '../middlewares/authMiddleware.js';
 import * as product from '../controllers/productV2Controller.js';
+import { search } from '../controllers/searchController.js';
 
 const router = Router();
 router.get('/repositories/:repoId/share', product.getRepositoryShare);
 router.use(requireAuth);
+router.post('/search', search);
 router.get('/users/me', product.getMe);
 router.patch('/users/me', product.updateMe);
 router.get('/users/:userId', product.getUser);

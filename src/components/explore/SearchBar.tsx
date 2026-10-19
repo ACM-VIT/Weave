@@ -1,11 +1,12 @@
-import React from 'react';
-import { TextInput, View } from 'react-native';
+import React, { useRef } from 'react';
+import { Platform, Pressable, Text, TextInput, View } from 'react-native';
 import Svg, { Circle, Path } from 'react-native-svg';
 
 interface SearchBarProps {
   value: string;
   onChangeText: (text: string) => void;
   placeholder?: string;
+  onCompositionChange?: (composing: boolean) => void;
 }
 
 function SearchGlyph(): React.JSX.Element {
@@ -20,13 +21,15 @@ function SearchGlyph(): React.JSX.Element {
 export default function SearchBar({
   value,
   onChangeText,
-  placeholder = 'Repos, devs, topics',
+  placeholder = 'Search repositories, people and Lists',
+  onCompositionChange,
 }: SearchBarProps): React.JSX.Element {
+  const input = useRef<TextInput>(null);
   return (
     <View style={{ paddingTop: 14, paddingHorizontal: 20 }}>
       <View
         style={{
-          height: 38,
+          minHeight: 44,
           borderRadius: 12,
           backgroundColor: 'rgba(118, 118, 128, 0.18)',
           paddingHorizontal: 12,
@@ -37,6 +40,16 @@ export default function SearchBar({
       >
         <SearchGlyph />
         <TextInput
+          ref={input}
+          accessibilityLabel="Search repositories, people and Lists"
+          maxLength={512}
+          autoCapitalize="none"
+          autoCorrect={false}
+          returnKeyType="search"
+          {...(Platform.OS === 'web' ? {
+            onCompositionStart: () => onCompositionChange?.(true),
+            onCompositionEnd: () => onCompositionChange?.(false),
+          } : {})}
           value={value}
           onChangeText={onChangeText}
           placeholder={placeholder}
@@ -49,6 +62,9 @@ export default function SearchBar({
             borderWidth: 0,
           }}
         />
+        {value ? <Pressable accessibilityRole="button" accessibilityLabel="Clear search" onPress={() => { onCompositionChange?.(false); onChangeText(''); input.current?.focus(); }} style={{ minWidth: 44, minHeight: 44, alignItems: 'center', justifyContent: 'center' }}>
+          <Text style={{ color: '#FFFFFF', fontSize: 22 }}>×</Text>
+        </Pressable> : null}
       </View>
     </View>
   );
