@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { InfiniteQueryObserver, QueryClient } from '@tanstack/react-query';
-import { isSearchExpired, runSearchRequest, searchQueryOptions } from '../src/api/search-query';
+import { isSearchExpired, runSearchRequest, searchQueryOptions, SearchSessions } from '../src/api/search-query';
 import { mapExploreRepository, mapTrendingRepository } from '../src/api/explore-data';
 import { searchResultHref, SEARCH_GROUPS, type SearchPage } from '../src/models/search';
 
@@ -15,6 +15,25 @@ const page = (cursor: string | null = null): SearchPage => ({
   next_cursor: cursor, mode: 'hybrid',
 });
 const tick = () => new Promise(resolve => setTimeout(resolve, 0));
+
+test('returning to a search group offline reuses cached pages until explicitly restarted', () => {
+  let sequence = 0;
+  const sessions = new SearchSessions(() => `session-${++sequence}`);
+  const client = new QueryClient();
+  const input = { viewer: 'viewer', query: 'vision', group: 'all' as const,
+    searchId: sessions.get('viewer', 'vision', 'all'), composing: false, offline: true, send: async () => page() };
+  const options = searchQueryOptions(input);
+  client.setQueryData(options.queryKey, { pages: [page()], pageParams: [null] });
+  sessions.get('viewer', 'vision', 'people');
+  const returned = searchQueryOptions({ ...input, searchId: sessions.get('viewer', ' vision ', 'all') });
+  assert.deepEqual(client.getQueryData(returned.queryKey), { pages: [page()], pageParams: [null] });
+  assert.notEqual(sessions.get('other-viewer', 'vision', 'all'), input.searchId);
+  assert.notEqual(sessions.get('viewer', 'different', 'all'), input.searchId);
+  const restarted = sessions.get('viewer', 'vision', 'all', true);
+  assert.notEqual(restarted, input.searchId);
+  assert.equal(sessions.get('viewer', 'vision', 'all'), restarted);
+  client.clear();
+});
 
 test('Trending preserves backend ranking and rejects absent or malformed positions', () => {
   const repo = mapTrendingRepository({ ...projection, position: 1, score: 0.8, features: { trend_velocity: 12 } })!;

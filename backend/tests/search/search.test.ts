@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
 import test from 'node:test';
+import { RedisSearchSnapshotStore } from '../../adapters/redisSearchSnapshotStore.js';
 import { hybridRank, parseSearchRequest, parseSemanticResponse, preserveHydrationOrder, SearchService, type SearchPersistence, type SearchRef, type SearchRequest } from '../../services/searchService.js';
 
 const ids = [1,2,3,4].map(n => `00000000-0000-4000-8000-${String(n).padStart(12,'0')}`);
@@ -10,6 +11,26 @@ function persistence(extra: Partial<SearchPersistence> = {}): SearchPersistence 
     hydrate: async (_viewer,refs) => refs.map(ref => ({ ...ref, data: { repo_id: ref.id } })), ...extra };
 }
 function body(req: SearchRequest, items = [{ repo_id: ids[1], score: 0.9 }]) { return { schema_version: 2, search_id: req.search_id, embedding_version: 'repo-embedding-v2', items }; }
+
+test('Redis snapshots support pagination across API instances, TTL expiry and viewer binding', async () => {
+  let now = 0;
+  const entries = new Map<string, { value: string; expires: number }>();
+  const redis = {
+    async get(key: string) { const entry = entries.get(key); return entry && entry.expires > now ? entry.value : null; },
+    async setex(key: string, seconds: number, value: string) { entries.set(key, { value, expires: now + seconds * 1000 }); },
+  };
+  let semanticCalls = 0;
+  const makeInstance = () => new SearchService(persistence(), async req => { semanticCalls++; return body(req); },
+    () => now, new RedisSearchSnapshotStore(redis));
+  const req = request({ limit: 1 });
+  const first = await makeInstance().search('viewer', req);
+  const second = await makeInstance().search('viewer', { ...req, cursor: first.next_cursor });
+  assert.deepEqual(second.items.map(item => item.id), [ids[1]]);
+  assert.equal(semanticCalls, 1);
+  await assert.rejects(makeInstance().search('other', { ...req, cursor: first.next_cursor }), /expired/);
+  now = 120001;
+  await assert.rejects(makeInstance().search('viewer', { ...req, cursor: first.next_cursor }), /expired/);
+});
 
 test('search input is versioned, bounded, literal-filtered and cursor-bounded', () => {
   for (const value of [{ query: 'a' },{ query: 'a'.repeat(513) },{ limit: 51 },{ group: 'topics' },{ schema_version: 1 },{ filters: { topic: 'x' } },{ exclude_repo_ids: ['owner/repo'] },{ cursor: 'a'.repeat(101) }]) assert.throws(() => request(value));

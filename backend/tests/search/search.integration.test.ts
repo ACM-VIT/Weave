@@ -11,6 +11,10 @@ import { sqlClient } from '../../db/index.js';
 import { PostgresSearchPersistence } from '../../adapters/postgresSearchPersistence.js';
 import { parseSearchRequest, SearchService, type SearchRef } from '../../services/searchService.js';
 import { semanticSearch } from '../../controllers/searchController.js';
+import redisClient from '../../config/redis.js';
+import { RedisSearchSnapshotStore } from '../../adapters/redisSearchSnapshotStore.js';
+
+test.after(async () => { redisClient.disconnect(); });
 
 const integration = process.env.RUN_SEARCH_INTEGRATION === '1' ? test : test.skip;
 const ids: string[] = Array.from({length:16},()=>crypto.randomUUID());
@@ -46,6 +50,15 @@ integration('isolated PostgreSQL search: hydration, people deduplication, List p
     assert.equal(people.filter(p=>p.id===`user:${other}`).length,1);
     assert.ok(!people.some(p=>p.id===`profile:${claimed}`));
     assert.ok(people.some(p=>p.id===`profile:${external}`));
+    // A reused handle with a different numeric GitHub identity must remain discoverable.
+    await sqlClient`UPDATE app.users SET github_handle='phase4external' WHERE user_id=${other}::uuid`;
+    await sqlClient`UPDATE app.social_profiles SET provider_subject='987654321' WHERE profile_id=${external}::uuid`;
+    assert.ok((await persistence.people(request())).some(p=>p.id===`profile:${external}`));
+    await sqlClient`UPDATE app.users SET github_id='987654321' WHERE user_id=${other}::uuid`;
+    assert.ok(!(await persistence.people(request())).some(p=>p.id===`profile:${external}`));
+    await sqlClient`UPDATE app.social_profiles SET provider_subject=NULL WHERE profile_id=${external}::uuid`;
+    assert.ok(!(await persistence.people(request())).some(p=>p.id===`profile:${external}`));
+    await sqlClient`UPDATE app.users SET github_id='123456789',github_handle='phase4claimed' WHERE user_id=${other}::uuid`;
     const lists = await persistence.lists(viewer,request());
     assert.deepEqual(new Set(lists.map(v=>v.id)),new Set([`collection:${ownCollection}`,`legacy-board:${publicBoard}`]));
     assert.equal((await persistence.lists(other,request())).length,4);
@@ -58,13 +71,14 @@ integration('isolated PostgreSQL search: hydration, people deduplication, List p
     assert.equal((await persistence.hydrate(viewer,refs,request({filters:{languages:['Rust']}}))).length,0);
     assert.equal((await persistence.hydrate(viewer,refs,request({filters:{topics:['missing-search-topic']}}))).length,0);
     assert.equal((await persistence.lexical(request({query:'%%'}))).length,0);
-    const service = new SearchService(persistence,async req=>({schema_version:2,search_id:req.search_id,embedding_version:'test',items:refs.map((ref,index)=>({repo_id:ref.id,score:0.99-index*.01}))}));
+    const service = new SearchService(persistence,async req=>({schema_version:2,search_id:req.search_id,embedding_version:'test',items:refs.map((ref,index)=>({repo_id:ref.id,score:0.99-index*.01}))}), Date.now, new RedisSearchSnapshotStore(redisClient));
     const response = await service.search(viewer,request({group:'repositories',query:`image understanding ${repo}`}));
     assert.deepEqual(response.items.map(v=>v.id),[repo2,repo], 'conceptual query survives without lexical words in repository name/description');
     const paged = request({group:'lists',limit:1});
     const page1 = await service.search(viewer,paged);
     await sqlClient`UPDATE app.boards SET visibility='private' WHERE board_id=${publicBoard}::uuid`;
-    const page2 = await service.search(viewer,{...paged,cursor:page1.next_cursor});
+    const otherInstance = new SearchService(persistence, async () => { throw new Error('Cursor must reuse the shared ranking'); }, Date.now, new RedisSearchSnapshotStore(redisClient));
+    const page2 = await otherInstance.search(viewer,{...paged,cursor:page1.next_cursor});
     assert.ok(!page2.items.some(v=>v.id===`legacy-board:${publicBoard}`),'changed visibility is rechecked on pagination');
 
     const runtimeUrl = new URL(process.env.DATABASE_URL!);

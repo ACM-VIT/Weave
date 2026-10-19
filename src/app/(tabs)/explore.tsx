@@ -7,7 +7,7 @@ import { useInfiniteQuery } from '@tanstack/react-query';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { fetchExploreRepos, mergeExplorePages } from '@/api/explore';
 import { fetchSearch } from '@/api/search';
-import { MIN_SEARCH_LENGTH, searchQueryOptions, isSearchExpired } from '@/api/search-query';
+import { MIN_SEARCH_LENGTH, searchQueryOptions, isSearchExpired, SearchSessions } from '@/api/search-query';
 import SearchBar from '@/components/explore/SearchBar';
 import RepoCard from '@/components/explore/RepoCard';
 import TabBar from '@/components/explore/TabBar';
@@ -36,14 +36,17 @@ export default function ExploreScreen() {
   const offline = network.isConnected === false || network.isInternetReachable === false;
   const { user } = useAuth();
   const [activeTab, setActiveTab] = useState<TabName>('Latest');
-  const [searchInput, setSearchInput] = useState(() => ({ value: '', group: 'all' as SearchGroup, id: randomUUID() }));
-  const { value: searchQuery, group, id: searchId } = searchInput;
-  const setSearchQuery = (value: string) => setSearchInput(previous => ({
-    ...previous, value, id: value.trim() === previous.value.trim() ? previous.id : randomUUID(),
-  }));
+  const [sessions] = useState(() => new SearchSessions(randomUUID));
+  const [searchInput, setSearchInput] = useState({ value: '', group: 'all' as SearchGroup });
+  const { value: searchQuery, group } = searchInput;
+  const searchId = sessions.get(user?.user_id, searchQuery, group);
+  const setSearchQuery = (value: string) => setSearchInput(previous => ({ ...previous, value }));
   const setGroup = (nextGroup: SearchGroup) => setSearchInput(previous => previous.group === nextGroup
-    ? previous : { ...previous, group: nextGroup, id: randomUUID() });
-  const restartSearch = () => setSearchInput(previous => ({ ...previous, id: randomUUID() }));
+    ? previous : { ...previous, group: nextGroup });
+  const restartSearch = () => {
+    sessions.get(user?.user_id, searchQuery, group, true);
+    setSearchInput(previous => ({ ...previous }));
+  };
   const [period, setPeriod] = useState<string>();
   const [composing, setComposing] = useState(false);
   const query = searchQuery.trim();

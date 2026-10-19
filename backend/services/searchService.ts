@@ -18,6 +18,22 @@ export interface SearchPersistence {
 export class SearchInputError extends Error { readonly statusCode = 400; }
 export class SearchExpiredError extends Error { readonly statusCode = 410; }
 
+export type SearchSnapshot = { binding: string; refs: SearchRef[]; mode: 'hybrid' | 'lexical'; expires: number };
+export interface SearchSnapshotStore {
+  get(key: string): Promise<SearchSnapshot | undefined>;
+  set(key: string, snapshot: SearchSnapshot): Promise<void>;
+}
+
+/** Local store for isolated tests. The HTTP controller supplies shared Redis storage. */
+export class MemorySearchSnapshotStore implements SearchSnapshotStore {
+  private readonly snapshots = new Map<string, SearchSnapshot>();
+  async get(key: string) { return this.snapshots.get(key); }
+  async set(key: string, snapshot: SearchSnapshot) {
+    if (this.snapshots.size >= 256) this.snapshots.delete(this.snapshots.keys().next().value!);
+    this.snapshots.set(key, snapshot);
+  }
+}
+
 export function parseSearchRequest(body: unknown): SearchRequest {
   if (!body || typeof body !== 'object' || Array.isArray(body)) throw new SearchInputError('Invalid search request.');
   const b = body as Record<string, unknown>;
@@ -75,20 +91,19 @@ export function preserveHydrationOrder(refs: SearchRef[], rows: SearchResult[]):
 }
 
 export class SearchService {
-  private snapshots = new Map<string, { binding: string; refs: SearchRef[]; mode: 'hybrid' | 'lexical'; expires: number }>();
   constructor(private readonly persistence: SearchPersistence,
     private readonly semantic: (request: SearchRequest, signal?: AbortSignal) => Promise<unknown>,
-    private readonly now = Date.now) {}
+    private readonly now = Date.now,
+    private readonly snapshots: SearchSnapshotStore = new MemorySearchSnapshotStore()) {}
 
   async search(viewer: string, request: SearchRequest, signal?: AbortSignal) {
-    for (const [key, value] of this.snapshots) if (value.expires <= this.now()) this.snapshots.delete(key);
     const binding = JSON.stringify([viewer, request.search_id, request.query, request.group, request.filters, request.exclude_repo_ids]);
     let key: string; let offset = 0;
     let snapshot;
     if (request.cursor) {
       const parts = request.cursor.split(':'); key = parts[0]; offset = Number(parts[1]);
-      snapshot = this.snapshots.get(key);
-      if (parts.length !== 2 || !Number.isInteger(offset) || offset < 0 || !snapshot || snapshot.binding !== binding || offset > snapshot.refs.length) throw new SearchExpiredError('Search expired. Search again.');
+      snapshot = await this.snapshots.get(key);
+      if (parts.length !== 2 || !Number.isInteger(offset) || offset < 0 || !snapshot || snapshot.expires <= this.now() || snapshot.binding !== binding || offset > snapshot.refs.length) throw new SearchExpiredError('Search expired. Search again.');
     } else {
       const repositories = request.group === 'all' || request.group === 'repositories';
       const [lexical, people, lists, semantic] = await Promise.all([
@@ -107,8 +122,7 @@ export class SearchService {
       }
       snapshot = { binding, refs, mode: semantic.ok ? 'hybrid' as const : 'lexical' as const, expires: this.now()+120_000 };
       key = crypto.randomUUID();
-      if (this.snapshots.size >= 256) this.snapshots.delete(this.snapshots.keys().next().value!);
-      this.snapshots.set(key, snapshot);
+      await this.snapshots.set(key, snapshot);
     }
     const items: SearchResult[] = [];
     // Revalidate every page against PostgreSQL; deleted/private results are skipped and topped up.

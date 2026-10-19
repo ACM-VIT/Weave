@@ -3,6 +3,8 @@ import type { Response } from 'express';
 import { getMlRuntimeConfig } from '../config/ml.js';
 import type { AuthRequest } from '../middlewares/authMiddleware.js';
 import { PostgresSearchPersistence } from '../adapters/postgresSearchPersistence.js';
+import { RedisSearchSnapshotStore } from '../adapters/redisSearchSnapshotStore.js';
+import redisClient from '../config/redis.js';
 import { SearchService, parseSearchRequest, type SearchRequest } from '../services/searchService.js';
 import { sendControllerError, sendError, sendSuccess } from '../utils/response.js';
 
@@ -16,7 +18,7 @@ export async function semanticSearch(request: SearchRequest, signal?: AbortSigna
   });
   return response.data;
 }
-export const searchService = new SearchService(new PostgresSearchPersistence(), semanticSearch);
+export const searchService = new SearchService(new PostgresSearchPersistence(), semanticSearch, Date.now, new RedisSearchSnapshotStore(redisClient));
 export async function search(req: AuthRequest, res: Response): Promise<void> {
   if (!req.user?.userId) return sendError(res,401,'Authentication required.');
   const controller = new AbortController();

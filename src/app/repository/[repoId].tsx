@@ -1,4 +1,5 @@
-import { ActivityIndicator, Pressable, ScrollView, Text, View } from 'react-native';
+import { ActivityIndicator, Linking, Pressable, ScrollView, Text, View } from 'react-native';
+import { useState } from 'react';
 import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 import { useQuery } from '@tanstack/react-query';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -9,6 +10,7 @@ import { formatCompactCount } from '@/utils/format-count';
 import { getStorageItem } from '@/utils/storage';
 
 type Repository = {
+  url: string;
   full_name: string;
   description: string | null;
   summary: string | null;
@@ -24,6 +26,7 @@ export default function RepositoryScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const { user } = useAuth();
+  const [openError, setOpenError] = useState(false);
   const repository = useQuery({
     queryKey: ['repository', user?.user_id, repoId],
     enabled: Boolean(repoId && user?.user_id),
@@ -62,6 +65,15 @@ export default function RepositoryScreen() {
     {repo ? <>
       <Text selectable accessibilityRole="header" style={{ color: theme.text, fontSize: 28, fontWeight: '700' }}>{repo.full_name}</Text>
       <Text selectable style={{ color: theme.textSecondary, fontSize: 15, lineHeight: 23 }}>{repo.description || 'No description provided.'}</Text>
+      {repo.url ? <Pressable accessibilityRole="link" accessibilityLabel="Open on GitHub"
+        onPress={() => {
+          setOpenError(false);
+          void Linking.openURL(repo.url).catch(() => setOpenError(true));
+        }}
+        style={({ pressed }) => ({ minHeight: 44, justifyContent: 'center', opacity: pressed ? 0.6 : 1 })}>
+        <Text style={{ color: theme.accent, fontSize: 16 }}>Open on GitHub</Text>
+      </Pressable> : null}
+      {openError ? <Text accessibilityLiveRegion="polite" style={{ color: theme.textSecondary }}>Could not open GitHub. Try again.</Text> : null}
       <Text selectable style={{ color: theme.textSecondary, fontVariant: ['tabular-nums'] }}>
         {repo.primary_language ? `${repo.primary_language} · ` : ''}{formatCompactCount(repo.star_count)} stars · {formatCompactCount(repo.fork_count)} forks
       </Text>

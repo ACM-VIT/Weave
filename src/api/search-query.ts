@@ -17,6 +17,17 @@ export async function runSearchRequest<T>(signal: AbortSignal, delay: number, se
 export const MIN_SEARCH_LENGTH = 2;
 export const SEARCH_DEBOUNCE_MS = 300;
 
+/** Reuse cached searches across group/query changes; only an explicit restart rotates an ID. */
+export class SearchSessions {
+  private readonly ids = new Map<string, string>();
+  constructor(private readonly createId: () => string) {}
+  get(viewer: string | undefined, query: string, group: SearchGroup, restart = false): string {
+    const key = JSON.stringify([viewer, query.trim(), group]);
+    if (restart || !this.ids.has(key)) this.ids.set(key, this.createId());
+    return this.ids.get(key)!;
+  }
+}
+
 export function isSearchExpired(error: unknown): boolean {
   return Boolean(error && typeof error === 'object' && 'status' in error && error.status === 410);
 }
