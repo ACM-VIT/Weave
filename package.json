@@ -10,6 +10,7 @@
     "@react-native-community/netinfo": "12.0.1",
     "@sentry/react-native": "~7.11.0",
     "@tanstack/react-query": "^5.101.2",
+    "braces": "file:./vendor/braces",
     "decode-uri-component": "file:./vendor/decode-uri-component",
     "expo": "~56.0.16",
     "expo-blur": "~56.0.4",
@@ -77,6 +78,12 @@
     "unrs-resolver@1.12.2": true
   },
   "overrides": {
+    "micromatch": {
+      "braces": "$braces"
+    },
+    "chokidar": {
+      "braces": "$braces"
+    },
     "query-string": {
       "decode-uri-component": "$decode-uri-component"
     },
