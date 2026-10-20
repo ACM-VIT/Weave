@@ -41,3 +41,29 @@ test('malformed router query input terminates without recursive decoding or byte
   assert.ifError(result.error);
   assert.equal(result.status, 0, result.stderr);
 });
+
+test('malformed router queries decode only original percent bytes', () => {
+  const parse = (value: string) => getStateFromPath('/profile?value=' + value).routes[0].params.value;
+  assert.equal(parse('%2541-%41-%FF'), '%41-A-%FF');
+  assert.equal(parse('%25%43%32%FF'), '%C2%FF');
+  assert.equal(parse('%25%46%45%25%46%46-%FF'), '%FE%FF-%FF');
+  assert.equal(parse('%24%26-%FF'), '$&-%FF');
+  assert.equal(parse('%FE%FF'), '\uFFFD\uFFFD');
+  assert.equal(parse('%FF%FE'), '\uFFFD\uFFFD');
+  assert.equal(parse('%C2%C2%B5'), '\uFFFDµ');
+  assert.equal(parse('%FF%FE%FF'), '\uFFFD\uFFFD%FF');
+});
+
+test('many distinct encoded runs use bounded work even when one run is malformed', () => {
+  const result = spawnSync(process.execPath, ['-e', `
+    const assert = require('node:assert/strict');
+    const { getStateFromPath } = require(${JSON.stringify(require.resolve('expo-router/build/react-navigation/core/getStateFromPath'))});
+    const decoded = Array.from({ length: 32000 }, (_, i) => String.fromCodePoint(0x10000 + i));
+    const input = decoded.map(value => encodeURIComponent(value)).join('-') + '-%FF';
+    assert.equal(input.length, 416003);
+    const params = getStateFromPath('/profile?value=' + input).routes[0].params;
+    assert.equal(params.value, decoded.join('-') + '-%FF');
+  `], { timeout: 4000, encoding: 'utf8' });
+  assert.ifError(result.error);
+  assert.equal(result.status, 0, result.stderr);
+});

@@ -75,6 +75,13 @@ function decode(input) {
 				continue;
 			}
 
+			// Retain upstream BOM handling, but only for bytes in the original run.
+			if (input.startsWith('%FE%FF', position) || input.startsWith('%FF%FE', position)) {
+				output += '\uFFFD\uFFFD';
+				position += 6;
+				continue;
+			}
+
 			const sequenceLength = utf8SequenceLength(firstByte.byte);
 
 			// Continuation byte or invalid lead byte — emit one `%XX` literally.
@@ -111,7 +118,8 @@ function decode(input) {
 			}
 
 			// Missing continuation bytes or decode failure — emit the first byte literally.
-			output += input.slice(position, position + 3);
+			// The upstream truncated-C2 replacement must not reinterpret decoded `%25` output.
+			output += input.startsWith('%C2', position) ? '\uFFFD' : input.slice(position, position + 3);
 			position += 3;
 		}
 
@@ -120,41 +128,8 @@ function decode(input) {
 }
 
 function customDecodeURIComponent(input) {
-	// Keep track of all the replacements and prefill the map with the `BOM`
-	const replaceMap = {
-		'%FE%FF': '\uFFFD\uFFFD',
-		'%FF%FE': '\uFFFD\uFFFD',
-	};
-
-	// Find percent-encoded runs separated by literal text or lone `%` characters.
-	let match = multiMatcher.exec(input);
-
-	while (match) {
-		try {
-			// Decode as big chunks as possible
-			replaceMap[match[0]] = decodeURIComponent(match[0]);
-		} catch {
-			const result = decode(match[0]);
-
-			if (result !== match[0]) {
-				replaceMap[match[0]] = result;
-			}
-		}
-
-		match = multiMatcher.exec(input);
-	}
-
-	// Add `%C2` at the end of the map to make sure it does not replace the combinator before everything else
-	replaceMap['%C2'] = '\uFFFD';
-
-	const entries = Object.keys(replaceMap);
-
-	for (const key of entries) {
-		// Replace all decoded components
-		input = input.replace(new RegExp(key, 'g'), replaceMap[key]);
-	}
-
-	return input;
+	// Match original runs once. Never search the already decoded output again.
+	return input.replace(multiMatcher, encoded => decode(encoded));
 }
 
 module.exports = function decodeUriComponent(encodedURI) {
