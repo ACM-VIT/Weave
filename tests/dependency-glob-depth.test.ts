@@ -41,6 +41,34 @@ test('each parser or direct AST walker reads and normalizes maxDepth once', () =
   }
 });
 
+test('expansion stringification fallbacks preserve depth and the normalized limit', () => {
+  const cases = [
+    { pattern: '(${a{b,c}})', invalid: false },
+    { pattern: '({a..{b,c}})', invalid: false },
+    { pattern: '({a{b,c}})', invalid: true },
+  ];
+  for (const { pattern, invalid } of cases) {
+    for (const limit of [2, 3]) {
+      const ast = braces.parse(pattern);
+      if (invalid) ast.nodes.find((node: { type: string }) => node.type === 'paren')
+        .nodes.find((node: { type: string }) => node.type === 'brace').invalid = true;
+      let reads = 0;
+      const options = Object.freeze({ get maxDepth() { reads++; return limit; } });
+      if (limit === 2) assert.throws(() => braces.expand(ast, options), /AST depth \(3\)/);
+      else assert.deepEqual(braces.expand(ast, options), [pattern]);
+      assert.equal(reads, 1);
+    }
+  }
+
+  // The internal fallback arguments must not expose a way around the hard cap.
+  const stringify = require(path.join(path.dirname(require.resolve('braces')), 'lib/stringify.js'));
+  assert.throws(() => stringify(braces.parse(nested('{', '}', 100)), {}, 1000, -1), RangeError);
+  assert.throws(() => stringify(braces.parse(nested('{', '}', 100)), {}, 1000, Number.NaN), RangeError);
+  assert.throws(() => stringify(braces.parse('{a,b}').nodes[1], {}, 100, 0), RangeError);
+  const tooDeep = { type: 'root', nodes: [{ type: 'root', nodes: [braces.parse(nested('{', '}', 100))] }] };
+  assert.throws(() => stringify(tooDeep, {}, 1000), /AST depth/);
+});
+
 test('direct AST depth, cycles and ancestor traversal are bounded', () => {
   const result = spawnSync(process.execPath, ['-e', `
     const assert = require('node:assert/strict');

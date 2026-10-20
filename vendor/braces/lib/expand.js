@@ -61,7 +61,7 @@ const expand = (ast, options = {}) => {
     const q = queueOwner(parent, maxDepth).queue;
 
     if (node.invalid || node.dollar) {
-      q.push(append(q.pop(), stringify(node, options)));
+      q.push(append(q.pop(), stringify(node, options, maxDepth, depth)));
       return;
     }
 
@@ -79,7 +79,7 @@ const expand = (ast, options = {}) => {
 
       let range = fill(...args, options);
       if (range.length === 0) {
-        range = stringify(node, options);
+        range = stringify(node, options, maxDepth, depth);
       }
 
       q.push(append(q.pop(), range));

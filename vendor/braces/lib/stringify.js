@@ -2,8 +2,11 @@
 
 const utils = require('./utils');
 
-module.exports = (ast, options = {}) => {
-  const maxDepth = utils.getMaxDepth(options.maxDepth);
+module.exports = (ast, options = {}, limit = options.maxDepth, initialDepth = ast.type === 'root' ? 0 : 1) => {
+  const maxDepth = utils.getMaxDepth(limit);
+  if (!Number.isInteger(initialDepth) || initialDepth < (ast.type === 'root' ? 0 : 1)) {
+    throw new RangeError('Invalid AST initial depth');
+  }
 
   const stringify = (node, parent = {}, depth = 0) => {
     if (node.nodes && depth > maxDepth) {
@@ -32,5 +35,5 @@ module.exports = (ast, options = {}) => {
     return output;
   };
 
-  return stringify(ast, {}, ast.type === 'root' ? 0 : 1);
+  return stringify(ast, {}, initialDepth);
 };

@@ -20,6 +20,9 @@ routed here by scoped root overrides.
   depth, including `escapeInvalid` behavior. The pinned PR includes this fix.
 - Centralize maxDepth normalization and read the option once per parser/walker,
   avoiding a getter changing the value between the finite check and clamp.
+- Carry expansion's current depth and normalized limit into its literal/range
+  stringification fallbacks. Internal context arguments still enforce the hard
+  cap and reject invalid starting depths without rereading the original option.
 - Bound expansion's parent-chain traversal as well as rejecting parent cycles,
   following the defensive correction documented in
   [AWS Labs' downstream patch](https://github.com/awslabs/cli-agent-orchestrator/blob/main/patches/%40dieub%2Bbraces-depth-guard%2B3.0.3-pn.3.patch).
@@ -35,6 +38,10 @@ Excess string nesting throws SyntaxError; excess AST traversal throws RangeError
 The original input-length and expansion-range limits remain unchanged. This is
 a nesting/traversal mitigation, not a general bound on expansion cardinality or
 arbitrary AST width.
+
+Optional stricter limits apply on parser/walker paths. The unchanged entrypoint
+fast path can return strings shorter than three characters directly; these
+cannot exceed the hard 100-level security bound.
 
 The local name and version `@weave/braces-compat@0.0.0` identify an unpublished
 derivative, not a fictitious upstream fixed version. Version-based scanners may
