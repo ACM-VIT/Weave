@@ -1,6 +1,7 @@
+import { KeyboardForm } from '@/components/keyboard/keyboard-layout';
 import { Href, useRouter } from "expo-router";
 import { useState } from "react";
-import { KeyboardAvoidingView, Platform, ScrollView, Text, View } from "react-native";
+import { Text, View } from "react-native";
 import { useAuth } from "../../store/AuthContext";
 import { login } from "../../api/auth";
 import { useOAuth } from "../../hooks/useOAuth";
@@ -48,12 +49,7 @@ export default function LoginScreen() {
   };
 
   return (
-    <KeyboardAvoidingView
-      style={{ flex: 1 }}
-      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-      keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 20}
-    >
-      <ScrollView
+      <KeyboardForm
         className="flex-1 bg-[#000000]"
         showsVerticalScrollIndicator={false}
         contentContainerStyle={{ paddingTop: 24, paddingBottom: 40, flexGrow: 1, justifyContent: 'center' }}
@@ -176,7 +172,6 @@ export default function LoginScreen() {
           />
 
         </View>
-      </ScrollView>
-    </KeyboardAvoidingView>
+      </KeyboardForm>
   );
 }

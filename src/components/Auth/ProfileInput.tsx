@@ -27,8 +27,11 @@ export default function ProfileInput({
         justify-center"
       >
         <TextInput
+        accessibilityLabel={title}
+        autoCapitalize={title === "Username" ? "none" : "words"}
+        autoCorrect={title !== "Username"}
           placeholder={placeholder}
-          placeholderTextColor="rgba(235,235,245,0.3)"
+          placeholderTextColor="#A6A6AE"
           className="text-white text-[15px] font-nata outline-none w-full h-full"
           {...rest}
         />

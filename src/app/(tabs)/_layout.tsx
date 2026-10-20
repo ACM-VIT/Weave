@@ -1,7 +1,9 @@
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Tabs } from 'expo-router';
 import { Home, Search, User } from 'lucide-react-native';
 
 export default function TabsLayout() {
+  const insets = useSafeAreaInsets();
   return (
     <Tabs
       initialRouteName="home"
@@ -13,10 +15,10 @@ export default function TabsLayout() {
           backgroundColor: '#090B08',
           borderTopColor: '#090B08',
           borderTopWidth: 0.5,
-          height: 84,
+          height: 64 + Math.max(insets.bottom, 12),
           paddingTop: 10,
           paddingHorizontal: 8,
-          paddingBottom: 0,
+          paddingBottom: Math.max(insets.bottom, 12),
           elevation: 0,
           boxShadow: 'none',
         },
@@ -42,6 +44,7 @@ export default function TabsLayout() {
         name="explore"
         options={{
           title: 'Explore',
+          tabBarHideOnKeyboard: true,
           tabBarIcon: ({ color }) => <Search color={color} size={24} strokeWidth={1.8} />,
         }}
       />

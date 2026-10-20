@@ -1,0 +1,17 @@
+{
+  "node": "22.23.2",
+  "branch": "fix/product-fixes-v2",
+  "baseline": "5c42129",
+  "phaseCommitsVerifiedAsAncestors": ["962c37f", "4b177bd", "e1296f3", "5c42129"],
+  "lint": "pass, no warnings",
+  "typecheck": "pass",
+  "frontendTests": { "passed": 142, "failed": 0, "skipped": 0 },
+  "doctor": { "passed": 20, "total": 21, "exitStatus": 1, "finding": "Existing unmaintained react-native-render-html warning" },
+  "expoInstallCheck": "pass, dependencies up to date",
+  "exportAll": { "platforms": ["ios", "android", "web"], "status": "completed; Expo forced its own process exit after export" },
+  "backendBuild": "pass",
+  "backendTests": { "passed": 139, "failed": 0, "skipped": 8, "environment": "isolated loopback DATABASE_URL and test-only Supabase values; no production services" },
+  "diffCheck": "pass",
+  "staticUiAuditFindings": 0,
+  "designLint": { "errors": 0, "warnings": 1, "finding": "Existing Markdown-only DESIGN.md lacks YAML frontmatter" }
+}

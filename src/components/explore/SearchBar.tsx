@@ -29,7 +29,7 @@ export default function SearchBar({
     <View style={{ paddingTop: 14, paddingHorizontal: 20 }}>
       <View
         style={{
-          minHeight: 44,
+          minHeight: 48,
           borderRadius: 12,
           backgroundColor: 'rgba(118, 118, 128, 0.18)',
           paddingHorizontal: 12,
@@ -53,16 +53,17 @@ export default function SearchBar({
           value={value}
           onChangeText={onChangeText}
           placeholder={placeholder}
-          placeholderTextColor="rgba(235,235,245,0.3)"
+          placeholderTextColor="#A6A6AE"
           style={{
             flex: 1,
             color: '#FFFFFF',
             fontSize: 15,
+            minHeight: 48,
             padding: 0,
             borderWidth: 0,
           }}
         />
-        {value ? <Pressable accessibilityRole="button" accessibilityLabel="Clear search" onPress={() => { onChangeText(''); input.current?.focus(); }} style={{ minWidth: 44, minHeight: 44, alignItems: 'center', justifyContent: 'center' }}>
+        {value ? <Pressable accessibilityRole="button" accessibilityLabel="Clear search" onPress={() => { onChangeText(''); input.current?.focus(); }} style={{ minWidth: 48, minHeight: 48, alignItems: 'center', justifyContent: 'center' }}>
           <Text style={{ color: '#FFFFFF', fontSize: 22 }}>×</Text>
         </Pressable> : null}
       </View>

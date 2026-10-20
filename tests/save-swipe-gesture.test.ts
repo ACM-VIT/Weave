@@ -23,3 +23,12 @@ test('the reveal translation only moves right and remains bounded', () => {
   assert.equal(getSaveRevealTranslation(40), 40);
   assert.equal(getSaveRevealTranslation(SAVE_REVEAL_WIDTH + 50), SAVE_REVEAL_WIDTH);
 });
+
+test('accidental motion never commits a Save reveal in either vertical direction', () => {
+  for (let x = -20; x <= 20; x += 1) {
+    for (const y of [-100, -20, -1, 0, 1, 20, 100]) {
+      assert.equal(shouldRevealSaveAction(x, y), false);
+    }
+  }
+  assert.equal(shouldRevealSaveAction(SAVE_REVEAL_THRESHOLD, -60), false);
+});

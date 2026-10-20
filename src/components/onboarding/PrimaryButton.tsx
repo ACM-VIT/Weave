@@ -16,6 +16,8 @@ export default function PrimaryButton({
 }: PrimaryButtonProps) {
   return (
     <TouchableOpacity
+      accessibilityRole="button"
+      accessibilityState={{ disabled }}
       onPress={onPress}
       disabled={disabled}
       className="
@@ -28,7 +30,7 @@ export default function PrimaryButton({
       <Text
         className="text-lg font-bold"
         style={{
-          color: disabled ? "rgba(235,235,245,0.35)" : "#FFFFFF",
+          color: disabled ? "rgba(235,235,245,0.35)" : "#071009",
         }}
       >
         {title}

@@ -1,0 +1,11 @@
+{
+  "runtime": "Expo Go, SDK 56, local Pixel_9 AVD",
+  "viewportDp": { "width": 320, "height": 568 },
+  "viewportPx": { "width": 640, "height": 1136 },
+  "densityDpi": 320,
+  "login": { "keyboard": "docked Gboard", "focusedPasswordBoundsPx": [95, 296, 545, 408], "keyboardTopPx": 522, "focusedInputVisible": true, "dragDismissedKeyboard": true, "submitReachableAfterDrag": true },
+  "forgotPassword": { "loaded": true, "textEntry": true, "keyboard": "floating handwriting toolbar", "dockedKeyboardVerified": false },
+  "ios": { "available": false, "reason": "xcrun simctl unavailable; no physical device" },
+  "authenticatedDeviceFlowsVerified": false,
+  "standaloneAndroidResizeVerified": false
+}

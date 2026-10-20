@@ -1,8 +1,10 @@
+import { useReducedMotion } from 'react-native-reanimated';
+import { KeyboardForm } from '@/components/keyboard/keyboard-layout';
 import React, { useMemo, useState } from "react"
 import { ActivityIndicator, Modal, Pressable, ScrollView, Text, TextInput, View, useWindowDimensions } from "react-native"
 import { FolderPlus, LogOut, SquarePen } from "lucide-react-native"
 import { router, type Href } from "expo-router"
-import { useSafeAreaInsets } from "react-native-safe-area-context"
+import { SafeAreaProvider, useSafeAreaInsets } from "react-native-safe-area-context"
 import { useQuery } from "@tanstack/react-query"
 import { API_URL } from "@/api/config"
 import { apiV2 } from "@/api/client"
@@ -32,6 +34,7 @@ export default function ProfileScreen() {
   const { user, signOut, checkOnboardingStatus, updateUserProfile } = useAuth()
   const isTablet = width >= 768
   const isCompact = height < 750 || width < 360
+  const reducedMotion = useReducedMotion()
   const [editVisible, setEditVisible] = useState(false)
   const [logoutVisible, setLogoutVisible] = useState(false)
   const [loggingOut, setLoggingOut] = useState(false)
@@ -245,7 +248,7 @@ export default function ProfileScreen() {
               <View className="flex-1 justify-center" style={{ minWidth: 0 }}>
                 <View className="w-full flex-row items-start" style={{ gap: "3%" }}>
                   <Text selectable numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.05} className="flex-1 text-white font-nataBold" style={{ flexShrink: 1, fontSize: primaryFontSize, lineHeight: Math.ceil(primaryFontSize * 1.2) }}>{usernameText}</Text>
-                  <Pressable accessibilityLabel="Edit profile" onPress={openEditor} hitSlop={12} className="items-center justify-center"><SquarePen size={isCompact ? 17 : 20} color="#97969C" /></Pressable>
+                  <Pressable accessibilityRole="button" accessibilityLabel="Edit profile" onPress={openEditor} style={{ minWidth: 48, minHeight: 48 }} className="items-center justify-center"><SquarePen size={isCompact ? 17 : 20} color="#97969C" /></Pressable>
                 </View>
                 <Text numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.05} className="text-[#8A898F] font-nata" style={{ flexShrink: 1, fontSize: jobFontSize, lineHeight: Math.ceil(jobFontSize * 1.25) }}>{job}</Text>
                 <Text selectable numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.05} className="text-[#68676D] font-nata" style={{ flexShrink: 1, fontSize: fullNameFontSize, lineHeight: Math.ceil(fullNameFontSize * 1.25) }}>{name}</Text>
@@ -292,18 +295,20 @@ export default function ProfileScreen() {
         visible={statSheetType !== null}
       />
 
-      <Modal visible={editVisible} animationType="slide" presentationStyle="pageSheet" onRequestClose={() => setEditVisible(false)}>
-        <ScrollView contentInsetAdjustmentBehavior="automatic" keyboardShouldPersistTaps="handled" className="bg-[#080808]" contentContainerStyle={{ flexGrow: 1, justifyContent: "center", paddingHorizontal: "8%", paddingVertical: "10%", gap: 16 }}>
-          <Text className="text-white font-nataBold text-[27px]">Edit profile</Text>
+      <Modal visible={editVisible} animationType={reducedMotion ? "none" : "slide"} presentationStyle="pageSheet" onRequestClose={() => { if (!isSaving) setEditVisible(false) }}>
+        <SafeAreaProvider>
+        <KeyboardForm className="bg-[#080808]" contentContainerStyle={{ flexGrow: 1, justifyContent: "center", paddingHorizontal: "8%", paddingVertical: 24, gap: 16 }}>
+          <Text accessibilityRole="header" className="text-white font-nataBold text-[27px]">Edit profile</Text>
           {[
             { key: "username" as const, label: "Username" },
             { key: "job" as const, label: "Bio" },
             { key: "name" as const, label: "Name" },
-          ].map((field) => <View key={field.key} className="gap-2"><Text className="text-[#63E08A] font-nataMedium">{field.label}</Text><TextInput value={draft[field.key]} onChangeText={(value) => setDraft((current) => ({ ...current, [field.key]: value }))} autoCapitalize={field.key === "username" ? "none" : "sentences"} className="min-h-[54px] text-white bg-[#151515] rounded-[14px] px-[5%] font-nata text-base" /></View>)}
-          {editError ? <Text selectable className="text-[#FF6878] font-nata">{editError}</Text> : null}
-          <Pressable disabled={isSaving} onPress={saveDetails} className="min-h-[54px] rounded-[14px] bg-[#63E08A] items-center justify-center" style={{ opacity: isSaving ? 0.7 : 1 }}>{isSaving ? <ActivityIndicator color="#071009" /> : <Text className="text-[#071009] font-nataBold text-base">Save changes</Text>}</Pressable>
-          <Pressable disabled={isSaving} onPress={() => setEditVisible(false)} className="items-center p-[3%]"><Text className="text-[#77767C] font-nataMedium">Cancel</Text></Pressable>
-        </ScrollView>
+          ].map((field) => <View key={field.key} className="gap-2"><Text className="text-[#63E08A] font-nataMedium">{field.label}</Text><TextInput accessibilityLabel={field.label} editable={!isSaving} value={draft[field.key]} onChangeText={(value) => setDraft((current) => ({ ...current, [field.key]: value }))} autoCapitalize={field.key === "username" ? "none" : "sentences"} className="min-h-[54px] text-white bg-[#151515] rounded-[14px] px-[5%] font-nata text-base" /></View>)}
+          {editError ? <Text accessibilityRole="alert" selectable className="text-[#FF6878] font-nata">{editError}</Text> : null}
+          <Pressable accessibilityRole="button" accessibilityLabel="Save profile changes" accessibilityState={{ busy: isSaving }} disabled={isSaving} onPress={saveDetails} className="min-h-[54px] rounded-[14px] bg-[#63E08A] items-center justify-center" style={{ opacity: isSaving ? 0.7 : 1 }}>{isSaving ? <ActivityIndicator color="#071009" /> : <Text className="text-[#071009] font-nataBold text-base">Save changes</Text>}</Pressable>
+          <Pressable disabled={isSaving} onPress={() => setEditVisible(false)} accessibilityRole="button" style={{ minHeight: 48, justifyContent: "center" }} className="items-center p-[3%]"><Text className="text-[#B8B8C0] font-nataMedium">Cancel</Text></Pressable>
+        </KeyboardForm>
+        </SafeAreaProvider>
       </Modal>
 
       <Modal visible={logoutVisible} transparent animationType="fade" onRequestClose={() => setLogoutVisible(false)}>

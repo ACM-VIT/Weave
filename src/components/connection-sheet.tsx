@@ -1,11 +1,11 @@
+import { useReducedMotion } from 'react-native-reanimated';
+import { KeyboardSurface } from '@/components/keyboard/keyboard-layout';
 import { useCallback, useEffect, useMemo, useRef } from 'react';
 import {
   Animated,
   Easing,
   Keyboard,
-  KeyboardAvoidingView,
   Modal,
-  Platform,
   Pressable,
   StyleSheet,
   Text,
@@ -50,6 +50,7 @@ export function ConnectionSheet({
   onFollowingCountChange,
 }: ConnectionSheetProps) {
   const { height, width } = useWindowDimensions();
+  const reducedMotion = useReducedMotion();
   const insets = useSafeAreaInsets();
   const sheetHeight = Math.min(Math.floor(height * 0.82), 720);
   const overlayOpacity = useMemo(() => new Animated.Value(0), []);
@@ -68,18 +69,18 @@ export function ConnectionSheet({
     Animated.parallel([
       Animated.timing(overlayOpacity, {
         toValue: 1,
-        duration: OVERLAY_DURATION,
+        duration: reducedMotion ? 0 : OVERLAY_DURATION,
         easing: Easing.out(Easing.quad),
         useNativeDriver: true,
       }),
       Animated.timing(sheetTranslateY, {
         toValue: 0,
-        duration: OPEN_DURATION,
+        duration: reducedMotion ? 0 : OPEN_DURATION,
         easing: SHEET_EASING,
         useNativeDriver: true,
       }),
     ]).start();
-  }, [overlayOpacity, sheetHeight, sheetTranslateY, visible]);
+  }, [overlayOpacity, sheetHeight, sheetTranslateY, visible, reducedMotion]);
 
   const closeAnimated = useCallback(() => {
     if (closingRef.current) return;
@@ -89,13 +90,13 @@ export function ConnectionSheet({
     Animated.parallel([
       Animated.timing(overlayOpacity, {
         toValue: 0,
-        duration: OVERLAY_DURATION,
+        duration: reducedMotion ? 0 : OVERLAY_DURATION,
         easing: Easing.in(Easing.quad),
         useNativeDriver: true,
       }),
       Animated.timing(sheetTranslateY, {
         toValue: sheetHeight,
-        duration: CLOSE_DURATION,
+        duration: reducedMotion ? 0 : CLOSE_DURATION,
         easing: SHEET_EASING,
         useNativeDriver: true,
       }),
@@ -103,7 +104,7 @@ export function ConnectionSheet({
       closingRef.current = false;
       if (finished) onClose();
     });
-  }, [onClose, overlayOpacity, sheetHeight, sheetTranslateY]);
+  }, [onClose, overlayOpacity, sheetHeight, sheetTranslateY, reducedMotion]);
 
   const title = type === 'followers'
     ? 'Followers'
@@ -133,14 +134,14 @@ export function ConnectionSheet({
           />
         </Animated.View>
 
-        <KeyboardAvoidingView
-          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        <KeyboardSurface
           pointerEvents="box-none"
-          style={styles.keyboardRoot}
+          style={[styles.keyboardRoot, { paddingTop: insets.top }]}
         >
           <Animated.View
             style={[
               styles.sheet,
+              { flexShrink: 1, minHeight: 0 },
               {
                 width: Math.min(width, 560),
                 height: sheetHeight,
@@ -164,7 +165,7 @@ export function ConnectionSheet({
               <Pressable
                 accessibilityLabel={`Close ${title.toLocaleLowerCase()}`}
                 accessibilityRole="button"
-                hitSlop={8}
+                hitSlop={14}
                 onPress={closeAnimated}
                 style={({ pressed }) => [styles.closeButton, pressed && styles.pressed]}
               >
@@ -190,7 +191,7 @@ export function ConnectionSheet({
               />
             )}
           </Animated.View>
-        </KeyboardAvoidingView>
+        </KeyboardSurface>
       </View>
     </Modal>
   );
@@ -267,8 +268,8 @@ const styles = StyleSheet.create({
     lineHeight: 16,
   },
   closeButton: {
-    width: 30,
-    height: 30,
+    width: 48,
+    height: 48,
     borderRadius: 15,
     flexShrink: 0,
     alignItems: 'center',

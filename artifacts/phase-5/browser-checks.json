@@ -1,0 +1,126 @@
+{
+  "checks": [
+    {
+      "route": "login",
+      "viewport": {
+        "width": 320,
+        "height": 568
+      },
+      "inputs": 2,
+      "scrollableActions": true,
+      "noHorizontalOverflow": true
+    },
+    {
+      "route": "login",
+      "viewport": {
+        "width": 360,
+        "height": 640
+      },
+      "inputs": 2,
+      "scrollableActions": true,
+      "noHorizontalOverflow": true
+    },
+    {
+      "route": "login",
+      "viewport": {
+        "width": 320,
+        "height": 300
+      },
+      "inputs": 2,
+      "scrollableActions": true,
+      "noHorizontalOverflow": true
+    },
+    {
+      "route": "sign-up-email",
+      "viewport": {
+        "width": 320,
+        "height": 568
+      },
+      "inputs": 5,
+      "scrollableActions": true,
+      "noHorizontalOverflow": true
+    },
+    {
+      "route": "sign-up-email",
+      "viewport": {
+        "width": 360,
+        "height": 640
+      },
+      "inputs": 5,
+      "scrollableActions": true,
+      "noHorizontalOverflow": true
+    },
+    {
+      "route": "sign-up-email",
+      "viewport": {
+        "width": 320,
+        "height": 300
+      },
+      "inputs": 5,
+      "scrollableActions": true,
+      "noHorizontalOverflow": true
+    },
+    {
+      "route": "forgot-password",
+      "viewport": {
+        "width": 320,
+        "height": 568
+      },
+      "inputs": 1,
+      "scrollableActions": true,
+      "noHorizontalOverflow": true
+    },
+    {
+      "route": "forgot-password",
+      "viewport": {
+        "width": 360,
+        "height": 640
+      },
+      "inputs": 1,
+      "scrollableActions": true,
+      "noHorizontalOverflow": true
+    },
+    {
+      "route": "forgot-password",
+      "viewport": {
+        "width": 320,
+        "height": 300
+      },
+      "inputs": 1,
+      "scrollableActions": true,
+      "noHorizontalOverflow": true
+    },
+    {
+      "route": "reset-password",
+      "viewport": {
+        "width": 320,
+        "height": 568
+      },
+      "inputs": 2,
+      "scrollableActions": true,
+      "noHorizontalOverflow": true
+    },
+    {
+      "route": "reset-password",
+      "viewport": {
+        "width": 360,
+        "height": 640
+      },
+      "inputs": 2,
+      "scrollableActions": true,
+      "noHorizontalOverflow": true
+    },
+    {
+      "route": "reset-password",
+      "viewport": {
+        "width": 320,
+        "height": 300
+      },
+      "inputs": 2,
+      "scrollableActions": true,
+      "noHorizontalOverflow": true
+    }
+  ],
+  "errors": [],
+  "note": "Chrome layout checks; 320x300 simulates constrained space, not a native keyboard."
+}

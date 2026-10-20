@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   FlatList,
@@ -51,6 +51,7 @@ export function ProfileRepositoryList({
   userId?: string;
 }) {
   const { width } = useWindowDimensions();
+  const searchInputRef = useRef<TextInput>(null);
   const compact = width < 360;
   const searchKey = `${type}:${userId ?? 'missing'}`;
   const [searchState, setSearchState] = useState({ key: searchKey, value: '' });
@@ -102,18 +103,19 @@ export function ProfileRepositoryList({
       <View style={[styles.searchBox, compact && styles.searchBoxCompact]}>
         <Search color={REFERENCE_THEME.textTertiary} size={18} strokeWidth={1.8} />
         <TextInput
+          ref={searchInputRef}
           accessibilityLabel={`Search ${type === 'likes' ? 'liked' : 'saved'} repositories`}
           autoCapitalize="none"
           autoCorrect={false}
           onChangeText={setSearch}
           placeholder="Search repositories"
-          placeholderTextColor={REFERENCE_THEME.textTertiary}
+          placeholderTextColor={REFERENCE_THEME.textSecondary}
           returnKeyType="search"
           style={styles.searchInput}
           value={search}
         />
         {search ? (
-          <Pressable accessibilityLabel="Clear search" hitSlop={8} onPress={() => setSearch('')} style={({ pressed }) => [styles.clearButton, pressed && styles.pressed]}>
+          <Pressable accessibilityLabel="Clear search" hitSlop={14} accessibilityRole="button" onPress={() => { setSearch(''); searchInputRef.current?.focus(); }} style={({ pressed }) => [styles.clearButton, pressed && styles.pressed]}>
             <X color={REFERENCE_THEME.textSecondary} size={13} strokeWidth={2.4} />
           </Pressable>
         ) : null}

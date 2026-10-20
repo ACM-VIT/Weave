@@ -1,3 +1,4 @@
+import { KeyboardSurface } from '@/components/keyboard/keyboard-layout';
 import { useMemo, useState } from 'react';
 import { ActivityIndicator, FlatList, Pressable, ScrollView, StatusBar, Text, View } from 'react-native';
 import { router } from 'expo-router';
@@ -76,7 +77,7 @@ export default function ExploreScreen() {
     : offline || current.fetchStatus === 'paused' ? 'You’re offline. Reconnect to search again.'
     : current.isError ? 'Could not load results. Check your connection and try again.'
     : 'No results found. Try another search or filter.';
-  return <View style={{ flex: 1, backgroundColor: '#000000' }}>
+  return <KeyboardSurface style={{ flex: 1, backgroundColor: '#000000' }}>
     <StatusBar barStyle="light-content" />
     <View style={{ paddingTop: Math.max(28,insets.top+16), paddingBottom: 8 }}>
       <Text accessibilityRole="header" style={{ color: '#FFFFFF', paddingHorizontal: 20, fontSize: 30, fontWeight: '700' }}>Explore</Text>
@@ -99,6 +100,7 @@ export default function ExploreScreen() {
       renderItem={({ item }) => !searching && activeTab === 'Latest' && item.type === 'repository'
         ? <View style={{ flex: 1 }}><RepoCard repo={item.data} onPress={() => router.push(searchResultHref(item))} /></View>
         : <SearchRow item={item} />}
+      keyboardDismissMode="on-drag"
       keyboardShouldPersistTaps="handled"
       contentInsetAdjustmentBehavior="automatic"
       initialNumToRender={8} maxToRenderPerBatch={8} windowSize={7}
@@ -120,5 +122,5 @@ export default function ExploreScreen() {
         </Pressable>
       </View> : null}
     />
-  </View>;
+  </KeyboardSurface>;
 }

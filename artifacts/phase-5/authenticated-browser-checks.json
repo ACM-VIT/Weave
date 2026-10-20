@@ -1,0 +1,14 @@
+{
+  "viewport": "320x568",
+  "fixture": "Intercepted local QA user and API responses; no live service writes",
+  "checks": [
+    "profile fields reachable",
+    "profile save error retains modal and draft",
+    "Explore empty state",
+    "Explore error/retry",
+    "Explore keyword fallback",
+    "Explore clear restores focus",
+    "onboarding long bio and invalid username"
+  ],
+  "errors": []
+}

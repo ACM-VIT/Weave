@@ -28,7 +28,8 @@
       "adaptiveIcon": {
         "foregroundImage": "./assets/images/logo/weavelogo.png",
         "backgroundColor": "#151110"
-      }
+      },
+      "softwareKeyboardLayoutMode": "resize"
     },
     "web": {
       "output": "static",

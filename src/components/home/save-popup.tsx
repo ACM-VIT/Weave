@@ -1,9 +1,11 @@
+import { useReducedMotion } from 'react-native-reanimated';
+import { KeyboardSurface } from '@/components/keyboard/keyboard-layout';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Animated,
   Easing,
-  KeyboardAvoidingView,
+  Keyboard,
   Modal,
   Pressable,
   ScrollView,
@@ -116,6 +118,7 @@ export function SavePopup({
   position,
 }: SavePopupProps) {
   const { height, width } = useWindowDimensions();
+  const reducedMotion = useReducedMotion();
   const insets = useSafeAreaInsets();
   const { checkOnboardingStatus, user } = useAuth();
   const viewerUserId = user?.user_id;
@@ -125,6 +128,7 @@ export function SavePopup({
   const [translateY] = useState(() => new Animated.Value(height));
   const [overlayOpacity] = useState(() => new Animated.Value(0));
   const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const searchInputRef = useRef<TextInput>(null);
   const createInputRef = useRef<TextInput>(null);
   const [search, setSearch] = useState('');
   const [localSelection, setLocalSelection] = useState(() => ({
@@ -181,16 +185,17 @@ export function SavePopup({
   }, []);
 
   const closeAnimated = useCallback(() => {
+    Keyboard.dismiss();
     Animated.parallel([
       Animated.timing(translateY, {
         toValue: modalHeight,
-        duration: 210,
+        duration: reducedMotion ? 0 : 210,
         easing: Easing.in(Easing.cubic),
         useNativeDriver: true,
       }),
       Animated.timing(overlayOpacity, {
         toValue: 0,
-        duration: 170,
+        duration: reducedMotion ? 0 : 170,
         useNativeDriver: true,
       }),
     ]).start(({ finished }) => {
@@ -202,7 +207,7 @@ export function SavePopup({
       setLocalSelection({ scope: selectionScope, selectedIds: new Set(), hasChanges: false });
       onClose();
     });
-  }, [modalHeight, onClose, overlayOpacity, selectionScope, translateY]);
+  }, [modalHeight, onClose, overlayOpacity, selectionScope, translateY, reducedMotion]);
 
   useEffect(() => {
     if (!isVisible) return;
@@ -211,17 +216,17 @@ export function SavePopup({
     Animated.parallel([
       Animated.timing(translateY, {
         toValue: 0,
-        duration: 290,
+        duration: reducedMotion ? 0 : 290,
         easing: Easing.bezier(0.32, 0.72, 0, 1),
         useNativeDriver: true,
       }),
       Animated.timing(overlayOpacity, {
         toValue: 1,
-        duration: 200,
+        duration: reducedMotion ? 0 : 200,
         useNativeDriver: true,
       }),
     ]).start();
-  }, [isVisible, modalHeight, overlayOpacity, translateY]);
+  }, [isVisible, modalHeight, overlayOpacity, translateY, reducedMotion]);
 
   useEffect(() => () => {
     if (closeTimer.current) clearTimeout(closeTimer.current);
@@ -401,15 +406,14 @@ export function SavePopup({
           </Animated.View>
         </Pressable>
 
-        <KeyboardAvoidingView
-          behavior="padding"
-          enabled={process.env.EXPO_OS === 'ios'}
+        <KeyboardSurface
           pointerEvents="box-none"
-          style={styles.keyboardLayer}
+          style={[styles.keyboardLayer, { paddingTop: insets.top }]}
         >
           <Animated.View
             style={[
               styles.sheet,
+              { flexShrink: 1, minHeight: 0 },
               {
                 backgroundColor: palette.background,
                 borderColor: palette.border,
@@ -420,6 +424,8 @@ export function SavePopup({
               },
             ]}
           >
+            <View style={{ flex: 1, minHeight: 0 }} accessibilityElementsHidden={isCreating} importantForAccessibility={isCreating ? "no-hide-descendants" : "auto"}>
+            <ScrollView style={{ flex: 1, minHeight: 0 }} keyboardDismissMode="on-drag" keyboardShouldPersistTaps="handled" contentContainerStyle={{ flexGrow: 1 }}>
             <View style={styles.header}>
               <View style={styles.headerText}>
                 <Text style={[styles.title, { color: palette.text }]}>Save repository</Text>
@@ -427,7 +433,7 @@ export function SavePopup({
                   {repoName ? `Add ${repoName} to one or more Lists` : 'Choose one or more Lists'}
                 </Text>
               </View>
-              <Pressable accessibilityLabel="Close" accessibilityRole="button" hitSlop={8} onPress={closeAnimated} style={[styles.closeButton, { backgroundColor: palette.elevated }]}>
+              <Pressable accessibilityLabel="Close" accessibilityRole="button" hitSlop={14} onPress={closeAnimated} style={[styles.closeButton, { backgroundColor: palette.elevated }]}>
                 <X color={palette.secondary} size={18} />
               </Pressable>
             </View>
@@ -435,31 +441,22 @@ export function SavePopup({
             <View style={[styles.search, { backgroundColor: palette.elevated, borderColor: palette.border }]}>
               <Search color={palette.tertiary} size={19} />
               <TextInput
+                ref={searchInputRef}
                 accessibilityLabel="Search Lists"
                 onChangeText={setSearch}
                 placeholder="Search Lists"
-                placeholderTextColor={palette.tertiary}
+                placeholderTextColor={palette.secondary}
                 style={[styles.searchInput, { color: palette.text }]}
                 value={search}
               />
               {search ? (
-                <Pressable accessibilityLabel="Clear search" accessibilityRole="button" hitSlop={8} onPress={() => setSearch('')}>
+                <Pressable accessibilityLabel="Clear search" accessibilityRole="button" hitSlop={14} onPress={() => { setSearch(''); searchInputRef.current?.focus(); }}>
                   <X color={palette.tertiary} size={17} />
                 </Pressable>
               ) : null}
             </View>
 
-            <ScrollView
-              bounces={false}
-              contentContainerStyle={styles.collectionList}
-              contentInsetAdjustmentBehavior="automatic"
-              keyboardShouldPersistTaps="handled"
-              nestedScrollEnabled
-              overScrollMode="never"
-              scrollEnabled
-              showsVerticalScrollIndicator
-              style={styles.collectionScroller}
-            >
+            <View style={styles.collectionList}>
               {listsQuery.isLoading && lists.length === 0 ? (
                 <ListLayoutPreview loading />
               ) : listsQuery.isError && lists.length === 0 ? (
@@ -528,6 +525,7 @@ export function SavePopup({
                   </Text>
                 </View>
               )}
+            </View>
             </ScrollView>
 
             <View style={[styles.footer, { borderTopColor: palette.border, backgroundColor: palette.background }]}>
@@ -615,6 +613,7 @@ export function SavePopup({
               </View>
             </View>
 
+            </View>
             {isCreating ? (
               <View accessibilityViewIsModal style={styles.creationOverlay}>
                 <BlurView intensity={18} tint="dark" style={StyleSheet.absoluteFill} />
@@ -625,7 +624,7 @@ export function SavePopup({
                   onPress={() => { setIsCreating(false); setNewListName(''); setMessage(null); }}
                   style={[StyleSheet.absoluteFill, styles.creationDim]}
                 />
-                <View style={[styles.createPanel, { backgroundColor: palette.elevatedStrong, borderColor: palette.border }]}>
+                <ScrollView keyboardShouldPersistTaps="handled" keyboardDismissMode="on-drag" style={{ maxHeight: "100%", width: "100%", maxWidth: 350 }} contentContainerStyle={[styles.createPanel, { backgroundColor: palette.elevatedStrong, borderColor: palette.border }]}>
                   <View style={styles.createHeader}>
                     <View style={styles.createHeading}>
                       <Text style={[styles.createTitle, { color: palette.text }]}>New List</Text>
@@ -635,7 +634,7 @@ export function SavePopup({
                       accessibilityLabel="Cancel List creation"
                       accessibilityRole="button"
                       disabled={createMutation.isPending}
-                      hitSlop={8}
+                      hitSlop={14}
                       onPress={() => { setIsCreating(false); setNewListName(''); setMessage(null); }}
                       style={[styles.createClose, { backgroundColor: palette.elevated }]}
                     >
@@ -650,7 +649,7 @@ export function SavePopup({
                     onChangeText={(value) => { setNewListName(value); if (message) setMessage(null); }}
                     onSubmitEditing={() => { if (newListName.trim() && !createMutation.isPending) createMutation.mutate(); }}
                     placeholder="List name"
-                    placeholderTextColor={palette.tertiary}
+                    placeholderTextColor={palette.secondary}
                     returnKeyType="done"
                     style={[styles.createInput, { backgroundColor: palette.elevated, color: palette.text, borderColor: palette.border }]}
                     value={newListName}
@@ -674,11 +673,11 @@ export function SavePopup({
                       <Text style={[styles.createSubmitText, { color: palette.saveAccentText }]}>Create</Text>
                     )}
                   </Pressable>
-                </View>
+                </ScrollView>
               </View>
             ) : null}
           </Animated.View>
-        </KeyboardAvoidingView>
+        </KeyboardSurface>
       </View>
     </Modal>
   );
@@ -696,7 +695,6 @@ const styles = StyleSheet.create({
   closeButton: { width: 36, height: 36, borderRadius: 18, alignItems: 'center', justifyContent: 'center' },
   search: { minHeight: 43, marginHorizontal: 14, borderWidth: 1, borderRadius: 13, paddingHorizontal: 12, flexDirection: 'row', alignItems: 'center', gap: 8 },
   searchInput: { flex: 1, minHeight: 41, fontFamily: 'NataSans-Regular', fontSize: 13 },
-  collectionScroller: { flex: 1 },
   collectionList: { padding: 14, gap: 9 },
   loadingList: { minHeight: 190, position: 'relative' },
   previewLoadingOverlay: { position: 'absolute', left: 0, top: 0, right: 0, bottom: 0, alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(29,29,31,0.34)' },

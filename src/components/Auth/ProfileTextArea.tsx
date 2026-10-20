@@ -15,11 +15,12 @@ export default function ProfileTextArea({ value, onChangeText, ...rest }: Props)
       </Text>
 
       <TextInput
+        accessibilityLabel="Bio (optional)"
         multiline
         numberOfLines={2}
         textAlignVertical="top"
         placeholder="Tell us about yourself!"
-        placeholderTextColor="rgba(235,235,245,0.3)"
+        placeholderTextColor="#A6A6AE"
         value={value}
         onChangeText={onChangeText}
         maxLength={2000}

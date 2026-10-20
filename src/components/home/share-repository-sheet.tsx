@@ -1,3 +1,4 @@
+import { useReducedMotion } from 'react-native-reanimated';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
@@ -81,6 +82,7 @@ export function ShareRepositorySheet({
   repositoryDetails,
 }: ShareRepositorySheetProps) {
   const { height, width } = useWindowDimensions();
+  const reducedMotion = useReducedMotion();
   const insets = useSafeAreaInsets();
   const { user } = useAuth();
   const viewerUserId = user?.user_id;
@@ -145,13 +147,13 @@ export function ShareRepositorySheet({
     Animated.parallel([
       Animated.timing(translateY, {
         toValue: height,
-        duration: 210,
+        duration: reducedMotion ? 0 : 210,
         easing: Easing.in(Easing.cubic),
         useNativeDriver: true,
       }),
       Animated.timing(overlayOpacity, {
         toValue: 0,
-        duration: 170,
+        duration: reducedMotion ? 0 : 170,
         useNativeDriver: true,
       }),
     ]).start(({ finished }) => {
@@ -159,7 +161,7 @@ export function ShareRepositorySheet({
       setToast('');
       onClose();
     });
-  }, [height, onClose, overlayOpacity, translateY]);
+  }, [height, onClose, overlayOpacity, translateY, reducedMotion]);
 
   useEffect(() => {
     if (!isVisible) return;
@@ -168,17 +170,17 @@ export function ShareRepositorySheet({
     Animated.parallel([
       Animated.timing(translateY, {
         toValue: 0,
-        duration: 290,
+        duration: reducedMotion ? 0 : 290,
         easing: Easing.bezier(0.32, 0.72, 0, 1),
         useNativeDriver: true,
       }),
       Animated.timing(overlayOpacity, {
         toValue: 1,
-        duration: 200,
+        duration: reducedMotion ? 0 : 200,
         useNativeDriver: true,
       }),
     ]).start();
-  }, [height, isVisible, overlayOpacity, translateY]);
+  }, [height, isVisible, overlayOpacity, translateY, reducedMotion]);
 
   useEffect(() => () => {
     if (toastTimer.current) clearTimeout(toastTimer.current);
@@ -264,7 +266,7 @@ export function ShareRepositorySheet({
               <Pressable
                 accessibilityLabel="Close"
                 accessibilityRole="button"
-                hitSlop={8}
+                hitSlop={14}
                 onPress={closeAnimated}
                 style={[styles.closeButton, { backgroundColor: palette.elevated }]}
               >

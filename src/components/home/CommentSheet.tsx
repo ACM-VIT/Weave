@@ -1,3 +1,5 @@
+import { useReducedMotion } from 'react-native-reanimated';
+import { KeyboardSurface } from '@/components/keyboard/keyboard-layout';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
@@ -6,7 +8,6 @@ import {
   FlatList,
   Image,
   Keyboard,
-  KeyboardAvoidingView,
   Modal,
   Platform,
   Pressable,
@@ -121,6 +122,7 @@ export function CommentSheet({
   onCommentCountChange,
 }: CommentSheetProps) {
   const { height, width } = useWindowDimensions();
+  const reducedMotion = useReducedMotion();
   const insets = useSafeAreaInsets();
   const { user } = useAuth();
   const queryClient = useQueryClient();
@@ -205,18 +207,18 @@ export function CommentSheet({
     Animated.parallel([
       Animated.timing(overlayOpacity, {
         toValue: 1,
-        duration: OVERLAY_DURATION,
+        duration: reducedMotion ? 0 : OVERLAY_DURATION,
         easing: Easing.out(Easing.quad),
         useNativeDriver: true,
       }),
       Animated.timing(sheetTranslateY, {
         toValue: 0,
-        duration: OPEN_DURATION,
+        duration: reducedMotion ? 0 : OPEN_DURATION,
         easing: SHEET_EASING,
         useNativeDriver: true,
       }),
     ]).start();
-  }, [height, isVisible, overlayOpacity, sheetTranslateY]);
+  }, [height, isVisible, overlayOpacity, sheetTranslateY, reducedMotion]);
 
   const closeAnimated = useCallback(() => {
     if (closingRef.current) return;
@@ -226,13 +228,13 @@ export function CommentSheet({
     Animated.parallel([
       Animated.timing(overlayOpacity, {
         toValue: 0,
-        duration: OVERLAY_DURATION,
+        duration: reducedMotion ? 0 : OVERLAY_DURATION,
         easing: Easing.in(Easing.quad),
         useNativeDriver: true,
       }),
       Animated.timing(sheetTranslateY, {
         toValue: height * 0.75,
-        duration: CLOSE_DURATION,
+        duration: reducedMotion ? 0 : CLOSE_DURATION,
         easing: SHEET_EASING,
         useNativeDriver: true,
       }),
@@ -240,7 +242,7 @@ export function CommentSheet({
       closingRef.current = false;
       if (finished) onClose();
     });
-  }, [height, onClose, overlayOpacity, sheetTranslateY]);
+  }, [height, onClose, overlayOpacity, sheetTranslateY, reducedMotion]);
 
   const createMutation = useMutation<CommentRecord, Error, string, OptimisticContext>({
     mutationFn: async (text) => {
@@ -407,14 +409,14 @@ export function CommentSheet({
           />
         </Animated.View>
 
-        <KeyboardAvoidingView
-          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        <KeyboardSurface
           pointerEvents="box-none"
-          style={styles.keyboardRoot}
+          style={[styles.keyboardRoot, { paddingTop: insets.top }]}
         >
           <Animated.View
             style={[
               styles.sheet,
+              { flexShrink: 1, minHeight: 0 },
               {
                 width: Math.min(width, 520),
                 height: Math.floor(height * 0.75),
@@ -434,7 +436,7 @@ export function CommentSheet({
               <Pressable
                 accessibilityLabel="Close comments"
                 accessibilityRole="button"
-                hitSlop={8}
+                hitSlop={14}
                 onPress={closeAnimated}
                 style={({ pressed }) => [styles.closeButton, pressed && styles.pressed]}
               >
@@ -484,7 +486,7 @@ export function CommentSheet({
                   }}
                   onSubmitEditing={submitComment}
                   placeholder={user?.user_id ? 'Add a comment...' : 'Sign in to comment'}
-                  placeholderTextColor={REFERENCE_THEME.textTertiary}
+                  placeholderTextColor={REFERENCE_THEME.textSecondary}
                   returnKeyType="send"
                   style={styles.input}
                   value={draft}
@@ -513,7 +515,7 @@ export function CommentSheet({
               </View>
             </View>
           </Animated.View>
-        </KeyboardAvoidingView>
+        </KeyboardSurface>
       </View>
     </Modal>
   );
@@ -588,8 +590,8 @@ const styles = StyleSheet.create({
     lineHeight: 18,
   },
   closeButton: {
-    width: 26,
-    height: 26,
+    width: 48,
+    height: 48,
     borderRadius: 13,
     backgroundColor: REFERENCE_THEME.controlStrong,
     alignItems: 'center',
@@ -730,9 +732,9 @@ const styles = StyleSheet.create({
     paddingVertical: 0,
   },
   sendButton: {
-    width: 38,
-    height: 38,
-    borderRadius: 19,
+    width: 48,
+    height: 48,
+    borderRadius: 24,
     backgroundColor: '#30D158',
     alignItems: 'center',
     justifyContent: 'center',

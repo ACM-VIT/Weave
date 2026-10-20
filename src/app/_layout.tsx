@@ -1,3 +1,4 @@
+import { KeyboardProvider } from 'react-native-keyboard-controller';
 import '@/global.css';
 import { useEffect, useRef } from 'react';
 import {
@@ -117,9 +118,11 @@ function Layout() {
       </Head>
       <QueryClientProvider client={queryClient}>
         <GestureHandlerRootView style={{ flex: 1 }}>
-          <AuthProvider>
-            <RootLayoutNav />
-          </AuthProvider>
+          <KeyboardProvider>
+            <AuthProvider>
+              <RootLayoutNav />
+            </AuthProvider>
+          </KeyboardProvider>
         </GestureHandlerRootView>
       </QueryClientProvider>
     </>

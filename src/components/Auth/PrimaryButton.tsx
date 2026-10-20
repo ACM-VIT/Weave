@@ -12,7 +12,9 @@ export default function PrimaryButton({
 }: PrimaryButtonProps) {
   return (
     <TouchableOpacity
-      className="h-[52px] rounded-[9px] items-center justify-center"
+      accessibilityRole="button"
+      accessibilityState={{ disabled }}
+      className="min-h-[52px] rounded-[9px] items-center justify-center"
       disabled={disabled}
       style={[
         { backgroundColor: disabled ? "#1C1C1E" : "#FFFFFF" },
