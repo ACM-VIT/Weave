@@ -12,6 +12,7 @@ export interface ReindexOptions {
   campaignId: string;
   execute: boolean;
   batchSize: number;
+  summaryBackfill: boolean;
 }
 
 interface ReindexRow {
@@ -22,6 +23,9 @@ interface ReindexRow {
   url: string;
   description: string | null;
   readme: string | null;
+  readme_source_path: string | null;
+  readme_default_branch: string | null;
+  readme_base_url: string | null;
   primary_language: string | null;
   languages: unknown;
   topics: unknown;
@@ -40,8 +44,10 @@ export function parseReindexOptions(arguments_: string[]): ReindexOptions {
   let execute = false;
   let campaignId: string | undefined;
   let batchSize = 100;
+  let summaryBackfill = false;
   for (const argument of arguments_) {
     if (argument === '--execute') execute = true;
+    else if (argument === '--summary-backfill') summaryBackfill = true;
     else if (argument.startsWith('--campaign=')) campaignId = argument.slice('--campaign='.length);
     else if (argument.startsWith('--batch-size=')) batchSize = Number(argument.slice('--batch-size='.length));
     else throw new Error(`Unknown argument: ${argument}`);
@@ -52,7 +58,7 @@ export function parseReindexOptions(arguments_: string[]): ReindexOptions {
   if (!Number.isInteger(batchSize) || batchSize < 1 || batchSize > 500) {
     throw new Error('--batch-size must be an integer from 1 to 500.');
   }
-  return { campaignId, execute, batchSize };
+  return { campaignId, execute, batchSize, summaryBackfill };
 }
 
 export function campaignIdempotencyKey(
@@ -81,6 +87,9 @@ export function buildCampaignRepositoryJob(
     url: row.url,
     description: row.description,
     readme: row.readme,
+    readme_source_path: row.readme_source_path,
+    readme_default_branch: row.readme_default_branch,
+    readme_base_url: row.readme_base_url,
     primary_language: row.primary_language,
     languages: Array.isArray(row.languages) ? row.languages.map(String) : [],
     topics: Array.isArray(row.topics) ? row.topics.map(String) : [],
@@ -103,6 +112,7 @@ export async function runReindex(options: ReindexOptions, databaseUrl: string): 
   const client = postgres(databaseUrl, { max: 1, prepare: false });
   const report = {
     mode: options.execute ? 'execute' : 'dry-run',
+    scope: options.summaryBackfill ? 'missing-current-generated-summary' : 'all-active-repositories',
     campaign_id: options.campaignId,
     batch_size: options.batchSize,
     active: 0,
@@ -131,7 +141,9 @@ export async function runReindex(options: ReindexOptions, databaseUrl: string): 
         const rows = await tx`
           SELECT repo.repo_id,repo.github_id::text AS github_id,repo.owner_github_id::text AS owner_github_id,
             repo.full_name,repo.url,
-            content.description,content.readme,content.primary_language,content.languages,
+            content.description,content.readme,content.readme_source_path,
+            content.readme_default_branch,content.readme_base_url,
+            content.primary_language,content.languages,
             content.content_hash,content.content_version,content.source_updated_at,
             stat.star_count,stat.fork_count,stat.open_issues_count,
             COALESCE(stat.observed_at,content.updated_at) AS observed_at,topic_list.topics
@@ -148,6 +160,15 @@ export async function runReindex(options: ReindexOptions, databaseUrl: string): 
             WHERE relation.repo_id=repo.repo_id
           ) topic_list ON true
           WHERE repo.status='active' AND (${cursor}::uuid IS NULL OR repo.repo_id>${cursor}::uuid)
+            AND (
+              ${options.summaryBackfill}=false
+              OR NOT EXISTS (
+                SELECT 1 FROM app.repo_card_summaries summary
+                WHERE summary.repo_id=repo.repo_id AND summary.active
+                  AND summary.content_version=content.content_version
+                  AND summary.source='generated'
+              )
+            )
           ORDER BY repo.repo_id LIMIT ${options.batchSize}
           FOR SHARE OF repo,content
         ` as unknown as ReindexRow[];

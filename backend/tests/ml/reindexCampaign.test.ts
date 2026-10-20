@@ -9,16 +9,17 @@ import {
 
 test('reindex campaign is dry-run by default and execute requires the same explicit campaign', () => {
   assert.deepEqual(parseReindexOptions(['--campaign=v2-strict-20260721']), {
-    campaignId: 'v2-strict-20260721', execute: false, batchSize: 100,
+    campaignId: 'v2-strict-20260721', execute: false, batchSize: 100, summaryBackfill: false,
   });
-  assert.deepEqual(parseReindexOptions(['--campaign=v2-strict-20260721', '--execute', '--batch-size=25']), {
-    campaignId: 'v2-strict-20260721', execute: true, batchSize: 25,
+  assert.deepEqual(parseReindexOptions([
+    '--campaign=v2-strict-20260721', '--execute', '--batch-size=25', '--summary-backfill',
+  ]), {
+    campaignId: 'v2-strict-20260721', execute: true, batchSize: 25, summaryBackfill: true,
   });
   assert.throws(() => parseReindexOptions(['--execute']), /--campaign/);
   assert.throws(() => parseReindexOptions(['--campaign=unsafe campaign']), /--campaign/);
   assert.throws(() => parseReindexOptions(['--campaign=safe', '--unknown']), /Unknown argument/);
 });
-
 test('campaign reindex preserves canonical identity/version and builds a fresh scoped key', () => {
   const job = buildCampaignRepositoryJob({
     repo_id: '00000000-0000-4000-8000-000000000001',
@@ -28,6 +29,9 @@ test('campaign reindex preserves canonical identity/version and builds a fresh s
     url: 'https://github.com/owner/repository',
     description: null,
     readme: 'README',
+    readme_source_path: 'docs/README.md',
+    readme_default_branch: 'main',
+    readme_base_url: 'https://raw.githubusercontent.com/owner/repository/refs/heads/main/docs/',
     primary_language: null,
     languages: ['TypeScript'],
     topics: ['recommendations'],
@@ -42,6 +46,9 @@ test('campaign reindex preserves canonical identity/version and builds a fresh s
   assert.ok(job);
   assert.equal(job.content_version, 7);
   assert.equal(job.repository.content_hash, 'canonical-content-hash');
+  assert.equal(job.repository.readme_source_path, 'docs/README.md');
+  assert.equal(job.repository.readme_default_branch, 'main');
+  assert.equal(job.repository.readme_base_url, 'https://raw.githubusercontent.com/owner/repository/refs/heads/main/docs/');
   assert.equal(job.repository.pushed_at, '2026-07-21T03:00:00.000Z');
   assert.equal(Object.hasOwn(job.repository, 'repo_id'), false);
   assert.equal(

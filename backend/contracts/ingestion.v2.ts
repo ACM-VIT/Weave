@@ -8,6 +8,9 @@ export interface RepositoryUpsert {
   url: string;
   description?: string | null;
   readme?: string | null;
+  readme_source_path?: string | null;
+  readme_default_branch?: string | null;
+  readme_base_url?: string | null;
   readme_length?: number;
   primary_language?: string | null;
   languages?: string[];

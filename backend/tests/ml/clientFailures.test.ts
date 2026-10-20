@@ -2,7 +2,12 @@ import assert from 'node:assert/strict';
 import { createServer, type RequestListener, type Server } from 'node:http';
 import test from 'node:test';
 
-import { MlV2Client } from '../../services/mlService.js';
+import type { MlRepositoryIndexJob, MlRepositoryIndexResponse } from '../../contracts/ml.v2.js';
+import { ML_DESCRIPTION_FALLBACK_MODEL_VERSION } from '../../contracts/ml.v2.js';
+import {
+  MlV2Client,
+  parseMlRepositoryIndexResponse,
+} from '../../services/mlService.js';
 
 async function withServer(handler: RequestListener, run: (url: string) => Promise<void>): Promise<void> {
   const server: Server = createServer(handler);
@@ -18,6 +23,41 @@ const feedback = { schema_version: 2 as const, events: [{
   repo_id: '00000000-0000-4000-8000-000000000003', feedback_version: '1', event_type: 'like' as const,
   dwell_ms: null, occurred_at: new Date(0).toISOString(),
 }] };
+
+const repositoryJob: MlRepositoryIndexJob = {
+  job_id: '00000000-0000-4000-8000-000000000010',
+  repo_id: '00000000-0000-4000-8000-000000000011',
+  content_version: 1,
+  repository: {
+    github_id: '123', full_name: 'owner/repository', url: 'https://github.com/owner/repository',
+    description: 'A focused developer discovery application.', primary_language: 'Unknown',
+    languages: [], topics: [], readme: '# Repository\n\nCanonical Markdown stays separate.',
+    readme_source_path: 'README.md', readme_default_branch: 'main',
+    readme_base_url: 'https://raw.githubusercontent.com/owner/repository/refs/heads/main/',
+    star_count: 0, fork_count: 0, open_issues_count: 0, pushed_at: null, content_hash: 'hash',
+  },
+};
+
+function repositoryResponse(overrides: Record<string, unknown> = {}): MlRepositoryIndexResponse {
+  return {
+    schema_version: 2,
+    accepted: true,
+    status: 'applied',
+    job_id: repositoryJob.job_id,
+    repo_id: repositoryJob.repo_id,
+    content_version: repositoryJob.content_version,
+    embedding_version: 'embedding-v2',
+    card_summary: {
+      summary: 'Weave helps developers discover useful repositories through concise, personalized project context. It separates quick evaluation from the complete README so technical details remain available on demand.',
+      highlights: ['Personalized discovery'],
+      prompt_version: 'repo-card-summary-v1',
+      model_version: 'test-model',
+      format_version: 'repo-card-summary-json-v1',
+      source: 'generated',
+    },
+    ...overrides,
+  } as MlRepositoryIndexResponse;
+}
 
 test('ML transport classifies 429 and 5xx as retryable and 4xx as terminal', async () => {
   for (const [status, retryable] of [[429, true], [503, true], [400, false]] as const) {
@@ -57,29 +97,182 @@ test('repository-index transport adds the v2 envelope without changing strict so
     request.on('data', (chunk: Buffer) => chunks.push(chunk));
     request.on('end', () => {
       received = JSON.parse(Buffer.concat(chunks).toString('utf8')) as Record<string, unknown>;
-      response.writeHead(202, { 'content-type': 'text/plain' });
-      response.end('accepted');
+      response.writeHead(202, { 'content-type': 'application/json' });
+      response.end(JSON.stringify(repositoryResponse({ status: 'applied' })));
     });
   }, async (url) => {
     const result = await new MlV2Client({
       baseUrl: url, internalSecret: 'test', timeoutMs: 500, maxResponseBytes: 10_000,
-    }).deliverRepositoryIndex({
-      job_id: '00000000-0000-4000-8000-000000000010',
-      repo_id: '00000000-0000-4000-8000-000000000011',
-      content_version: 1,
-      repository: {
-        github_id: '123', full_name: 'owner/repository', url: 'https://github.com/owner/repository',
-        description: '', primary_language: 'Unknown', languages: [], topics: [], readme: null,
-        star_count: 0, fork_count: 0, open_issues_count: 0, pushed_at: null, content_hash: 'hash',
-      },
-    });
+    }).deliverRepositoryIndex(repositoryJob);
     assert.equal(result.accepted, true);
+    assert.deepEqual(result.response_body, repositoryResponse());
   });
   const body = received as unknown as Record<string, unknown>;
   assert.equal(body.schema_version, 2);
   assert.deepEqual(Object.keys(body).sort(), [
     'content_version', 'job_id', 'repo_id', 'repository', 'schema_version',
   ]);
+});
+
+test('repository-index response validator enforces version identity and strict artifact shape', () => {
+  assert.deepEqual(parseMlRepositoryIndexResponse(repositoryResponse(), repositoryJob), repositoryResponse());
+  assert.throws(
+    () => parseMlRepositoryIndexResponse(repositoryResponse({ content_version: 2 }), repositoryJob),
+    /did not match/,
+  );
+  assert.throws(
+    () => parseMlRepositoryIndexResponse({ ...repositoryResponse(), unexpected: true }, repositoryJob),
+    /violated the v2 envelope/,
+  );
+  assert.throws(() => parseMlRepositoryIndexResponse(repositoryResponse({
+    card_summary: { ...repositoryResponse().card_summary, summary: 'x'.repeat(361) },
+  }), repositoryJob), /invalid bounded content/);
+  assert.throws(() => parseMlRepositoryIndexResponse(repositoryResponse({
+    card_summary: {
+      ...repositoryResponse().card_summary,
+      source: 'description_fallback',
+    },
+  }), repositoryJob), /invalid bounded content/);
+  const fallbackResponse = repositoryResponse({
+    card_summary: {
+      ...repositoryResponse().card_summary,
+      model_version: ML_DESCRIPTION_FALLBACK_MODEL_VERSION,
+      source: 'description_fallback',
+    },
+  });
+  assert.deepEqual(parseMlRepositoryIndexResponse(fallbackResponse, repositoryJob), fallbackResponse);
+  const quotedSentenceResponse = repositoryResponse({
+    card_summary: {
+      ...repositoryResponse().card_summary,
+      summary: 'Teams call it "Review Workspace." It helps developers evaluate repositories quickly.',
+    },
+  });
+  assert.deepEqual(
+    parseMlRepositoryIndexResponse(quotedSentenceResponse, repositoryJob),
+    quotedSentenceResponse,
+  );
+  assert.throws(() => parseMlRepositoryIndexResponse(repositoryResponse({
+    card_summary: {
+      ...repositoryResponse().card_summary,
+      highlights: ['one', 'two', 'three', 'four'],
+    },
+  }), repositoryJob), /invalid bounded content/);
+  assert.throws(() => parseMlRepositoryIndexResponse(repositoryResponse({
+    card_summary: {
+      ...repositoryResponse().card_summary,
+      summary: 'This is only one complete sentence.',
+    },
+  }), repositoryJob), /invalid bounded content/);
+  assert.throws(() => parseMlRepositoryIndexResponse(repositoryResponse({
+    card_summary: {
+      ...repositoryResponse().card_summary,
+      summary: 'Sentence one. Sentence two. Sentence three. Sentence four.',
+    },
+  }), repositoryJob), /invalid bounded content/);
+  assert.throws(() => parseMlRepositoryIndexResponse(
+    repositoryResponse(),
+    { ...repositoryJob, repository: { ...repositoryJob.repository, content_hash: '' } },
+  ), /content hash/);
+  assert.throws(() => parseMlRepositoryIndexResponse(repositoryResponse({
+    card_summary: {
+      ...repositoryResponse().card_summary,
+      highlights: ['x'.repeat(97)],
+    },
+  }), repositoryJob), /invalid bounded content/);
+});
+
+test('repository-index response validator rejects README-copy, command, and section leakage', () => {
+  const copied = 'Canonical Markdown stays separate. '.repeat(4).trim();
+  const copiedJob = {
+    ...repositoryJob,
+    repository: { ...repositoryJob.repository, readme: `# Repository\n\n${copied}\n` },
+  };
+  for (const summary of [
+    copied,
+    'Run npm install package-name to install it before starting the application.',
+    'Installation instructions: download the project and configure it locally.',
+    'License: MIT. Contributors may reuse the project under those terms.',
+    'Contributing: open a pull request after changing the implementation.',
+    'A concise project summary with `inline code` that must not reach a card.',
+    'Run brew install package-name to prepare the project. Then start the application normally.',
+    'The API reference lists every endpoint. The project also offers concise discovery context.',
+    'Use the [project website](https://example.com) for details. The repository targets developers.',
+    '- Fast project discovery. - Personalized repository context.',
+  ]) {
+    assert.throws(() => parseMlRepositoryIndexResponse(repositoryResponse({
+      card_summary: { ...repositoryResponse().card_summary, summary },
+    }), copiedJob), /invalid bounded content/);
+  }
+  assert.throws(() => parseMlRepositoryIndexResponse(repositoryResponse({
+    card_summary: {
+      ...repositoryResponse().card_summary,
+      highlights: ['Run yarn add package-name'],
+    },
+  }), copiedJob), /invalid bounded content/);
+});
+
+test('description fallback may repeat its canonical description even when README repeats it', () => {
+  const description = 'This repository helps engineering teams evaluate unfamiliar projects with focused context and clear discovery guidance.';
+  const fallbackJob = {
+    ...repositoryJob,
+    repository: {
+      ...repositoryJob.repository,
+      description,
+      readme: `# Project\n\n${description}`,
+    },
+  };
+  const fallback = repositoryResponse({
+    card_summary: {
+      ...repositoryResponse().card_summary,
+      summary: `${description} It is intended for TypeScript developers.`,
+      model_version: ML_DESCRIPTION_FALLBACK_MODEL_VERSION,
+      source: 'description_fallback',
+    },
+  });
+  assert.deepEqual(parseMlRepositoryIndexResponse(fallback, fallbackJob), fallback);
+  assert.throws(() => parseMlRepositoryIndexResponse(repositoryResponse({
+    card_summary: {
+      ...fallback.card_summary,
+      model_version: 'provider-model',
+      source: 'generated',
+    },
+  }), fallbackJob), /invalid bounded content/);
+});
+
+test('repository-index transport terminally rejects malformed successful responses', async () => {
+  await withServer((_req, response) => {
+    response.writeHead(200, { 'content-type': 'application/json' });
+    response.end(JSON.stringify(repositoryResponse({ repo_id: '00000000-0000-4000-8000-000000000099' })));
+  }, async (url) => {
+    const result = await new MlV2Client({
+      baseUrl: url, internalSecret: 'test', timeoutMs: 500, maxResponseBytes: 10_000,
+    }).deliverRepositoryIndex(repositoryJob);
+    assert.equal(result.accepted, false);
+    assert.equal(result.retryable, false);
+    assert.match(result.detail ?? '', /did not match/);
+  });
+});
+
+test('repository-index transport terminally rejects invalid JSON and oversized successful responses', async () => {
+  for (const [body, maxResponseBytes, message] of [
+    ['not-json', 10_000, /invalid JSON/],
+    [JSON.stringify({ padding: 'x'.repeat(1_000) }), 100, /size limit/],
+  ] as const) {
+    await withServer((_req, response) => {
+      response.writeHead(200, { 'content-type': 'application/json' });
+      response.end(body);
+    }, async (url) => {
+      const result = await new MlV2Client({
+        baseUrl: url,
+        internalSecret: 'test',
+        timeoutMs: 500,
+        maxResponseBytes,
+      }).deliverRepositoryIndex(repositoryJob);
+      assert.equal(result.accepted, false);
+      assert.equal(result.retryable, false);
+      assert.match(result.detail ?? '', message);
+    });
+  }
 });
 
 test('ML recommendation client rejects invalid contracts', async () => {
@@ -190,5 +383,23 @@ test('durable delivery uses its longer timeout without weakening read timeouts',
     }).deliverFeedback(feedback);
     assert.equal(result.accepted, true);
     assert.equal(result.status_code, 202);
+  });
+});
+
+test('repository indexing uses its dedicated generation-and-embedding timeout', async () => {
+  await withServer((_req, response) => setTimeout(() => {
+    response.writeHead(200, { 'content-type': 'application/json' });
+    response.end(JSON.stringify(repositoryResponse()));
+  }, 30), async (url) => {
+    const result = await new MlV2Client({
+      baseUrl: url,
+      internalSecret: 'test',
+      timeoutMs: 5,
+      deliveryTimeoutMs: 10,
+      repositoryIndexTimeoutMs: 100,
+      maxResponseBytes: 10_000,
+    }).deliverRepositoryIndex(repositoryJob);
+    assert.equal(result.accepted, true);
+    assert.equal(result.status_code, 200);
   });
 });
