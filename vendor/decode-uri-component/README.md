@@ -1,10 +1,21 @@
 # Decoder compatibility backport
 
 This private local package contains the official `decode-uri-component@0.5.0`
-decoder, not a published Weave release. It replaces the vulnerable recursive
-decoder used by `query-string@7.1.3`, while preserving its CommonJS function
-export. The only source adaptation is `export default` to `module.exports`.
+scanner as a source backport, not a published Weave release. It replaces the
+vulnerable recursive decoder used by `query-string@7.1.3`, while preserving its
+CommonJS function export. In addition to adapting the module export, a local
+security correction decodes each original encoded run once instead of repeatedly
+replacing runs across already decoded output. BOM and truncated-C2 handling occur
+only at original byte positions inside the existing upstream UTF-8 scanner.
 Query-string already handles form-style `+` to space conversion before decoding.
+
+The local correction removes repeated whole-input searches for distinct runs and
+prevents double decoding such as `%2541-%41-%FF` becoming `A-A-%FF`; the result is
+`%41-A-%FF`. Newly decoded percent signs are not interpreted again, including as
+BOM/C2 replacements. Malformed sequences are handled left-to-right, so overlapping
+invalid BOM sequences can differ from upstream's ordered global replacements.
+The official upstream UTF-8 fixtures and focused Router regressions cover this
+backport; it is no longer an export-only copy of upstream 0.5.0.
 
 ## Provenance
 
