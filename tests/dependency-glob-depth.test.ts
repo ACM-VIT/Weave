@@ -89,7 +89,7 @@ test('the depth backport preserves expansion and escapeInvalid output', () => {
   assert.equal(braces.compile('a/{b,c', { escapeInvalid: true }), 'a/\\{b,c');
 });
 
-test('installed glob and watcher parents consume the guarded implementation', { timeout: 5000 }, async () => {
+test('installed glob and watcher parents consume the guarded implementation', { timeout: 5000 }, async (t) => {
   const fastGlob = require('fast-glob');
   const chokidar = require('chokidar');
   for (const parent of ['micromatch', 'chokidar']) {
@@ -106,8 +106,8 @@ test('installed glob and watcher parents consume the guarded implementation', { 
     watcher = chokidar.watch(path.join(directory, '*.{ts,tsx}'), {
       ignoreInitial: true, usePolling: true, interval: 10,
     });
-    await once(watcher, 'ready');
-    const added = once(watcher, 'add');
+    await once(watcher, 'ready', { signal: t.signal });
+    const added = once(watcher, 'add', { signal: t.signal });
     const filename = path.join(directory, 'new.tsx');
     await writeFile(filename, 'export {};\n');
     assert.equal((await added)[0], filename);
