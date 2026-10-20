@@ -48,7 +48,10 @@ function boundedVersion(value: unknown, maximum = 200): value is string {
 }
 
 function hasTwoOrThreeCompleteSentences(value: string): boolean {
-  const endings = value.match(/[.!?](?:["')\]]+)?(?=\s|$)/gu) ?? [];
+  // These inline abbreviations introduce examples/explanations, not sentences.
+  const prose = value.replace(/\b(?:e\.g|i\.e)\./giu, (match) => match.replaceAll('.', ''))
+    .replace(/\b(?:Mr|Mrs|Ms|Dr|Prof|Jr|Sr)\.(?=\s+\p{L})/gu, (match) => match.slice(0, -1));
+  const endings = prose.match(/[.!?](?:["')\]]+)?(?=\s|$)/gu) ?? [];
   return (endings.length === 2 || endings.length === 3)
     && /[.!?](?:["')\]]+)?(?=\s|$)/u.test(value.slice(-4));
 }
@@ -78,8 +81,7 @@ function hasForbiddenCardContent(value: string): boolean {
   return /(?:^|\n)\s*#{1,6}\s|```|~~~|`/.test(value)
     || /(?:^|\n)\s*(?:[-+*]|\d+[.)])\s+/u.test(value)
     || /!?\[[^\]\n]*\]\([^)\n]+\)/u.test(value)
-    || /\b(?:installation instructions?|license text|contribut(?:ing|ors?) section|changelog|table of contents|API (?:reference|documentation))\b/i.test(value)
-    || /(?:^|[.!?]\s+)(?:installation|license|contributing|contributors?|changelog|API reference)\s*[:\-]/i.test(value)
+    || /(?:^|[.!?]\s+|\n)[ \t]*(?:installation(?: instructions?)?|license(?: text)?|contribut(?:ing|ors?)(?: section)?|changelog|table of contents|API (?:reference|documentation))\s*[:\-]/i.test(value)
     || /\b(?:licensed under|MIT License|Apache License|GNU (?:General Public )?License|GPL)\b/i.test(value)
     || /\b(?:npm|pnpm|yarn|pip|pipx|uv|cargo|go|brew)\s+(?:install|add|run|get)\b/i.test(value);
 }
@@ -181,17 +183,18 @@ export class MlV2Client implements RecommendationPort, OutboxTransportPort {
         signal: controller.signal,
       });
       const text = await response.text();
-      if (Buffer.byteLength(text) > this.config.maxResponseBytes) {
+      const oversized = Buffer.byteLength(text) > this.config.maxResponseBytes;
+      if (oversized && response.ok) {
         if (path === '/api/v2/repositories/embed' && response.ok) {
           throw new MlRepositoryIndexContractError('ML response exceeded size limit.');
         }
         throw new Error('ML response exceeded size limit.');
       }
-      let body: unknown = null;
-      if (text) {
+      let body: unknown = oversized ? text.slice(0, 4_000) : null;
+      if (text && !oversized) {
         try { body = JSON.parse(text); }
         catch {
-          if (responseFormat === 'required-json') {
+          if (responseFormat === 'required-json' && response.ok) {
             if (path === '/api/v2/repositories/embed' && response.ok) {
               throw new MlRepositoryIndexContractError('ML returned invalid JSON.');
             }

@@ -118,6 +118,7 @@ export async function runReindex(options: ReindexOptions, databaseUrl: string): 
     active: 0,
     eligible: 0,
     missing_content: 0,
+    already_generated: 0,
     queued: 0,
     would_queue: 0,
     already_queued: 0,
@@ -127,13 +128,21 @@ export async function runReindex(options: ReindexOptions, databaseUrl: string): 
   try {
     const counts = await client`
       SELECT count(*) FILTER (WHERE repo.status='active')::int AS active,
-        count(content.repo_id) FILTER (WHERE repo.status='active')::int AS eligible
+        count(content.repo_id) FILTER (WHERE repo.status='active')::int AS with_content,
+        count(content.repo_id) FILTER (WHERE repo.status='active' AND (
+          ${options.summaryBackfill}=false OR NOT EXISTS (
+            SELECT 1 FROM app.repo_card_summaries summary
+            WHERE summary.repo_id=repo.repo_id AND summary.active
+              AND summary.content_version=content.content_version AND summary.source='generated'
+          )
+        ))::int AS eligible
       FROM app.repos repo LEFT JOIN app.repo_content content ON content.repo_id=repo.repo_id
     `;
     report.active = Number(counts[0].active);
     report.eligible = Number(counts[0].eligible);
-    report.missing_content = report.active - report.eligible;
-    report.skipped = report.missing_content;
+    report.missing_content = report.active - Number(counts[0].with_content);
+    report.already_generated = Number(counts[0].with_content) - report.eligible;
+    report.skipped = report.missing_content + report.already_generated;
 
     let cursor: string | null = null;
     do {

@@ -176,6 +176,14 @@ export class OutboxService {
         );
       }
 
+      // Ingestion locks the repository before its content. Use the same order
+      // so the summary insert's repository FK cannot deadlock with ingestion.
+      const repositories = await tx`
+        SELECT repo_id FROM app.repos WHERE repo_id=${response.repo_id}::uuid FOR UPDATE
+      `;
+      if (!repositories[0]) {
+        throw new RepositoryIndexCompletionConflictError('Repository no longer exists.');
+      }
       const contentRows = await tx`
         SELECT content_version,content_hash
         FROM app.repo_content

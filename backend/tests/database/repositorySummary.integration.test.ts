@@ -1,9 +1,20 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import crypto from 'node:crypto';
+import { execFile } from 'node:child_process';
+import { mkdtemp, rm } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { promisify } from 'node:util';
+import { setTimeout as delay } from 'node:timers/promises';
+import postgres from 'postgres';
 
 import type { MlRepositoryIndexResponse } from '../../contracts/ml.v2.js';
 import { sqlClient } from '../../db/index.js';
 import { OutboxService, type OutboxRow } from '../../services/outboxService.js';
+import { runReindex } from '../../scripts/reindex-active-repositories.js';
+import { PostgresRepositoryPersistence } from '../../adapters/postgresRepositoryPersistence.js';
 
 const integration = process.env.RUN_DATABASE_INTEGRATION === '1' ? test : test.skip;
 const repoId = '00000000-0000-4000-8000-000000000701';
@@ -241,4 +252,126 @@ integration('summary completion is atomic, idempotent, and fenced by current con
     SELECT count(*) AS count FROM app.repo_card_summaries
     WHERE repo_id=${repoId}::uuid AND model_version='failed-persistence-model'
   `)[0].count), 0, 'failed completion must roll back the artifact insertion');
+});
+
+integration('summary completion follows ingestion lock order without blocking its content write', async () => {
+  const row = await claimedRow(crypto.randomUUID(), crypto.randomUUID(), 2);
+  const ingestionClient = postgres(process.env.DATABASE_URL!, { max: 1, prepare: false });
+  let signalLocked!: () => void;
+  const locked = new Promise<void>((resolve) => { signalLocked = resolve; });
+  let continueIngestion!: () => void;
+  const proceed = new Promise<void>((resolve) => { continueIngestion = resolve; });
+  const ingestion = ingestionClient.begin(async (tx) => {
+    await tx`SELECT repo_id FROM app.repos WHERE repo_id=${repoId}::uuid FOR UPDATE`;
+    signalLocked();
+    await proceed;
+    await tx`SET LOCAL lock_timeout='500ms'`;
+    await tx`UPDATE app.repo_content SET updated_at=now() WHERE repo_id=${repoId}::uuid`;
+  });
+  await locked;
+  const completion = new OutboxService().completeRepositoryIndex(row, response(String(row.payload.job_id), 2));
+  try {
+    let blocked = false;
+    for (let attempt = 0; attempt < 100; attempt++) {
+      const waiting = await sqlClient`
+        SELECT 1 FROM pg_stat_activity
+        WHERE datname=current_database() AND pid<>pg_backend_pid()
+          AND wait_event_type='Lock'
+      `;
+      if (waiting.length) { blocked = true; break; }
+      await delay(10);
+    }
+    assert.equal(blocked, true, 'completion must reach the repository lock while ingestion owns it');
+    continueIngestion();
+    await ingestion;
+    assert.equal(await completion, true);
+  } finally {
+    continueIngestion();
+    await Promise.allSettled([ingestion, completion]);
+    await ingestionClient.end({ timeout: 1 });
+  }
+});
+
+integration('summary backfill reports generated exclusions and eligible jobs consistently', async () => {
+  const options = { campaignId: 'summary-counts-regression', execute: false, batchSize: 1, summaryBackfill: true };
+  const report = await runReindex(options, process.env.DATABASE_URL!);
+  assert.equal(report.active, 1);
+  assert.equal(report.eligible, 0);
+  assert.equal(report.already_generated, 1);
+  assert.equal(report.skipped, 1);
+  assert.equal(report.would_queue, 0);
+
+  await sqlClient`UPDATE app.repo_card_summaries SET active=false WHERE repo_id=${repoId}::uuid`;
+  await sqlClient`
+    UPDATE app.repo_card_summaries SET active=true
+    WHERE repo_id=${repoId}::uuid AND content_version=2 AND source='description_fallback'
+  `;
+  const eligible = await runReindex(options, process.env.DATABASE_URL!);
+  assert.equal(eligible.active, 1);
+  assert.equal(eligible.eligible, 1);
+  assert.equal(eligible.already_generated, 0);
+  // This direct persistence fixture deliberately has no owner GitHub ID.
+  assert.equal(eligible.invalid, 1);
+  assert.equal(eligible.skipped, 1);
+});
+
+integration('code-only changes deliver index-only activity fields to ML', async () => {
+  const persistence = new PostgresRepositoryPersistence();
+  const record = {
+    github_id: '7701', owner_github_id: '7702', full_name: 'fixture/activity',
+    owner: 'fixture', name: 'activity', url: 'https://github.com/fixture/activity',
+    description: 'Unchanged project prose.', readme: '# Unchanged README',
+    observed_at: '2026-10-20T00:00:00Z', recent_commits: [], readme_to_codebase_ratio: 0.1,
+  };
+  const [first] = await persistence.bulkUpsert([record]);
+  const updated = { ...record, recent_commits: ['2026-10-20T01:00:00Z'], readme_to_codebase_ratio: 0.2,
+    observed_at: '2026-10-20T01:00:00Z' };
+  const [second] = await persistence.bulkUpsert([updated]);
+  assert.equal(second.content_version, first.content_version + 1);
+  const jobs = await sqlClient`
+    SELECT job_type,payload FROM telemetry.ml_outbox
+    WHERE aggregate_id=${second.repo_id}::uuid AND payload->>'content_version'=${String(second.content_version)}
+  `;
+  assert.equal(jobs.length, 1);
+  assert.equal(jobs[0].job_type, 'repo_index');
+  assert.equal(jobs[0].payload.repository.readme_to_codebase_ratio, 0.2);
+  assert.deepEqual(jobs[0].payload.repository.recent_commits, ['2026-10-20T01:00:00.000Z']);
+});
+
+integration('legacy backfill remains idempotent after versioned summary migration', async () => {
+  const legacyId = crypto.randomUUID();
+  // Legacy schemas without numeric GitHub IDs require an existing canonical
+  // mapping; the backfill deliberately refuses to invent those identities.
+  await sqlClient`
+    INSERT INTO app.repos (repo_id,github_id,full_name,owner,name,url)
+    VALUES (${legacyId}::uuid,7703,'legacy/summary-fixture','legacy','summary-fixture',
+      'https://github.com/legacy/summary-fixture')
+  `;
+  await sqlClient`
+    INSERT INTO public.repo (repo_id,github_repo_url,owner_id,repo_name,full_name,readme_summary)
+    VALUES (${legacyId}::uuid,'https://github.com/legacy/summary-fixture','legacy',
+      'summary-fixture','legacy/summary-fixture',${'Historical summary text. '.repeat(20)})
+  `;
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'weave-backfill-regression-'));
+  try {
+    for (let replay = 0; replay < 2; replay++) {
+      await promisify(execFile)(process.execPath, ['--import', 'tsx', 'scripts/backfill-v2.ts'], {
+        cwd: fileURLToPath(new URL('../..', import.meta.url)),
+        env: { ...process.env, BACKFILL_REPORT: path.join(directory, `report-${replay}.json`) },
+        timeout: 15_000,
+      });
+    }
+    const summaries = await sqlClient`
+      SELECT active,source,prompt_version,format_version FROM app.repo_card_summaries
+      WHERE repo_id=${legacyId}::uuid
+    `;
+    assert.equal(summaries.length, 1);
+    assert.equal(summaries[0].active, false);
+    assert.equal(summaries[0].source, 'legacy');
+    assert.equal(summaries[0].prompt_version, 'legacy-unversioned');
+    assert.equal(summaries[0].format_version, 'legacy-unversioned');
+  } finally {
+    await sqlClient`DELETE FROM public.repo WHERE repo_id=${legacyId}::uuid`;
+    await rm(directory, { recursive: true, force: true });
+  }
 });

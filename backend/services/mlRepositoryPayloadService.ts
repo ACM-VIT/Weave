@@ -36,9 +36,11 @@ export function repositoryContentHash(repository: RepositoryUpsert): string {
   for (const key of [
     'content_hash', 'star_count', 'fork_count', 'open_issues_count', 'pushed_days_ago',
     'delta_3d', 'delta_7d', 'delta_30d', 'mentionable_users_count', 'readme_length',
-    'readme_to_codebase_ratio', 'recent_commits', 'created_at', 'updated_at', 'pushed_at',
+    'created_at', 'updated_at', 'pushed_at',
     'discovery_category', 'discovery_band',
   ]) delete hashable[key];
+  // Commit history and README/code ratio are index-only ML fields. Keep them
+  // in this hash until the strict refresh contract supports updating them.
   if (Array.isArray(hashable.languages)) hashable.languages = [...hashable.languages].sort();
   if (Array.isArray(hashable.topics)) {
     hashable.topics = hashable.topics.map((topic) => String(topic).toLowerCase()).sort();

@@ -195,7 +195,7 @@ test('repository-index response validator rejects README-copy, command, and sect
     'Contributing: open a pull request after changing the implementation.',
     'A concise project summary with `inline code` that must not reach a card.',
     'Run brew install package-name to prepare the project. Then start the application normally.',
-    'The API reference lists every endpoint. The project also offers concise discovery context.',
+    'API reference: every endpoint is listed here. Follow these instructions to configure authentication.',
     'Use the [project website](https://example.com) for details. The repository targets developers.',
     '- Fast project discovery. - Personalized repository context.',
   ]) {
@@ -209,6 +209,39 @@ test('repository-index response validator rejects README-copy, command, and sect
       highlights: ['Run yarn add package-name'],
     },
   }), copiedJob), /invalid bounded content/);
+});
+
+test('ordinary documentation tools and abbreviated prose remain valid summary responses', () => {
+  for (const summary of [
+    'This tool generates API documentation from source code. Teams can publish a searchable site.',
+    'This changelog tool summarizes releases from commit history. Teams can share project updates.',
+    'It supports common formats, e.g. JSON and YAML. Developers can extend it, e.g. with custom parsers.',
+    'It supports common formats, i.e. JSON and YAML. Dr. Smith built extensible parsers for developers.',
+  ]) {
+    const expected = repositoryResponse({ card_summary: { ...repositoryResponse().card_summary, summary } });
+    assert.deepEqual(parseMlRepositoryIndexResponse(expected, repositoryJob), expected);
+  }
+});
+
+test('repository-index transport preserves HTTP failures without requiring JSON', async () => {
+  for (const [status, retryable, text] of [
+    [429, true, 'rate limited'], [503, true, '<html>upstream unavailable</html>'],
+    [400, false, 'bad repository payload'],
+  ] as const) {
+    await withServer((_request, response) => {
+      response.writeHead(status, { 'content-type': 'text/plain', 'retry-after': '2' });
+      response.end(text);
+    }, async (url) => {
+      const result = await new MlV2Client({
+        baseUrl: url, internalSecret: 'test', timeoutMs: 500, maxResponseBytes: 10_000,
+      }).deliverRepositoryIndex(repositoryJob);
+      assert.equal(result.accepted, false);
+      assert.equal(result.status_code, status);
+      assert.equal(result.retryable, retryable);
+      assert.equal(result.retry_after_ms, 2_000);
+      assert.equal(result.detail, text);
+    });
+  }
 });
 
 test('description fallback may repeat its canonical description even when README repeats it', () => {

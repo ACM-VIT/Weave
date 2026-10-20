@@ -130,6 +130,8 @@ test('empty and null README publishers share one canonical content identity', ()
     readme_default_branch: null,
     readme_base_url: null,
     readme_length: 0,
+    readme_to_codebase_ratio: 0,
+    recent_commits: [],
   };
   const emptyPublisher = {
     ...ingestionRecord,
@@ -148,4 +150,17 @@ test('empty and null README publishers share one canonical content identity', ()
   assert.equal(projected.readme_base_url, null);
   assert.equal(projected.readme_length, 0);
   assert.equal(repositoryContentHash(emptyPublisher), repositoryContentHash(absent));
+});
+
+test('index-only activity fields trigger delivery even when repository prose is unchanged', () => {
+  for (const update of [
+    { recent_commits: ['2026-10-20T00:00:00Z'] },
+    { readme_to_codebase_ratio: 0.5 },
+  ]) {
+    const updated = { ...ingestionRecord, ...update };
+    assert.notEqual(repositoryContentHash(updated), repositoryContentHash(ingestionRecord));
+    const indexed = buildMlRepositorySource(updated, repositoryContentHash(updated));
+    assert.equal(indexed.readme_to_codebase_ratio, updated.readme_to_codebase_ratio);
+    assert.deepEqual(indexed.recent_commits, updated.recent_commits?.map((value) => new Date(value).toISOString()));
+  }
 });

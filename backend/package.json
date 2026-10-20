@@ -19,7 +19,7 @@
     "qdrant:audit": "tsx scripts/qdrant-audit.ts",
     "reindex:ml": "tsx scripts/reindex-active-repositories.ts",
     "load:feed:v2": "node scripts/load-feed-v2.mjs",
-    "test": "npm run typecheck:test && tsx --test tests/**/*.test.ts"
+    "test": "npm run typecheck:test && tsx --test --test-concurrency=1 tests/**/*.test.ts"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.107.0",
