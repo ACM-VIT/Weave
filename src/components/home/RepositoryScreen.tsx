@@ -26,7 +26,6 @@ import {
 } from 'lucide-react-native';
 
 import { REFERENCE_THEME } from '@/constants/theme';
-import { DEVELOPMENT_PREVIEW_ENABLED } from '@/config/development-preview';
 import { useAuth } from '@/store/AuthContext';
 import { getAvatarColor } from '@/utils/avatar-color';
 import {
@@ -340,10 +339,9 @@ export function RepositoryScreen({
                 compact={compact}
                 identityKey={repository.owner}
                 isFollowing={repository.viewerFollowsOwner === true}
-                localOnly={DEVELOPMENT_PREVIEW_ENABLED}
                 neutral
                 onFollowingChange={handleOwnerFollowingChange}
-                stateKnown={ownerFollowStateKnown || DEVELOPMENT_PREVIEW_ENABLED}
+                stateKnown={ownerFollowStateKnown}
                 targetProfileId={repository.ownerProfileId}
                 targetUserId={repository.ownerUserId}
               />

@@ -61,6 +61,8 @@ export default function BoardScreen() {
         ? Boolean(collectionId)
         : Boolean(boardId),
     staleTime: 30_000,
+    // Surface failures promptly; the error state provides an explicit retry action.
+    retry: false,
     queryFn: async ({ signal }) => {
       if (isPinnedCollection) {
         if (!user?.user_id) throw new Error('Sign in to view pinned repositories.');

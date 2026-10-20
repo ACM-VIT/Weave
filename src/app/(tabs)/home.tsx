@@ -16,10 +16,8 @@ import { getResponsiveContentWidth } from '@/components/responsive-layout';
 import type { RepositoryData } from '@/data/repositories';
 import { RepositoryFeedItem } from '@/components/home/RepositoryFeedItem';
 import { FeedHeader } from '@/components/home/FeedHeader';
-import { DEVELOPMENT_PREVIEW_ENABLED } from '@/config/development-preview';
 import { REFERENCE_THEME } from '@/constants/theme';
 import { router, type Href } from 'expo-router';
-import { DEVELOPMENT_REPOSITORIES } from '@/data/development-repositories';
 import {
   useInfiniteQuery,
   useQueryClient,
@@ -51,7 +49,7 @@ export default function HomeScreen() {
   const queryClient = useQueryClient();
   const feedQueryKey = useMemo(() => getFeedQueryKey(user?.user_id), [user?.user_id]);
   const feedInvalidationGenerationRef = useRef(0);
-  const activityOutbox = user?.user_id && !DEVELOPMENT_PREVIEW_ENABLED
+  const activityOutbox = user?.user_id
     ? getActivityOutbox(user.user_id)
     : null;
   const { width, height } = useWindowDimensions();
@@ -94,7 +92,7 @@ export default function HomeScreen() {
   } = useInfiniteQuery({
     queryKey: feedQueryKey,
     queryFn: fetchFeedPage,
-    enabled: Boolean(user?.user_id) && !DEVELOPMENT_PREVIEW_ENABLED,
+    enabled: Boolean(user?.user_id),
     staleTime: Infinity,
     refetchOnMount: false,
     refetchOnReconnect: false,
@@ -104,12 +102,6 @@ export default function HomeScreen() {
   });
 
   const feedItems = useMemo(() => {
-    if (DEVELOPMENT_PREVIEW_ENABLED) {
-      return DEVELOPMENT_REPOSITORIES.map((repository, index) => ({
-        feedId: getFeedItemIdentity(repository, index),
-        repository,
-      }));
-    }
     return data?.pages
       .flatMap((page) => page.items)
       .map(mapFeedRepository)
@@ -244,8 +236,11 @@ export default function HomeScreen() {
         <Text style={styles.messageBody}>
           {error instanceof Error ? error.message : 'The feed service is unavailable.'}
         </Text>
-        <Pressable style={styles.retryButton} onPress={() => refetch()}>
+        <Pressable accessibilityRole="button" style={styles.retryButton} onPress={() => refetch()}>
           <Text style={styles.retryText}>Try again</Text>
+        </Pressable>
+        <Pressable accessibilityRole="button" accessibilityHint="Browse repositories while recommendations are unavailable" style={styles.retryButton} onPress={() => router.push('/(tabs)/explore')}>
+          <Text style={styles.retryText}>Explore repositories</Text>
         </Pressable>
       </View>
     );

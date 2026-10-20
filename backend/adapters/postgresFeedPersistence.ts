@@ -48,6 +48,8 @@ function projection(row: Record<string, unknown>): RepositoryProjection {
   };
 }
 
+// Optional summary/README metadata is read through JSON until migration 0024 is deployed.
+// Missing provenance excludes legacy text so it can never appear as a concise Summary.
 export class PostgresFeedPersistence implements FeedPersistencePort {
   async recordGenerationAttempt(input: Parameters<NonNullable<FeedPersistencePort['recordGenerationAttempt']>>[0]): Promise<void> {
     await sqlClient`
@@ -113,6 +115,7 @@ export class PostgresFeedPersistence implements FeedPersistencePort {
           SELECT card.summary_id FROM app.repo_card_summaries card
           WHERE card.repo_id=repo.repo_id AND card.active
             AND card.content_version=content.content_version
+            AND to_jsonb(card)->>'source' IN ('generated','description_fallback')
           ORDER BY card.created_at DESC LIMIT 1
         ) current_summary ON true
         WHERE serve.user_id=${userId}::uuid
@@ -196,17 +199,17 @@ export class PostgresFeedPersistence implements FeedPersistencePort {
       SELECT item.serve_id,item.position,item.repo_id,item.score,item.source,item.model_version,
              COALESCE(exact_summary.summary_id,current_summary.summary_id) AS summary_id,
              repo.full_name, repo.updated_at, content.description, content.primary_language,
-             content.languages, content.readme,content.readme_source_path,
-             content.readme_default_branch,content.readme_base_url,
+             content.languages, content.readme,to_jsonb(content)->>'readme_source_path' AS readme_source_path,
+             to_jsonb(content)->>'readme_default_branch' AS readme_default_branch,to_jsonb(content)->>'readme_base_url' AS readme_base_url,
              COALESCE(topic_values.topics, '[]'::jsonb) AS topics,
              stats.star_count, stats.fork_count, stats.open_issues_count,
              engagement.likes_count, engagement.comments_count, engagement.views_count,
              COALESCE(exact_summary.summary,current_summary.summary) AS summary,
-             COALESCE(exact_summary.highlights,current_summary.highlights,'[]'::jsonb) AS summary_highlights,
-             COALESCE(exact_summary.prompt_version,current_summary.prompt_version) AS summary_prompt_version,
+             COALESCE((to_jsonb(exact_summary)->'highlights'),current_summary.highlights,'[]'::jsonb) AS summary_highlights,
+             COALESCE((to_jsonb(exact_summary)->>'prompt_version'),current_summary.prompt_version) AS summary_prompt_version,
              COALESCE(exact_summary.model_version,current_summary.model_version) AS summary_model_version,
-             COALESCE(exact_summary.format_version,current_summary.format_version) AS summary_format_version,
-             COALESCE(exact_summary.source,current_summary.source) AS summary_source,
+             COALESCE((to_jsonb(exact_summary)->>'format_version'),current_summary.format_version) AS summary_format_version,
+             COALESCE((to_jsonb(exact_summary)->>'source'),current_summary.source) AS summary_source,
              reaction.reaction AS viewer_reaction,
              (saved.repo_id IS NOT NULL) AS viewer_saved,
              social_profile.claimed_by_user_id AS owner_user_id,
@@ -260,14 +263,16 @@ export class PostgresFeedPersistence implements FeedPersistencePort {
         ON exact_summary.summary_id=item.summary_id
        AND exact_summary.repo_id=repo.repo_id
        AND exact_summary.content_version=content.content_version
-       AND exact_summary.source<>'legacy'
+       AND (to_jsonb(exact_summary)->>'source') IN ('generated','description_fallback')
        AND char_length(btrim(exact_summary.summary)) BETWEEN 1 AND 360
       LEFT JOIN LATERAL (
-        SELECT card.summary_id,card.summary,card.highlights,card.prompt_version,
-          card.model_version,card.format_version,card.source
+        SELECT card.summary_id,card.summary,to_jsonb(card)->'highlights' AS highlights,
+          to_jsonb(card)->>'prompt_version' AS prompt_version,card.model_version,
+          to_jsonb(card)->>'format_version' AS format_version,to_jsonb(card)->>'source' AS source
         FROM app.repo_card_summaries card
         WHERE card.repo_id=repo.repo_id AND card.active
           AND card.content_version=content.content_version
+          AND to_jsonb(card)->>'source' IN ('generated','description_fallback')
         ORDER BY card.created_at DESC LIMIT 1
       ) current_summary ON exact_summary.summary_id IS NULL
       LEFT JOIN app.reactions reaction ON reaction.repo_id=repo.repo_id AND reaction.user_id=${String(serve.user_id)}::uuid
@@ -321,15 +326,15 @@ export class PostgresFeedPersistence implements FeedPersistencePort {
     if (repoIds.length === 0) return [];
     const rows = await sqlClient`
       SELECT repo.repo_id, repo.full_name, repo.status, repo.updated_at, content.description,
-             content.primary_language,content.languages,content.readme,content.readme_source_path,
-             content.readme_default_branch,content.readme_base_url,
+             content.primary_language,content.languages,content.readme,to_jsonb(content)->>'readme_source_path' AS readme_source_path,
+             to_jsonb(content)->>'readme_default_branch' AS readme_default_branch,to_jsonb(content)->>'readme_base_url' AS readme_base_url,
              COALESCE(topic_values.topics, '[]'::jsonb) AS topics,
              COALESCE(stats.star_count, 0) AS star_count, COALESCE(stats.fork_count, 0) AS fork_count, COALESCE(stats.open_issues_count, 0) AS open_issues_count,
              COALESCE(engagement.likes_count, 0) AS likes_count, COALESCE(engagement.comments_count, 0) AS comments_count, COALESCE(engagement.views_count, 0) AS views_count,
-             summary.summary_id,summary.summary,summary.highlights AS summary_highlights,
-             summary.prompt_version AS summary_prompt_version,
+             summary.summary_id,summary.summary,to_jsonb(summary)->'highlights' AS summary_highlights,
+             to_jsonb(summary)->>'prompt_version' AS summary_prompt_version,
              summary.model_version AS summary_model_version,
-             summary.format_version AS summary_format_version,summary.source AS summary_source,
+             to_jsonb(summary)->>'format_version' AS summary_format_version,to_jsonb(summary)->>'source' AS summary_source,
              reaction.reaction AS viewer_reaction,
              (saved.repo_id IS NOT NULL) AS viewer_saved,
              social_profile.claimed_by_user_id AS owner_user_id,
@@ -378,6 +383,7 @@ export class PostgresFeedPersistence implements FeedPersistencePort {
       LEFT JOIN app.repo_engagement engagement ON engagement.repo_id = repo.repo_id
       LEFT JOIN app.repo_card_summaries summary ON summary.repo_id=repo.repo_id AND summary.active
         AND summary.content_version=content.content_version
+        AND to_jsonb(summary)->>'source' IN ('generated','description_fallback')
       LEFT JOIN app.reactions reaction ON reaction.repo_id=repo.repo_id AND reaction.user_id=${viewerUserId ?? null}::uuid
       LEFT JOIN app.saves saved ON saved.repo_id=repo.repo_id AND saved.user_id=${viewerUserId ?? null}::uuid
       WHERE repo.repo_id = ANY(${repoIds}::uuid[]) AND repo.status='active'

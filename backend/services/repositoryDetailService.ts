@@ -90,6 +90,8 @@ export function mapRepositoryDetailRow(row: Record<string, unknown>): Repository
   };
 }
 
+// Optional summary/README metadata is read through JSON until migration 0024 is deployed.
+// Missing provenance excludes legacy text so it can never appear as a concise Summary.
 export async function getRepositoryDetails(
   viewerUserId: string,
   repositoryIds: string[],
@@ -101,8 +103,8 @@ export async function getRepositoryDetails(
     SELECT
       repo.repo_id,repo.github_id,repo.full_name,repo.owner,repo.owner_github_id,
       repo.name,repo.url,repo.status,repo.created_at,repo.updated_at,
-      content.description,CASE WHEN ${includeReadme} THEN content.readme ELSE NULL END AS readme_md,content.readme_source_path,
-      content.readme_default_branch,content.readme_base_url,content.primary_language,
+      content.description,CASE WHEN ${includeReadme} THEN content.readme ELSE NULL END AS readme_md,to_jsonb(content)->>'readme_source_path' AS readme_source_path,
+      to_jsonb(content)->>'readme_default_branch' AS readme_default_branch,to_jsonb(content)->>'readme_base_url' AS readme_base_url,content.primary_language,
       COALESCE(content.languages,'[]'::jsonb) AS languages,
       content.content_version,content.updated_at AS content_updated_at,content.source_updated_at,
       summary.summary_id,summary.summary,summary.highlights AS summary_highlights,
@@ -146,11 +148,13 @@ export async function getRepositoryDetails(
       LIMIT 1
     ) stats ON true
     LEFT JOIN LATERAL (
-      SELECT card.summary_id,card.summary,card.highlights,card.prompt_version,
-        card.model_version,card.format_version,card.source
+      SELECT card.summary_id,card.summary,to_jsonb(card)->'highlights' AS highlights,
+        to_jsonb(card)->>'prompt_version' AS prompt_version,card.model_version,
+        to_jsonb(card)->>'format_version' AS format_version,to_jsonb(card)->>'source' AS source
       FROM app.repo_card_summaries card
       WHERE card.repo_id=repo.repo_id AND card.active
         AND card.content_version=content.content_version
+        AND to_jsonb(card)->>'source' IN ('generated','description_fallback')
       ORDER BY card.created_at DESC
       LIMIT 1
     ) summary ON true

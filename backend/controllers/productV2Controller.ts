@@ -393,6 +393,8 @@ async function followList(req: AuthRequest, res: Response, direction: 'followers
 export const listFollowers = (req: AuthRequest, res: Response) => followList(req, res, 'followers');
 export const listFollowing = (req: AuthRequest, res: Response) => followList(req, res, 'following');
 
+// Optional summary/README metadata is read through JSON until migration 0024 is deployed.
+// Missing provenance excludes legacy text so it can never appear as a concise Summary.
 export async function listLikesGiven(req: AuthRequest, res: Response): Promise<void> {
   const viewer = userId(req, res); const target = idParam(req, res, 'userId'); const page = paging(req);
   if (!viewer || !target) return;
@@ -401,8 +403,8 @@ export async function listLikesGiven(req: AuthRequest, res: Response): Promise<v
     SELECT r.repo_id,r.github_id,r.owner_github_id,r.url AS github_repo_url,
       r.owner AS owner_id,r.name AS repo_name,r.full_name,r.owner,r.name,r.url,r.status,
       r.created_at,r.updated_at,c.description,c.languages AS language_used,
-      c.primary_language,c.languages,c.readme AS readme_md,c.readme_source_path,
-      c.readme_default_branch,c.readme_base_url,c.content_version,
+      c.primary_language,c.languages,c.readme AS readme_md,to_jsonb(c)->>'readme_source_path' AS readme_source_path,
+      to_jsonb(c)->>'readme_default_branch' AS readme_default_branch,to_jsonb(c)->>'readme_base_url' AS readme_base_url,c.content_version,
       c.updated_at AS content_updated_at,c.source_updated_at,
       COALESCE((SELECT json_agg(t.slug ORDER BY t.slug) FROM app.repo_topics rt JOIN app.topics t USING(topic_id)
         WHERE rt.repo_id=r.repo_id),'[]'::json) AS topics,
@@ -429,9 +431,12 @@ export async function listLikesGiven(req: AuthRequest, res: Response): Promise<v
     JOIN app.repo_content c USING(repo_id) JOIN app.repo_engagement e USING(repo_id)
     LEFT JOIN LATERAL (SELECT star_count,fork_count,open_issues_count,observed_at FROM app.repo_stat_snapshots snapshot
       WHERE snapshot.repo_id=r.repo_id ORDER BY observed_at DESC LIMIT 1) s ON true
-    LEFT JOIN LATERAL (SELECT summary_id,summary,highlights,prompt_version,model_version,format_version,source
+    LEFT JOIN LATERAL (SELECT card.summary_id,card.summary,to_jsonb(card)->'highlights' AS highlights,
+      to_jsonb(card)->>'prompt_version' AS prompt_version,card.model_version,
+      to_jsonb(card)->>'format_version' AS format_version,to_jsonb(card)->>'source' AS source
       FROM app.repo_card_summaries card
       WHERE card.repo_id=r.repo_id AND active AND card.content_version=c.content_version
+        AND to_jsonb(card)->>'source' IN ('generated','description_fallback')
       ORDER BY created_at DESC LIMIT 1) summary ON true
     LEFT JOIN app.reactions viewer_reaction
       ON viewer_reaction.repo_id=r.repo_id AND viewer_reaction.user_id=${viewer}::uuid
@@ -452,7 +457,7 @@ export async function listRepositories(req: AuthRequest, res: Response): Promise
   const page = paging(req); if (!page) return sendError(res, 400, 'Invalid pagination.');
   const q = typeof req.query.q === 'string' ? req.query.q.trim().slice(0, 100) : '';
   const rows = await sqlClient.unsafe(`SELECT ${repoProjection},r.owner_github_id,r.status,r.created_at,r.updated_at,
-    c.readme AS readme_md,c.readme_source_path,c.readme_default_branch,c.readme_base_url,
+    c.readme AS readme_md,to_jsonb(c)->>'readme_source_path' AS readme_source_path,to_jsonb(c)->>'readme_default_branch' AS readme_default_branch,to_jsonb(c)->>'readme_base_url' AS readme_base_url,
     c.updated_at AS content_updated_at,c.source_updated_at,
     s.observed_at AS stats_observed_at,cs.summary_id,cs.highlights AS summary_highlights,
     cs.prompt_version AS summary_prompt_version,cs.model_version AS summary_model_version,
@@ -474,9 +479,12 @@ export async function listRepositories(req: AuthRequest, res: Response): Promise
     FROM app.repos r
     JOIN app.repo_content c USING(repo_id) JOIN app.repo_engagement e USING(repo_id)
     LEFT JOIN LATERAL (SELECT * FROM app.repo_stat_snapshots x WHERE x.repo_id=r.repo_id ORDER BY observed_at DESC LIMIT 1) s ON true
-    LEFT JOIN LATERAL (SELECT summary_id,summary,highlights,prompt_version,model_version,format_version,source
+    LEFT JOIN LATERAL (SELECT x.summary_id,x.summary,to_jsonb(x)->'highlights' AS highlights,
+      to_jsonb(x)->>'prompt_version' AS prompt_version,x.model_version,
+      to_jsonb(x)->>'format_version' AS format_version,to_jsonb(x)->>'source' AS source
       FROM app.repo_card_summaries x WHERE x.repo_id=r.repo_id AND active
-        AND x.content_version=c.content_version ORDER BY created_at DESC LIMIT 1) cs ON true
+        AND x.content_version=c.content_version
+        AND to_jsonb(x)->>'source' IN ('generated','description_fallback') ORDER BY created_at DESC LIMIT 1) cs ON true
     LEFT JOIN app.reactions viewer_reaction ON viewer_reaction.repo_id=r.repo_id AND viewer_reaction.user_id=$4::uuid
     LEFT JOIN app.saves viewer_save ON viewer_save.repo_id=r.repo_id AND viewer_save.user_id=$4::uuid
     WHERE r.status='active' AND ($1='' OR r.full_name ILIKE '%'||$1||'%' OR COALESCE(c.description,'') ILIKE '%'||$1||'%')
@@ -516,8 +524,8 @@ export async function listTrending(req: AuthRequest, res: Response): Promise<voi
   if (!['daily','weekly','monthly'].includes(period)) return sendError(res,400,'Invalid trending period.');
   const rows = await sqlClient`SELECT i.position,i.score,i.features,r.repo_id,r.github_id,r.owner_github_id,
     r.full_name,r.owner,r.name,r.url,r.status,r.created_at,r.updated_at,
-    c.description,c.primary_language,c.languages,c.readme AS readme_md,c.readme_source_path,
-    c.readme_default_branch,c.readme_base_url,c.content_version,
+    c.description,c.primary_language,c.languages,c.readme AS readme_md,to_jsonb(c)->>'readme_source_path' AS readme_source_path,
+    to_jsonb(c)->>'readme_default_branch' AS readme_default_branch,to_jsonb(c)->>'readme_base_url' AS readme_base_url,c.content_version,
     c.updated_at AS content_updated_at,c.source_updated_at,
     e.likes_count,e.dislikes_count,e.saves_count,e.comments_count,e.views_count,
     COALESCE(stat.star_count,0) AS star_count,COALESCE(stat.fork_count,0) AS fork_count,
@@ -543,9 +551,12 @@ export async function listTrending(req: AuthRequest, res: Response): Promise<voi
     JOIN app.repos r USING(repo_id) JOIN app.repo_content c USING(repo_id) JOIN app.repo_engagement e USING(repo_id)
     LEFT JOIN LATERAL (SELECT star_count,fork_count,open_issues_count,observed_at FROM app.repo_stat_snapshots x
       WHERE x.repo_id=r.repo_id ORDER BY observed_at DESC LIMIT 1) stat ON true
-    LEFT JOIN LATERAL (SELECT summary_id,summary,highlights,prompt_version,model_version,format_version,source
+    LEFT JOIN LATERAL (SELECT x.summary_id,x.summary,to_jsonb(x)->'highlights' AS highlights,
+      to_jsonb(x)->>'prompt_version' AS prompt_version,x.model_version,
+      to_jsonb(x)->>'format_version' AS format_version,to_jsonb(x)->>'source' AS source
       FROM app.repo_card_summaries x WHERE x.repo_id=r.repo_id AND active
-        AND x.content_version=c.content_version ORDER BY created_at DESC LIMIT 1) summary ON true
+        AND x.content_version=c.content_version
+        AND to_jsonb(x)->>'source' IN ('generated','description_fallback') ORDER BY created_at DESC LIMIT 1) summary ON true
     LEFT JOIN app.reactions viewer_reaction
       ON viewer_reaction.repo_id=r.repo_id AND viewer_reaction.user_id=${viewer}::uuid
     LEFT JOIN app.saves viewer_save
@@ -560,8 +571,8 @@ export async function listSaved(req: AuthRequest, res: Response): Promise<void> 
   if (!page) return sendError(res, 400, 'Invalid pagination.');
   const rows = await sqlClient`SELECT s.created_at,s.created_at AS saved_at,r.repo_id,r.github_id,r.owner_github_id,
     r.full_name,r.owner,r.name,r.url,r.status,r.created_at AS repository_created_at,r.updated_at,
-    c.description,c.primary_language,c.languages,c.readme AS readme_md,c.readme_source_path,
-    c.readme_default_branch,c.readme_base_url,c.content_version,
+    c.description,c.primary_language,c.languages,c.readme AS readme_md,to_jsonb(c)->>'readme_source_path' AS readme_source_path,
+    to_jsonb(c)->>'readme_default_branch' AS readme_default_branch,to_jsonb(c)->>'readme_base_url' AS readme_base_url,c.content_version,
     c.updated_at AS content_updated_at,c.source_updated_at,
     e.likes_count,e.dislikes_count,e.saves_count,e.comments_count,e.views_count,
     COALESCE(stat.star_count,0) AS star_count,COALESCE(stat.fork_count,0) AS fork_count,
@@ -586,9 +597,12 @@ export async function listSaved(req: AuthRequest, res: Response): Promise<void> 
     JOIN app.repo_engagement e USING(repo_id)
     LEFT JOIN LATERAL (SELECT star_count,fork_count,open_issues_count,observed_at FROM app.repo_stat_snapshots x
       WHERE x.repo_id=r.repo_id ORDER BY observed_at DESC LIMIT 1) stat ON true
-    LEFT JOIN LATERAL (SELECT summary_id,summary,highlights,prompt_version,model_version,format_version,source
+    LEFT JOIN LATERAL (SELECT x.summary_id,x.summary,to_jsonb(x)->'highlights' AS highlights,
+      to_jsonb(x)->>'prompt_version' AS prompt_version,x.model_version,
+      to_jsonb(x)->>'format_version' AS format_version,to_jsonb(x)->>'source' AS source
       FROM app.repo_card_summaries x WHERE x.repo_id=r.repo_id AND active
-        AND x.content_version=c.content_version ORDER BY created_at DESC LIMIT 1) summary ON true
+        AND x.content_version=c.content_version
+        AND to_jsonb(x)->>'source' IN ('generated','description_fallback') ORDER BY created_at DESC LIMIT 1) summary ON true
     LEFT JOIN app.reactions viewer_reaction
       ON viewer_reaction.repo_id=r.repo_id AND viewer_reaction.user_id=${id}::uuid
     WHERE s.user_id=${id}::uuid AND r.status='active' ORDER BY s.created_at DESC LIMIT ${page.limit} OFFSET ${page.offset}`;
@@ -770,7 +784,7 @@ export async function listCollectionRepos(req: AuthRequest, res: Response): Prom
   const rows = await sqlClient`
     SELECT cr.added_at,r.repo_id,r.github_id,r.owner_github_id,r.full_name,r.owner,r.name,r.url,
       r.status,r.created_at,r.updated_at,c.description,c.primary_language,c.languages,
-      c.readme AS readme_md,c.readme_source_path,c.readme_default_branch,c.readme_base_url,
+      c.readme AS readme_md,to_jsonb(c)->>'readme_source_path' AS readme_source_path,to_jsonb(c)->>'readme_default_branch' AS readme_default_branch,to_jsonb(c)->>'readme_base_url' AS readme_base_url,
       c.content_version,c.updated_at AS content_updated_at,c.source_updated_at,
       e.likes_count,e.dislikes_count,e.saves_count,e.comments_count,e.views_count,
       COALESCE(stat.star_count,0) AS star_count,COALESCE(stat.fork_count,0) AS fork_count,
@@ -800,9 +814,12 @@ export async function listCollectionRepos(req: AuthRequest, res: Response): Prom
     LEFT JOIN LATERAL (SELECT star_count,fork_count,open_issues_count,observed_at
       FROM app.repo_stat_snapshots snapshot WHERE snapshot.repo_id=r.repo_id
       ORDER BY observed_at DESC LIMIT 1) stat ON true
-    LEFT JOIN LATERAL (SELECT summary_id,summary,highlights,prompt_version,model_version,format_version,source
+    LEFT JOIN LATERAL (SELECT card.summary_id,card.summary,to_jsonb(card)->'highlights' AS highlights,
+      to_jsonb(card)->>'prompt_version' AS prompt_version,card.model_version,
+      to_jsonb(card)->>'format_version' AS format_version,to_jsonb(card)->>'source' AS source
       FROM app.repo_card_summaries card WHERE card.repo_id=r.repo_id AND active
-        AND card.content_version=c.content_version ORDER BY created_at DESC LIMIT 1) summary ON true
+        AND card.content_version=c.content_version
+        AND to_jsonb(card)->>'source' IN ('generated','description_fallback') ORDER BY created_at DESC LIMIT 1) summary ON true
     LEFT JOIN app.reactions viewer_reaction
       ON viewer_reaction.repo_id=r.repo_id AND viewer_reaction.user_id=${id}::uuid
     LEFT JOIN app.saves viewer_save
@@ -848,7 +865,7 @@ export async function listBoardRepos(req: AuthRequest, res: Response): Promise<v
   const rows = await sqlClient`
     SELECT br.added_at,r.repo_id,r.github_id,r.owner_github_id,r.full_name,r.owner,r.name,r.url,
       r.status,r.created_at,r.updated_at,c.description,c.primary_language,c.languages,
-      c.readme AS readme_md,c.readme_source_path,c.readme_default_branch,c.readme_base_url,
+      c.readme AS readme_md,to_jsonb(c)->>'readme_source_path' AS readme_source_path,to_jsonb(c)->>'readme_default_branch' AS readme_default_branch,to_jsonb(c)->>'readme_base_url' AS readme_base_url,
       c.content_version,c.updated_at AS content_updated_at,c.source_updated_at,
       e.likes_count,e.dislikes_count,e.saves_count,e.comments_count,e.views_count,
       COALESCE(stat.star_count,0) AS star_count,COALESCE(stat.fork_count,0) AS fork_count,
@@ -878,9 +895,12 @@ export async function listBoardRepos(req: AuthRequest, res: Response): Promise<v
     LEFT JOIN LATERAL (SELECT star_count,fork_count,open_issues_count,observed_at
       FROM app.repo_stat_snapshots snapshot WHERE snapshot.repo_id=r.repo_id
       ORDER BY observed_at DESC LIMIT 1) stat ON true
-    LEFT JOIN LATERAL (SELECT summary_id,summary,highlights,prompt_version,model_version,format_version,source
+    LEFT JOIN LATERAL (SELECT card.summary_id,card.summary,to_jsonb(card)->'highlights' AS highlights,
+      to_jsonb(card)->>'prompt_version' AS prompt_version,card.model_version,
+      to_jsonb(card)->>'format_version' AS format_version,to_jsonb(card)->>'source' AS source
       FROM app.repo_card_summaries card WHERE card.repo_id=r.repo_id AND active
-        AND card.content_version=c.content_version ORDER BY created_at DESC LIMIT 1) summary ON true
+        AND card.content_version=c.content_version
+        AND to_jsonb(card)->>'source' IN ('generated','description_fallback') ORDER BY created_at DESC LIMIT 1) summary ON true
     LEFT JOIN app.reactions viewer_reaction
       ON viewer_reaction.repo_id=r.repo_id AND viewer_reaction.user_id=${id}::uuid
     LEFT JOIN app.saves viewer_save

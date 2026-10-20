@@ -23,7 +23,6 @@ export type FollowButtonProps = {
   stateKnown?: boolean;
   compact?: boolean;
   neutral?: boolean;
-  localOnly?: boolean;
   disabled?: boolean;
   onFollowingChange?: (following: boolean) => void;
   onError?: (error: Error) => void;
@@ -41,7 +40,6 @@ export function FollowButton({
   stateKnown = true,
   compact = false,
   neutral = false,
-  localOnly = false,
   disabled = false,
   onFollowingChange,
   onError,
@@ -76,7 +74,6 @@ export function FollowButton({
 
   const mutation = useMutation<void, Error, boolean>({
     mutationFn: async (following) => {
-      if (localOnly) return;
       if (!targetId) throw new Error('This profile is unavailable.');
       const token = await getStorageItem('access_token');
       if (!token) throw new Error('Your session has expired. Please sign in again.');
@@ -93,11 +90,9 @@ export function FollowButton({
     }
   }, [isFollowing, mutation.isPending, queryClient, queryKey]);
 
-  const targetAvailable = localOnly || (Boolean(targetId) && stateKnown);
+  const targetAvailable = Boolean(targetId) && stateKnown;
   const buttonDisabled = disabled || !targetAvailable || mutation.isPending;
-  const accessibilityHint = localOnly
-    ? 'Preview follow state is kept for this session.'
-    : !targetId
+  const accessibilityHint = !targetId
     ? 'This profile is unavailable.'
     : !stateKnown
       ? 'Follow status is unavailable for this repository owner.'

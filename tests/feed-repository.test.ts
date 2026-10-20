@@ -197,3 +197,12 @@ test('feed item local saved state follows changes from the same repository cache
     saved: false,
   });
 });
+
+test('feed displays the exact backend engagement count instead of sample or star counts', () => {
+  for (const likes of [0, 1, 27, 9842]) {
+    const repository = mapFeedRepository(feedRepository({ likes_count: likes, star_count: 654321 }));
+    assert.ok(repository);
+    assert.equal(repository.stats.likes, likes);
+    assert.equal(repository.stats.stars, 654321);
+  }
+});

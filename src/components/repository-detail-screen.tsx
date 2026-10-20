@@ -33,9 +33,7 @@ import {
 import { ReadmePopup } from '@/components/home/ReadmePopup';
 import { SavePopup } from '@/components/home/save-popup';
 import { ShareRepositorySheet } from '@/components/home/share-repository-sheet';
-import { DEVELOPMENT_PREVIEW_ENABLED } from '@/config/development-preview';
 import { REFERENCE_THEME } from '@/constants/theme';
-import { DEVELOPMENT_REPOSITORIES } from '@/data/development-repositories';
 import type { RepositoryDetail } from '@/models/repository';
 import { getActivityOutbox } from '@/services/activityOutboxClient';
 import { useAuth } from '@/store/AuthContext';
@@ -113,13 +111,6 @@ export function RepositoryDetailScreen({ repositoryId }: { repositoryId: string 
     queryKey: repositoryDetailQueryKey(repositoryId, viewerUserId),
     enabled: Boolean(repositoryId && viewerUserId),
     queryFn: async ({ signal }) => {
-      if (DEVELOPMENT_PREVIEW_ENABLED) {
-        const previewRepository = DEVELOPMENT_REPOSITORIES.find(
-          (item) => item.id === repositoryId,
-        );
-        if (!previewRepository) throw new Error('Repository not found in the development preview.');
-        return previewRepository;
-      }
       const token = await getStorageItem('access_token');
       if (!token) throw new Error('Your session has expired. Please sign in again.');
       return fetchRepositoryDetail(repositoryId, token, signal);

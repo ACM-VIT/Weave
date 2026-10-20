@@ -16,10 +16,6 @@ import {
   OtherUserProfile,
   type OtherUserProfileData,
 } from '@/components/other-user-profile';
-import {
-  DEVELOPMENT_PREVIEW_ENABLED,
-} from '@/config/development-preview';
-import { DEVELOPMENT_REPOSITORIES } from '@/data/development-repositories';
 import type { RepositoryDetail } from '@/models/repository';
 import { useAuth } from '@/store/AuthContext';
 import {
@@ -57,8 +53,6 @@ function booleanParam(value: string | string[] | undefined) {
   return firstParam(value) === 'true';
 }
 
-const DEVELOPMENT_PINNED_REPOSITORIES = DEVELOPMENT_REPOSITORIES.slice(0, 3);
-
 export default function OtherUserProfileRoute() {
   const params = useLocalSearchParams<OtherUserRouteParams>();
   const { user, checkOnboardingStatus } = useAuth();
@@ -75,9 +69,7 @@ export default function OtherUserProfileRoute() {
 
   const profileQuery = useQuery({
     queryKey: ['public-user-profile', targetKind, targetId],
-    enabled: targetKind !== 'route'
-      && user?.isPreview !== true
-      && !DEVELOPMENT_PREVIEW_ENABLED,
+    enabled: targetKind !== 'route',
     queryFn: async ({ signal }) => {
       const token = await getStorageItem('access_token');
       if (!token) throw new Error('Your session has expired. Please sign in again.');
@@ -138,9 +130,7 @@ export default function OtherUserProfileRoute() {
           ?? countParam(params.following),
       },
       lists: [],
-      pinnedRepositories: DEVELOPMENT_PREVIEW_ENABLED
-        ? DEVELOPMENT_PINNED_REPOSITORIES
-        : externalRepositories,
+      pinnedRepositories: externalRepositories,
     };
   }, [
     params.followStateKnown,
