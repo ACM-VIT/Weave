@@ -1,4 +1,35 @@
 import { httpStatus, isTerminalRefreshError } from '../api/session-errors';
+import { SessionChangedError } from '../api/session-lifecycle';
+
+export const STARTUP_SESSION_TIMEOUT_MS = 15_000;
+
+export class StartupSessionTimeoutError extends Error {
+  constructor() {
+    super('Session restoration timed out. Check your connection and try again.');
+    this.name = 'StartupSessionTimeoutError';
+  }
+}
+
+/** Bound even non-cancellable storage reads, and abort fetch/body work too. */
+export async function withStartupSessionDeadline(
+  controller: AbortController,
+  restore: (signal: AbortSignal) => Promise<void>,
+): Promise<void> {
+  let timedOut = false;
+  let onAbort!: () => void;
+  const aborted = new Promise<never>((_resolve, reject) => {
+    onAbort = () => reject(timedOut ? new StartupSessionTimeoutError() : new SessionChangedError());
+    controller.signal.addEventListener('abort', onAbort, { once: true });
+  });
+  const timer = setTimeout(() => { timedOut = true; controller.abort(); }, STARTUP_SESSION_TIMEOUT_MS);
+  try {
+    if (controller.signal.aborted) onAbort();
+    await Promise.race([restore(controller.signal), aborted]);
+  } finally {
+    clearTimeout(timer);
+    controller.signal.removeEventListener('abort', onAbort);
+  }
+}
 
 export type StartupSessionState = 'authenticated' | 'anonymous';
 export type StartupProfileAttempt = 'stored' | 'latest' | 'refreshed';
