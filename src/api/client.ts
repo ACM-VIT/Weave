@@ -44,14 +44,29 @@ async function readJson(response: Response): Promise<unknown> {
 }
 
 async function expireStoredSession(lease: SessionLease): Promise<void> {
-  const retired = await retireSessionIfCurrent(lease.generation);
+  const retired = await retireSessionIfCurrent(lease.generation, undefined, lease.assertCurrent);
   if (!retired) throw new SessionChangedError();
   sessionExpiredHandler?.();
 }
 
 const refreshAccessToken = (
   expectedToken?: string | null,
+  signal?: AbortSignal,
 ): Promise<string> => authSessionLifecycle.runRefresh(async (lease) => {
+  // Startup cancellation is also checked at persistence boundaries. A fetch
+  // implementation or a body read that settles late must not mutate a session.
+  if (signal) {
+    const sessionLease = lease;
+    lease = {
+      generation: sessionLease.generation,
+      isCurrent: () => sessionLease.isCurrent() && !signal.aborted,
+      assertCurrent: () => {
+        sessionLease.assertCurrent();
+        if (signal.aborted) throw new SessionChangedError();
+      },
+    };
+  }
+  lease.assertCurrent();
   if (await isSessionRestoreBlocked()) throw new SessionChangedError();
   lease.assertCurrent();
 
@@ -59,18 +74,22 @@ const refreshAccessToken = (
     method: 'POST',
     credentials: 'include',
     headers: { Accept: 'application/json' },
+    signal,
   });
+  lease.assertCurrent();
 
   let payload: ApiEnvelope<RefreshResponse> | null;
   try {
     payload = await readJson(response) as ApiEnvelope<RefreshResponse> | null;
   } catch (error) {
+    lease.assertCurrent();
     if (isTerminalRefreshStatus(response.status)) {
       await expireStoredSession(lease);
       Object.assign(error as object, { status: response.status });
     }
     throw error;
   }
+  lease.assertCurrent();
 
   const refreshData = payload
     && typeof payload === 'object'
@@ -101,7 +120,7 @@ const refreshAccessToken = (
   const responseOwnerMismatch = typeof responseOwner === 'string'
     && (returnedOwner === null || responseOwner !== returnedOwner);
   if (ownerChanged || responseOwnerMismatch) {
-    await retireSessionIfCurrent(lease.generation);
+    await retireSessionIfCurrent(lease.generation, undefined, lease.assertCurrent);
     throw new SessionChangedError();
   }
 
@@ -109,8 +128,8 @@ const refreshAccessToken = (
   return token;
 });
 
-export function refreshSession(expectedToken?: string | null): Promise<string> {
-  return refreshAccessToken(expectedToken);
+export function refreshSession(expectedToken?: string | null, signal?: AbortSignal): Promise<string> {
+  return refreshAccessToken(expectedToken, signal);
 }
 
 async function resolveRequestToken(
