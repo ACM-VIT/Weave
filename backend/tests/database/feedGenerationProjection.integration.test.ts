@@ -33,14 +33,15 @@ test('generation projection filters inactive repos and reads only current summar
           ${index === 2 ? 'archived' : 'active'})
       `;
     }
+    await sqlClient`INSERT INTO app.repo_content(repo_id,content_hash,content_version) VALUES(${activeId}::uuid,'projection-test',2)`;
     for (const [summaryId, repoId, active, version] of [
       [oldSummaryId, activeId, false, 1],
       [currentSummaryId, activeId, true, 2],
       [crypto.randomUUID(), inactiveId, true, 1],
     ] as const) {
       await sqlClient`
-        INSERT INTO app.repo_card_summaries (summary_id,repo_id,content_version,model_version,summary,active)
-        VALUES (${summaryId}::uuid,${repoId}::uuid,${version},'projection-test','Not hydrated.',${active})
+        INSERT INTO app.repo_card_summaries (summary_id,repo_id,content_version,model_version,summary,active,prompt_version,format_version,source)
+        VALUES (${summaryId}::uuid,${repoId}::uuid,${version},'projection-test','Not hydrated.',${active},'projection-test','repo-card-summary-json-v1','generated')
       `;
     }
 
@@ -57,13 +58,15 @@ test('generation projection filters inactive repos and reads only current summar
     assert.match(statement, /^SELECT repo\.repo_id, summary\.summary_id FROM app\.repos repo /);
     assert.match(statement, /summary\.repo_id\s*=\s*repo\.repo_id AND summary\.active/);
     assert.match(statement, /repo\.status\s*=\s*'active'/);
-    assert.doesNotMatch(statement, /readme|repo_content|social_profiles|app\.users|follows|repo_topics|repo_stat_snapshots|repo_engagement|reactions|saves/i);
+    assert.doesNotMatch(statement, /readme|social_profiles|app\.users|follows|repo_topics|repo_stat_snapshots|repo_engagement|reactions|saves/i);
     sqlClient.options.debug = previousDebug;
 
+    await sqlClient`UPDATE app.repo_content SET content_version=3 WHERE repo_id=${activeId}::uuid`;
+    assert.deepEqual(await persistence.listActiveRepositoryIdentities([activeId]), [{repo_id: activeId, summary_id: null}], 'A stale active summary must be excluded.');
     await sqlClient`UPDATE app.repo_card_summaries SET active=false WHERE summary_id=${currentSummaryId}::uuid`;
     await sqlClient`
-      INSERT INTO app.repo_card_summaries (summary_id,repo_id,content_version,model_version,summary,active)
-      VALUES (${nextSummaryId}::uuid,${activeId}::uuid,3,'projection-test','New identity.',true)
+      INSERT INTO app.repo_card_summaries (summary_id,repo_id,content_version,model_version,summary,active,prompt_version,format_version,source)
+      VALUES (${nextSummaryId}::uuid,${activeId}::uuid,3,'projection-test','New identity.',true,'projection-test','repo-card-summary-json-v1','generated')
     `;
     assert.deepEqual(await persistence.listActiveRepositoryIdentities([activeId]), [
       { repo_id: activeId, summary_id: nextSummaryId },
