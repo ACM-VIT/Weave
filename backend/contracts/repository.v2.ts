@@ -40,6 +40,8 @@ export interface RepositoryDetailV2 {
   summary_format_version: string | null;
   summary_source: 'generated' | 'description_fallback' | null;
   readme_digest?: ReadmeSummaryArtifact | null;
+  /** Compatibility alias for clients predating the `readme_md` field. */
+  readme: string | null;
   readme_md: string | null;
   readme_source_path: string | null;
   readme_default_branch: string | null;
