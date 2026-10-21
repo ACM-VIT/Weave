@@ -1,13 +1,8 @@
 import { KeyboardProvider } from 'react-native-keyboard-controller';
 import '@/global.css';
-import { useEffect, useRef } from 'react';
-import {
-  Stack,
-  type Href,
-  usePathname,
-  useRouter,
-  useSegments,
-} from 'expo-router';
+import { useEffect, useRef, useState } from 'react';
+import { Pressable, Text, View } from 'react-native';
+import { Stack, type Href, usePathname, useRouter, useSegments } from 'expo-router';
 import Head from 'expo-router/head';
 import { useFonts } from 'expo-font';
 import * as SplashScreen from 'expo-splash-screen';
@@ -21,6 +16,7 @@ import {
   postAuthenticationRoute,
 } from '../utils/auth-routing';
 import type { RepositoryRouteHref } from '../utils/repository-links';
+import { REFERENCE_THEME } from '../constants/theme';
 
 // Keep the splash screen visible while we fetch resources
 SplashScreen.preventAutoHideAsync();
@@ -33,14 +29,18 @@ Sentry.init({
   tracesSampleRate: 0.1,
 });
 
-function RootLayoutNav() {
-  const { user, isLoading } = useAuth();
+function RootLayoutNav({ fontsReady }: { fontsReady: boolean }) {
+  const { user, isLoading, startupError, retryStartupSession } = useAuth();
   const pathname = usePathname();
-  const segments = useSegments();
-  const router = useRouter();
   const queryClient = useQueryClient();
   const pendingProtectedRouteRef = useRef<RepositoryRouteHref | null>(null);
   const previousViewerRef = useRef<string | null | undefined>(undefined);
+  const segments = useSegments();
+  const router = useRouter();
+  const isReady = fontsReady && !isLoading && !startupError;
+  const [startupComplete, setStartupComplete] = useState(false);
+  if (isReady && !startupComplete) setStartupComplete(true);
+  const splashHidden = useRef(false);
 
   useEffect(() => {
     Sentry.setUser(user?.user_id ? { id: user.user_id } : null);
@@ -48,16 +48,13 @@ function RootLayoutNav() {
 
   useEffect(() => {
     if (isLoading) return;
-    const viewerUserId = user?.user_id ?? null;
-    if (previousViewerRef.current !== undefined
-      && previousViewerRef.current !== viewerUserId) {
-      queryClient.clear();
-    }
-    previousViewerRef.current = viewerUserId;
+    const viewer = user?.user_id ?? null;
+    if (previousViewerRef.current !== undefined && previousViewerRef.current !== viewer) queryClient.clear();
+    previousViewerRef.current = viewer;
   }, [isLoading, queryClient, user?.user_id]);
 
   useEffect(() => {
-    if (isLoading) return;
+    if (!isReady) return;
 
     const inAuthGroup = segments[0] === '(auth)';
     const inOnboardingGroup = segments[0] === 'onboarding';
@@ -82,7 +79,40 @@ function RootLayoutNav() {
         router.replace(destination as Href);
       }
     }
-  }, [user, isLoading, pathname, segments, router]);
+  }, [user, isReady, pathname, segments, router]);
+
+  useEffect(() => {
+    if (!splashHidden.current && fontsReady && (startupComplete || startupError)) {
+      splashHidden.current = true;
+      SplashScreen.hideAsync();
+    }
+  }, [fontsReady, startupComplete, startupError]);
+
+  // Restore authentication in parallel with fonts, but never mount a route
+  // (including a protected deep link) until both startup tasks have settled.
+  // Later sign-in/profile transitions must not reset the mounted navigator.
+  if (fontsReady && startupError && !startupComplete) {
+    return (
+      <View style={{ flex: 1, justifyContent: 'center', padding: 24, gap: 16, backgroundColor: REFERENCE_THEME.background }}>
+        <Text accessibilityRole="alert" style={{ color: REFERENCE_THEME.text }}>
+          {isLoading ? 'Restoring your session…' : startupError}
+        </Text>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Try restoring session again"
+          accessibilityState={{ disabled: isLoading, busy: isLoading }}
+          disabled={isLoading}
+          onPress={() => { if (!isLoading) void retryStartupSession(); }}
+          style={{ padding: 16, backgroundColor: REFERENCE_THEME.accent, borderRadius: 9, opacity: isLoading ? 0.65 : 1 }}
+        >
+          <Text style={{ color: REFERENCE_THEME.background, textAlign: 'center' }}>
+            {isLoading ? 'Restoring…' : 'Try again'}
+          </Text>
+        </Pressable>
+      </View>
+    );
+  }
+  if (!isReady && !startupComplete) return null;
 
   return <Stack screenOptions={{ headerShown: false }} />;
 }
@@ -97,16 +127,6 @@ function Layout() {
     'NataSans-Bold': require('../../assets/fonts/NataSans-Bold.ttf'),
   });
 
-  useEffect(() => {
-    if (loaded || error) {
-      SplashScreen.hideAsync();
-    }
-  }, [loaded, error]);
-
-  if (!loaded && !error) {
-    return null;
-  }
-
   return (
     <>
       <Head>
@@ -120,7 +140,7 @@ function Layout() {
         <GestureHandlerRootView style={{ flex: 1 }}>
           <KeyboardProvider>
             <AuthProvider>
-              <RootLayoutNav />
+              <RootLayoutNav fontsReady={loaded || Boolean(error)} />
             </AuthProvider>
           </KeyboardProvider>
         </GestureHandlerRootView>

@@ -53,7 +53,13 @@ import { feedQueryKey, patchFeedSaved } from '@/utils/feed-repository';
 import { listRepositoryQueryKey } from '@/services/accountQueryCache';
 import * as SecureStore from '@/utils/storage';
 
+export type SavePopupMutationState = { save: boolean; create: boolean };
+
 type SavePopupProps = {
+  mutations?: {
+    state: SavePopupMutationState;
+    onChange: React.Dispatch<React.SetStateAction<SavePopupMutationState>>;
+  };
   isVisible: boolean;
   onClose: () => void;
   onSaved?: (saved: boolean, saveStateChanged: boolean) => void;
@@ -117,6 +123,7 @@ export function SavePopup({
   repoName,
   serveId,
   position,
+  mutations,
 }: SavePopupProps) {
   const { height, width } = useWindowDimensions();
   const reducedMotion = useReducedMotion();
@@ -140,6 +147,10 @@ export function SavePopup({
   const [isCreating, setIsCreating] = useState(false);
   const [newListName, setNewListName] = useState('');
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [localMutations, setLocalMutations] = useState<SavePopupMutationState>({ save: false, create: false });
+  const pending = mutations?.state ?? localMutations;
+  const setPending = mutations?.onChange ?? setLocalMutations;
+  const mountedRef = useRef(false);
 
   useModalScrollLock(isVisible);
 
@@ -200,7 +211,7 @@ export function SavePopup({
         useNativeDriver: true,
       }),
     ]).start(({ finished }) => {
-      if (!finished) return;
+      if (!finished || !mountedRef.current) return;
       setSearch('');
       setMessage(null);
       setIsCreating(false);
@@ -229,8 +240,12 @@ export function SavePopup({
     ]).start();
   }, [isVisible, modalHeight, overlayOpacity, translateY, reducedMotion]);
 
-  useEffect(() => () => {
-    if (closeTimer.current) clearTimeout(closeTimer.current);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      if (closeTimer.current) clearTimeout(closeTimer.current);
+    };
   }, []);
 
   useEffect(() => {
@@ -243,6 +258,7 @@ export function SavePopup({
   }, [isCreating]);
 
   const createMutation = useMutation({
+    onMutate: () => setPending(current => ({ ...current, create: true })),
     mutationFn: async () => {
       const name = newListName.trim();
       if (!name) throw new Error('List name is required.');
@@ -265,6 +281,7 @@ export function SavePopup({
       });
     },
     onError: (error) => setMessage({ type: 'error', text: error instanceof Error ? error.message : 'Could not create List.' }),
+    onSettled: () => setPending(current => ({ ...current, create: false })),
   });
 
   const saveMutation = useMutation({
@@ -281,6 +298,7 @@ export function SavePopup({
       return syncRepositoryLists(repoId, listIds, token, event);
     },
     onMutate: async ({ listIds }) => {
+      setPending(current => ({ ...current, save: true }));
       const key = repositoryListsQueryKey(repoId, viewerUserId);
       await queryClient.cancelQueries({ queryKey: key });
       const previous = queryClient.getQueryData<ListDto[]>(key);
@@ -365,11 +383,17 @@ export function SavePopup({
         selectedIds: new Set(result.selectedListIds),
         hasChanges: false,
       });
-      closeTimer.current = setTimeout(closeAnimated, 900);
+      if (mountedRef.current) closeTimer.current = setTimeout(closeAnimated, 900);
     },
+    onSettled: () => setPending(current => ({ ...current, save: false })),
   });
 
+  const isSaving = saveMutation.isPending || pending.save;
+  const isCreatingList = createMutation.isPending || pending.create;
+  const mutationBusy = isSaving || isCreatingList;
+
   const toggleList = (listId: string) => {
+    if (mutationBusy) return;
     setMessage(null);
     const next = new Set(selectedIds);
     if (next.has(listId)) next.delete(listId);
@@ -379,12 +403,13 @@ export function SavePopup({
   };
 
   const beginListCreation = () => {
+    if (mutationBusy) return;
     setMessage(null);
     setIsCreating(true);
     void haptic();
   };
 
-  const saveDisabled = saveMutation.isPending
+  const saveDisabled = mutationBusy
     || listsQuery.isLoading
     || listsQuery.isFetching
     || listsQuery.isError;
@@ -507,7 +532,8 @@ export function SavePopup({
                           <Pressable
                             accessibilityLabel={`${list.name}, ${list.repositoryCount} repositories`}
                             accessibilityRole="checkbox"
-                            accessibilityState={{ checked: selected }}
+                            accessibilityState={{ checked: selected, disabled: mutationBusy }}
+                            disabled={mutationBusy}
                             onPress={() => toggleList(membershipId)}
                             style={StyleSheet.absoluteFill}
                           />
@@ -568,6 +594,8 @@ export function SavePopup({
                   <Pressable
                     accessibilityLabel="Create new List"
                     accessibilityRole="button"
+                    accessibilityState={{ disabled: mutationBusy }}
+                    disabled={mutationBusy}
                     onPress={beginListCreation}
                     style={StyleSheet.absoluteFill}
                   />
@@ -590,7 +618,7 @@ export function SavePopup({
                       justifyContent: 'center',
                     }}
                   >
-                    {saveMutation.isPending ? <ActivityIndicator color={palette.saveAccentText} /> : (
+                    {isSaving ? <ActivityIndicator color={palette.saveAccentText} /> : (
                       <Text style={[styles.saveText, { color: palette.saveAccentText }]}>Save</Text>
                     )}
                   </View>
@@ -600,7 +628,7 @@ export function SavePopup({
                     accessibilityState={{ disabled: saveDisabled }}
                     disabled={saveDisabled}
                     onPress={() => {
-                      if (!repoId) return;
+                      if (!repoId || saveDisabled) return;
                       const event = toInteractionEventV2(prepareQueuedActivity({
                         repo_id: repoId,
                         action: selectedIds.size > 0 ? 'save' : 'unsave',
@@ -622,7 +650,7 @@ export function SavePopup({
                 <Pressable
                   accessibilityLabel="Cancel List creation"
                   accessibilityRole="button"
-                  disabled={createMutation.isPending}
+                  disabled={mutationBusy}
                   onPress={() => { setIsCreating(false); setNewListName(''); setMessage(null); }}
                   style={[StyleSheet.absoluteFill, styles.creationDim]}
                 />
@@ -635,7 +663,7 @@ export function SavePopup({
                     <Pressable
                       accessibilityLabel="Cancel List creation"
                       accessibilityRole="button"
-                      disabled={createMutation.isPending}
+                      disabled={mutationBusy}
                       hitSlop={14}
                       onPress={() => { setIsCreating(false); setNewListName(''); setMessage(null); }}
                       style={[styles.createClose, { backgroundColor: palette.elevated }]}
@@ -645,11 +673,11 @@ export function SavePopup({
                   </View>
                   <TextInput
                     accessibilityLabel="List name"
-                    editable={!createMutation.isPending}
+                    editable={!mutationBusy}
                     ref={createInputRef}
                     maxLength={100}
                     onChangeText={(value) => { setNewListName(value); if (message) setMessage(null); }}
-                    onSubmitEditing={() => { if (newListName.trim() && !createMutation.isPending) createMutation.mutate(); }}
+                    onSubmitEditing={() => { if (newListName.trim() && !mutationBusy) createMutation.mutate(); }}
                     placeholder="List name"
                     placeholderTextColor={palette.secondary}
                     returnKeyType="done"
@@ -661,17 +689,17 @@ export function SavePopup({
                   ) : null}
                   <Pressable
                     accessibilityRole="button"
-                    accessibilityState={{ disabled: !newListName.trim() || createMutation.isPending }}
-                    disabled={!newListName.trim() || createMutation.isPending}
-                    onPress={() => createMutation.mutate()}
+                    accessibilityState={{ disabled: !newListName.trim() || mutationBusy }}
+                    disabled={!newListName.trim() || mutationBusy}
+                    onPress={() => { if (newListName.trim() && !mutationBusy) createMutation.mutate(); }}
                     style={({ pressed }) => [
                       styles.createSubmit,
                       { backgroundColor: palette.saveAccent },
-                      (!newListName.trim() || createMutation.isPending) && styles.disabled,
+                      (!newListName.trim() || mutationBusy) && styles.disabled,
                       pressed && styles.pressed,
                     ]}
                   >
-                    {createMutation.isPending ? <ActivityIndicator color={palette.saveAccentText} /> : (
+                    {isCreatingList ? <ActivityIndicator color={palette.saveAccentText} /> : (
                       <Text style={[styles.createSubmitText, { color: palette.saveAccentText }]}>Create</Text>
                     )}
                   </Pressable>

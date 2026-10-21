@@ -5,7 +5,7 @@ import type {
   StoredServe,
   StoredServeItem,
 } from '../contracts/feed.v2.js';
-import type { FeedPersistencePort } from '../ports/feedPersistencePort.js';
+import type { FeedPersistencePort, RepositoryIdentityProjection } from '../ports/feedPersistencePort.js';
 import { sqlClient } from '../db/index.js';
 import { buildMlOnboardingJob, hasMlEmbeddingContext } from '../services/mlOnboardingService.js';
 
@@ -323,6 +323,23 @@ export class PostgresFeedPersistence implements FeedPersistencePort {
     const stored = await this.getServeByRequest(input.user_id, input.feed_request_id);
     if (!stored) throw new Error('Serve was not persisted.');
     return stored;
+  }
+
+  async listActiveRepositoryIdentities(repoIds: string[]): Promise<RepositoryIdentityProjection[]> {
+    if (repoIds.length === 0) return [];
+    const rows = await sqlClient`
+      SELECT repo.repo_id, summary.summary_id
+      FROM app.repos repo
+      LEFT JOIN app.repo_content content ON content.repo_id=repo.repo_id
+      LEFT JOIN app.repo_card_summaries summary ON summary.repo_id=repo.repo_id AND summary.active
+        AND summary.content_version=content.content_version
+        AND to_jsonb(summary)->>'source' IN ('generated','description_fallback')
+      WHERE repo.repo_id = ANY(${repoIds}::uuid[]) AND repo.status='active'
+    `;
+    return rows.map((row) => ({
+      repo_id: String(row.repo_id),
+      summary_id: row.summary_id == null ? null : String(row.summary_id),
+    }));
   }
 
   async listActiveRepositories(repoIds: string[], viewerUserId?: string): Promise<RepositoryProjection[]> {

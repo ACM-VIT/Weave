@@ -26,18 +26,18 @@ import {
 import * as SecureStore from '../../utils/storage';
 import { type FeedPage } from '@/api/feed';
 import { fetchHomeFeed } from '@/api/home-feed';
-import { homeFeedItems, canContinueHomeFeed, subscribeToHomeFeedInvalidations } from '@/utils/home-feed';
+import { canContinueHomeFeed, subscribeToHomeFeedInvalidations } from '@/utils/home-feed';
 import { type ActivityInput } from '@/api/activity';
 import { useAuth } from '@/store/AuthContext';
 import { getActivityOutbox } from '@/services/activityOutboxClient';
 import {
   feedQueryKey as getFeedQueryKey,
-  getFeedItemIdentity,
   mapFeedRepository,
   patchFeedReaction,
   patchFeedSaved,
 } from '@/utils/feed-repository';
 import { repositoryHref } from '@/utils/repository-links';
+import { createFeedItemMapper } from '@/utils/feed-items';
 
 const WEB_FEED_LIST_STYLE =
   Platform.OS === 'web'
@@ -112,15 +112,13 @@ export default function HomeScreen() {
     initialPageParam: null as string | null,
   });
 
+  const feedProjection = useMemo(() => ({
+    queryKey: feedQueryKey,
+    mapPages: createFeedItemMapper(mapFeedRepository),
+  }), [feedQueryKey]);
   const feedItems = useMemo(() => {
-    return homeFeedItems(data?.pages ?? [])
-      .map(mapFeedRepository)
-      .filter((repository): repository is RepositoryData => repository !== null)
-      .map((repository, index) => ({
-        feedId: getFeedItemIdentity(repository, index),
-        repository,
-      })) || [];
-  }, [data?.pages]);
+    return feedProjection.mapPages(data?.pages);
+  }, [data?.pages, feedProjection]);
 
   const handleQueueActivity = useCallback((event: ActivityInput, flushNow?: boolean) => {
     queryClient.setQueryData<InfiniteData<FeedPage, string | null>>(

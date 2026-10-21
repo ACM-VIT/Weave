@@ -46,7 +46,13 @@ type OptimisticContext = {
   submittedText: string;
 };
 
+export type CommentComposerState = { draft: string; error: string | null; pending: boolean };
+
 export interface CommentSheetProps {
+  composer?: {
+    state: CommentComposerState;
+    onChange: React.Dispatch<React.SetStateAction<CommentComposerState>>;
+  };
   isVisible: boolean;
   onClose: () => void;
   repoId: string;
@@ -120,6 +126,7 @@ export function CommentSheet({
   repoId,
   initialCommentCount = 0,
   onCommentCountChange,
+  composer,
 }: CommentSheetProps) {
   const { height, width } = useWindowDimensions();
   const reducedMotion = useReducedMotion();
@@ -133,8 +140,15 @@ export function CommentSheet({
   const closingRef = useRef(false);
   const listRef = useRef<FlatList<CommentRecord>>(null);
 
-  const [draft, setDraft] = useState('');
-  const [composerError, setComposerError] = useState<string | null>(null);
+  const [localComposer, setLocalComposer] = useState<CommentComposerState>({ draft: '', error: null, pending: false });
+  const { draft, error: composerError } = composer?.state ?? localComposer;
+  const setComposer = composer?.onChange ?? setLocalComposer;
+  const setDraft = useCallback((draft: string) => {
+    setComposer(current => ({ ...current, draft }));
+  }, [setComposer]);
+  const setComposerError = useCallback((error: string | null) => {
+    setComposer(current => ({ ...current, error }));
+  }, [setComposer]);
   const [localCountFloorByRepo, setLocalCountFloorByRepo] = useState<Record<string, number>>({});
 
   const commentsQuery = useQuery({
@@ -260,6 +274,7 @@ export function CommentSheet({
       );
     },
     onMutate: async (submittedText) => {
+      setComposer(current => ({ ...current, pending: true }));
       await queryClient.cancelQueries({ queryKey });
 
       const previousComments = queryClient.getQueryData<CommentRecord[]>(queryKey) ?? [];
@@ -315,20 +330,22 @@ export function CommentSheet({
       setDraft(context?.submittedText ?? submittedText);
       setComposerError(error.message);
     },
+    onSettled: () => setComposer(current => ({ ...current, pending: false })),
   });
 
+  const isPosting = createMutation.isPending || (composer?.state ?? localComposer).pending;
   const submitComment = useCallback(() => {
     const normalizedDraft = draft.trim();
-    if (!normalizedDraft || createMutation.isPending) return;
+    if (!normalizedDraft || isPosting) return;
     createMutation.mutate(normalizedDraft);
-  }, [createMutation, draft]);
+  }, [createMutation, draft, isPosting]);
 
   const displayedCount = Math.max(
     initialCommentCount,
     localCountFloorByRepo[repoId] ?? 0,
     comments.length,
   );
-  const composerDisabled = !draft.trim() || createMutation.isPending || !user?.user_id;
+  const composerDisabled = !draft.trim() || isPosting || !user?.user_id;
 
   const renderComment = useCallback(
     ({ item }: { item: CommentRecord }) => {
@@ -478,7 +495,7 @@ export function CommentSheet({
                 <CommentAvatar author={currentAuthor} userId={user?.user_id ?? 'guest'} />
                 <TextInput
                   accessibilityLabel="Add a comment"
-                  editable={!!user?.user_id && !createMutation.isPending}
+                  editable={!!user?.user_id && !isPosting}
                   maxLength={1000}
                   onChangeText={(text) => {
                     setDraft(text);
@@ -502,7 +519,7 @@ export function CommentSheet({
                     pressed && !composerDisabled && styles.sendButtonPressed,
                   ]}
                 >
-                  {createMutation.isPending ? (
+                  {isPosting ? (
                     <ActivityIndicator color={REFERENCE_THEME.text} size="small" />
                   ) : (
                     <ArrowUp

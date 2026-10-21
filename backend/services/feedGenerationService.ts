@@ -81,7 +81,7 @@ export class FeedGenerationService {
         });
         return 'stale';
       }
-      const projections = await this.persistence.listActiveRepositories(response.items.map((item) => item.repo_id));
+      const projections = await this.persistence.listActiveRepositoryIdentities(response.items.map((item) => item.repo_id));
       const summaries = new Map(projections.map((repo) => [repo.repo_id, repo.summary_id]));
       const activeRepoIds = new Set(projections.map((repo) => repo.repo_id));
       const usableItems = response.items.filter((item) => activeRepoIds.has(item.repo_id));

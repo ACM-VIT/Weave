@@ -26,12 +26,12 @@ import {
   FEEDBACK_ACTIONS,
   IMPRESSION_VISIBILITY_THRESHOLD_MS,
 } from '../../constants/feedbackActions';
-import { CommentSheet } from './CommentSheet';
+import { CommentSheet, type CommentComposerState } from './CommentSheet';
 import { SaveSwipeGestureContext } from './DescriptionCard';
 import { ReadmePopup } from './ReadmePopup';
 import { prepareReadmeSummaryDocument } from '@/utils/readme';
 import { RepositoryScreen } from './RepositoryScreen';
-import { SavePopup } from './save-popup';
+import { SavePopup, type SavePopupMutationState } from './save-popup';
 import {
   SAVE_REVEAL_WIDTH,
   SAVE_SWIPE_ACTIVATION_DISTANCE,
@@ -83,11 +83,14 @@ export function RepositoryFeedItem({
   ) => void;
 }) {
   const [isSaveVisible, setIsSaveVisible] = useState(false);
+  const [saveMutations, setSaveMutations] = useState<SavePopupMutationState>({ save: false, create: false });
   const [isShareVisible, setIsShareVisible] = useState(false);
   const [isReadmeVisible, setIsReadmeVisible] = useState(false);
   const [expandedSummary, setExpandedSummary] = useState<string | null>(null);
   const [isCommentsVisible, setIsCommentsVisible] = useState(false);
   const [isSaveRevealOpen, setIsSaveRevealOpen] = useState(false);
+  // Keep only lightweight composer state while the expensive sheet is unmounted.
+  const [commentComposer, setCommentComposer] = useState<CommentComposerState>({ draft: '', error: null, pending: false });
   const [isAppActive, setIsAppActive] = useState(
     AppState.currentState !== 'background' && AppState.currentState !== 'inactive',
   );
@@ -332,7 +335,8 @@ export function RepositoryFeedItem({
         />
       ) : null}
 
-      <SavePopup
+      {isSaveVisible ? <SavePopup
+        mutations={{ state: saveMutations, onChange: setSaveMutations }}
         isVisible={isSaveVisible}
         onClose={() => setIsSaveVisible(false)}
         onSaved={handleSavedChange}
@@ -340,8 +344,8 @@ export function RepositoryFeedItem({
         repoId={repository.id}
         repoName={repository.name}
         serveId={repository.serveId}
-      />
-      <ShareRepositorySheet
+      /> : null}
+      {isShareVisible ? <ShareRepositorySheet
         isVisible={isShareVisible}
         onClose={() => setIsShareVisible(false)}
         onShared={() => queueRepositoryActivity(
@@ -355,14 +359,15 @@ export function RepositoryFeedItem({
           githubUrl: repository.githubUrl,
           description: repository.description,
         }}
-      />
-      <CommentSheet
+      /> : null}
+      {isCommentsVisible ? <CommentSheet
+        composer={{ state: commentComposer, onChange: setCommentComposer }}
         initialCommentCount={commentCount}
         isVisible={isCommentsVisible}
         onClose={() => setIsCommentsVisible(false)}
         onCommentCountChange={setCommentCount}
         repoId={repository.id}
-      />
+      /> : null}
       {isReadmeVisible ? (
         <ReadmePopup
           isVisible
