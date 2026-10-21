@@ -1,3 +1,6 @@
+import type { SearchGroup, SearchPage } from '../models/search';
+import { infiniteQueryOptions } from '@tanstack/react-query';
+
 /** Abort both the debounce timer and transport when the observer is superseded. */
 export async function runSearchRequest<T>(signal: AbortSignal, delay: number, send: (signal: AbortSignal) => Promise<T>): Promise<T> {
   signal.throwIfAborted();
@@ -13,3 +16,35 @@ export async function runSearchRequest<T>(signal: AbortSignal, delay: number, se
 }
 export const MIN_SEARCH_LENGTH = 2;
 export const SEARCH_DEBOUNCE_MS = 300;
+
+/** Reuse cached searches across group/query changes; only an explicit restart rotates an ID. */
+export class SearchSessions {
+  private readonly ids = new Map<string, string>();
+  constructor(private readonly createId: () => string) {}
+  get(viewer: string | undefined, query: string, group: SearchGroup, restart = false): string {
+    const key = JSON.stringify([viewer, query.trim(), group]);
+    if (restart || !this.ids.has(key)) this.ids.set(key, this.createId());
+    return this.ids.get(key)!;
+  }
+}
+
+export function isSearchExpired(error: unknown): boolean {
+  return Boolean(error && typeof error === 'object' && 'status' in error && error.status === 410);
+}
+
+export function searchQueryOptions(input: {
+  viewer: string | undefined; query: string; group: SearchGroup; searchId: string;
+  composing: boolean; offline: boolean;
+  send: (cursor: string | null, signal: AbortSignal) => Promise<SearchPage>;
+}) {
+  return infiniteQueryOptions({
+    queryKey: ['explore-search', input.viewer, input.query, input.group, input.composing, input.searchId],
+    enabled: input.query.length >= MIN_SEARCH_LENGTH && !input.composing && !input.offline && Boolean(input.viewer),
+    queryFn: ({ pageParam, signal }) => runSearchRequest(signal, pageParam ? 0 : SEARCH_DEBOUNCE_MS,
+      activeSignal => input.send(pageParam, activeSignal)),
+    initialPageParam: null as string | null,
+    getNextPageParam: (page: SearchPage) => page.next_cursor ?? undefined,
+    retry: false,
+    staleTime: 30_000,
+  });
+}

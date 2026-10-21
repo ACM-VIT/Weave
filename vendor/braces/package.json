@@ -1,0 +1,15 @@
+{
+  "name": "@weave/braces-compat",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Local braces 3.0.3 compatibility backport with bounded nesting and AST traversal",
+  "main": "index.js",
+  "type": "commonjs",
+  "license": "MIT",
+  "engines": {
+    "node": ">=8"
+  },
+  "dependencies": {
+    "fill-range": "^7.1.1"
+  }
+}

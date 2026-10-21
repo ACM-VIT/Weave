@@ -16,6 +16,8 @@ import {
   type SavedUserProfileAttributes,
 } from '../utils/profile-state';
 import { restoreStartupSession } from './restore-session';
+import { useQueryClient } from '@tanstack/react-query';
+import { clearAccountQueryCache } from '../services/accountQueryCache';
 
 interface User {
   user_id: string;
@@ -46,6 +48,7 @@ type UserProfileRequestPolicy = {
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
+  const queryClient = useQueryClient();
   const [user, setUser] = useState<User | null>(null);
   const [isLoading, setIsLoading] = useState(true);
 
@@ -151,6 +154,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     authSessionLifecycle.assertCurrent(sessionGeneration);
     if (storedToken !== accessToken) throw new SessionChangedError();
 
+    clearAccountQueryCache(queryClient);
     setUser(null);
     setIsLoading(true);
     try {
@@ -158,11 +162,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     } finally {
       if (authSessionLifecycle.isCurrent(sessionGeneration)) setIsLoading(false);
     }
-  }, [fetchUserProfile]);
+  }, [fetchUserProfile, queryClient]);
 
   const signOut = useCallback(async () => {
     const previousUser = user;
     const logout = logoutRequest();
+    clearAccountQueryCache(queryClient);
     setUser(null);
     setIsLoading(false);
 
@@ -175,17 +180,18 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       }
       console.error('Failed to revoke server session', e);
     }
-  }, [user]);
+  }, [user, queryClient]);
 
   useEffect(() => authSessionLifecycle.subscribe(() => {
+    clearAccountQueryCache(queryClient);
     setUser(null);
     setIsLoading(false);
-  }), []);
+  }), [queryClient]);
 
   useEffect(() => {
-    setSessionExpiredHandler(() => setUser(null));
+    setSessionExpiredHandler(() => { clearAccountQueryCache(queryClient); setUser(null); });
     return () => setSessionExpiredHandler(null);
-  }, []);
+  }, [queryClient]);
 
   useEffect(() => {
     const timer = setTimeout(() => {

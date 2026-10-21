@@ -8,6 +8,6 @@ test('retroactive V2 migrations include collection storage before reconciliation
     '0020_repository_collection_actions',
     '0021_v2_reconciliation_indexes',
     '0024_repository_summary_artifacts',
-    '0025_explore_search',
+    '0024_explore_search',
   ]);
 });

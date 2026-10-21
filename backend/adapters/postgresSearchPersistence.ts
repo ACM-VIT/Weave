@@ -35,7 +35,8 @@ const peopleRows = `SELECT 'user:'||u.user_id::text AS id,u.user_id,NULL::uuid A
   WHERE p.status='active' AND p.claimed_by_user_id IS NULL AND p.profile_kind IN ('user','unknown')
   AND NOT EXISTS (SELECT 1 FROM app.users u WHERE
     (u.github_id IS NOT NULL AND u.github_id=p.provider_subject)
-    OR (u.github_identity_verified_at IS NOT NULL AND lower(u.github_handle)=lower(p.handle)))`;
+    OR ((u.github_id IS NULL OR p.provider_subject IS NULL)
+      AND u.github_identity_verified_at IS NOT NULL AND lower(u.github_handle)=lower(p.handle)))`;
 
 export class PostgresSearchPersistence implements SearchPersistence {
   async lexical(request: SearchRequest) {

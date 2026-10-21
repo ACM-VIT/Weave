@@ -1,15 +1,40 @@
-# Weave Explore
+---
+name: Weave
+colors:
+  background: '#000000'
+  surface: '#1C1C1E'
+  accent: '#30D158'
+  text: '#FFFFFF'
+typography:
+  sans:
+    fontFamily: 'Nata Sans, system-ui, sans-serif'
+omitted:
+  - section: spacing
+    reason: Existing runtime Spacing tokens remain authoritative.
+  - section: rounded
+    reason: Existing shared components own their corner geometry.
+---
 
-## Context and ownership
-Weave helps developers discover repositories, people and curated Lists. Phase 4 changes Explore only. Existing repository, user and board routes remain the destination contracts. Components in `src/components/explore` own Explore styling; `src/models/repository.ts` and `src/models/list.ts` own product data shapes.
+# Weave
 
-## Visual direction
-Follow the existing dark Weave surfaces and the supplied Spotify pill reference. Palette: canvas #000000, surface #1C1C1E, pill #272729, text #FFFFFF, secondary #B8B8C0, action #63E6A9. Typography uses the existing system family: 30/700 screen title, 18/700 featured repository names, 15/600 row names, 13/19 summaries, tabular ranking numerals. Spacing uses 8/12/16/20; cards use radius 16, pills 24. Tokens are local constants/inline styles in the existing Explore components, not a new global theme.
+Weave is a phone-first open-source discovery product. Preserve its existing dark,
+compact repository cards and green actions. The runtime source of truth is
+`src/constants/theme.ts`: `REFERENCE_THEME` for content, `APP_THEME` for the tab
+shell, and `Spacing` for layout. This document records those choices; it does not
+generate a second token system.
 
-## Signature and behavior
-Trending uses actual backend ranks: large medal-colored numerals and restrained outlines for the top three, compact rows below. Summaries are bounded to two lines for featured rows and one otherwise. Stars, forks, language and score remain visible; full trend features stay in the mapped model. Only backend-populated periods appear as controls.
+Explore reuses SearchBar, RepoCard and TabBar. Trending uses compact ranked rows
+in a virtualized list, with gold/silver/bronze reserved for the top three ranks.
+Repository results open inside Weave; people and lists use existing routes.
+The detail screen reads the existing repository API and presents README source
+as selectable text, without introducing another HTML renderer.
 
-Search pills: All, Repositories, People, Lists. Additional content types stay hidden until supported. All interleaves groups while preserving within-group ranking. Selection preserves the query. The search is transient native discovery state rather than persisted URL state, avoiding private query text in navigation/history. Clear acts immediately and restores input focus. The 300ms debounce and transport share an AbortSignal; two characters are required. Web IME composition pauses search. FlatList owns vertical scrolling; horizontal pill strips own only horizontal scrolling. Explicit Load more supports bounded pages. Cached results survive refresh failures, with loading, empty, offline, error and keyword-fallback feedback. Internal routes are mandatory for every result.
+Search stays local to the Explore tab, follows the existing English UI, and uses
+explicit Load more. Preserve loaded results offline; label keyword fallback;
+provide loading, empty, failure and retry states. Cancel superseded searches and
+restart expired pagination. Use accessible controls and the existing safe-area
+layout. Avoid decorative gradients, new font families and unrelated screen
+restyling in this feature.
 
 ## Phase 5 usability ownership
 The existing dark identity and component tokens remain authoritative. Phase 5 adds no new palette or typography system. `src/components/keyboard/keyboard-layout.tsx` owns focus-aware form scrolling and measured keyboard avoidance; form fields remain the existing Auth primitives. See `UX-CONTRACT.md` and `docs/handoffs/phase-5-usability.md` for behavior and verification. No visual-token drift was introduced; the onboarding green button uses dark text for readable contrast.

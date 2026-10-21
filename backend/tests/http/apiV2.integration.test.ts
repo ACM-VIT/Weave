@@ -89,7 +89,7 @@ async function seed(): Promise<void> {
   `;
   await sqlClient`
     INSERT INTO app.trending_snapshots (snapshot_id,period,source,computed_at,complete,active,activated_at)
-    VALUES ('00000000-0000-4000-8000-000000000204','test','http',now(),true,true,now())
+    VALUES ('00000000-0000-4000-8000-000000000204','daily','http',now(),true,true,now())
   `;
   await sqlClient`
     INSERT INTO app.trending_snapshot_items (snapshot_id,position,repo_id)
@@ -136,6 +136,11 @@ integration('registered v2 HTTP paths complete controlled integration flows', as
   const base = `http://127.0.0.1:${address.port}`;
   const token = jwt.sign({ userId, email: 'test@example.com' }, process.env.JWT_SECRET!);
   const authHeaders = { authorization: `Bearer ${token}`, 'content-type': 'application/json' };
+  // Recommendation fixtures belong to this isolated HTTP test, never the live catalogue.
+  const seedRecommendation = async () => getApplicationRuntime().queue.replace(
+    userId, await feedPersistence.getFeedVersion(userId),
+    [{repo_id:repoId,score:1,source:'semantic',model_version:'http-test-model',summary_id:null}],600,
+  );
   try {
     const publicShare = await fetch(`${base}/api/v2/repositories/${repoId}/share`);
     assert.equal(publicShare.status, 200);
@@ -148,6 +153,13 @@ integration('registered v2 HTTP paths complete controlled integration flows', as
     });
     assert.equal(spoofHandle.status, 400);
 
+    const unavailable = await fetch(`${base}/api/v2/feed`, {
+      method:'POST',headers:authHeaders,body:JSON.stringify({
+        feed_request_id:crypto.randomUUID(),session_id:sessionId,limit:10,cursor:null,
+      }),
+    });
+    assert.equal(unavailable.status,503,'Missing ML generations must not invent personalized recommendations');
+    await seedRecommendation();
     const feedRequestId = crypto.randomUUID();
     const feed = await fetch(`${base}/api/v2/feed`, {
       method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json', 'x-request-id': 'http-integration' },
@@ -170,7 +182,7 @@ integration('registered v2 HTTP paths complete controlled integration flows', as
         };
       }>;
     };
-    assert.equal(served.source, 'fallback');
+    assert.equal(served.source, 'personalized');
     assert.deepEqual(served.items.map((item) => item.repo_id), [repoId]);
     assert.equal(served.items[0].repository.owner_user_id, ownerUserId);
     assert.equal(served.items[0].repository.owner_profile_id, ownerProfileId);
@@ -301,7 +313,7 @@ integration('registered v2 HTTP paths complete controlled integration flows', as
     assert.deepEqual(exploreItem.selected_list_ids, []);
 
     const trendingRepositories = await fetch(
-      `${base}/api/v2/repositories/trending?period=test`,
+      `${base}/api/v2/repositories/trending?period=daily`,
       { headers: authHeaders },
     );
     assert.equal(trendingRepositories.status, 200);
@@ -399,6 +411,7 @@ integration('registered v2 HTTP paths complete controlled integration flows', as
     );
     assert.equal(unknownFollow.status, 404);
 
+    await seedRecommendation();
     const followedFeed = await fetch(`${base}/api/v2/feed`, {
       method: 'POST', headers: authHeaders,
       body: JSON.stringify({
@@ -539,6 +552,10 @@ integration('registered v2 HTTP paths complete controlled integration flows', as
     assert.equal(me.status, 200);
     assert.equal(((await me.json()) as { data: { user_id: string } }).data.user_id, userId);
 
+    const completedProfile = await fetch(`${base}/api/v2/users/me`, {
+      method:'PATCH',headers:authHeaders,body:JSON.stringify({full_name:'HTTP Test User',date_of_birth:'2000-01-01'}),
+    });
+    assert.equal(completedProfile.status,200);
     const onboard = await fetch(`${base}/api/v2/onboarding`, {
       method: 'PUT', headers: authHeaders,
       body: JSON.stringify({

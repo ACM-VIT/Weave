@@ -31,8 +31,8 @@ export function mergeExplorePages(pages: ExploreRepoPage[]): RepositoryDetail[] 
 export function mapTrendingRepository(payload: RepositoryApiPayload & { position?: unknown; score?: unknown; features?: unknown }, period: string, capturedAt: string | null): RepositoryDetail | null {
   const repo = mapRepositoryDetail(payload);
   if (!repo) return null;
-  const rank = Number(payload.position);
-  if (!Number.isInteger(rank) || rank < 0) return null;
+  const rank = payload.position;
+  if (typeof rank !== 'number' || !Number.isInteger(rank) || rank < 0) return null;
   return { ...repo, trend: {
     rank: rank + 1, score: typeof payload.score === 'number' && Number.isFinite(payload.score) ? payload.score : null,
     features: payload.features && typeof payload.features === 'object' && !Array.isArray(payload.features) ? payload.features as Record<string, unknown> : {},

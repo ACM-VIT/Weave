@@ -7,7 +7,8 @@ import test from 'node:test';
 import postgres from 'postgres';
 
 const integration=process.env.RUN_README_SUMMARY_INTEGRATION==='1'?test:test.skip;
-integration('targeted README upgrade preserves V2 migration history and does not skip Search later',async()=>{
+for (const history of ['readme-first', 'search-first'] as const)
+integration(`V2 migration histories reconcile safely: ${history}`,async()=>{
   const url=new URL(process.env.README_SUMMARY_TEST_DATABASE_URL??'');
   assert.ok(['127.0.0.1','localhost','[::1]'].includes(url.hostname));
   const admin=postgres(url.toString(),{max:1,prepare:false});
@@ -36,6 +37,19 @@ integration('targeted README upgrade preserves V2 migration history and does not
       });
       assert.equal(result.status,0,result.stderr||result.stdout);
     };
+    if (history === 'search-first') {
+      const entry=journal.entries.find((entry:{tag:string})=>entry.tag==='0024_explore_search');
+      const source=fs.readFileSync(new URL(entry.tag+'.sql',folder),'utf8');
+      await isolated.unsafe(source).simple();
+      await isolated`INSERT INTO drizzle.__drizzle_migrations(hash,created_at) VALUES(${crypto.createHash('sha256').update(source).digest('hex')},${entry.when})`;
+      // Simulate dev already migrated beyond the older summary timestamp.
+      run([]);
+      assert.ok((await isolated`SELECT to_regclass('app.repo_readme_summaries') AS present`)[0].present);
+      const hashes=await isolated`SELECT hash,count(*)::int AS n FROM drizzle.__drizzle_migrations GROUP BY hash`;
+      assert.ok(hashes.every(row=>row.n===1),'Applied hashes must not be duplicated');
+      run([]);
+      return;
+    }
     run(['--readme-summary-only']);
     assert.equal((await isolated`SELECT to_regclass('app.repo_readme_summaries') AS present`)[0].present,null,'Default is a dry run');
     run(['--readme-summary-only','--execute']);

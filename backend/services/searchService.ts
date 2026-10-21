@@ -18,19 +18,37 @@ export interface SearchPersistence {
 export class SearchInputError extends Error { readonly statusCode = 400; }
 export class SearchExpiredError extends Error { readonly statusCode = 410; }
 
+export type SearchSnapshot = { binding: string; refs: SearchRef[]; mode: 'hybrid' | 'lexical'; expires: number };
+export interface SearchSnapshotStore {
+  get(key: string): Promise<SearchSnapshot | undefined>;
+  set(key: string, snapshot: SearchSnapshot): Promise<void>;
+  getOrCreate?(binding: string, viewer: string, build: () => Promise<SearchSnapshot>, signal?: AbortSignal): Promise<{ key: string; snapshot: SearchSnapshot }>;
+}
+export class SearchRateLimitError extends Error { readonly statusCode = 429; }
+
+/** Local store for isolated tests. The HTTP controller supplies shared Redis storage. */
+export class MemorySearchSnapshotStore implements SearchSnapshotStore {
+  private readonly snapshots = new Map<string, SearchSnapshot>();
+  async get(key: string) { return this.snapshots.get(key); }
+  async set(key: string, snapshot: SearchSnapshot) {
+    if (this.snapshots.size >= 256) this.snapshots.delete(this.snapshots.keys().next().value!);
+    this.snapshots.set(key, snapshot);
+  }
+}
+
 export function parseSearchRequest(body: unknown): SearchRequest {
   if (!body || typeof body !== 'object' || Array.isArray(body)) throw new SearchInputError('Invalid search request.');
   const b = body as Record<string, unknown>;
   if (Object.keys(b).some(k => !['schema_version','search_id','query','group','limit','exclude_repo_ids','filters','cursor'].includes(k))) throw new SearchInputError('Unsupported search field.');
   const query = typeof b.query === 'string' ? b.query.trim() : '';
   const filters = (b.filters ?? {}) as Record<string, unknown>;
-  const group = b.group ?? 'all';
+  const group = b.group === undefined ? 'all' : b.group;
   const limit = b.limit ?? 24;
   const exclusions = b.exclude_repo_ids ?? [];
   const strings = (value: unknown, max: number, topic = false): value is string[] => Array.isArray(value)
     && value.length <= 10 && value.every(v => typeof v === 'string' && v === v.trim() && v.length >= 1 && v.length <= max && (!topic || /^[a-z0-9][a-z0-9-]*$/.test(v)));
   if (b.schema_version !== 2 || typeof b.search_id !== 'string' || !isValidUuid(b.search_id)
-    || query.length < 2 || query.length > 512 || !['all','repositories','people','lists'].includes(String(group))
+    || query.length < 2 || query.length > 512 || typeof group !== 'string' || !['all','repositories','people','lists'].includes(group)
     || !Number.isInteger(limit) || Number(limit) < 1 || Number(limit) > 50
     || !Array.isArray(exclusions) || exclusions.length > 500 || !exclusions.every(v => typeof v === 'string' && isValidUuid(v))
     || !filters || typeof filters !== 'object' || Array.isArray(filters)
@@ -75,40 +93,46 @@ export function preserveHydrationOrder(refs: SearchRef[], rows: SearchResult[]):
 }
 
 export class SearchService {
-  private snapshots = new Map<string, { binding: string; refs: SearchRef[]; mode: 'hybrid' | 'lexical'; expires: number }>();
   constructor(private readonly persistence: SearchPersistence,
     private readonly semantic: (request: SearchRequest, signal?: AbortSignal) => Promise<unknown>,
-    private readonly now = Date.now) {}
+    private readonly now = Date.now,
+    private readonly snapshots: SearchSnapshotStore = new MemorySearchSnapshotStore()) {}
 
   async search(viewer: string, request: SearchRequest, signal?: AbortSignal) {
-    for (const [key, value] of this.snapshots) if (value.expires <= this.now()) this.snapshots.delete(key);
-    const binding = JSON.stringify([viewer, request.search_id, request.query, request.group, request.filters, request.exclude_repo_ids]);
+    const binding = JSON.stringify([viewer, request.query, request.group,
+      [...request.filters.languages].sort(), [...request.filters.topics].sort(), [...request.exclude_repo_ids].sort()]);
     let key: string; let offset = 0;
     let snapshot;
     if (request.cursor) {
       const parts = request.cursor.split(':'); key = parts[0]; offset = Number(parts[1]);
-      snapshot = this.snapshots.get(key);
-      if (parts.length !== 2 || !Number.isInteger(offset) || offset < 0 || !snapshot || snapshot.binding !== binding || offset > snapshot.refs.length) throw new SearchExpiredError('Search expired. Search again.');
+      snapshot = await this.snapshots.get(key);
+      if (parts.length !== 2 || !Number.isInteger(offset) || offset < 0 || !snapshot || snapshot.expires <= this.now() || snapshot.binding !== binding || offset > snapshot.refs.length) throw new SearchExpiredError('Search expired. Search again.');
     } else {
-      const repositories = request.group === 'all' || request.group === 'repositories';
-      const [lexical, people, lists, semantic] = await Promise.all([
-        repositories ? this.persistence.lexical(request) : [],
-        ['all','people'].includes(request.group) ? this.persistence.people(request) : [],
-        ['all','lists'].includes(request.group) ? this.persistence.lists(viewer, request) : [],
-        repositories ? this.semantic(request, signal).then(body => ({ items: parseSemanticResponse(body, request.search_id), ok: true })).catch(() => ({ items: [], ok: false })) : { items: [], ok: true },
-      ]);
-      signal?.throwIfAborted();
-      const excluded = new Set(request.exclude_repo_ids);
-      const repos: SearchRef[] = hybridRank(lexical, semantic.items).filter(id => !excluded.has(id)).map(id => ({ type: 'repository', id }));
-      const refs: SearchRef[] = [];
-      // All interleaves groups; per-group order is retained and filters don't guess intent.
-      for (let i = 0; i < Math.max(repos.length, people.length, lists.length); i++) {
-        for (const group of [repos,people,lists]) if (group[i]) refs.push(group[i]);
+      const build = async (): Promise<SearchSnapshot> => {
+        const repositories = request.group === 'all' || request.group === 'repositories';
+        const [lexical, people, lists, semantic] = await Promise.all([
+          repositories ? this.persistence.lexical(request) : [],
+          ['all','people'].includes(request.group) ? this.persistence.people(request) : [],
+          ['all','lists'].includes(request.group) ? this.persistence.lists(viewer, request) : [],
+          repositories ? this.semantic(request, signal).then(body => ({ items: parseSemanticResponse(body, request.search_id), ok: true })).catch(() => ({ items: [], ok: false })) : { items: [], ok: true },
+        ]);
+        signal?.throwIfAborted();
+        const excluded = new Set(request.exclude_repo_ids);
+        const repos: SearchRef[] = hybridRank(lexical, semantic.items).filter(id => !excluded.has(id)).map(id => ({ type: 'repository', id }));
+        const refs: SearchRef[] = [];
+        // All interleaves groups; per-group order is retained and filters don't guess intent.
+        for (let i = 0; i < Math.max(repos.length, people.length, lists.length); i++) {
+          for (const group of [repos,people,lists]) if (group[i]) refs.push(group[i]);
+        }
+        return { binding, refs, mode: semantic.ok ? 'hybrid' as const : 'lexical' as const, expires: this.now()+120_000 };
+      };
+      if (this.snapshots.getOrCreate) {
+        ({ key, snapshot } = await this.snapshots.getOrCreate(binding, viewer, build, signal));
+      } else {
+        snapshot = await build();
+        key = crypto.randomUUID();
+        await this.snapshots.set(key, snapshot);
       }
-      snapshot = { binding, refs, mode: semantic.ok ? 'hybrid' as const : 'lexical' as const, expires: this.now()+120_000 };
-      key = crypto.randomUUID();
-      if (this.snapshots.size >= 256) this.snapshots.delete(this.snapshots.keys().next().value!);
-      this.snapshots.set(key, snapshot);
     }
     const items: SearchResult[] = [];
     // Revalidate every page against PostgreSQL; deleted/private results are skipped and topped up.

@@ -18,6 +18,7 @@ import {
 } from '@/api/boards';
 import RepoCard from '@/components/explore/RepoCard';
 import { loadPinnedRepositories } from '@/services/pinnedRepositoryStorage';
+import { listRepositoryQueryKey } from '@/services/accountQueryCache';
 import { useAuth } from '@/store/AuthContext';
 import { repositoryHref } from '@/utils/repository-links';
 import { mapPinnedRepository } from '@/utils/repository-mapper';
@@ -50,16 +51,9 @@ export default function BoardScreen() {
   const isCompact = width < 360;
 
   const repositoriesQuery = useQuery({
-    queryKey: isPinnedCollection
-      ? ['pinned-repositories', user?.user_id]
-      : isRepositoryCollection
-        ? ['collection-repositories', collectionId]
-        : ['board-repositories', boardId],
-    enabled: isPinnedCollection
-      ? Boolean(user?.user_id)
-      : isRepositoryCollection
-        ? Boolean(collectionId)
-        : Boolean(boardId),
+    queryKey: listRepositoryQueryKey(isPinnedCollection ? 'pinned' : isRepositoryCollection ? 'collection' : 'board',
+      user?.user_id, isPinnedCollection ? '' : isRepositoryCollection ? collectionId : boardId),
+    enabled: Boolean(user?.user_id) && (isPinnedCollection || Boolean(isRepositoryCollection ? collectionId : boardId)),
     staleTime: 30_000,
     // Surface failures promptly; the error state provides an explicit retry action.
     retry: false,

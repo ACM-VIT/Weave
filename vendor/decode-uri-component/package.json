@@ -1,0 +1,13 @@
+{
+  "name": "@weave/decode-uri-component-compat",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Local CommonJS compatibility build of upstream decode-uri-component 0.5.0",
+  "main": "index.js",
+  "type": "commonjs",
+  "license": "MIT",
+  "sideEffects": false,
+  "engines": {
+    "node": ">=14.16"
+  }
+}

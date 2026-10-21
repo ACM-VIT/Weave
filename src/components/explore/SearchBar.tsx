@@ -63,7 +63,7 @@ export default function SearchBar({
             borderWidth: 0,
           }}
         />
-        {value ? <Pressable accessibilityRole="button" accessibilityLabel="Clear search" onPress={() => { onChangeText(''); input.current?.focus(); }} style={{ minWidth: 48, minHeight: 48, alignItems: 'center', justifyContent: 'center' }}>
+        {value ? <Pressable accessibilityRole="button" accessibilityLabel="Clear search" onPress={() => { onCompositionChange?.(false); onChangeText(''); input.current?.focus(); }} style={{ minWidth: 48, minHeight: 48, alignItems: 'center', justifyContent: 'center' }}>
           <Text style={{ color: '#FFFFFF', fontSize: 22 }}>×</Text>
         </Pressable> : null}
       </View>

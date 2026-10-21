@@ -26,7 +26,7 @@ export const RETROACTIVE_V2_TAGS = [
   '0021_v2_reconciliation_indexes',
   // A targeted README migration may record 0026 before unrelated Search DDL.
   '0024_repository_summary_artifacts',
-  '0025_explore_search',
+  '0024_explore_search',
 ] as const;
 
 // Some parent environments contain the full v2 structures but were created
