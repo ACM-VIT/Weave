@@ -3,101 +3,307 @@
   "original_repository_count": 1589,
   "final_repository_count": 1599,
   "newly_ingested": 10,
-  "persisted_current_summaries": 0,
+  "persisted_current_summaries": 10,
   "source": "Public GitHub repository metadata and complete README via REST API",
   "legacy_table_used": false,
   "recommendation_ml_called": false,
-  "provider": "OpenRouter",
+  "provider": "Gemini API",
   "repositories": [
     {
       "repo_id": "0f7d2d53-5505-4e54-8124-521477a2bb69",
       "full_name": "ayghri/i-have-adhd",
-      "summary_id": null,
-      "content_version": null,
-      "model_version": null,
-      "artifact": null,
-      "current_source": null
+      "summary_id": "ef7d4fdb-0a15-4df7-a7f9-97c9e58b49c3",
+      "content_version": 1,
+      "content_hash": "b7e97491f3b98e27a7f7c46175f5cff6b9829f2c9d4095ad57702e3e3c5c2b2c",
+      "prompt_version": "readme-digest-v3",
+      "model_version": "gemini:gemini-2.5-flash",
+      "artifact": {
+        "overview": "This skill for coding assistants aims to provide ADHD-friendly outputs by reformatting responses to be direct and actionable. It prevents the assistant from burying the answer in verbose explanations, focusing instead on immediate next steps. The skill structures information clearly, making it easier for developers to quickly grasp and act upon the provided guidance without unnecessary cognitive load.",
+        "use_cases": [
+          "Developers using coding assistants who prefer concise, action-oriented instructions to avoid information overload.",
+          "Streamlining debugging processes by receiving direct commands for code modifications and testing."
+        ],
+        "capabilities": [
+          "Prioritizes the next immediate action, ensuring the most critical step is presented first.",
+          "Numbers multi-step tasks for clear, sequential execution, improving task comprehension.",
+          "Suppresses tangents and unnecessary conversational elements like preambles or closers.",
+          "Ends responses with a single, concrete next step to guide the user forward.",
+          "Provides matter-of-fact error reporting without additional commentary."
+        ],
+        "considerations": []
+      },
+      "current_source": true,
+      "latest_job_status": "completed",
+      "word_count": 136,
+      "numeric_claims_to_review": []
     },
     {
       "repo_id": "b37bf8e0-5abb-434a-b6f4-ff6e32ecff7b",
       "full_name": "ComposioHQ/awesome-claude-skills",
-      "summary_id": null,
-      "content_version": null,
-      "model_version": null,
-      "artifact": null,
-      "current_source": null
+      "summary_id": "7ec8be6e-039e-4147-a2b0-facd84dc9678",
+      "content_version": 1,
+      "content_hash": "49c2e271c8f144a4a2a2ba297242caa71df5dd5c47642cfcadaedf22bdf9ed03",
+      "prompt_version": "readme-digest-v3",
+      "model_version": "gemini:gemini-3.5-flash",
+      "artifact": {
+        "overview": "This repository provides a curated collection of over 1000 production-ready skills and plugins designed for Claude AI, Claude Code, and various AI coding agents. The skills load progressively, presenting minimal initial token overhead and expanding to full instruction files and references on demand. Coupled with the Composio MCP Gateway, the project allows AI agents to securely interact with third-party tools and platforms.",
+        "use_cases": [
+          "Automating software engineering workflows such as git operations, test fixes, web fuzzing, and changelog generation",
+          "Managing third-party cloud applications, storage services, and e-commerce platforms like Shopify, Stripe, and Google Workspace"
+        ],
+        "capabilities": [
+          "Loads skills progressively, keeping session initialization context small while enabling on-demand expansion",
+          "Provides pre-built workflow skills and integrations for automated operations across numerous SaaS tools",
+          "Connects AI agents to external applications with built-in authentication, access controls, and audit logs"
+        ],
+        "considerations": [
+          "Full skill context and auxiliary scripts are only retrieved when the agent determines a skill is relevant to the current task"
+        ]
+      },
+      "current_source": true,
+      "latest_job_status": "completed",
+      "word_count": 152,
+      "numeric_claims_to_review": []
     },
     {
       "repo_id": "82948977-2547-40c7-bb67-0a3b43e9323a",
       "full_name": "DeusData/codebase-memory-mcp",
-      "summary_id": null,
-      "content_version": null,
-      "model_version": null,
-      "artifact": null,
-      "current_source": null
+      "summary_id": "50525f5e-d58f-458a-8339-ee63052b1169",
+      "content_version": 1,
+      "content_hash": "beaf1cf46fac14e87d49c8c594dd94c82592db724366e9eeb1750a358fc422f4",
+      "prompt_version": "readme-digest-v3",
+      "model_version": "gemini:gemini-2.5-flash",
+      "artifact": {
+        "overview": "codebase-memory-mcp is an MCP server that creates a persistent local knowledge graph of a repository, connecting code, documentation, configuration, and infrastructure. It provides structural context for developers and AI agents, enabling them to understand codebases, trace dependencies, and assess change impacts. The core server is complemented by CBM Lens, an optional visual companion for exploring the graph.",
+        "use_cases": [
+          "Developers can use it to understand unfamiliar features, follow calls across services, and trace deployments to their source.",
+          "AI agents can leverage the structural context provided by MCP to enhance their code comprehension and generation tasks.",
+          "Assess which parts of a project a change could affect, aiding in impact analysis and focused CI runs."
+        ],
+        "capabilities": [
+          "Connects code, documentation, configuration, and infrastructure into a persistent local knowledge graph.",
+          "Exposes 17 MCP tools via a native C backend, with Hybrid LSP type resolution for supported languages.",
+          "Offers CBM Lens (open beta) for visual exploration of the code graph, including architecture maps and source readers.",
+          "Supports 45 automatic or conditional client integrations for various coding agents and tools.",
+          "Enables local code chat, allowing users to query the graph and ask questions about selected code."
+        ],
+        "considerations": [
+          "Source analysis and graph storage run locally on the user's machine; CBM Lens can optionally download a model for on-device browser AI.",
+          "Synchronous indexing of large repositories may time out in some MCP clients, requiring the use of an asynchronous indexing mode."
+        ]
+      },
+      "current_source": true,
+      "latest_job_status": "completed",
+      "word_count": 229,
+      "numeric_claims_to_review": []
     },
     {
       "repo_id": "a82f5f66-d316-4abd-b82e-9b3f6ed5e12c",
       "full_name": "DietrichGebert/ponytail",
-      "summary_id": null,
-      "content_version": null,
-      "model_version": null,
-      "artifact": null,
-      "current_source": null
+      "summary_id": "27d0cd72-0104-422f-a2db-2c70ae0640de",
+      "content_version": 1,
+      "content_hash": "8b1515bc1fc02353ab4721e031a4626a5337179ce65cecf9fe38661dfc508f22",
+      "prompt_version": "readme-digest-v3",
+      "model_version": "gemini:gemini-3.1-flash-lite",
+      "artifact": {
+        "overview": "Ponytail is an AI agent skill designed to optimize code generation by mimicking the efficiency of a senior developer. It prioritizes writing only necessary code while maintaining critical standards like validation, security, and error handling. By reducing unnecessary bloat, it lowers token usage, latency, and costs while simultaneously improving test coverage for complex logic.",
+        "use_cases": [
+          "Optimizing AI agent performance in FastAPI and React repositories to reduce operational costs and latency.",
+          "Managing technical debt by automatically cataloging deliberate code shortcuts for future review and refactoring."
+        ],
+        "capabilities": [
+          "Reduces code volume, development time, and token consumption without sacrificing essential security or validation logic.",
+          "Provides a real-time audit band in Claude Code to track task costs, token usage, and testing.",
+          "Tracks deliberate technical shortcuts using comments, which are aggregated into a ledger via specific CLI commands.",
+          "Traces real code flow before implementation to ensure solutions are efficient rather than just brief."
+        ],
+        "considerations": [
+          "Requires a skill-capable host environment such as Claude Code, Cursor, or compatible CLI agent tools.",
+          "Only install official versions from the specified GitHub repository or npm package for security."
+        ]
+      },
+      "current_source": true,
+      "latest_job_status": "completed",
+      "word_count": 174,
+      "numeric_claims_to_review": []
     },
     {
       "repo_id": "8c030bfe-10b3-48f1-8583-396379e52f28",
       "full_name": "files-community/Files",
-      "summary_id": null,
-      "content_version": null,
-      "model_version": null,
-      "artifact": null,
-      "current_source": null
+      "summary_id": "5b49cd25-291f-4ddf-b3d7-6f62723047e6",
+      "content_version": 1,
+      "content_hash": "69c42bb0b7b95d8da4b6c98518432ed232da9ddc7f06dbbc4b1e3f7b74b805f2",
+      "prompt_version": "readme-digest-v3",
+      "model_version": "gemini:gemini-3.5-flash",
+      "artifact": {
+        "overview": "Files is an open-source, community-driven file manager for Windows designed to improve file and folder organization. It combines an intuitive modern user interface with robust multitasking features to deliver a modern alternative to the default Windows file management experience.",
+        "use_cases": [
+          "Replacing or enhancing the default Windows file management experience.",
+          "Testing upcoming features early by running preview builds alongside stable releases."
+        ],
+        "capabilities": [
+          "Delivers multitasking experiences for efficient file and folder organization.",
+          "Supports file tagging to simplify file categorization and retrieval.",
+          "Provides deep system integrations alongside a modern user design."
+        ],
+        "considerations": [
+          "Requires following specific repository guidelines when submitting issues or pull requests."
+        ]
+      },
+      "current_source": true,
+      "latest_job_status": "completed",
+      "word_count": 97,
+      "numeric_claims_to_review": []
     },
     {
       "repo_id": "1bc4cc8f-d751-45b9-bb77-6a33541d794c",
       "full_name": "hoppscotch/hoppscotch",
-      "summary_id": null,
-      "content_version": null,
-      "model_version": null,
-      "artifact": null,
-      "current_source": null
+      "summary_id": "6e678994-4567-4a01-9d6a-aee38a5849c6",
+      "content_version": 1,
+      "content_hash": "5a19771a0cff73e1118ab9d490e0363abd083b4abd377d21941304f7eaf11ea3",
+      "prompt_version": "readme-digest-v3",
+      "model_version": "gemini:gemini-2.5-flash",
+      "artifact": {
+        "overview": "Hoppscotch is an open-source API development ecosystem designed for testing and interacting with APIs. It offers a lightweight, fast, and minimalistic user interface, functioning as a Progressive Web App (PWA) and available across web, desktop, and CLI platforms. It provides real-time request/response handling and supports various authentication methods, making it a versatile tool for developers.",
+        "use_cases": [
+          "Developers can use Hoppscotch to test API endpoints and observe responses in real-time during development.",
+          "Teams can leverage its synchronization features to share API requests and environments across different devices.",
+          "Automating API testing workflows using the Hoppscotch CLI for integration into CI/CD pipelines."
+        ],
+        "capabilities": [
+          "Supports multiple authentication methods including OAuth 2.0 and OIDC Access Token/PKCE.",
+          "Allows real-time sending of requests and receiving responses, including Server-Sent Events.",
+          "Enables pre-request scripting with JavaScript for setting environment variables or dynamic parameters.",
+          "Provides post-response scripting to parse data, filter headers, and set environment variables.",
+          "Offers data synchronization across devices when signed in, enhancing collaborative workflows."
+        ],
+        "considerations": []
+      },
+      "current_source": true,
+      "latest_job_status": "completed",
+      "word_count": 155,
+      "numeric_claims_to_review": []
     },
     {
       "repo_id": "e211f8d5-4a80-450f-b8c5-6d68330446fe",
       "full_name": "morluto/rea",
-      "summary_id": null,
-      "content_version": null,
-      "model_version": null,
-      "artifact": null,
-      "current_source": null
+      "summary_id": "42925a86-83ee-46d8-9098-6042e248c26c",
+      "content_version": 1,
+      "content_hash": "2eb83865ba36124a4a2e8a1e949407e1f0ebbf98dc43bede53e72af84a7c8a53",
+      "prompt_version": "readme-digest-v3",
+      "model_version": "gemini:gemini-3.1-flash-lite",
+      "artifact": {
+        "overview": "REA is a Model Context Protocol (MCP) tool designed to facilitate reverse engineering across binaries, applications, and runtime behaviors. By integrating with AI agents, it allows developers to inspect targets, trace code execution, and generate evidence-based findings. It bridges the gap between high-level application analysis and low-level binary inspection, enabling users to understand complex software functionality efficiently.",
+        "use_cases": [
+          "Tracing the Electron clipboard bridge to understand how specific application features function internally.",
+          "Analyzing native binaries to uncover hidden logic or verify software behavior at the machine level."
+        ],
+        "capabilities": [
+          "Integrates with AI agents via MCP to inspect targets and trace relevant application code.",
+          "Supports offline native-binary inspection by leveraging external tools like GNU objdump and Rizin.",
+          "Provides evidence-based findings that agents use to explain behavior or write implementation tests."
+        ],
+        "considerations": [
+          "Users must legally obtain and be authorized to use commercial reverse engineering tools like IDA Pro.",
+          "REA does not install or update external providers like GNU objdump or Rizin for binary inspection."
+        ]
+      },
+      "current_source": true,
+      "latest_job_status": "completed",
+      "word_count": 157,
+      "numeric_claims_to_review": []
     },
     {
       "repo_id": "42210235-cf69-4549-99b3-6dfdda84cf74",
       "full_name": "sickn33/agentic-awesome-skills",
-      "summary_id": null,
-      "content_version": null,
-      "model_version": null,
-      "artifact": null,
-      "current_source": null
+      "summary_id": "a557d1d5-c792-40a8-87ad-6724a7ac45ec",
+      "content_version": 1,
+      "content_hash": "cc815b4a47017a29de38faa589066ef18974348c9a620e2433e017ba82381a2f",
+      "prompt_version": "readme-digest-v3",
+      "model_version": "gemini:gemini-2.5-flash",
+      "artifact": {
+        "overview": "AAS Core is an agent-first control plane for managing over 2,700 agentic skills, provided as installable SKILL.md playbooks. It enables local catalog discovery, agent-owned skill selection, stack validation, and plan preview for agents like Codex or Claude. The system helps users find reusable instructions, inspect complete skill files, and maintain a precise, reviewable skill set without ranking or recommending skills.",
+        "use_cases": [
+          "Agents can search for and record chosen skills, then preview a plan before execution.",
+          "Developers can integrate individual SKILL.md files into host integrations using the v1 schema and compatibility mirror."
+        ],
+        "capabilities": [
+          "Discover and inspect a local catalog of over 2,700 agentic skills.",
+          "Enable agents to select skills and validate the operational stack.",
+          "Preview agent plans before applying changes to a target.",
+          "Integrate with host systems using a direct-host discovery manifest (skills_index.json)."
+        ],
+        "considerations": [
+          "Apply and recovery features are currently experimental.",
+          "The project is independent and not affiliated with or endorsed by Google."
+        ]
+      },
+      "current_source": true,
+      "latest_job_status": "completed",
+      "word_count": 149,
+      "numeric_claims_to_review": [
+        "2,700"
+      ]
     },
     {
       "repo_id": "50228284-19be-4503-920d-c1dab7c89f03",
       "full_name": "tt-a1i/archify",
-      "summary_id": null,
-      "content_version": null,
-      "model_version": null,
-      "artifact": null,
-      "current_source": null
+      "summary_id": "2c74faf8-9d50-4a35-b646-f0f1b82b622b",
+      "content_version": 1,
+      "content_hash": "4e8df3fd5eedea5ffedeaea245fe7dd8c1f362c685d8cf512bebea1b9f3e13a3",
+      "prompt_version": "readme-digest-v3",
+      "model_version": "gemini:gemini-2.5-flash",
+      "artifact": {
+        "overview": "Archify is an open-source tool that transforms ideas, plans, or codebases into interactive HTML diagrams. It functions as an agent skill for AI models like Claude Code and Codex, enabling users to describe concepts and generate visual representations. These diagrams are explorable, customizable, and shareable, making complex systems or information more accessible for understanding and communication.",
+        "use_cases": [
+          "Mapping a repository into an interactive diagram to understand its structure and components.",
+          "Visualizing complex systems or plans, such as travel itineraries or learning maps, for better comprehension.",
+          "Creating communication artifacts from technical intent, like workflows or timelines, for clear presentation."
+        ],
+        "capabilities": [
+          "Generates interactive HTML diagrams from natural language descriptions provided to an AI agent.",
+          "Creates multi-panel explainers with conclusions, validated diagrams, tables, steps, and code for comprehensive answers.",
+          "Supports iterative refinement of diagrams through focused requests like \"add Redis\" or \"highlight the rollback path\".",
+          "Provides source-backed system maps, allowing exploration of diagrams and tracing paths to source links."
+        ],
+        "considerations": [
+          "Archify is not a general-purpose drawing editor or a Mermaid theme; it focuses on converting technical intent into diagrams."
+        ]
+      },
+      "current_source": true,
+      "latest_job_status": "completed",
+      "word_count": 173,
+      "numeric_claims_to_review": []
     },
     {
       "repo_id": "ca85b293-6c57-480a-87e8-d726e2c16f24",
       "full_name": "usebruno/bruno",
-      "summary_id": null,
-      "content_version": null,
-      "model_version": null,
-      "artifact": null,
-      "current_source": null
+      "summary_id": "224ebfc9-67fc-4418-8678-9c36e0d30892",
+      "content_version": 1,
+      "content_hash": "883b96995c3eaa8718cee8940748c288a3f4d5fe202325c4c3a30c54d73e056f",
+      "prompt_version": "readme-digest-v3",
+      "model_version": "gemini:gemini-3.1-flash-lite",
+      "artifact": {
+        "overview": "Bruno is an open-source API client designed as a lightweight alternative to tools like Postman. It stores API collections directly on your local filesystem using the Bru markup language. By keeping data offline and local, it enables developers to manage API requests using standard version control systems like Git for collaboration.",
+        "use_cases": [
+          "Managing and testing API collections locally while maintaining full control over data privacy.",
+          "Automating API testing workflows within CI/CD pipelines using the command-line interface."
+        ],
+        "capabilities": [
+          "Stores API collections as plain text files directly on your local filesystem for easy management.",
+          "Integrates seamlessly with Git or any version control system to facilitate team collaboration on collections.",
+          "Includes a command-line interface for executing API collections within automated testing and CI/CD pipelines."
+        ],
+        "considerations": [
+          "The application is strictly offline-only, with no plans to implement cloud-sync functionality."
+        ]
+      },
+      "current_source": true,
+      "latest_job_status": "completed",
+      "word_count": 131,
+      "numeric_claims_to_review": []
     }
-  ]
+  ],
+  "generation_verified_at": "2026-10-21T13:35:51.705Z",
+  "latest_prompt_summaries": 10
 }

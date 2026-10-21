@@ -6,10 +6,12 @@ import { promisify } from 'node:util';
 import { sqlClient } from '../db/index.js';
 import type { RepositoryUpsert } from '../contracts/ingestion.v2.js';
 import { isRepositoryUpsert } from '../utils/ingestionValidation.js';
-import { OpenRouterReadmeSummaryGenerator } from '../services/readmeSummaryGenerator.js';
+import { createReadmeSummaryGenerator } from '../services/readmeSummaryGenerator.js';
 import { ReadmeSummaryService } from '../services/readmeSummaryService.js';
 
 const execute=process.argv.includes('--execute');
+// Fail invalid provider configuration before any canonical ingestion writes.
+const generator=execute ? createReadmeSummaryGenerator() : undefined;
 const count=Number(process.argv.find((arg)=>arg.startsWith('--count='))?.slice(8)??10);
 if (!Number.isInteger(count)||count<1||count>10) throw new Error('--count must be 1–10');
 const target=new URL(process.env.WEAVE_TEST_BACKEND_URL||'http://127.0.0.1:5001');
@@ -80,7 +82,7 @@ try {
       if(!repoId)throw new Error('V2 ingestion returned no canonical mapping');
       ids.push(repoId);console.log(JSON.stringify({status:'ingested',full_name:record.full_name,repo_id:repoId}));
     }
-    const service=new ReadmeSummaryService(new OpenRouterReadmeSummaryGenerator());
+    const service=new ReadmeSummaryService(generator!);
     for(let index=0;index<ids.length;index++)console.log(JSON.stringify(await service.processOne(ids)));
     const rows=await sqlClient`SELECT repo.repo_id,repo.full_name,digest.summary_id,digest.content_version,digest.model_version,digest.artifact,
       digest.content_hash=content.content_hash AND digest.content_version=content.content_version AS current_source
@@ -91,7 +93,7 @@ try {
     const report={generated_at:new Date().toISOString(),original_repository_count:originalCount,final_repository_count:after,
       newly_ingested:ids.length,persisted_current_summaries:rows.filter((row)=>row.summary_id&&row.current_source).length,
       source:'Public GitHub repository metadata and complete README via REST API',legacy_table_used:false,
-      recommendation_ml_called:false,provider:'OpenRouter',repositories:rows};
+      recommendation_ml_called:false,provider:process.env.README_SUMMARY_PROVIDER||'openrouter',repositories:rows};
     if(reportPath)await fs.writeFile(reportPath,JSON.stringify(report,null,2)+'\n');
     console.log(JSON.stringify({status:'acceptance_report',new_repositories:ids.length,current_summaries:report.persisted_current_summaries,repository_count:after}));
     if(report.persisted_current_summaries!==count)throw new Error('Some summary jobs did not complete; inspect scoped job statuses and retry after backoff');

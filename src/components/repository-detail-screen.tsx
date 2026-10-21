@@ -101,7 +101,7 @@ function goBack() {
 export function RepositoryDetailScreen({ repositoryId }: { repositoryId: string }) {
   const { width } = useWindowDimensions();
   const insets = useSafeAreaInsets();
-  const { user } = useAuth();
+  const { user, isLoading: isAuthLoading } = useAuth();
   const viewerUserId = user?.user_id;
   const queryClient = useQueryClient();
   const [saveVisible, setSaveVisible] = useState(false);
@@ -171,7 +171,7 @@ export function RepositoryDetailScreen({ repositoryId }: { repositoryId: string 
     );
   }
 
-  if (repositoryQuery.isLoading) {
+  if (isAuthLoading || repositoryQuery.isLoading) {
     return (
       <View style={[styles.stateScreen, { paddingTop: insets.top }]}>
         <ActivityIndicator color={REFERENCE_THEME.accent} size="large" />

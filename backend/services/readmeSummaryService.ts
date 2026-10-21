@@ -52,7 +52,7 @@ export class ReadmeSummaryService {
       WITH candidate AS (
         SELECT job.job_id FROM telemetry.readme_summary_jobs job
         WHERE ((job.status='pending' AND job.available_at<=now())
-          OR (job.status='claimed' AND job.claimed_at<now()-interval '3 minutes'))
+          OR (job.status='claimed' AND job.claimed_at<now()-interval '5 minutes'))
           AND job.prompt_version=${README_SUMMARY_PROMPT_VERSION}
           AND (${repoIds ?? null}::uuid[] IS NULL OR job.repo_id=ANY(${repoIds ?? []}::uuid[]))
         ORDER BY job.created_at FOR UPDATE SKIP LOCKED LIMIT 1
