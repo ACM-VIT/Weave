@@ -84,5 +84,29 @@
     "highlights": [
       "🚀 Repository activity, ownership decisions, and release progress in shared engineering workspaces"
     ]
+  },
+  {
+    "name": "versioned GPL v3 or later label",
+    "summary": "GPL v3 or later. Teams can redistribute the software.",
+    "valid": false
+  },
+  {
+    "name": "versioned GPL v3 plus label",
+    "summary": "GPL v3+. Teams can redistribute the software.",
+    "valid": false
+  },
+  {
+    "name": "versioned GPL label as highlight",
+    "summary": "A workspace helps maintainers coordinate repository changes. Teams can inspect project activity.",
+    "highlights": [
+      "GPL v3 or later",
+      "GPL v3+"
+    ],
+    "valid": false
+  },
+  {
+    "name": "GPL version in ordinary prose",
+    "summary": "Tools compare GPL v3+ compatibility across projects. Teams can track policy changes.",
+    "valid": true
   }
 ]

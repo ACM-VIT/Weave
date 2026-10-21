@@ -85,7 +85,7 @@ function hasForbiddenCardContent(value: string): boolean {
     || /!?\[[^\]\n]*\]\([^)\n]+\)/u.test(value)
     || /(?:^|[.!?]\s+|\n)[ \t]*(?:installation(?: instructions?)?|license(?: text)?|contribut(?:ing|ors?)(?: section)?|changelog|table of contents|API (?:reference|documentation))\s*[:\-]/i.test(value)
     || /\b(?:licensed under|MIT License|Apache License|GNU (?:General Public )?License)\b/i.test(value)
-    || /(?:^|[.!?]\s+|\n)\s*GPL(?:[ -]?v?\d+(?:\.\d+)*)?\s*(?:[.!?:]|$)/i.test(value)
+    || /(?:^|[.!?]\s+|\n)[ \t]*GPL(?:[ \t-]*v?\d+(?:\.\d+)*(?:\+|[ \t]+or[ \t]+later)?|[ \t]*\+|[ \t]+or[ \t]+later)?[ \t]*(?:[.!?:]|$)/i.test(value)
     || /\b(?:npm|pnpm|yarn|pip|pipx|uv|cargo|go|brew)\s+(?:install|add|run|get)\b/i.test(value);
 }
 
