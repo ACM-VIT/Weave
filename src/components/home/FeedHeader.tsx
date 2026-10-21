@@ -6,7 +6,7 @@ import { REFERENCE_THEME } from '@/constants/theme';
 
 const WEAVE_LOGO = require('../../../assets/images/logo/weavelogo.png');
 
-export function FeedHeader({ pageWidth }: { pageWidth: number }) {
+export function FeedHeader({ pageWidth, discovery = false }: { pageWidth: number; discovery?: boolean }) {
   const insets = useSafeAreaInsets();
   const compact = pageWidth < 360;
   const outerGutter = pageWidth < 330 ? 10 : 14;
@@ -59,6 +59,8 @@ export function FeedHeader({ pageWidth }: { pageWidth: number }) {
             Wea<Text style={styles.brandAccent}>v</Text>e
           </Text>
         </View>
+        {discovery ? <Text accessibilityLabel="Recently updated repositories. Not personalized recommendations."
+          style={styles.sourceLabel}>Recently updated{'\n'}Not personalized</Text> : null}
       </View>
     </View>
   );
@@ -79,6 +81,10 @@ const styles = StyleSheet.create({
     top: 0,
   },
   topBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 8,
     position: 'absolute',
     top: 0,
   },
@@ -100,6 +106,14 @@ const styles = StyleSheet.create({
   brandCompact: {
     fontSize: 26,
     lineHeight: 32,
+  },
+  sourceLabel: {
+    color: REFERENCE_THEME.textSecondary,
+    fontFamily: 'NataSans-Regular',
+    fontSize: 11,
+    lineHeight: 15,
+    flexShrink: 1,
+    textAlign: 'right',
   },
   brandAccent: {
     color: '#63E08A',

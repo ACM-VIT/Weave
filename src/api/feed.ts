@@ -1,4 +1,5 @@
 import { apiV2Raw } from './client';
+import type { RepositoryApiPayload } from './repositories';
 import { createUuid, getAppSessionId } from '../utils/uuid';
 
 export type FeedRepositoryPayload = {
@@ -64,13 +65,15 @@ type FeedResponseV2 = {
 };
 
 export type FeedPage = {
-  items: FeedRepositoryPayload[];
+  items: RepositoryApiPayload[];
+  mode?: 'personalized' | 'discovery';
   nextCursor: string | null;
 };
 
 export async function fetchFeed(
   token: string,
   cursor: string | null = null,
+  options: { retryUnavailable?: boolean } = {},
 ): Promise<FeedPage> {
   const feedRequestId = createUuid();
   const body = {
@@ -105,6 +108,7 @@ export async function fetchFeed(
       };
       const shouldRetry = failure.status === 409
         || (failure.status === 503
+          && options.retryUnavailable !== false
           && failure.code === 'PERSONALIZED_FEED_UNAVAILABLE'
           && failure.retryable === true);
       if (!shouldRetry || attempt === 2) throw error;

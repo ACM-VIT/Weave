@@ -24,7 +24,9 @@ import {
   type InfiniteData,
 } from '@tanstack/react-query';
 import * as SecureStore from '../../utils/storage';
-import { fetchFeed, type FeedPage } from '@/api/feed';
+import { type FeedPage } from '@/api/feed';
+import { fetchHomeFeed } from '@/api/home-feed';
+import { homeFeedItems, canContinueHomeFeed } from '@/utils/home-feed';
 import { type ActivityInput } from '@/api/activity';
 import { useAuth } from '@/store/AuthContext';
 import { getActivityOutbox } from '@/services/activityOutboxClient';
@@ -45,7 +47,7 @@ const VIEWABILITY_CONFIG = { itemVisiblePercentThreshold: 50 } as const;
 const ACTIVITY_FLUSH_INTERVAL_MS = 8_000;
 
 export default function HomeScreen() {
-  const { user } = useAuth();
+  const { user, isLoading: isAuthLoading } = useAuth();
   const queryClient = useQueryClient();
   const feedQueryKey = useMemo(() => getFeedQueryKey(user?.user_id), [user?.user_id]);
   const feedInvalidationGenerationRef = useRef(0);
@@ -76,7 +78,7 @@ export default function HomeScreen() {
     const token = await SecureStore.getItemAsync('access_token');
     if (!token) throw new Error('No token');
     
-    return fetchFeed(token, pageParam);
+    return fetchHomeFeed(token, pageParam);
   };
 
   const {
@@ -94,6 +96,7 @@ export default function HomeScreen() {
     queryFn: fetchFeedPage,
     enabled: Boolean(user?.user_id),
     staleTime: Infinity,
+    retry: 1,
     refetchOnMount: false,
     refetchOnReconnect: false,
     refetchOnWindowFocus: false,
@@ -102,8 +105,7 @@ export default function HomeScreen() {
   });
 
   const feedItems = useMemo(() => {
-    return data?.pages
-      .flatMap((page) => page.items)
+    return homeFeedItems(data?.pages ?? [])
       .map(mapFeedRepository)
       .filter((repository): repository is RepositoryData => repository !== null)
       .map((repository, index) => ({
@@ -221,7 +223,7 @@ export default function HomeScreen() {
     );
   }, [responsiveWidth]);
 
-  if (isLoading && feedItems.length === 0) {
+  if ((isAuthLoading || isLoading) && feedItems.length === 0) {
     return (
       <View style={[styles.outer, styles.centered]} onLayout={handleLayout}>
         <ActivityIndicator size="large" color={REFERENCE_THEME.accent} />
@@ -232,7 +234,7 @@ export default function HomeScreen() {
   if (isError && feedItems.length === 0) {
     return (
       <View style={[styles.outer, styles.centered, styles.message]} onLayout={handleLayout}>
-        <Text style={styles.messageTitle}>Couldn&apos;t load your recommendations</Text>
+        <Text style={styles.messageTitle}>Couldn&apos;t load repositories</Text>
         <Text style={styles.messageBody}>
           {error instanceof Error ? error.message : 'The feed service is unavailable.'}
         </Text>
@@ -249,12 +251,12 @@ export default function HomeScreen() {
   if (!isLoading && feedItems.length === 0) {
     return (
       <View style={[styles.outer, styles.centered, styles.message]} onLayout={handleLayout}>
-        <Text style={styles.messageTitle}>Building your personalized feed</Text>
+        <Text style={styles.messageTitle}>{data?.pages[0]?.mode === 'discovery' ? 'No repositories available yet' : 'Building your personalized feed'}</Text>
         <Text style={styles.messageBody}>
-          Your onboarding choices were saved. Retry while ML prepares recommendations.
+          {data?.pages[0]?.mode === 'discovery' ? 'The catalogue is empty. Please check again later.' : 'Your onboarding choices were saved. Retry while recommendations are prepared.'}
         </Text>
         <Pressable style={styles.retryButton} onPress={() => refetch()}>
-          <Text style={styles.retryText}>Load recommendations</Text>
+          <Text style={styles.retryText}>Refresh Home</Text>
         </Pressable>
       </View>
     );
@@ -299,10 +301,10 @@ export default function HomeScreen() {
             if (hasNextPage
               && !isFetchingNextPage
               && !isRefetching
-              && feedInvalidationGenerationRef.current === 0) {
+              && canContinueHomeFeed(data?.pages[0]?.mode, feedInvalidationGenerationRef.current)) {
               void flushActivityBatch()
                 .then(() => {
-                  if (feedInvalidationGenerationRef.current === 0) return fetchNextPage();
+                  if (canContinueHomeFeed(data?.pages[0]?.mode, feedInvalidationGenerationRef.current)) return fetchNextPage();
                 })
                 .catch(() => undefined);
             }
@@ -314,7 +316,7 @@ export default function HomeScreen() {
           onViewableItemsChanged={onViewableItemsChanged}
           viewabilityConfig={VIEWABILITY_CONFIG}
         />
-        <FeedHeader pageWidth={pageWidth} />
+        <FeedHeader pageWidth={pageWidth} discovery={data?.pages[0]?.mode === 'discovery'} />
       </View>
     </View>
   );

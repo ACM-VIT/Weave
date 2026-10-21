@@ -460,7 +460,19 @@ export async function listRepositories(req: AuthRequest, res: Response): Promise
   const rows = await sqlClient.unsafe(`SELECT ${repoProjection},r.owner_github_id,r.status,r.created_at,r.updated_at,
     ${readmeSummaryProjection('r','c')},c.readme AS readme_md,to_jsonb(c)->>'readme_source_path' AS readme_source_path,to_jsonb(c)->>'readme_default_branch' AS readme_default_branch,to_jsonb(c)->>'readme_base_url' AS readme_base_url,
     c.updated_at AS content_updated_at,c.source_updated_at,
-    s.observed_at AS stats_observed_at,cs.summary_id,cs.highlights AS summary_highlights,
+    s.observed_at AS stats_observed_at,
+    owner_profile.profile_id AS owner_profile_id,
+    owner_profile.claimed_by_user_id AS owner_user_id,
+    owner_profile.claimed_by_user_id AS owner_profile_claimed_user_id,
+    owner_profile.profile_kind AS owner_profile_kind,
+    COALESCE(owner_user.username,owner_profile.handle) AS owner_username,
+    COALESCE(owner_user.full_name,owner_profile.display_name,r.owner) AS owner_display_name,
+    COALESCE(owner_user.avatar_url,owner_profile.avatar_url) AS owner_avatar_url,
+    owner_user.bio AS owner_bio,
+    CASE WHEN owner_profile.claimed_by_user_id IS NOT NULL THEN owner_follow.following_id IS NOT NULL
+      WHEN owner_profile.profile_id IS NOT NULL THEN external_owner_follow.profile_id IS NOT NULL
+      ELSE NULL END AS viewer_follows_owner,
+    cs.summary_id,cs.highlights AS summary_highlights,
     cs.prompt_version AS summary_prompt_version,cs.model_version AS summary_model_version,
     cs.format_version AS summary_format_version,cs.source AS summary_source,
     COALESCE((SELECT json_agg(topic.slug ORDER BY topic.slug)
@@ -486,6 +498,17 @@ export async function listRepositories(req: AuthRequest, res: Response): Promise
       FROM app.repo_card_summaries x WHERE x.repo_id=r.repo_id AND active
         AND x.content_version=c.content_version
         AND to_jsonb(x)->>'source' IN ('generated','description_fallback') ORDER BY created_at DESC LIMIT 1) cs ON true
+    LEFT JOIN LATERAL (
+      SELECT profile.profile_id,profile.claimed_by_user_id,profile.handle,profile.display_name,profile.avatar_url,profile.profile_kind
+      FROM app.social_profiles profile WHERE profile.provider='github' AND profile.status='active'
+        AND ((r.owner_github_id IS NOT NULL AND profile.provider_subject=r.owner_github_id::text)
+          OR (r.owner_github_id IS NULL AND lower(profile.handle)=lower(r.owner)))
+      ORDER BY (profile.claimed_by_user_id IS NOT NULL) DESC,profile.created_at ASC LIMIT 1
+    ) owner_profile ON true
+    LEFT JOIN app.users owner_user ON owner_user.user_id=owner_profile.claimed_by_user_id
+    LEFT JOIN app.follows owner_follow ON owner_follow.follower_id=$4::uuid AND owner_follow.following_id=owner_profile.claimed_by_user_id
+    LEFT JOIN app.social_profile_follows external_owner_follow ON external_owner_follow.follower_id=$4::uuid
+      AND external_owner_follow.profile_id=owner_profile.profile_id AND owner_profile.claimed_by_user_id IS NULL
     LEFT JOIN app.reactions viewer_reaction ON viewer_reaction.repo_id=r.repo_id AND viewer_reaction.user_id=$4::uuid
     LEFT JOIN app.saves viewer_save ON viewer_save.repo_id=r.repo_id AND viewer_save.user_id=$4::uuid
     WHERE r.status='active' AND ($1='' OR r.full_name ILIKE '%'||$1||'%' OR COALESCE(c.description,'') ILIKE '%'||$1||'%')

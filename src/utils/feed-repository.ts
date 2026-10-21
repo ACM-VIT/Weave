@@ -1,5 +1,6 @@
 import type { FeedbackAction } from '@/api/activity';
 import type { FeedPage, FeedRepositoryPayload } from '@/api/feed';
+import type { RepositoryApiPayload } from '@/api/repositories';
 import type { RepositoryDetail } from '@/models/repository';
 import { mapRepositoryDetail } from '@/utils/repository-mapper';
 
@@ -36,7 +37,7 @@ export function feedQueryKey(viewerUserId: string | null | undefined) {
 }
 
 export function mapFeedRepository(
-  backendItem: FeedRepositoryPayload,
+  backendItem: RepositoryApiPayload,
 ): RepositoryDetail | null {
   return mapRepositoryDetail(backendItem);
 }
@@ -51,7 +52,7 @@ export function getFeedItemIdentity(
 }
 
 function matchesTarget(
-  repository: FeedRepositoryPayload,
+  repository: RepositoryApiPayload,
   target: FeedRepositoryTarget,
 ): boolean {
   if (repository.repo_id !== target.repoId) return false;
@@ -84,7 +85,8 @@ export function patchFeedReaction<T extends FeedCache>(
     let pageChanged = false;
     const items = page.items.map((repository) => {
       if (!matchesTarget(repository, target)) return repository;
-      const previousReaction = repository.viewer_reaction;
+      const previousReaction = repository.viewer_reaction === 'like' || repository.viewer_reaction === 'dislike'
+        ? repository.viewer_reaction : null;
       const nextReaction = reactionAfter(action, previousReaction);
       if (nextReaction === undefined) return repository;
       if (previousReaction === nextReaction) return repository;
