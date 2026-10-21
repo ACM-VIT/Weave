@@ -84,7 +84,8 @@ function hasForbiddenCardContent(value: string): boolean {
     || /(?:^|\n)\s*(?:[-+*]|\d+[.)])\s+/u.test(value)
     || /!?\[[^\]\n]*\]\([^)\n]+\)/u.test(value)
     || /(?:^|[.!?]\s+|\n)[ \t]*(?:installation(?: instructions?)?|license(?: text)?|contribut(?:ing|ors?)(?: section)?|changelog|table of contents|API (?:reference|documentation))\s*[:\-]/i.test(value)
-    || /\b(?:licensed under|MIT License|Apache License|GNU (?:General Public )?License|GPL)\b/i.test(value)
+    || /\b(?:licensed under|MIT License|Apache License|GNU (?:General Public )?License)\b/i.test(value)
+    || /(?:^|[.!?]\s+|\n)\s*GPL(?:[ -]?v?\d+(?:\.\d+)*)?\s*(?:[.!?:]|$)/i.test(value)
     || /\b(?:npm|pnpm|yarn|pip|pipx|uv|cargo|go|brew)\s+(?:install|add|run|get)\b/i.test(value);
 }
 
@@ -133,13 +134,14 @@ export function parseMlRepositoryIndexResponse(
     ? job.repository.description
     : null;
   if (typeof summary !== 'string' || summary !== summary.trim()
-    || summary.length < 1 || summary.length > 360
+    // Python len(str) and PostgreSQL char_length count Unicode codepoints.
+    || [...summary].length < 1 || [...summary].length > 360
     || !hasTwoOrThreeCompleteSentences(summary)
     || hasForbiddenCardContent(summary)
     || containsCopiedPassage(summary, job.repository.readme, allowedFallbackSource)
     || !Array.isArray(highlights) || highlights.length > 3
     || !highlights.every((item) => typeof item === 'string'
-      && item === item.trim() && item.length >= 1 && item.length <= 96
+      && item === item.trim() && [...item].length >= 1 && [...item].length <= 96
       && !hasForbiddenCardContent(item)
       && !containsCopiedPassage(item, job.repository.readme, allowedFallbackSource))
     || !boundedVersion(artifact.prompt_version)

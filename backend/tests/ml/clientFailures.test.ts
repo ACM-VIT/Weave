@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import { createServer, type RequestListener, type Server } from 'node:http';
 import test from 'node:test';
 
@@ -247,6 +249,69 @@ test('abbreviations do not bypass summary sentence limits or final punctuation',
     assert.throws(() => parseMlRepositoryIndexResponse(repositoryResponse({
       card_summary: { ...repositoryResponse().card_summary, summary },
     }), repositoryJob), /invalid bounded content/, summary);
+  }
+});
+
+const compatibilityCases = JSON.parse(readFileSync(
+  new URL('../fixtures/summary_compatibility.json', import.meta.url), 'utf8',
+)) as Array<{ name: string; summary: string; highlights?: string[]; valid: boolean }>;
+
+for (const fixture of compatibilityCases) {
+  test(`shared ML summary contract: ${fixture.name}`, () => {
+    for (const status of ['applied', 'duplicate', 'current'] as const) {
+      const response = repositoryResponse({ status, card_summary: {
+        ...repositoryResponse().card_summary,
+        summary: fixture.summary,
+        highlights: fixture.highlights ?? [],
+      } });
+      if (fixture.valid) {
+        assert.deepEqual(parseMlRepositoryIndexResponse(response, repositoryJob), response);
+      } else {
+        assert.throws(() => parseMlRepositoryIndexResponse(response, repositoryJob), /invalid bounded content/);
+      }
+    }
+  });
+}
+
+test('real Python pipeline artifacts are accepted by Node HTTP delivery', {
+  skip: !process.env.WEAVE_ML_ROOT || !process.env.WEAVE_ML_PYTHON,
+}, async () => {
+  const artifacts = JSON.parse(execFileSync(process.env.WEAVE_ML_PYTHON!, ['-c', `
+import json
+from pathlib import Path
+from summarization.pipeline import CardSummaryPipeline
+cases = json.loads(Path('tests/fixtures/summary_compatibility.json').read_text())
+artifacts = []
+for case in cases:
+    if not case['valid']:
+        continue
+    class Provider:
+        def generate(self, *args, **kwargs):
+            return json.dumps({'summary': case['summary'], 'highlights': case.get('highlights', [])})
+    repo = {'full_name': 'weave/compatibility', 'description': 'A focused developer tool.' if len(case['summary']) >= 180 else case['summary']}
+    pipeline = CardSummaryPipeline(provider=Provider() if len(case['summary']) >= 180 else None)
+    artifact = pipeline.summarize(repo, repo)
+    if len(case['summary']) >= 180:
+        assert artifact.source == 'generated'
+    artifacts.append(artifact.model_dump(mode='json'))
+print(json.dumps(artifacts))
+`], { cwd: process.env.WEAVE_ML_ROOT, encoding: 'utf8', timeout: 30_000 })) as
+    MlRepositoryIndexResponse['card_summary'][];
+  for (const card_summary of artifacts) {
+    for (const status of ['applied', 'duplicate', 'current'] as const) {
+      const expected = repositoryResponse({ status, card_summary });
+      await withServer((_request, response) => {
+        response.writeHead(200, { 'content-type': 'application/json' });
+        response.end(JSON.stringify(expected));
+      }, async (url) => {
+        const result = await new MlV2Client({
+          baseUrl: url, internalSecret: 'test', timeoutMs: 500, maxResponseBytes: 10_000,
+        }).deliverRepositoryIndex(repositoryJob);
+        assert.equal(result.accepted, true, JSON.stringify(result));
+        assert.equal(result.retryable, false);
+        assert.deepEqual(result.response_body, expected);
+      });
+    }
   }
 });
 
