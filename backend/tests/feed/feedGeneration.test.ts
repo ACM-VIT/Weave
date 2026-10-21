@@ -144,9 +144,13 @@ test('feed generation repairs a missing ML persona and retries exactly once', as
     return originalGenerate(input);
   };
   let repairs = 0;
+  const records: Parameters<NonNullable<FeedPersistencePort['recordGenerationAttempt']>>[0][] = [];
+  const auditedPersistence: FeedPersistencePort = Object.assign(persistence, {
+    recordGenerationAttempt: async (record: typeof records[number]) => { records.push(record); },
+  });
 
   const result = await new FeedGenerationService(
-    persistence,
+    auditedPersistence,
     queue,
     recommendations,
     600,
@@ -157,6 +161,8 @@ test('feed generation repairs a missing ML persona and retries exactly once', as
   assert.equal(result, 'generated');
   assert.equal(calls, 2);
   assert.equal(repairs, 1);
+  assert.equal(records[0].generation_id, recommendations.request?.generation_id);
+  assert.ok(queue.entries.every(entry => entry.generation_id === records[0].generation_id));
 });
 
 test('feed generation drops stale ML repository IDs while preserving valid personalized ranking', async () => {

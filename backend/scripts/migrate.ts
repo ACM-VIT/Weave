@@ -243,6 +243,15 @@ async function applyReadmePipelineMigrations(): Promise<void> {
   for (const [schema, table] of [['app','repos'],['app','repo_content'],['app','repo_card_summaries'],['telemetry','ml_outbox']]) {
     if (!await relationExists(schema,table)) throw new Error('The canonical V2 baseline is required before README migrations.');
   }
+  // Drizzle uses the newest timestamp, so a scoped upgrade must never leap
+  // over required V2 DDL (including external profiles). Require the complete
+  // pre-0024 journal before recording the newer README migrations.
+  const prerequisites = journal.entries.filter(entry => Number(entry.tag.slice(0, 4)) < 24);
+  const missing = migrationEntries(prerequisites.map(entry => entry.tag))
+    .filter(entry => !recorded.has(entry.hash));
+  if (missing.length) {
+    throw new Error(`Complete the normal migration before the scoped README upgrade. Missing prerequisites: ${missing.map(entry => entry.tag).join(', ')}`);
+  }
   await ensureMigrationHistoryTable();
   await client.begin(async (tx) => {
     await tx`SELECT pg_advisory_xact_lock(hashtextextended('weave-readme-migrations',0))`;

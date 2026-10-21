@@ -26,7 +26,7 @@ export class FeedGenerationService {
   ): Promise<'generated' | 'coalesced' | 'stale'> {
     const feedVersion = await this.persistence.getFeedVersion(userId);
     const token = crypto.randomUUID();
-    const generationId = crypto.randomUUID();
+    let generationId = crypto.randomUUID();
     const started = Date.now();
     if (!await this.queue.acquireGenerationLock(userId, feedVersion, token, this.lockTtlMs)) {
       await this.persistence.recordGenerationAttempt?.({
@@ -69,9 +69,10 @@ export class FeedGenerationService {
         if (!this.personaRepair || !isMissingPersonaRecommendationError(error)) throw error;
         incrementMetric('feed_v2_persona_repairs_total');
         await this.personaRepair.repair(userId);
+        generationId = crypto.randomUUID();
         response = await this.recommendations.generate({
           ...request,
-          generation_id: crypto.randomUUID(),
+          generation_id: generationId,
         });
       }
       if (leaseLost || await this.persistence.getFeedVersion(userId) !== feedVersion) {

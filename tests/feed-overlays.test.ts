@@ -8,6 +8,7 @@ import { create } from 'react-test-renderer';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import ts from 'typescript';
 import type { RepositoryData } from '../src/data/repositories';
+import { subscribeToHomeFeedInvalidations } from '../src/utils/home-feed';
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 (globalThis as any).requestAnimationFrame = (callback: (time: number) => void) => { callback(0); return 0; };
@@ -146,6 +147,12 @@ function feed(ids: string[], reducedMotion = false) {
     get mountedOverlays() { return overlayTypes.reduce((count, type) => count + root.root.findAllByType(type).length, 0); },
     get observers() { return client.getQueryCache().getAll().reduce((count, query) => count + query.getObserversCount(), 0); },
     get input() { return root.root.findAllByType('Modal').find(node => node.props.visible)!.findAllByType('TextInput').find(node => node.props.accessibilityLabel === 'Add a comment')!; },
+    async mountStandaloneSave(repoId: string) {
+      await act(async () => { root = create(React.createElement(QueryClientProvider, { client },
+        React.createElement(overlayTypes[0], {repoId, isVisible: true, onClose: () => undefined}),
+      )); });
+      await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)); });
+    },
     async mount() {
       await act(async () => { root = create(React.createElement(QueryClientProvider, { client },
         ids.map(id => React.createElement(Row, { key: id, repository: repository(id), pageWidth: 400, pageHeight: 800,
@@ -327,3 +334,24 @@ test('collection creation also remains busy across save-popup close/reopen until
     assert.equal(app.button('Save repository to selected Lists').props.disabled, false);
   } finally { await app.unmount(); }
 });
+
+for (const changed of [true, false]) {
+  test(`standalone detail save invalidates Home only when save state changes: ${changed}`, async () => {
+    const app = feed([]);
+    const repoId = '00000000-0000-4000-8000-000000000001';
+    app.setSave(async () => ({saved: true, selectedListIds: ['collection:list'], saveStateChanged: changed}));
+    const key = ['feed', 'viewer'] as const;
+    app.client.setQueryData(key, {pages: [{mode: 'personalized', nextCursor: 'loaded-cursor', items: [{repo_id: repoId, viewer_saved: false}]}], pageParams: [null]});
+    let invalidations = 0;
+    const unsubscribe = subscribeToHomeFeedInvalidations(app.client, key, () => {invalidations++;});
+    await app.mountStandaloneSave(repoId);
+    try {
+      await app.press('Save repository to selected Lists');
+      assert.equal(invalidations, changed ? 1 : 0);
+      assert.equal(app.client.getQueryState(key)?.isInvalidated, changed);
+      const data = app.client.getQueryData<any>(key);
+      assert.equal(data.pages[0].items[0].viewer_saved, true);
+      assert.equal(data.pages[0].nextCursor, 'loaded-cursor', 'Keep loaded pages until the user refreshes');
+    } finally {unsubscribe(); await app.unmount();}
+  });
+}

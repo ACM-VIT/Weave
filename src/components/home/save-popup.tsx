@@ -346,6 +346,15 @@ export function SavePopup({
           (current) => patchFeedSaved(current, { repoId }, result.saved),
         );
       }
+      // Saves from every surface can advance feed_version. Mark loaded pages
+      // stale without refetching/remounting them; Home will offer a refresh.
+      if (result.saveStateChanged) {
+        await queryClient.invalidateQueries({
+          queryKey: feedQueryKey(viewerUserId),
+          exact: true,
+          refetchType: 'none',
+        });
+      }
       onSaved?.(result.saved, result.saveStateChanged);
       onListMembershipsChanged?.(result.selectedListIds, result.saved);
       await haptic('success');

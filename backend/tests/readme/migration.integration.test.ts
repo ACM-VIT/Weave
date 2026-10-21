@@ -7,7 +7,7 @@ import test from 'node:test';
 import postgres from 'postgres';
 
 const integration=process.env.RUN_README_SUMMARY_INTEGRATION==='1'?test:test.skip;
-for (const history of ['readme-first', 'search-first'] as const)
+for (const history of ['readme-first', 'search-first', 'incomplete-baseline'] as const)
 integration(`V2 migration histories reconcile safely: ${history}`,async()=>{
   const url=new URL(process.env.README_SUMMARY_TEST_DATABASE_URL??'');
   assert.ok(['127.0.0.1','localhost','[::1]'].includes(url.hostname));
@@ -26,20 +26,34 @@ integration(`V2 migration histories reconcile safely: ${history}`,async()=>{
     const journal=JSON.parse(fs.readFileSync(new URL('meta/_journal.json',folder),'utf8'));
     for(const entry of journal.entries){
       if(Number(entry.tag.slice(0,4))>=24)continue;
+      if(history === 'incomplete-baseline' && Number(entry.tag.slice(0,4)) > 19)continue;
       // Reproduce a V2 journal advanced by the targeted README migration while
       // owner identity and active-handle migrations are still pending.
-      if(['0022_repo_owner_github_identity','0023_active_social_profile_handles'].includes(entry.tag))continue;
+      if(history === 'search-first' && ['0022_repo_owner_github_identity','0023_active_social_profile_handles'].includes(entry.tag))continue;
       const sql=fs.readFileSync(new URL(entry.tag+'.sql',folder),'utf8');
       await isolated.unsafe(sql).simple();
       await isolated`INSERT INTO drizzle.__drizzle_migrations(hash,created_at) VALUES(${crypto.createHash('sha256').update(sql).digest('hex')},${entry.when})`;
     }
-    const run=(args:string[])=>{
+    const run=(args:string[], expectedStatus=0)=>{
       const result=spawnSync(process.execPath,['--import','tsx','scripts/migrate.ts',...args],{
         cwd:fileURLToPath(new URL('../../',import.meta.url)),encoding:'utf8',timeout:30000,
         env:{...process.env,DATABASE_URL:isolatedUrl.toString(),NODE_ENV:'test'},
       });
-      assert.equal(result.status,0,result.stderr||result.stdout);
+      assert.equal(result.status,expectedStatus,result.stderr||result.stdout);
+      return result;
     };
+    if (history === 'incomplete-baseline') {
+      const before=await isolated`SELECT hash,created_at FROM drizzle.__drizzle_migrations ORDER BY id`;
+      const blocked=run(['--readme-summary-only','--execute'],1);
+      assert.match(blocked.stderr,/Missing prerequisites:.*0021_external_social_profiles/);
+      assert.deepEqual(await isolated`SELECT hash,created_at FROM drizzle.__drizzle_migrations ORDER BY id`,before,'Refused upgrades must not advance migration history');
+      assert.equal((await isolated`SELECT to_regclass('app.repo_readme_summaries') AS present`)[0].present,null);
+      run([]);
+      assert.ok((await isolated`SELECT to_regclass('app.social_profiles') AS present`)[0].present);
+      assert.ok((await isolated`SELECT to_regclass('app.social_profile_follows') AS present`)[0].present);
+      run(['--readme-summary-only','--execute']);
+      return;
+    }
     if (history === 'search-first') {
       const entry=journal.entries.find((entry:{tag:string})=>entry.tag==='0024_explore_search');
       const source=fs.readFileSync(new URL(entry.tag+'.sql',folder),'utf8');
