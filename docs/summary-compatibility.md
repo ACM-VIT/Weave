@@ -11,8 +11,9 @@ Keep both fixture copies synchronized when changing this policy.
 - ML uses the same boundaries for generated-output validation and description
   fallback extraction. Clipping must still leave two or three complete sentences.
   Previously stored malformed summaries are regenerated on duplicate/current replay.
-- `GPL` as project subject matter is allowed. Standalone GPL license labels and
-  `licensed under` clauses remain excluded; commands and section leakage stay blocked.
+- `GPL` as project subject matter is allowed. Standalone and versioned license labels
+  such as `GPL v3+` and `GPL v3 or later`, plus `licensed under` clauses, remain
+  excluded; commands and section leakage stay blocked.
 - Summary length is 1–360 Unicode codepoints; each highlight is 1–96 codepoints,
   with at most three highlights. Python `len(str)`, JavaScript string iteration
   and PostgreSQL `char_length` use this unit. An emoji is one codepoint, while a
