@@ -175,7 +175,7 @@ function startup({
     mocks['expo-web-browser'] = { maybeCompleteAuthSession: () => undefined };
     mocks['@/services/oauthClientPkce'] = {
       loadOAuthClientVerifier: async () => 'synthetic-client-verifier',
-      clearOAuthClientVerifier: async () => undefined,
+      clearOAuthClientVerifier: async () => { events.push('verifier:clear'); },
     };
     callbackScreen = loadSource('src/app/(auth)/callback.tsx', mocks).default;
   }
@@ -196,6 +196,8 @@ function startup({
     setProfileRequest(request: Promise<Viewer>) { profileRequest = request; },
     setRefreshRequest(request: Promise<string>) { refreshRequest = request; },
     navigate(next: string[]) { segments.splice(0, segments.length, ...next); root.update(React.createElement(Layout)); },
+    retryExchange() { root.root.findByProps({ accessibilityLabel: 'Retry authorization code exchange' }).props.onPress(); },
+    get exchangeRetryButton() { return root.root.findAllByProps({ accessibilityLabel: 'Retry authorization code exchange' })[0]?.props; },
     retry() { root.root.findByProps({ accessibilityLabel: 'Try restoring session again' }).props.onPress(); },
     get recoveryButton() { return root.root.findAllByProps({ accessibilityLabel: 'Try restoring session again' })[0]?.props; },
     get navigationMounts() { return navigationMounts; },
@@ -809,4 +811,45 @@ test('leaving a public recovery route cannot reveal a protected route before sta
     await act(async () => { app.session.resolve('valid-token'); });
     assert.equal(app.navigationMounts - app.navigationUnmounts, 1);
   } finally { await app.unmount(); }
+});
+
+
+test('stalled refresh releases OAuth recovery without racing rotation or losing its code', async (t) => {
+  const app = startup({ segments: ['(auth)', 'callback'], realNetwork: true, mountCallback: true });
+  const refreshResponse = deferred<Response>();
+  let refreshes = 0;
+  let exchanges = 0;
+  t.mock.method(globalThis, 'fetch', async (url) => {
+    const path = String(url);
+    if (path.endsWith('/auth/refresh')) { refreshes++; return refreshResponse.promise; }
+    if (path.endsWith('/auth/exchange')) {
+      exchanges++;
+      return envelope({ accessToken: fixtureToken('alice'), user: { id: 'alice' } });
+    }
+    assert.ok(path.endsWith('/v2/users/me'));
+    return envelope({ user_id: 'alice', username: 'alice', onboarding_completed: true });
+  });
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  await app.mount(() => t.mock.timers.tick(0));
+  try {
+    await act(async () => { app.session.resolve(null); });
+    assert.equal(refreshes, 1);
+    await act(async () => { app.fonts.resolve(); });
+    await act(async () => { t.mock.timers.tick(15_000); });
+    assert.ok(app.exchangeRetryButton, 'the callback must stop spinning and expose a bounded retry');
+    assert.equal(app.auth.isLoading, false);
+    assert.equal(exchanges, 0, 'a timed-out wait must not start auth while the old cookie response is unresolved');
+    assert.ok(!app.events.includes('verifier:clear'), 'unconsumed OAuth code must retain its verifier');
+    let overlappingRefreshes = 0;
+    await assert.rejects(app.lifecycle.runRefresh(async () => { overlappingRefreshes++; }), { name: 'SessionRefreshPendingError' });
+    assert.equal(overlappingRefreshes, 0, 'retired flight must block a second rotation even after the auth wait times out');
+    await act(async () => { app.retryExchange(); });
+    assert.equal(exchanges, 0);
+    await act(async () => { refreshResponse.resolve(envelope({ accessToken: fixtureToken('old-account') })); });
+    assert.equal(refreshes, 1);
+    assert.equal(exchanges, 1, 'retry should exchange the same still-valid code after rotation settles');
+    assert.equal(app.events.filter(event => event === 'verifier:clear').length, 1);
+    assert.equal(app.auth.user?.user_id, 'alice');
+    assert.equal(app.exchangeRetryButton, undefined);
+  } finally { t.mock.timers.reset(); await app.unmount(); }
 });

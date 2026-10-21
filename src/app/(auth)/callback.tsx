@@ -3,6 +3,7 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import { ActivityIndicator, Text, TouchableOpacity, View } from 'react-native';
 import { useAuth } from '@/store/AuthContext';
 import { exchangeCode } from '@/api/auth';
+import { SessionRefreshPendingError } from '../../api/session-lifecycle';
 import * as WebBrowser from 'expo-web-browser';
 import {
   clearOAuthClientVerifier,
@@ -26,6 +27,8 @@ export default function OAuthCallbackScreen() {
   const { setSession } = useAuth();
   const router = useRouter();
   const [exchangeError, setExchangeError] = useState<string | null>(null);
+  const [retryable, setRetryable] = useState(false);
+  const [attempt, setAttempt] = useState(0);
   const exchangedCodeRef = useRef<string | null>(null);
   const routeError = oauthError
     ? decodeURIComponent(oauthError)
@@ -48,8 +51,11 @@ export default function OAuthCallbackScreen() {
         await clearOAuthClientVerifier().catch(() => undefined);
         await setSession(data);
       })
-      .catch((err) => setExchangeError(err.message || 'Authentication failed'));
-  }, [code, oauthError, setSession]);
+      .catch((err) => {
+        setRetryable(err instanceof SessionRefreshPendingError);
+        setExchangeError(err.message || 'Authentication failed');
+      });
+  }, [code, oauthError, setSession, attempt]);
 
   if (errorMsg) {
     return (
@@ -60,6 +66,21 @@ export default function OAuthCallbackScreen() {
         <Text className="text-[rgba(235,235,245,0.6)] text-[14px] font-nata text-center mb-8">
           {errorMsg}
         </Text>
+        {retryable ? (
+          <TouchableOpacity
+            accessibilityRole="button"
+            accessibilityLabel="Retry authorization code exchange"
+            className="bg-[#63E08A] rounded-[9px] px-8 py-4 mb-4"
+            onPress={() => {
+              exchangedCodeRef.current = null;
+              setRetryable(false);
+              setExchangeError(null);
+              setAttempt(current => current + 1);
+            }}
+          >
+            <Text className="text-[#000000] font-nataBold text-[15px]">Try again</Text>
+          </TouchableOpacity>
+        ) : null}
         <TouchableOpacity
           className="bg-[#FFFFFF] rounded-[9px] px-8 py-4"
           onPress={() => router.replace('/(auth)/login')}
