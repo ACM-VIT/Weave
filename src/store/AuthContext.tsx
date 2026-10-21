@@ -241,7 +241,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     } catch (e) {
       if (e instanceof LogoutNotCompletedError) {
         if (authSessionLifecycle.isCurrent(logoutGeneration)) {
-          setUser(previousUser);
+          if (e.restoreUserWhenPrepared) {
+            // A pending marker write may still clear credentials. Restore only
+            // after it confirms failure, and never over a newer auth transition.
+            void e.restoreUserWhenPrepared.then((restore) => {
+              if (restore && authSessionLifecycle.isCurrent(logoutGeneration)) setUser(previousUser);
+            }, () => undefined);
+          } else {
+            setUser(previousUser);
+          }
           throw e;
         }
         return;

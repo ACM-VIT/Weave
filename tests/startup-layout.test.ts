@@ -57,6 +57,7 @@ function startup({
   let profileRequest: Promise<Viewer> | undefined;
   let refreshRequest: Promise<string> | undefined;
   let markerWritesFail = false;
+  let pendingMarkerWrite: Promise<void> | undefined;
   let callbackScreen: React.ComponentType | undefined;
   let auth!: {
     user: Viewer | null;
@@ -148,6 +149,7 @@ function startup({
         if (key === 'access_token') storedToken = value;
         else {
           if (markerWritesFail) throw new Error('Synthetic marker storage failure');
+          if (pendingMarkerWrite) await pendingMarkerWrite;
           restoreBlocked = value;
         }
       },
@@ -192,6 +194,7 @@ function startup({
     fonts, session, events, redirects, lifecycle,
     get auth() { return auth; },
     failMarkerWrites(value: boolean) { markerWritesFail = value; },
+    holdMarkerWrites(value: Promise<void> | undefined) { pendingMarkerWrite = value; },
     refresh() { return (mocks['../api/client'] as any).refreshSession(storedToken) as Promise<string>; },
     async establish(token: string, onRequest: () => void = () => undefined) {
       const session = await realTransitions!.establishSession(async () => {
@@ -907,6 +910,60 @@ test('logout timeout reports an unsafe marker failure without restoring a supers
       }
       await act(async () => { refreshResponse.resolve(envelope({ accessToken: aliceToken })); await refresh; await switchAccount; });
       if (superseded) {
+        assert.equal(app.auth.user?.user_id, 'bob');
+        assert.equal(app.storedToken, bobToken);
+      }
+    } finally { t.mock.timers.reset(); await app.unmount(); }
+  }
+});
+
+
+test('late logout preparation reconciles credentials before restoring the current viewer', async (t) => {
+  t.mock.method(console, 'error', () => undefined);
+  for (const outcome of ['saved', 'failed', 'superseded']) {
+    const app = startup({ realNetwork: true });
+    const marker = deferred<void>();
+    const refreshResponse = deferred<Response>();
+    const aliceToken = fixtureToken('alice');
+    const bobToken = fixtureToken('bob');
+    t.mock.method(globalThis, 'fetch', async (url, options) => {
+      const path = String(url);
+      if (path.endsWith('/auth/refresh')) return refreshResponse.promise;
+      assert.ok(path.endsWith('/v2/users/me'), 'no out-of-order logout request may start');
+      const owner = new Headers(options?.headers).get('Authorization') === `Bearer ${bobToken}` ? 'bob' : 'alice';
+      return envelope({ user_id: owner, username: owner, onboarding_completed: true });
+    });
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    await app.mount(() => t.mock.timers.tick(0));
+    try {
+      await act(async () => { app.session.resolve(aliceToken); app.fonts.resolve(); });
+      let refresh!: Promise<unknown>;
+      await act(async () => { refresh = app.refresh().catch(error => error); });
+      app.holdMarkerWrites(marker.promise);
+      let logout!: Promise<unknown>;
+      await act(async () => { logout = app.auth.signOut().catch(error => error); });
+      let result: unknown;
+      await act(async () => { t.mock.timers.tick(15_000); result = await logout; });
+      assert.equal((result as Error).name, 'LogoutNotCompletedError');
+      assert.equal(app.auth.user, null, 'unfinished cleanup must not restore a potentially unusable session');
+      assert.equal(app.storedToken, aliceToken, 'the storage write is still pending');
+      app.holdMarkerWrites(undefined);
+      let switchAccount: Promise<void> | undefined;
+      if (outcome === 'superseded') await act(async () => { switchAccount = app.establish(bobToken); });
+      await act(async () => {
+        if (outcome === 'saved') marker.resolve(); else marker.reject(new Error('Synthetic delayed marker failure'));
+      });
+      if (outcome === 'saved') {
+        assert.equal(app.storedToken, null);
+        assert.equal(app.auth.user, null, 'late successful cleanup must leave the viewer signed out');
+      } else if (outcome === 'failed') {
+        assert.equal(app.storedToken, aliceToken);
+        assert.equal(app.auth.user?.user_id, 'alice', 'confirmed marker failure may restore only its current viewer');
+      } else {
+        assert.equal(app.auth.user, null, 'late preparation must not restore the superseded viewer');
+      }
+      await act(async () => { refreshResponse.resolve(envelope({ accessToken: aliceToken })); await refresh; await switchAccount; });
+      if (outcome === 'superseded') {
         assert.equal(app.auth.user?.user_id, 'bob');
         assert.equal(app.storedToken, bobToken);
       }
