@@ -4,12 +4,29 @@ import test from 'node:test';
 import { sqlClient } from '../../db/index.js';
 import { processInteractionBatchV2 } from '../../services/activityV2Service.js';
 import type { InteractionEventV2 } from '../../contracts/interactions.v2.js';
-const integration = process.env.RUN_DATABASE_INTEGRATION === '1' ? test : test.skip;
-test.after(async () => { if (process.env.RUN_DATABASE_INTEGRATION === '1') await sqlClient.end({ timeout: 1 }); });
+import { assertDisposableDatabase } from './disposableDatabase.js';
+const enabled = process.env.RUN_DATABASE_INTEGRATION === '1';
+if (enabled) assertDisposableDatabase();
+const integration = enabled ? test : test.skip;
+const fixtures: { users: string[]; repos: string[] }[] = [];
+test.afterEach(async () => {
+  for (const fixture of fixtures) {
+    await sqlClient.begin(async tx => {
+      await tx`DELETE FROM telemetry.ml_outbox WHERE aggregate_id=ANY(${fixture.users}::uuid[])`;
+      await tx`DELETE FROM app.users WHERE user_id=ANY(${fixture.users}::uuid[])`;
+      await tx`DELETE FROM auth.users WHERE id=ANY(${fixture.users}::uuid[])`;
+      await tx`DELETE FROM app.repos WHERE repo_id=ANY(${fixture.repos}::uuid[])`;
+    });
+  }
+  fixtures.length = 0;
+});
+test.after(async () => { if (enabled) await sqlClient.end({ timeout: 1 }); });
 
 async function fixture() {
   const users = [crypto.randomUUID(), crypto.randomUUID()];
   const repos = Array.from({ length: 10 }, () => crypto.randomUUID());
+  // Register before the first write so failed setup and failed assertions clean up too.
+  fixtures.push({ users, repos });
   const session = crypto.randomUUID(); const serve = crypto.randomUUID();
   await sqlClient`INSERT INTO auth.users(id) SELECT unnest(${users}::uuid[])`;
   await sqlClient`INSERT INTO app.users(user_id,username,status)

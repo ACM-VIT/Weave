@@ -114,6 +114,74 @@ integration('isolated PostgreSQL search: hydration, people deduplication, List p
     assert.deepEqual(new Set(lists.map(v=>v.id)),new Set([`collection:${ownCollection}`,`legacy-board:${publicBoard}`]));
     assert.equal((await persistence.lists(other,request())).length,4);
     const refs: SearchRef[] = [unknown,deleted,archived,repo2,repo].map(id=>({type:'repository',id}));
+    const malformed: SearchRef[] = [
+      { type: 'repository', id: 'not-a-uuid' },
+      { type: 'repository', id: `user:${repo}` },
+      { type: 'person', id: other },
+      { type: 'person', id: `collection:${other}` },
+      { type: 'person', id: 'user:not-a-uuid' },
+      { type: 'person', id: `profile:${external}:extra` },
+      { type: 'list', id: `user:${ownCollection}` },
+      { type: 'list', id: 'legacy-board:' },
+      { type: 'list', id: `collection:${ownCollection} ` },
+    ];
+    let invalidQueries = 0;
+    const previousDebug = sqlClient.options.debug;
+    sqlClient.options.debug = () => { invalidQueries++; };
+    try {
+      assert.deepEqual(await persistence.hydrate(viewer, malformed), [], 'malformed references are discarded before UUID casts');
+    } finally { sqlClient.options.debug = previousDebug; }
+    assert.equal(invalidQueries, 0, 'invalid-only references do not query the database');
+    const mixed: SearchRef[] = [
+      { type: 'list', id: `legacy-board:${publicBoard}` },
+      { type: 'repository', id: repo2.toUpperCase() },
+      { type: 'person', id: `profile:${external}` },
+      { type: 'list', id: `collection:${ownCollection}` },
+      { type: 'person', id: `user:${other.toUpperCase()}` },
+      { type: 'repository', id: repo },
+      { type: 'person', id: `user:${other}` },
+      { type: 'list', id: `legacy-board:${publicBoard}` },
+      { type: 'repository', id: repo2 },
+    ];
+    const hidden: SearchRef[] = [
+      ...[unknown, deleted, archived].map(id => ({ type: 'repository' as const, id })),
+      { type: 'person', id: `profile:${claimed}` },
+      { type: 'list', id: `collection:${otherCollection}` },
+      ...[privateBoard, unlistedBoard].map(id => ({ type: 'list' as const, id: `legacy-board:${id}` })),
+    ];
+    await sqlClient`INSERT INTO app.collection_repos(collection_id,repo_id,added_by) VALUES
+      (${ownCollection}::uuid,${repo}::uuid,${viewer}::uuid),(${ownCollection}::uuid,${deleted}::uuid,${viewer}::uuid)`;
+    await sqlClient`INSERT INTO app.board_repos(board_id,repo_id,added_by) VALUES
+      (${publicBoard}::uuid,${repo}::uuid,${other}::uuid),(${publicBoard}::uuid,${deleted}::uuid,${other}::uuid)`;
+    await sqlClient`INSERT INTO app.boards(user_id,name,collection_id) VALUES (${viewer}::uuid,'hydration child',${ownCollection}::uuid)`;
+    const mixedRows = await persistence.hydrate(viewer, [...mixed, ...hidden, ...malformed]);
+    assert.deepEqual(mixedRows.map(({ type, id }) => ({ type, id })), mixed.slice(0, 6).map(ref => ({ ...ref, id: ref.id.toLowerCase() })),
+      'mixed entity results keep first-occurrence order, with normalized UUIDs and no duplicates or hidden rows');
+    assert.equal(mixedRows[0].data.source, 'legacy-board');
+    assert.equal(mixedRows[0].data.repositoryCount, 1, 'Board counts exclude deleted repositories');
+    assert.equal(mixedRows[3].data.repositoryCount, 1, 'Collection counts exclude deleted repositories');
+    assert.equal(mixedRows[3].data.nestedListCount, 1);
+    const ownerRefs: SearchRef[] = [
+      { type: 'list', id: `legacy-board:${privateBoard}` },
+      { type: 'list', id: `legacy-board:${unlistedBoard}` },
+      { type: 'list', id: `collection:${otherCollection}` },
+    ];
+    assert.deepEqual((await persistence.hydrate(other, ownerRefs)).map(row => row.id), ownerRefs.map(ref => ref.id),
+      'owners retain access to private and unlisted Lists');
+    await sqlClient`UPDATE app.users SET status='suspended' WHERE user_id=${other}::uuid`;
+    assert.deepEqual(await persistence.hydrate(other, [mixed[0], mixed[4], ownerRefs[2]]), [], 'inactive people and List owners cannot be hydrated');
+    await sqlClient`UPDATE app.users SET status='active' WHERE user_id=${other}::uuid`;
+    await sqlClient`UPDATE app.social_profiles SET status='deleted' WHERE profile_id=${external}::uuid`;
+    assert.deepEqual(await persistence.hydrate(viewer, [mixed[2]]), [], 'deleted profiles cannot be hydrated');
+    await sqlClient`UPDATE app.social_profiles SET status='active',profile_kind='organization' WHERE profile_id=${external}::uuid`;
+    assert.deepEqual(await persistence.hydrate(viewer, [mixed[2]]), [], 'organization profiles are not people');
+    await sqlClient`UPDATE app.users SET github_id='987654321' WHERE user_id=${other}::uuid`;
+    await sqlClient`UPDATE app.social_profiles SET profile_kind='user',provider_subject='987654321' WHERE profile_id=${external}::uuid`;
+    assert.deepEqual(await persistence.hydrate(viewer, [mixed[2]]), [], 'canonical users suppress an unclaimed matching provider identity');
+    await sqlClient`UPDATE app.social_profiles SET provider_subject=NULL WHERE profile_id=${external}::uuid`;
+    await sqlClient`UPDATE app.users SET github_handle='phase4external' WHERE user_id=${other}::uuid`;
+    assert.deepEqual(await persistence.hydrate(viewer, [mixed[2]]), [], 'verified canonical handles suppress profiles without provider IDs');
+    await sqlClient`UPDATE app.users SET github_id='123456789',github_handle='phase4claimed' WHERE user_id=${other}::uuid`;
     const hydrated = await persistence.hydrate(viewer,refs);
     assert.deepEqual(new Set(hydrated.map(v=>v.id)),new Set([repo,repo2]));
     assert.equal(hydrated.find(v=>v.id===repo)?.data.full_name,'owner/vision');

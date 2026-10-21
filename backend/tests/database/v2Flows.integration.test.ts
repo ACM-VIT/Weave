@@ -370,6 +370,18 @@ integration('v2 database, outbox, and Redis feed flows preserve invariants', asy
   // disposable Redis database is available.
   if (process.env.RUN_REDIS_INTEGRATION !== '1') return;
 
+  // The original repository has already been engaged with above. Preserve
+  // fallback coverage with an unseen repository rather than bypass exclusions.
+  const unseenRepoId = crypto.randomUUID();
+  await sqlClient`
+    INSERT INTO app.repos (repo_id,github_id,full_name,owner,name,url,status)
+    VALUES (${unseenRepoId}::uuid,303,'unseen/repo','unseen','repo','https://github.com/unseen/repo','active')
+  `;
+  await sqlClient`
+    INSERT INTO app.trending_snapshot_items (snapshot_id,position,repo_id)
+    VALUES ('00000000-0000-4000-8000-000000000104',1,${unseenRepoId}::uuid)
+  `;
+
   const redis = new Redis(process.env.REDIS_DATABASE_TEST_URL ?? 'redis://127.0.0.1:6379/14', { maxRetriesPerRequest: 1 });
   await redis.flushdb();
   try {
@@ -380,7 +392,7 @@ integration('v2 database, outbox, and Redis feed flows preserve invariants', asy
     const request = { feed_request_id: crypto.randomUUID(), session_id: sessionId, limit: 10, cursor: null };
     const served = await feed.getFeed(userId, request);
     assert.equal(served.source, 'fallback');
-    assert.deepEqual(served.items.map((item) => item.repo_id), [repoId]);
+    assert.deepEqual(served.items.map((item) => item.repo_id), [unseenRepoId]);
     assert.deepEqual(await feed.getFeed(userId, request), served);
 
     const version = await new PostgresFeedPersistence().getFeedVersion(userId);

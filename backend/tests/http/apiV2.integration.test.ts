@@ -35,11 +35,11 @@ async function seed(): Promise<void> {
   `;
   await sqlClient`
     INSERT INTO app.users (
-      user_id,username,github_id,github_handle,github_identity_verified_at,status
+      user_id,username,full_name,date_of_birth,github_id,github_handle,github_identity_verified_at,status
     ) VALUES
-      (${userId}::uuid,'http_test',NULL,'http-viewer',NULL,'active'),
-      (${spoofOwnerUserId}::uuid,'http_spoof',NULL,'owner',NULL,'active'),
-      (${ownerUserId}::uuid,'http_owner','9001','owner',now(),'active')
+      (${userId}::uuid,'http_test','Synthetic HTTP Viewer','1990-01-01',NULL,'http-viewer',NULL,'active'),
+      (${spoofOwnerUserId}::uuid,'http_spoof',NULL,NULL,NULL,'owner',NULL,'active'),
+      (${ownerUserId}::uuid,'http_owner',NULL,NULL,'9001','owner',now(),'active')
   `;
   await sqlClient`INSERT INTO app.user_stats (user_id) VALUES (${userId}::uuid),(${ownerUserId}::uuid)`;
   await sqlClient`INSERT INTO app.user_feed_state (user_id) VALUES (${userId}::uuid)`;
@@ -263,8 +263,10 @@ integration('registered v2 HTTP paths complete controlled integration flows', as
         };
       }>;
     };
-    assert.equal(followedItems.items[0].repository.owner_user_id, ownerUserId);
-    assert.equal(followedItems.items[0].repository.viewer_follows_owner, true);
+    assert.deepEqual(followedItems.items, [], 'a followed repository already shown or engaged with stays excluded');
+    const [followedProjection] = await feedPersistence.listActiveRepositories([repoId], userId);
+    assert.equal(followedProjection.owner_user_id, ownerUserId);
+    assert.equal(followedProjection.viewer_follows_owner, true);
     assert.deepEqual(await feedPersistence.listFollowedRepositoryIds(userId, 10), [repoId]);
 
     const unfollow = await fetch(`${base}/api/v2/users/${ownerUserId}/follow`, {

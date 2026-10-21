@@ -28,6 +28,7 @@ import { useAuth } from '@/store/AuthContext';
 import { getActivityOutbox } from '@/services/activityOutboxClient';
 import { FeedPaginationController, type FeedPage } from '@/services/feedPagination';
 import { authSessionLifecycle } from '@/api/session-lifecycle';
+import { createFeedItemMapper } from '@/utils/feed-items';
 
 const WEB_FEED_LIST_STYLE =
   Platform.OS === 'web'
@@ -35,76 +36,6 @@ const WEB_FEED_LIST_STYLE =
     : null;
 const VIEWABILITY_CONFIG = { itemVisiblePercentThreshold: 50 } as const;
 const ACTIVITY_FLUSH_INTERVAL_MS = 8_000;
-
-// Helper to map backend ML JSON to the frontend RepositoryData format
-function mapBackendToFrontend(backendItem: any): RepositoryData | null {
-  const repoId = typeof backendItem.repo_id === 'string' ? backendItem.repo_id : '';
-  const repoFullName = typeof backendItem.full_name === 'string'
-    ? backendItem.full_name
-    : typeof backendItem.github_repo === 'string'
-      ? backendItem.github_repo
-      : '';
-  const separator = repoFullName.indexOf('/');
-  if (!repoId || separator <= 0 || separator === repoFullName.length - 1) return null;
-  const owner = repoFullName.slice(0, separator);
-  const title = repoFullName.slice(separator + 1);
-  const canonicalGithubUrl = `https://github.com/${owner}/${title}`;
-  const backendUrl = typeof backendItem.url === 'string'
-    ? backendItem.url
-    : typeof backendItem.html_url === 'string'
-      ? backendItem.html_url
-      : '';
-  const rawLanguages = backendItem.languages ?? backendItem.language_used ?? [];
-  const techStack = Array.isArray(rawLanguages)
-    ? rawLanguages.map((language) =>
-        typeof language === 'string' ? language : language?.name
-      ).filter(Boolean)
-    : Object.keys(rawLanguages || {});
-
-  return {
-    id: repoId,
-    serveId: backendItem.serve_id ?? null,
-    feedPosition: backendItem.position ?? null,
-    viewerReaction: backendItem.viewer_reaction === 'like' || backendItem.viewer_reaction === 'dislike'
-      ? backendItem.viewer_reaction : null,
-    viewerSaved: backendItem.viewer_saved === true,
-    title,
-    owner,
-    githubUrl: backendUrl.startsWith('https://github.com/') ? backendUrl : canonicalGithubUrl,
-    ownerUserId: typeof backendItem.owner_user_id === 'string'
-      ? backendItem.owner_user_id
-      : null,
-    ownerBio: typeof backendItem.owner_bio === 'string'
-      ? backendItem.owner_bio
-      : typeof backendItem.owner_profile?.bio === 'string'
-        ? backendItem.owner_profile.bio
-        : null,
-    ownerProfileId: typeof backendItem.owner_profile_id === 'string'
-      ? backendItem.owner_profile_id
-      : null,
-    ownerProfileClaimedUserId: typeof backendItem.owner_profile_claimed_user_id === 'string'
-      ? backendItem.owner_profile_claimed_user_id
-      : null,
-    viewerFollowsOwner: typeof backendItem.viewer_follows_owner === 'boolean'
-      ? backendItem.viewer_follows_owner
-      : null,
-    description: backendItem.description || '',
-    readmeSummary: backendItem.readme_summary || backendItem.summary || 'No summary available.',
-    readmeFull: backendItem.readme_md || backendItem.readme || 'No readme available.',
-    stats: {
-      stars: (backendItem.star_count ?? 0).toString(),
-      views: (backendItem.views_count ?? 0).toString(),
-      bugs: (backendItem.open_issues_count ?? backendItem.pr_count ?? 0).toString(),
-      forks: (backendItem.fork_count ?? 0).toString(),
-      likes: (backendItem.likes_count ?? backendItem.saves_count ?? 0).toString(),
-      comments: (backendItem.comments_count ?? backendItem.comment_count ?? 0).toString(),
-    },
-    updatedText: backendItem.updated_at 
-      ? `updated ${new Date(backendItem.updated_at).toLocaleDateString()}` 
-      : 'updated recently',
-    techStack,
-  };
-}
 
 export default function HomeScreen() {
   const { user, checkOnboardingStatus } = useAuth();
@@ -116,7 +47,8 @@ export default function HomeScreen() {
       const token = await SecureStore.getItemAsync('access_token');
       if (!token) throw new Error('No token');
       return fetchFeed(token, cursor, { signal, requestId, sessionId });
-    }, queryClient.getQueryData<InfiniteData<FeedPage>>(feedQueryKey)?.pages);
+    }, queryClient.getQueryData<InfiniteData<FeedPage>>(feedQueryKey)?.pages,
+    () => queryClient.getQueryData<InfiniteData<FeedPage>>(feedQueryKey)?.pages ?? []);
     return { controller, reset: () => controller.reset() };
   }, [feedQueryKey, queryClient]);
   const activityOutbox = user?.user_id && !DEVELOPMENT_PREVIEW_ENABLED
@@ -163,6 +95,10 @@ export default function HomeScreen() {
     initialPageParam: null as string | null,
   });
 
+  const feedProjection = useMemo(() => ({
+    queryKey: feedQueryKey,
+    mapPages: createFeedItemMapper(),
+  }), [feedQueryKey]);
   const feedItems = useMemo(() => {
     if (DEVELOPMENT_PREVIEW_ENABLED) {
       return DEVELOPMENT_REPOSITORIES.map((repository, index) => ({
@@ -170,15 +106,8 @@ export default function HomeScreen() {
         repository,
       }));
     }
-    return data?.pages
-      .flatMap((page) => page.items)
-      .map(mapBackendToFrontend)
-      .filter((repository): repository is RepositoryData => repository !== null)
-      .map((repository, index) => ({
-        feedId: `${repository.id}-${index}-${repository.viewerReaction ?? 'none'}-${repository.viewerSaved ? 'saved' : 'unsaved'}`,
-        repository,
-      })) || [];
-  }, [data?.pages]);
+    return feedProjection.mapPages(data?.pages);
+  }, [data?.pages, feedProjection]);
 
   const handleQueueActivity = useCallback((event: {
     repo_id: string;

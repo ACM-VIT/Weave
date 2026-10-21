@@ -4,8 +4,9 @@ import test from 'node:test';
 import { sqlClient } from '../../db/index.js';
 import { PostgresFeedPersistence } from '../../adapters/postgresFeedPersistence.js';
 import type { CreateServeInput, RepositoryProjection } from '../../contracts/feed.v2.js';
+import { assertDisposableDatabase } from './disposableDatabase.js';
 const enabled = process.env.RUN_DATABASE_INTEGRATION === '1';
-if (enabled && new URL(process.env.DATABASE_URL!).pathname !== '/weave_scroll') throw new Error('Use the disposable weave_scroll database.');
+if (enabled) assertDisposableDatabase();
 const integration = enabled ? test : test.skip;
 test.after(async () => { if (enabled) await sqlClient.end({timeout:1}); });
 
