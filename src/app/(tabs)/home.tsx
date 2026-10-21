@@ -116,7 +116,8 @@ export default function HomeScreen() {
       const token = await SecureStore.getItemAsync('access_token');
       if (!token) throw new Error('No token');
       return fetchFeed(token, cursor, { signal, requestId, sessionId });
-    }, queryClient.getQueryData<InfiniteData<FeedPage>>(feedQueryKey)?.pages);
+    }, queryClient.getQueryData<InfiniteData<FeedPage>>(feedQueryKey)?.pages,
+    () => queryClient.getQueryData<InfiniteData<FeedPage>>(feedQueryKey)?.pages ?? []);
     return { controller, reset: () => controller.reset() };
   }, [feedQueryKey, queryClient]);
   const activityOutbox = user?.user_id && !DEVELOPMENT_PREVIEW_ENABLED

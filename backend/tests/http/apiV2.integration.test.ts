@@ -263,8 +263,10 @@ integration('registered v2 HTTP paths complete controlled integration flows', as
         };
       }>;
     };
-    assert.equal(followedItems.items[0].repository.owner_user_id, ownerUserId);
-    assert.equal(followedItems.items[0].repository.viewer_follows_owner, true);
+    assert.deepEqual(followedItems.items, [], 'a followed repository already shown or engaged with stays excluded');
+    const [followedProjection] = await feedPersistence.listActiveRepositories([repoId], userId);
+    assert.equal(followedProjection.owner_user_id, ownerUserId);
+    assert.equal(followedProjection.viewer_follows_owner, true);
     assert.deepEqual(await feedPersistence.listFollowedRepositoryIds(userId, 10), [repoId]);
 
     const unfollow = await fetch(`${base}/api/v2/users/${ownerUserId}/follow`, {

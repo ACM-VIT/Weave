@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { InfiniteQueryObserver, QueryClient, type InfiniteData } from '@tanstack/react-query';
 import { FeedPaginationController, type FeedPage } from '../src/services/feedPagination';
 import { requestFeedWithRetry, waitForFeedRetry } from '../src/services/feedTransport';
 
@@ -193,4 +194,81 @@ test('an acknowledgement does not discard a page already generated at the acknow
   }, [page(['a'])]);
   assert.deepEqual((await coordinator.load('next')).items.map(item => item.repo_id), ['b']);
   assert.equal(calls,1);
+});
+
+const feedKey = ['feed', 'synthetic-user'] as const;
+const cachedPages = () => ({ pages: [page(['a'], '1', 'page-2'), page(['b'], '1', 'page-3')], pageParams: [null, 'page-2'] });
+const committedIds = (client: QueryClient) => client.getQueryData<InfiniteData<FeedPage>>(feedKey)!.pages
+  .flatMap(result => result.items.map(item => item.repo_id));
+
+function observeFeed(client: QueryClient, controller: FeedPaginationController) {
+  return new InfiniteQueryObserver(client, {
+    queryKey: feedKey,
+    queryFn: ({ pageParam, signal }) => controller.load(pageParam, signal),
+    initialPageParam: null as string | null,
+    getNextPageParam: (lastPage: FeedPage) => lastPage.nextCursor ?? undefined,
+    retry: false, staleTime: Infinity, refetchOnMount: false,
+  });
+}
+
+test('failed multi-page query refetch does not hide a repository that never committed', async () => {
+  const client = new QueryClient();
+  client.setQueryData(feedKey, cachedPages());
+  const calls: (string | null)[] = [];
+  const controller = new FeedPaginationController(async cursor => {
+    calls.push(cursor);
+    if (cursor === null) return page(['c'], '1', 'replacement-2');
+    if (cursor === 'replacement-2') throw new TypeError('offline on page 2');
+    return page(['c'], '1', null);
+  }, cachedPages().pages, () => client.getQueryData<InfiniteData<FeedPage>>(feedKey)?.pages ?? []);
+  const observer = observeFeed(client, controller);
+  const unsubscribe = observer.subscribe(() => {});
+  try {
+    assert.equal((await observer.refetch()).isRefetchError, true);
+    assert.deepEqual(committedIds(client), ['a', 'b']);
+    await observer.fetchNextPage({ cancelRefetch: false });
+    assert.deepEqual(committedIds(client), ['a', 'b', 'c']);
+    assert.deepEqual(calls, [null, 'replacement-2', 'page-3']);
+  } finally { unsubscribe(); client.clear(); }
+});
+
+test('successful invalidation preserves replacement cards and deduplicates within the new pages', async () => {
+  const client = new QueryClient();
+  client.setQueryData(feedKey, cachedPages());
+  const controller = new FeedPaginationController(async cursor => cursor === null
+    ? page(['a'], '1', 'page-2') : page(['a', 'b'], '1', null),
+  cachedPages().pages, () => client.getQueryData<InfiniteData<FeedPage>>(feedKey)?.pages ?? []);
+  const observer = observeFeed(client, controller);
+  const unsubscribe = observer.subscribe(() => {});
+  try {
+    await client.invalidateQueries({ queryKey: feedKey });
+    assert.deepEqual(committedIds(client), ['a', 'b']);
+  } finally { unsubscribe(); client.clear(); }
+});
+
+test('cancelled replacement pages do not become committed deduplication history', async () => {
+  const client = new QueryClient();
+  client.setQueryData(feedKey, cachedPages());
+  let pageTwoStarted!: () => void;
+  const started = new Promise<void>(resolve => { pageTwoStarted = resolve; });
+  const controller = new FeedPaginationController(async (cursor, signal) => {
+    if (cursor === null) return page(['c'], '1', 'replacement-2');
+    if (cursor === 'replacement-2') {
+      pageTwoStarted();
+      return new Promise<FeedPage>((_resolve, reject) => signal!.addEventListener('abort',
+        () => reject(Object.assign(new Error('cancelled'), { name: 'AbortError' })), { once: true }));
+    }
+    return page(['c'], '1', null);
+  }, cachedPages().pages, () => client.getQueryData<InfiniteData<FeedPage>>(feedKey)?.pages ?? []);
+  const observer = observeFeed(client, controller);
+  const unsubscribe = observer.subscribe(() => {});
+  try {
+    const refetch = observer.refetch();
+    await started;
+    await client.cancelQueries({ queryKey: feedKey });
+    await refetch;
+    assert.deepEqual(committedIds(client), ['a', 'b']);
+    await observer.fetchNextPage();
+    assert.deepEqual(committedIds(client), ['a', 'b', 'c']);
+  } finally { unsubscribe(); client.clear(); }
 });
