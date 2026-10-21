@@ -15,7 +15,7 @@ import {
   FEEDBACK_ACTIONS,
   IMPRESSION_VISIBILITY_THRESHOLD_MS,
 } from '../../constants/feedbackActions';
-import { CommentSheet } from './CommentSheet';
+import { CommentSheet, type CommentComposerState } from './CommentSheet';
 import { ReadmePopup } from './ReadmePopup';
 import { RepositoryScreen } from './RepositoryScreen';
 import { SavePopup } from './save-popup';
@@ -54,6 +54,8 @@ export function RepositoryFeedItem({
   const [isShareVisible, setIsShareVisible] = useState(false);
   const [isReadmeVisible, setIsReadmeVisible] = useState(false);
   const [isCommentsVisible, setIsCommentsVisible] = useState(false);
+  // Keep only lightweight composer state while the expensive sheet is unmounted.
+  const [commentComposer, setCommentComposer] = useState<CommentComposerState>({ draft: '', error: null, pending: false });
   const [isAppActive, setIsAppActive] = useState(
     AppState.currentState !== 'background' && AppState.currentState !== 'inactive',
   );
@@ -180,44 +182,53 @@ export function RepositoryFeedItem({
         repository={repository}
       />
 
-      <SavePopup
-        isVisible={isSaveVisible}
-        onClose={() => setIsSaveVisible(false)}
-        onSaved={setIsSaved}
-        repoId={repository.id}
-        repoName={repository.title}
-        serveId={repository.serveId}
-        position={repository.feedPosition}
-      />
-      <ShareRepositorySheet
-        isVisible={isShareVisible}
-        onClose={() => setIsShareVisible(false)}
-        onShared={() => onQueueActivity?.(
-          { repo_id: repository.id, action: FEEDBACK_ACTIONS.share },
-          true,
-        )}
-        repositoryId={repository.id}
-        repositoryDetails={{
-          id: repository.id,
-          name: repository.title,
-          fullName: `${repository.owner}/${repository.title}`,
-          githubUrl: repository.githubUrl ?? `https://github.com/${repository.owner}/${repository.title}`,
-          description: repository.description,
-        }}
-      />
-      <CommentSheet
-        initialCommentCount={commentCount}
-        isVisible={isCommentsVisible}
-        onClose={() => setIsCommentsVisible(false)}
-        onCommentCountChange={setCommentCount}
-        repoId={repository.id}
-      />
-      <ReadmePopup
-        isVisible={isReadmeVisible}
-        onClose={() => setIsReadmeVisible(false)}
-        readmeText={repository.readmeFull}
-        title={repository.title}
-      />
+      {isSaveVisible ? (
+        <SavePopup
+          isVisible={isSaveVisible}
+          onClose={() => setIsSaveVisible(false)}
+          onSaved={setIsSaved}
+          repoId={repository.id}
+          repoName={repository.title}
+          serveId={repository.serveId}
+          position={repository.feedPosition}
+        />
+      ) : null}
+      {isShareVisible ? (
+        <ShareRepositorySheet
+          isVisible={isShareVisible}
+          onClose={() => setIsShareVisible(false)}
+          onShared={() => onQueueActivity?.(
+            { repo_id: repository.id, action: FEEDBACK_ACTIONS.share },
+            true,
+          )}
+          repositoryId={repository.id}
+          repositoryDetails={{
+            id: repository.id,
+            name: repository.title,
+            fullName: `${repository.owner}/${repository.title}`,
+            githubUrl: repository.githubUrl ?? `https://github.com/${repository.owner}/${repository.title}`,
+            description: repository.description,
+          }}
+        />
+      ) : null}
+      {isCommentsVisible ? (
+        <CommentSheet
+          composer={{ state: commentComposer, onChange: setCommentComposer }}
+          initialCommentCount={commentCount}
+          isVisible={isCommentsVisible}
+          onClose={() => setIsCommentsVisible(false)}
+          onCommentCountChange={setCommentCount}
+          repoId={repository.id}
+        />
+      ) : null}
+      {isReadmeVisible ? (
+        <ReadmePopup
+          isVisible={isReadmeVisible}
+          onClose={() => setIsReadmeVisible(false)}
+          readmeText={repository.readmeFull}
+          title={repository.title}
+        />
+      ) : null}
     </View>
   );
 }
