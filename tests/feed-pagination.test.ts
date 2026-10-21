@@ -272,3 +272,74 @@ test('cancelled replacement pages do not become committed deduplication history'
     assert.deepEqual(committedIds(client), ['a', 'b', 'c']);
   } finally { unsubscribe(); client.clear(); }
 });
+
+test('query-cache replacement and reset discard removed committed history before appending', async () => {
+  const client = new QueryClient();
+  client.setQueryData(feedKey, cachedPages());
+  let reset = false;
+  const controller = new FeedPaginationController(async cursor => reset && cursor === null
+    ? page(['b'], '1', 'reset-next') : page(['b', 'a'], '1', null),
+  client.getQueryData<InfiniteData<FeedPage>>(feedKey)!.pages,
+  () => client.getQueryData<InfiniteData<FeedPage>>(feedKey)?.pages ?? []);
+  const observer = observeFeed(client, controller);
+  const unsubscribe = observer.subscribe(() => {});
+  try {
+    client.setQueryData(feedKey, { pages: [page(['b'], '1', 'replacement-next')], pageParams: [null] });
+    await observer.fetchNextPage();
+    assert.deepEqual(committedIds(client), ['b', 'a']);
+    reset = true;
+    await client.resetQueries({ queryKey: feedKey, exact: true });
+    assert.deepEqual(committedIds(client), ['b']);
+    await observer.fetchNextPage();
+    assert.deepEqual(committedIds(client), ['b', 'a']);
+  } finally { unsubscribe(); client.clear(); }
+});
+
+test('append history reads each newly committed card once instead of rescanning old pages', async () => {
+  let reads = 0;
+  const measuredPage = (id: string, cursor: string | null) => ({
+    ...page([], '1', cursor), items: [{ get repo_id() { reads++; return id; } }],
+  });
+  let committed = [measuredPage('initial', 'next')];
+  let count = 0;
+  const controller = new FeedPaginationController(async () => measuredPage(`new-${++count}`, 'next'),
+    committed, () => committed);
+  reads = 0;
+  for (let index = 0; index < 100; index++) {
+    const result = await controller.load('next', new AbortController().signal);
+    assert.equal(result.items[0].repo_id, `new-${index + 1}`);
+    committed = [...committed, result];
+  }
+  console.log(`APPEND_HISTORY_MEASURE ${JSON.stringify({ pages: count, idReads: reads })}`);
+  assert.ok(reads <= count * 5, `100 appends reread history ${reads} times`);
+});
+
+test('replacement pagination does not copy its growing staged ID history', async () => {
+  const descriptor = Object.getOwnPropertyDescriptor(Set.prototype, Symbol.iterator)!;
+  const iterate = Set.prototype[Symbol.iterator];
+  let copiedIds = 0;
+  // Count actual historical IDs traversed by Set copies, not elapsed time or
+  // private controller state. Restore the native iterator before leaving.
+  Object.defineProperty(Set.prototype, Symbol.iterator, { ...descriptor, value: function* (this: Set<unknown>) {
+    for (const value of iterate.call(this)) {
+      if (typeof value === 'string' && value.startsWith('replacement-')) copiedIds++;
+      yield value;
+    }
+  } });
+  try {
+    let count = 0;
+    const controller = new FeedPaginationController(async () => {
+      count++;
+      return page([`replacement-${count}`], '1', count < 60 ? `cursor-${count}` : null);
+    }, [], () => []);
+    const signal = new AbortController().signal;
+    let cursor: string | null = null;
+    for (let index = 0; index < 60; index++) {
+      const result = await controller.load(cursor, signal);
+      assert.equal(result.items.length, 1);
+      cursor = result.nextCursor;
+    }
+    console.log(`REPLACEMENT_HISTORY_MEASURE ${JSON.stringify({ pages: count, copiedIds })}`);
+    assert.ok(copiedIds <= count, `60 replacement pages recopied ${copiedIds} prior IDs`);
+  } finally { Object.defineProperty(Set.prototype, Symbol.iterator, descriptor); }
+});
