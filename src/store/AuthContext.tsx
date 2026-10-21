@@ -147,7 +147,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
         await restoreStartupSession({
           getAccessToken: () => getStorageItem('access_token'),
-          refreshAccessToken: (expectedToken) => refreshSession(expectedToken, signal),
+          // A UI timeout must not discard a one-use refresh rotation response.
+          // The shared refresh keeps its session lease; retry joins that flight.
+          refreshAccessToken: (expectedToken) => refreshSession(expectedToken),
           assertSessionCurrent: assertCurrent,
           // Startup recovery owns one bounded refresh cycle and reuses a token
           // already rotated by another request before attempting another refresh.
@@ -166,9 +168,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     } catch (e) {
       if (startupController.current !== controller || !authSessionLifecycle.isCurrent(sessionGeneration)) return;
       if (e instanceof StartupSessionTimeoutError) {
-        // Invalidate late attempts without deleting a usable stored token.
-        authSessionLifecycle.retire(sessionGeneration);
+        // The deadline already invalidated this attempt's profile/UI work. Keep
+        // the session generation so its pending cookie rotation can still finish.
         setStartupError(e.message);
+        setIsLoading(false);
       } else if (!(e instanceof SessionChangedError)) {
         console.error('Failed to load session', e);
         setStartupError('Could not restore your session. Check your connection and try again.');

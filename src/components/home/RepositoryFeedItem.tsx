@@ -53,7 +53,7 @@ export function RepositoryFeedItem({
   ) => void;
 }) {
   const [isSaveVisible, setIsSaveVisible] = useState(false);
-  const [saveMutations, setSaveMutations] = useState<SavePopupMutationState>({ save: false, create: false });
+  const [saveMutations, setSaveMutations] = useState<SavePopupMutationState>({ save: false, create: false, error: null });
   const [isShareVisible, setIsShareVisible] = useState(false);
   const [isReadmeVisible, setIsReadmeVisible] = useState(false);
   const [isCommentsVisible, setIsCommentsVisible] = useState(false);
