@@ -53,6 +53,11 @@ request. The default database lease is 300 seconds; repository indexing has a
 Jobs do not wait in a claimed batch behind an earlier request. After a crash,
 reconciliation can reclaim a job once its configured lease expires.
 `SIGTERM` completes the active run and closes Redis/PostgreSQL connections.
+The outbox unit gives Docker 300 seconds to stop and systemd 330 seconds,
+covering the default 240-second index request and cleanup. When increasing
+`ML_REPOSITORY_INDEX_TIMEOUT_MS`, increase Docker's `ExecStop --time` to at least
+the request timeout in seconds plus 60, and `TimeoutStopSec` to at least another
+30 seconds beyond that. For a 600000 ms index timeout, use 660 and 690 seconds.
 Avoid `SIGKILL`, which can leave the current row claimed until reconciliation
 releases its lease.
 
