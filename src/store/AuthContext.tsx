@@ -231,6 +231,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setStartupError(null);
     const previousUser = user;
     const logout = logoutRequest();
+    const logoutGeneration = authSessionLifecycle.currentGeneration();
     clearAccountQueryCache(queryClient);
     setUser(null);
     setIsLoading(false);
@@ -239,8 +240,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       await logout;
     } catch (e) {
       if (e instanceof LogoutNotCompletedError) {
-        setUser(previousUser);
-        throw e;
+        if (authSessionLifecycle.isCurrent(logoutGeneration)) {
+          setUser(previousUser);
+          throw e;
+        }
+        return;
       }
       console.error('Failed to revoke server session', e);
     }
