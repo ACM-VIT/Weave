@@ -68,7 +68,7 @@ export class FeedGenerationService {
         if (excludedIds.has(item.repo_id) || seen.has(item.repo_id)) return false;
         seen.add(item.repo_id); return true;
       });
-      const projections = await this.persistence.listActiveRepositories(items.map((item) => item.repo_id));
+      const projections = await this.persistence.listActiveRepositoryIdentities(items.map((item) => item.repo_id));
       const summaries = new Map(projections.map((repo) => [repo.repo_id, repo.summary_id]));
       if (projections.length !== items.length) throw new Error('ML returned unknown or inactive repositories.');
       await this.queue.replace(

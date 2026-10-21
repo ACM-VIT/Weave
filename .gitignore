@@ -57,6 +57,3 @@ backend/dist/
 .env.development
 .env.production
 .package-lock.json
-
-# Local agent instructions
-/AGENTS.md

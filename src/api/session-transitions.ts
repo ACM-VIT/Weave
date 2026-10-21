@@ -76,17 +76,21 @@ export async function isSessionRestoreBlocked(): Promise<boolean> {
 export function retireSessionIfCurrent(
   generation: number,
   expectedToken?: string,
+  assertAttemptCurrent: () => void = () => undefined,
 ): Promise<boolean> {
   return queueStorageMutation(async () => {
+    assertAttemptCurrent();
     if (!authSessionLifecycle.isCurrent(generation)) return false;
     if (expectedToken !== undefined) {
       const currentToken = await getStorageItemStrict('access_token');
+      assertAttemptCurrent();
       if (!authSessionLifecycle.isCurrent(generation) || currentToken !== expectedToken) return false;
     }
     // Persist the fail-closed marker before retiring the in-memory generation.
     // If storage is unavailable, keep the existing session instead of claiming
     // a durable logout that could be undone on restart.
     await setStorageItem(SESSION_RESTORE_BLOCKED_KEY, '1');
+    assertAttemptCurrent();
     if (!authSessionLifecycle.isCurrent(generation)) return false;
     if (!authSessionLifecycle.retire(generation)) return false;
     await removeStorageItem('access_token').catch(() => undefined);

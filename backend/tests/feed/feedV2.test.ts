@@ -34,6 +34,9 @@ class FakePersistence implements FeedPersistencePort {
     return this.serve?.feed_request_id === requestId ? this.serve : null;
   }
   async listActiveRepositories(repoIds: string[]) { return repoIds.map((repoId) => ({ ...repo, repo_id: repoId })); }
+  async listActiveRepositoryIdentities(repoIds: string[]) {
+    return repoIds.map(repoId => ({ repo_id: repoId, summary_id: repo.summary_id }));
+  }
   async getTrendingFallback(_limit: number, _exclude: string[], viewerUserId?: string) {
     this.fallbackCalls++;
     this.fallbackViewerId = viewerUserId;
