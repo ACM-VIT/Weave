@@ -30,6 +30,9 @@ function feed(ids: string[], reducedMotion = false) {
   const events: any[] = [];
   const closeAnimations: ((result: { finished: boolean }) => void)[] = [];
   let postComment: () => Promise<any> = async () => { throw new Error('Unexpected post'); };
+  let saveRepository: () => Promise<any> = async () => { throw new Error('Unexpected save'); };
+  let createCollection: () => Promise<any> = async () => { throw new Error('Unexpected create'); };
+  let saveCollections: any[] = [];
   let root: ReturnType<typeof create>;
   const animation = () => ({
     start: (callback?: (result: { finished: boolean }) => void) => { if (callback) closeAnimations.push(callback); },
@@ -69,10 +72,10 @@ function feed(ids: string[], reducedMotion = false) {
     '@/constants/theme': { REFERENCE_THEME: {} }, '../../constants/theme': { REFERENCE_THEME: {} },
     '@/hooks/use-modal-scroll-lock': { useModalScrollLock: () => undefined },
     '@/api/repository-actions': {
-      getSaveCollections: async (id: string) => { requests.push(`save:${id}`); return []; },
+      getSaveCollections: async (id: string) => { requests.push(`save:${id}`); return saveCollections; },
       getRepositoryShareDetails: async (id: string) => { requests.push(`share:${id}`); return {}; },
-      createSaveCollection: async () => { throw new Error('Unexpected create'); },
-      saveRepositoryToCollections: async () => { throw new Error('Unexpected save'); },
+      createSaveCollection: () => createCollection(),
+      saveRepositoryToCollections: () => saveRepository(),
     },
     '../../api/comments': {
       getCommentsByRepo: async (id: string) => { requests.push(`comments:${id}`); return []; },
@@ -113,6 +116,14 @@ function feed(ids: string[], reducedMotion = false) {
   return {
     requests, events, client,
     setPost(value: () => Promise<any>) { postComment = value; },
+    setSave(value: () => Promise<any>) {
+      saveRepository = value;
+      saveCollections = [{ collection_id: 'list', name: 'List', repo_count: 0, selected: true }];
+    },
+    setCreate(value: () => Promise<any>) { createCollection = value; },
+    get pendingCloseAnimations() { return closeAnimations.length; },
+    button(label: string) { return root.root.findAllByType('Modal').find(node => node.props.visible)!.findAllByType('Pressable').find(node => node.props.accessibilityLabel === label)!; },
+    async press(label: string) { await act(async () => { this.button(label).props.onPress(); await new Promise(resolve => setTimeout(resolve, 0)); }); },
     get mountedOverlays() { return overlayTypes.reduce((count, type) => count + root.root.findAllByType(type).length, 0); },
     get observers() { return client.getQueryCache().getAll().reduce((count, query) => count + query.getObserversCount(), 0); },
     get input() { return root.root.findAllByType('Modal').find(node => node.props.visible)!.findAllByType('TextInput').find(node => node.props.accessibilityLabel === 'Add a comment')!; },
@@ -134,6 +145,12 @@ function feed(ids: string[], reducedMotion = false) {
     },
     async type(text: string) { await act(async () => { this.input.props.onChangeText(text); }); },
     async submit() { await act(async () => { this.input.props.onSubmitEditing(); await new Promise(resolve => setTimeout(resolve, 0)); }); },
+    async createCollection(name: string) {
+      await this.press('Create new collection');
+      const input = () => root.root.findAllByType('TextInput').find(node => node.props.accessibilityLabel === 'Collection name')!;
+      await act(async () => { input().props.onChangeText(name); });
+      await act(async () => { input().props.onSubmitEditing(); await new Promise(resolve => setTimeout(resolve, 0)); });
+    },
     async unmount() { await act(async () => { root.unmount(); }); client.clear(); },
   };
 }
@@ -231,5 +248,63 @@ test('reopening comments during an in-flight post cannot submit that draft twice
     assert.equal(posts, 1);
     await act(async () => { finish({ comment_id: 'saved', user_id: 'viewer', repo_id: 'one', comment: 'Post once' }); });
     assert.equal(app.input.props.editable, true);
+  } finally { await app.unmount(); }
+});
+
+test('reopening a pending save blocks overlapping replacements and ignores the old popup close timer', async () => {
+  const app = feed(['one']);
+  let finish!: (result: any) => void;
+  let saves = 0;
+  app.setSave(() => { saves++; return new Promise(resolve => { finish = resolve; }); });
+  await app.mount();
+  try {
+    await app.open(0, 'onSavePress'); await app.press('Save repository to selected collections');
+    assert.equal(saves, 1);
+    await app.requestClose(); await app.finishClose();
+    await app.open(0, 'onSavePress');
+    assert.equal(app.button('Save repository to selected collections').props.disabled, true);
+    await app.press('Save repository to selected collections');
+    assert.equal(saves, 1, 'a second full collection-set replacement must not race the first');
+    await act(async () => { finish({ saved: true, collection_ids: ['list'] }); await new Promise(resolve => setTimeout(resolve, 0)); });
+    assert.equal(app.button('Save repository to selected collections').props.disabled, false);
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 950)); });
+    assert.equal(app.pendingCloseAnimations, 0, 'the unmounted instance must not schedule a close on the reopened popup');
+    assert.equal(app.mountedOverlays, 1);
+  } finally { await app.unmount(); }
+});
+
+test('a failed save after close/reopen releases busy state so the user can retry', async () => {
+  const app = feed(['one']);
+  let reject!: (error: Error) => void;
+  let saves = 0;
+  app.setSave(() => {
+    saves++;
+    return saves === 1 ? new Promise((_yes, no) => { reject = no; }) : Promise.resolve({ saved: true, collection_ids: ['list'] });
+  });
+  await app.mount();
+  try {
+    await app.open(0, 'onSavePress'); await app.press('Save repository to selected collections');
+    await app.requestClose(); await app.finishClose(); await app.open(0, 'onSavePress');
+    assert.equal(app.button('Save repository to selected collections').props.disabled, true);
+    await act(async () => { reject(new Error('offline')); await new Promise(resolve => setTimeout(resolve, 0)); });
+    assert.equal(app.button('Save repository to selected collections').props.disabled, false);
+    await app.press('Save repository to selected collections');
+    assert.equal(saves, 2);
+  } finally { await app.unmount(); }
+});
+
+test('collection creation also remains busy across save-popup close/reopen until it settles', async () => {
+  const app = feed(['one']);
+  let finish!: (collection: any) => void;
+  app.setCreate(() => new Promise(resolve => { finish = resolve; }));
+  await app.mount();
+  try {
+    await app.open(0, 'onSavePress'); await app.createCollection('New collection');
+    await app.requestClose(); await app.finishClose(); await app.open(0, 'onSavePress');
+    assert.equal(app.button('Create new collection').props.disabled, true);
+    assert.equal(app.button('Save repository to selected collections').props.disabled, true);
+    await act(async () => { finish({ collection_id: 'new', name: 'New collection' }); await new Promise(resolve => setTimeout(resolve, 0)); });
+    assert.equal(app.button('Create new collection').props.disabled, false);
+    assert.equal(app.button('Save repository to selected collections').props.disabled, false);
   } finally { await app.unmount(); }
 });

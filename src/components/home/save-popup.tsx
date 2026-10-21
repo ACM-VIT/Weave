@@ -38,7 +38,13 @@ import { useModalScrollLock } from '@/hooks/use-modal-scroll-lock';
 import { useAuth } from '@/store/AuthContext';
 import * as SecureStore from '@/utils/storage';
 
+export type SavePopupMutationState = { save: boolean; create: boolean };
+
 type SavePopupProps = {
+  mutations?: {
+    state: SavePopupMutationState;
+    onChange: React.Dispatch<React.SetStateAction<SavePopupMutationState>>;
+  };
   isVisible: boolean;
   onClose: () => void;
   onSaved?: (saved: boolean) => void;
@@ -104,6 +110,7 @@ export function SavePopup({
   repoName,
   serveId,
   position,
+  mutations,
 }: SavePopupProps) {
   const { height, width } = useWindowDimensions();
   const insets = useSafeAreaInsets();
@@ -120,6 +127,10 @@ export function SavePopup({
   const [isCreating, setIsCreating] = useState(false);
   const [newCollectionName, setNewCollectionName] = useState('');
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [localMutations, setLocalMutations] = useState<SavePopupMutationState>({ save: false, create: false });
+  const pending = mutations?.state ?? localMutations;
+  const setPending = mutations?.onChange ?? setLocalMutations;
+  const mountedRef = useRef(false);
 
   useModalScrollLock(isVisible);
 
@@ -177,7 +188,7 @@ export function SavePopup({
         useNativeDriver: true,
       }),
     ]).start(({ finished }) => {
-      if (!finished) return;
+      if (!finished || !mountedRef.current) return;
       setSearch('');
       setMessage(null);
       setIsCreating(false);
@@ -207,8 +218,12 @@ export function SavePopup({
     ]).start();
   }, [isVisible, modalHeight, overlayOpacity, translateY]);
 
-  useEffect(() => () => {
-    if (closeTimer.current) clearTimeout(closeTimer.current);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      if (closeTimer.current) clearTimeout(closeTimer.current);
+    };
   }, []);
 
   useEffect(() => {
@@ -221,6 +236,7 @@ export function SavePopup({
   }, [isCreating]);
 
   const createMutation = useMutation({
+    onMutate: () => setPending(current => ({ ...current, create: true })),
     mutationFn: async () => {
       const name = newCollectionName.trim();
       if (!name) throw new Error('Collection name is required.');
@@ -238,6 +254,7 @@ export function SavePopup({
       await queryClient.invalidateQueries({ queryKey: collectionQueryKey(repoId) });
     },
     onError: (error) => setMessage({ type: 'error', text: error instanceof Error ? error.message : 'Could not create collection.' }),
+    onSettled: () => setPending(current => ({ ...current, create: false })),
   });
 
   const saveMutation = useMutation({
@@ -251,6 +268,7 @@ export function SavePopup({
       });
     },
     onMutate: async (collectionIds) => {
+      setPending(current => ({ ...current, save: true }));
       const key = collectionQueryKey(repoId);
       await queryClient.cancelQueries({ queryKey: key });
       const previous = queryClient.getQueryData<SaveCollection[]>(key);
@@ -280,12 +298,20 @@ export function SavePopup({
         queryClient.invalidateQueries({ queryKey: ['profile-content'] }),
       ]);
       void checkOnboardingStatus().catch(() => undefined);
-      setHasLocalChanges(false);
-      closeTimer.current = setTimeout(closeAnimated, 900);
+      if (mountedRef.current) {
+        setHasLocalChanges(false);
+        closeTimer.current = setTimeout(closeAnimated, 900);
+      }
     },
+    onSettled: () => setPending(current => ({ ...current, save: false })),
   });
 
+  const isSaving = saveMutation.isPending || pending.save;
+  const isCreatingCollection = createMutation.isPending || pending.create;
+  const mutationBusy = isSaving || isCreatingCollection;
+
   const toggleCollection = (collectionId: string) => {
+    if (mutationBusy) return;
     setHasLocalChanges(true);
     setMessage(null);
     setLocalSelectedIds(() => {
@@ -298,12 +324,13 @@ export function SavePopup({
   };
 
   const beginCollectionCreation = () => {
+    if (mutationBusy) return;
     setMessage(null);
     setIsCreating(true);
     void haptic();
   };
 
-  const saveDisabled = saveMutation.isPending
+  const saveDisabled = mutationBusy
     || collectionsQuery.isLoading
     || collectionsQuery.isFetching
     || collectionsQuery.isError;
@@ -433,7 +460,8 @@ export function SavePopup({
                           <Pressable
                             accessibilityLabel={`${collection.name}, ${collection.repo_count} repositories`}
                             accessibilityRole="checkbox"
-                            accessibilityState={{ checked: selected }}
+                            accessibilityState={{ checked: selected, disabled: mutationBusy }}
+                            disabled={mutationBusy}
                             onPress={() => toggleCollection(collection.collection_id)}
                             style={StyleSheet.absoluteFill}
                           />
@@ -493,6 +521,8 @@ export function SavePopup({
                   <Pressable
                     accessibilityLabel="Create new collection"
                     accessibilityRole="button"
+                    accessibilityState={{ disabled: mutationBusy }}
+                    disabled={mutationBusy}
                     onPress={beginCollectionCreation}
                     style={StyleSheet.absoluteFill}
                   />
@@ -515,7 +545,7 @@ export function SavePopup({
                       justifyContent: 'center',
                     }}
                   >
-                    {saveMutation.isPending ? <ActivityIndicator color={palette.saveAccentText} /> : (
+                    {isSaving ? <ActivityIndicator color={palette.saveAccentText} /> : (
                       <Text style={[styles.saveText, { color: palette.saveAccentText }]}>Save</Text>
                     )}
                   </View>
@@ -524,7 +554,7 @@ export function SavePopup({
                     accessibilityRole="button"
                     accessibilityState={{ disabled: saveDisabled }}
                     disabled={saveDisabled}
-                    onPress={() => saveMutation.mutate([...selectedIds])}
+                    onPress={() => { if (!saveDisabled) saveMutation.mutate([...selectedIds]); }}
                     style={StyleSheet.absoluteFill}
                   />
                 </View>
@@ -537,7 +567,7 @@ export function SavePopup({
                 <Pressable
                   accessibilityLabel="Cancel collection creation"
                   accessibilityRole="button"
-                  disabled={createMutation.isPending}
+                  disabled={isCreatingCollection}
                   onPress={() => { setIsCreating(false); setNewCollectionName(''); setMessage(null); }}
                   style={[StyleSheet.absoluteFill, styles.creationDim]}
                 />
@@ -550,7 +580,7 @@ export function SavePopup({
                     <Pressable
                       accessibilityLabel="Cancel collection creation"
                       accessibilityRole="button"
-                      disabled={createMutation.isPending}
+                      disabled={isCreatingCollection}
                       hitSlop={8}
                       onPress={() => { setIsCreating(false); setNewCollectionName(''); setMessage(null); }}
                       style={[styles.createClose, { backgroundColor: palette.elevated }]}
@@ -560,11 +590,11 @@ export function SavePopup({
                   </View>
                   <TextInput
                     accessibilityLabel="Collection name"
-                    editable={!createMutation.isPending}
+                    editable={!mutationBusy}
                     ref={createInputRef}
                     maxLength={100}
                     onChangeText={(value) => { setNewCollectionName(value); if (message) setMessage(null); }}
-                    onSubmitEditing={() => { if (newCollectionName.trim() && !createMutation.isPending) createMutation.mutate(); }}
+                    onSubmitEditing={() => { if (newCollectionName.trim() && !mutationBusy) createMutation.mutate(); }}
                     placeholder="Collection name"
                     placeholderTextColor={palette.tertiary}
                     returnKeyType="done"
@@ -576,17 +606,17 @@ export function SavePopup({
                   ) : null}
                   <Pressable
                     accessibilityRole="button"
-                    accessibilityState={{ disabled: !newCollectionName.trim() || createMutation.isPending }}
-                    disabled={!newCollectionName.trim() || createMutation.isPending}
-                    onPress={() => createMutation.mutate()}
+                    accessibilityState={{ disabled: !newCollectionName.trim() || mutationBusy }}
+                    disabled={!newCollectionName.trim() || mutationBusy}
+                    onPress={() => { if (newCollectionName.trim() && !mutationBusy) createMutation.mutate(); }}
                     style={({ pressed }) => [
                       styles.createSubmit,
                       { backgroundColor: palette.saveAccent },
-                      (!newCollectionName.trim() || createMutation.isPending) && styles.disabled,
+                      (!newCollectionName.trim() || mutationBusy) && styles.disabled,
                       pressed && styles.pressed,
                     ]}
                   >
-                    {createMutation.isPending ? <ActivityIndicator color={palette.saveAccentText} /> : (
+                    {isCreatingCollection ? <ActivityIndicator color={palette.saveAccentText} /> : (
                       <Text style={[styles.createSubmitText, { color: palette.saveAccentText }]}>Create</Text>
                     )}
                   </Pressable>
