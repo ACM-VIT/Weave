@@ -6,6 +6,8 @@ import {
   normalizeRepositoryCardSummary,
   prepareReadmeForDisplay,
   prepareReadmePreview,
+  prepareReadmeSummaryDocument,
+  readmePreviewLineCount,
   README_CARD_SUMMARY_MAX_CHARACTERS,
   README_MAX_CHARACTERS,
   README_SUMMARY_PENDING,
@@ -81,7 +83,7 @@ test('a concise generated discovery summary stays distinct and is bounded for th
   assert.equal(prepared.markdown.includes('Complete README'), false);
 });
 
-test('README preview falls back to description and never to full README', () => {
+test('missing summaries never borrow the description or full README', () => {
   assert.deepEqual(
     prepareReadmePreview({
       summary: ' ',
@@ -90,8 +92,8 @@ test('README preview falls back to description and never to full README', () => 
     }),
     {
       isTruncated: false,
-      markdown: 'Repository description',
-      source: 'description',
+      markdown: README_SUMMARY_PENDING,
+      source: 'pending',
     },
   );
   assert.deepEqual(
@@ -108,7 +110,7 @@ test('README preview falls back to description and never to full README', () => 
   );
 });
 
-test('legacy summary placeholders remain missing until description fallback runs', () => {
+test('legacy summary placeholders remain explicitly unavailable', () => {
   assert.deepEqual(
     prepareReadmePreview({
       summary: 'No summary available.',
@@ -117,8 +119,8 @@ test('legacy summary placeholders remain missing until description fallback runs
     }),
     {
       isTruncated: false,
-      markdown: 'An honest repository description.',
-      source: 'description',
+      markdown: README_SUMMARY_PENDING,
+      source: 'pending',
     },
   );
 
@@ -147,8 +149,8 @@ test('full README content cannot masquerade as the card summary', () => {
     }),
     {
       isTruncated: false,
-      markdown: 'A bounded repository description.',
-      source: 'description',
+      markdown: README_SUMMARY_PENDING,
+      source: 'pending',
     },
   );
 });
@@ -170,8 +172,8 @@ test('a label cannot disguise a complete or long contiguous README copy', () => 
     fullReadme,
   });
 
-  assert.equal(prepared.source, 'description');
-  assert.equal(prepared.markdown, 'A safe repository description.');
+  assert.equal(prepared.source, 'pending');
+  assert.equal(prepared.markdown, README_SUMMARY_PENDING);
 });
 
 test('long README-shaped content is rejected instead of truncated as a summary', () => {
@@ -184,8 +186,8 @@ test('long README-shaped content is rejected instead of truncated as a summary',
 
   assert.deepEqual(prepared, {
     isTruncated: false,
-    markdown: 'Concise repository description.',
-    source: 'description',
+    markdown: README_SUMMARY_PENDING,
+    source: 'pending',
   });
   assert.equal(prepared.markdown.includes('Installation'), false);
 
@@ -209,8 +211,8 @@ test('summaries over the hard V2 bound are rejected before presentation', () => 
     }),
     {
       isTruncated: false,
-      markdown: 'Bounded repository description.',
-      source: 'description',
+      markdown: README_SUMMARY_PENDING,
+      source: 'pending',
     },
   );
 });
@@ -257,8 +259,8 @@ test('README-shaped fenced code is never presented as a card summary', () => {
 
   assert.deepEqual(prepared, {
     isTruncated: false,
-    markdown: 'A safe description fallback.',
-    source: 'description',
+    markdown: README_SUMMARY_PENDING,
+    source: 'pending',
   });
 });
 
@@ -273,7 +275,7 @@ test('README preview never leaves a dangling emoji surrogate', () => {
   assert.equal(finalCodeUnit >= 0xd800 && finalCodeUnit <= 0xdbff, false);
 });
 
-test('description fallback is bounded through the same preview path', () => {
+test('description fallback is not presented as a README summary', () => {
   const prepared = prepareReadmePreview({
     summary: null,
     description: 'A useful repository description. Additional context should be bounded for the card layout.',
@@ -281,8 +283,41 @@ test('description fallback is bounded through the same preview path', () => {
     maximumCharacters: 55,
   });
 
-  assert.equal(prepared.source, 'description');
-  assert.equal(prepared.isTruncated, true);
-  assert.equal(prepared.markdown.endsWith('...'), true);
+  assert.equal(prepared.source, 'pending');
+  assert.equal(prepared.isTruncated, false);
+  assert.equal(prepared.markdown, README_SUMMARY_PENDING);
   assert.equal(prepared.markdown.includes('README that must remain separate'), false);
+});
+
+test('a one-line description duplicated in a summary artifact is never labelled a README summary', () => {
+  const description = 'Official React components and examples for building with LiveKit.';
+  assert.equal(prepareReadmePreview({ summary: description, description }).source, 'pending');
+  assert.equal(prepareReadmePreview({ summary: '**' + description + '**', description }).source, 'pending');
+  assert.equal(prepareReadmePreview({ summary: 'Different fallback text.', summarySource: 'description_fallback' }).source, 'pending');
+});
+
+test('Read more receives the complete summary artifact and highlights, never the raw README', () => {
+  const summary = 'Reusable media controls cover audio and video rooms. Developers can compose conferencing interfaces while retaining control of application state.';
+  const repository = {
+    readmeSummary: summary,
+    summarySource: 'generated' as const,
+    summaryHighlights: ['Composable room controls', 'Audio and video state'],
+    description: 'Official React components.',
+    readmeFull: '# Full README\n\nRaw installation instructions must remain separate.',
+  };
+  const preview = prepareReadmePreview({ summary, description: repository.description, maximumCharacters: 60 });
+  assert.equal(preview.isTruncated, true);
+  const document = prepareReadmeSummaryDocument(repository);
+  assert.equal(document, summary + '\n\n- Composable room controls\n- Audio and video state');
+  assert.equal(document.includes('installation'), false);
+  assert.equal(prepareReadmeSummaryDocument({ ...repository, readmeSummary: null }), null);
+  assert.equal(prepareReadmeSummaryDocument({ ...repository, summarySource: 'description_fallback' }), null);
+});
+
+test('summary preview adapts to measured available height and larger text while reserving two lines', () => {
+  assert.equal(readmePreviewLineCount(210, 21, 1), 8);
+  assert.equal(readmePreviewLineCount(105, 21, 1), 3);
+  assert.equal(readmePreviewLineCount(210, 21, 2), 3);
+  assert.equal(readmePreviewLineCount(0, 17, 1), 1);
+  assert.equal(readmePreviewLineCount(34, 17, 1), 1);
 });

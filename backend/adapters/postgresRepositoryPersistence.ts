@@ -1,4 +1,6 @@
+import type { Sql } from 'postgres';
 import crypto from 'node:crypto';
+import { enqueueReadmeSummary } from '../services/readmeSummaryService.js';
 
 import type {
   RepositoryUpsert,
@@ -17,8 +19,9 @@ import {
 import { reconcileGithubProfileForIngestion } from '../services/socialProfileService.js';
 
 export class PostgresRepositoryPersistence implements RepositoryPersistencePort {
+  constructor(private readonly db: Sql = sqlClient) {}
   async bulkUpsert(input: RepositoryUpsert[]): Promise<RepositoryUpsertResult[]> {
-    return sqlClient.begin(async (tx) => {
+    return this.db.begin(async (tx) => {
       const results: RepositoryUpsertResult[] = [];
       const repositories = input.map(normalizeCanonicalRepositoryReadme).sort(
         (a, b) => BigInt(a.github_id) < BigInt(b.github_id) ? -1 : 1,
@@ -74,7 +77,7 @@ export class PostgresRepositoryPersistence implements RepositoryPersistencePort 
             ${repoId}::uuid,${repo.description ?? null},${repo.readme ?? null},
             ${repo.readme_source_path ?? null},${repo.readme_default_branch ?? null},${repo.readme_base_url ?? null},
             ${repo.primary_language ?? null},
-            ${JSON.stringify(repo.languages ?? [])}::jsonb,${hash},${version},${repo.pushed_at ?? null}::timestamptz
+            ${JSON.stringify(repo.languages ?? [])}::text::jsonb,${hash},${version},${repo.pushed_at ?? null}::timestamptz
           ) ON CONFLICT (repo_id) DO UPDATE SET description=EXCLUDED.description,readme=EXCLUDED.readme,
             readme_source_path=EXCLUDED.readme_source_path,
             readme_default_branch=EXCLUDED.readme_default_branch,
@@ -82,6 +85,7 @@ export class PostgresRepositoryPersistence implements RepositoryPersistencePort 
             primary_language=EXCLUDED.primary_language,languages=EXCLUDED.languages,content_hash=EXCLUDED.content_hash,
             content_version=EXCLUDED.content_version,source_updated_at=EXCLUDED.source_updated_at,updated_at=now()
         `;
+        await enqueueReadmeSummary(tx, repoId, version, hash);
         if (changed) {
           await tx`
             UPDATE app.repo_card_summaries SET active=false
@@ -111,7 +115,7 @@ export class PostgresRepositoryPersistence implements RepositoryPersistencePort 
             repository: buildMlRepositorySource(repo, hash) };
           await tx`
             INSERT INTO telemetry.ml_outbox (job_type,aggregate_id,idempotency_key,payload)
-            VALUES ('repo_index',${repoId}::uuid,${`repo_index:${repoId}:${version}`},${JSON.stringify(payload)}::jsonb)
+            VALUES ('repo_index',${repoId}::uuid,${`repo_index:${repoId}:${version}`},${JSON.stringify(payload)}::text::jsonb)
             ON CONFLICT (idempotency_key) DO NOTHING
           `;
         } else {
@@ -123,7 +127,7 @@ export class PostgresRepositoryPersistence implements RepositoryPersistencePort 
           await tx`
             INSERT INTO telemetry.ml_outbox (job_type,aggregate_id,idempotency_key,payload)
             VALUES ('repo_refresh',${repoId}::uuid,
-              ${`repo_refresh:ingestion:${repoId}:${featureVersion}`},${JSON.stringify(payload)}::jsonb)
+              ${`repo_refresh:ingestion:${repoId}:${featureVersion}`},${JSON.stringify(payload)}::text::jsonb)
             ON CONFLICT (idempotency_key) DO NOTHING
           `;
         }
@@ -136,7 +140,7 @@ export class PostgresRepositoryPersistence implements RepositoryPersistencePort 
   async recordTrendingSnapshot(input: TrendingSnapshotInput): Promise<TrendingSnapshotResult> {
     const mappings = await this.bulkUpsert(input.repositories);
     const byGithubId = new Map(mappings.map((mapping) => [mapping.github_id, mapping]));
-    return sqlClient.begin(async (tx) => {
+    return this.db.begin(async (tx) => {
       await tx`
         INSERT INTO app.trending_snapshots (snapshot_id,period,source,computed_at,complete,active)
         VALUES (${input.snapshot_id}::uuid,${input.period},${input.source},${input.computed_at}::timestamptz,false,false)
@@ -149,7 +153,7 @@ export class PostgresRepositoryPersistence implements RepositoryPersistencePort 
         await tx`
           INSERT INTO app.trending_snapshot_items (snapshot_id,position,repo_id,score,features)
           VALUES (${input.snapshot_id}::uuid,${repo.rank},${mapping.repo_id}::uuid,${repo.score ?? null},
-            ${JSON.stringify(buildMlRepositoryFeaturePatch(repo))}::jsonb)
+            ${JSON.stringify(buildMlRepositoryFeaturePatch(repo))}::text::jsonb)
         `;
         // New or content-changed repositories already have a repo_index job from
         // bulkUpsert containing the same discovery features. A refresh must never
@@ -159,7 +163,7 @@ export class PostgresRepositoryPersistence implements RepositoryPersistencePort 
             feature_version: Date.parse(input.computed_at), features: buildMlRepositoryFeaturePatch(repo) };
           await tx`
             INSERT INTO telemetry.ml_outbox (job_type,aggregate_id,idempotency_key,payload)
-            VALUES ('repo_refresh',${mapping.repo_id}::uuid,${`repo_refresh:${input.snapshot_id}:${mapping.repo_id}`},${JSON.stringify(payload)}::jsonb)
+            VALUES ('repo_refresh',${mapping.repo_id}::uuid,${`repo_refresh:${input.snapshot_id}:${mapping.repo_id}`},${JSON.stringify(payload)}::text::jsonb)
             ON CONFLICT (idempotency_key) DO NOTHING
           `;
         }

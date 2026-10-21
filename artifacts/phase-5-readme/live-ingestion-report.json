@@ -1,0 +1,103 @@
+{
+  "generated_at": "2026-10-21T06:50:27.843Z",
+  "original_repository_count": 1589,
+  "final_repository_count": 1599,
+  "newly_ingested": 10,
+  "persisted_current_summaries": 0,
+  "source": "Public GitHub repository metadata and complete README via REST API",
+  "legacy_table_used": false,
+  "recommendation_ml_called": false,
+  "provider": "OpenRouter",
+  "repositories": [
+    {
+      "repo_id": "0f7d2d53-5505-4e54-8124-521477a2bb69",
+      "full_name": "ayghri/i-have-adhd",
+      "summary_id": null,
+      "content_version": null,
+      "model_version": null,
+      "artifact": null,
+      "current_source": null
+    },
+    {
+      "repo_id": "b37bf8e0-5abb-434a-b6f4-ff6e32ecff7b",
+      "full_name": "ComposioHQ/awesome-claude-skills",
+      "summary_id": null,
+      "content_version": null,
+      "model_version": null,
+      "artifact": null,
+      "current_source": null
+    },
+    {
+      "repo_id": "82948977-2547-40c7-bb67-0a3b43e9323a",
+      "full_name": "DeusData/codebase-memory-mcp",
+      "summary_id": null,
+      "content_version": null,
+      "model_version": null,
+      "artifact": null,
+      "current_source": null
+    },
+    {
+      "repo_id": "a82f5f66-d316-4abd-b82e-9b3f6ed5e12c",
+      "full_name": "DietrichGebert/ponytail",
+      "summary_id": null,
+      "content_version": null,
+      "model_version": null,
+      "artifact": null,
+      "current_source": null
+    },
+    {
+      "repo_id": "8c030bfe-10b3-48f1-8583-396379e52f28",
+      "full_name": "files-community/Files",
+      "summary_id": null,
+      "content_version": null,
+      "model_version": null,
+      "artifact": null,
+      "current_source": null
+    },
+    {
+      "repo_id": "1bc4cc8f-d751-45b9-bb77-6a33541d794c",
+      "full_name": "hoppscotch/hoppscotch",
+      "summary_id": null,
+      "content_version": null,
+      "model_version": null,
+      "artifact": null,
+      "current_source": null
+    },
+    {
+      "repo_id": "e211f8d5-4a80-450f-b8c5-6d68330446fe",
+      "full_name": "morluto/rea",
+      "summary_id": null,
+      "content_version": null,
+      "model_version": null,
+      "artifact": null,
+      "current_source": null
+    },
+    {
+      "repo_id": "42210235-cf69-4549-99b3-6dfdda84cf74",
+      "full_name": "sickn33/agentic-awesome-skills",
+      "summary_id": null,
+      "content_version": null,
+      "model_version": null,
+      "artifact": null,
+      "current_source": null
+    },
+    {
+      "repo_id": "50228284-19be-4503-920d-c1dab7c89f03",
+      "full_name": "tt-a1i/archify",
+      "summary_id": null,
+      "content_version": null,
+      "model_version": null,
+      "artifact": null,
+      "current_source": null
+    },
+    {
+      "repo_id": "ca85b293-6c57-480a-87e8-d726e2c16f24",
+      "full_name": "usebruno/bruno",
+      "summary_id": null,
+      "content_version": null,
+      "model_version": null,
+      "artifact": null,
+      "current_source": null
+    }
+  ]
+}

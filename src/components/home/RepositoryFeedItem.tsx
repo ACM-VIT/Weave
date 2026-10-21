@@ -29,6 +29,7 @@ import {
 import { CommentSheet } from './CommentSheet';
 import { SaveSwipeGestureContext } from './DescriptionCard';
 import { ReadmePopup } from './ReadmePopup';
+import { prepareReadmeSummaryDocument } from '@/utils/readme';
 import { RepositoryScreen } from './RepositoryScreen';
 import { SavePopup } from './save-popup';
 import {
@@ -84,6 +85,7 @@ export function RepositoryFeedItem({
   const [isSaveVisible, setIsSaveVisible] = useState(false);
   const [isShareVisible, setIsShareVisible] = useState(false);
   const [isReadmeVisible, setIsReadmeVisible] = useState(false);
+  const [expandedSummary, setExpandedSummary] = useState<string | null>(null);
   const [isCommentsVisible, setIsCommentsVisible] = useState(false);
   const [isSaveRevealOpen, setIsSaveRevealOpen] = useState(false);
   const [isAppActive, setIsAppActive] = useState(
@@ -302,7 +304,8 @@ export function RepositoryFeedItem({
               onOwnerPress={onOwnerPress}
               onRepositoryPress={onRepositoryPress}
               onQueueActivity={queueRepositoryActivity}
-              onReadFullPress={() => {
+              onReadFullPress={(digest) => {
+                setExpandedSummary(prepareReadmeSummaryDocument({ ...repository, readmeDigest: digest }));
                 queueRepositoryActivity(
                   { repo_id: repository.id, action: FEEDBACK_ACTIONS.readmeOpen },
                   true
@@ -364,7 +367,8 @@ export function RepositoryFeedItem({
         <ReadmePopup
           isVisible
           onClose={() => setIsReadmeVisible(false)}
-          readmeText={repository.readmeFull}
+          contentKind="summary"
+          readmeText={expandedSummary}
           readmeSource={{
             fullName: repository.fullName,
             githubUrl: repository.githubUrl,

@@ -1,0 +1,58 @@
+{
+  "node": "22.23.2",
+  "automated": {
+    "lint": "passed",
+    "typecheck": "passed",
+    "frontend_tests": {
+      "passed": 152,
+      "failed": 0
+    },
+    "backend_build": "passed",
+    "backend_tests": {
+      "passed": 143,
+      "failed": 0,
+      "skipped": 11
+    },
+    "isolated_readme_integration": {
+      "passed": 6,
+      "failed": 0
+    },
+    "expo_install_check": "passed",
+    "export_all": [
+      "ios",
+      "android",
+      "web"
+    ],
+    "expo_doctor": {
+      "passed": 20,
+      "total": 21,
+      "failure": "Existing unmaintained react-native-render-html metadata warning"
+    },
+    "git_diff_check": "passed"
+  },
+  "live_acceptance": {
+    "newly_ingested": 10,
+    "before_repository_count": 1589,
+    "after_repository_count": 1599,
+    "persisted_current_summaries": 0,
+    "status": "blocked_by_openrouter_policy",
+    "selected_model": "openai/gpt-4.1-mini",
+    "zero_data_retention": true,
+    "management_api_status": 401,
+    "application_deployed": false,
+    "recommendation_ml_called": false
+  },
+  "browser": {
+    "repository": "livekit/components-js",
+    "detail_loaded": true,
+    "unavailable_summary_retry": true,
+    "separate_stored_readme_open_close": true,
+    "positive_generated_summary_verified": false
+  },
+  "manual_remaining": [
+    "Enable selected model in OpenRouter allowlist while retaining ZDR, then regenerate the recorded repository IDs",
+    "Review all ten digests against source READMEs for usefulness and factual grounding",
+    "Verify populated digest preview/popup at 320x568 and 360x640 with large text",
+    "Authenticated iOS/Android cross-feature and keyboard checks in the Phase 5 QA matrix"
+  ]
+}

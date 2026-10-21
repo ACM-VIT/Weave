@@ -22,7 +22,7 @@ import RenderHtml, {
 } from 'react-native-render-html';
 
 import { REFERENCE_THEME } from '@/constants/theme';
-import { prepareReadmeForDisplay } from '@/utils/readme';
+import { prepareReadmeForDisplay, README_SUMMARY_PENDING } from '@/utils/readme';
 import { openReadmeExternalLink } from '@/utils/readme-external-link';
 import {
   renderReadmeMarkdown,
@@ -35,6 +35,7 @@ interface ReadmePopupProps {
   onClose: () => void;
   title: string;
   readmeText: string | null;
+  contentKind?: 'readme' | 'summary';
   readmeSource: ReadmeImageContext;
 }
 
@@ -165,6 +166,7 @@ export function ReadmePopup({
   onClose,
   title,
   readmeText,
+  contentKind = 'readme',
   readmeSource,
 }: ReadmePopupProps) {
   const { width, height } = useWindowDimensions();
@@ -173,7 +175,9 @@ export function ReadmePopup({
   const opacity = useMemo(() => new Animated.Value(0), []);
   const contentProgress = useMemo(() => new Animated.Value(0), []);
   const closingRef = useRef(false);
-  const content = useMemo(() => prepareReadmeForDisplay(readmeText), [readmeText]);
+  const content = useMemo(() => contentKind === 'summary'
+    ? readmeText || README_SUMMARY_PENDING
+    : prepareReadmeForDisplay(readmeText), [contentKind, readmeText]);
   const markdownHtml = useMemo(
     () => renderReadmeMarkdown(content, readmeSource),
     [content, readmeSource],
@@ -295,7 +299,7 @@ export function ReadmePopup({
     >
       <View style={styles.root}>
         <Pressable
-          accessibilityLabel="Close README"
+          accessibilityLabel={contentKind === 'summary' ? 'Close README summary' : 'Close README'}
           accessibilityRole="button"
           onPress={closeAnimated}
           style={StyleSheet.absoluteFill}
@@ -320,10 +324,10 @@ export function ReadmePopup({
           <View style={styles.header}>
             <View style={styles.headerTitle}>
               <BookOpen size={14} color={REFERENCE_THEME.accentLight} strokeWidth={2} />
-              <Text style={styles.headerText}>README</Text>
+              <Text style={styles.headerText}>{contentKind === 'summary' ? 'README SUMMARY' : 'README'}</Text>
             </View>
             <Pressable
-              accessibilityLabel="Close"
+              accessibilityLabel={contentKind === 'summary' ? 'Close README summary' : 'Close README'}
               accessibilityRole="button"
               onPress={closeAnimated}
               style={({ pressed }) => [styles.closeButton, pressed && styles.pressed]}
@@ -429,9 +433,9 @@ const styles = StyleSheet.create({
     letterSpacing: 0.3,
   },
   closeButton: {
-    width: 26,
-    height: 26,
-    borderRadius: 13,
+    width: 44,
+    height: 44,
+    borderRadius: 22,
     backgroundColor: REFERENCE_THEME.controlStrong,
     alignItems: 'center',
     justifyContent: 'center',

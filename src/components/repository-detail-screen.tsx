@@ -1,3 +1,4 @@
+import { useRepositoryReadmeSummary } from '@/hooks/use-repository-readme-summary';
 import { useCallback, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
@@ -38,7 +39,7 @@ import type { RepositoryDetail } from '@/models/repository';
 import { getActivityOutbox } from '@/services/activityOutboxClient';
 import { useAuth } from '@/store/AuthContext';
 import { formatCompactCount } from '@/utils/format-count';
-import { README_SUMMARY_PENDING } from '@/utils/readme';
+import { prepareReadmePreview, prepareReadmeSummaryDocument } from '@/utils/readme';
 import { getStorageItem } from '@/utils/storage';
 
 type ActionProps = {
@@ -106,6 +107,7 @@ export function RepositoryDetailScreen({ repositoryId }: { repositoryId: string 
   const [saveVisible, setSaveVisible] = useState(false);
   const [shareVisible, setShareVisible] = useState(false);
   const [readmeVisible, setReadmeVisible] = useState(false);
+  const [summaryVisible, setSummaryVisible] = useState(false);
 
   const repositoryQuery = useQuery({
     queryKey: repositoryDetailQueryKey(repositoryId, viewerUserId),
@@ -119,8 +121,16 @@ export function RepositoryDetailScreen({ repositoryId }: { repositoryId: string 
   });
 
   const repository = repositoryQuery.data;
+  const summaryQuery = useRepositoryReadmeSummary(repository);
   const contentWidth = Math.min(Math.max(width - 32, 0), 720);
-  const summary = repository?.readmeSummary || repository?.description || README_SUMMARY_PENDING;
+  const preparedSummary = prepareReadmePreview({
+    digest:summaryQuery.digest,summary:repository?.readmeSummary,description:repository?.description,
+    fullReadme:repository?.readmeFull,summarySource:repository?.summarySource,
+  });
+  const summary = preparedSummary.source==='summary' ? summaryQuery.digest?.overview || preparedSummary.markdown
+    : summaryQuery.isError ? 'Couldn’t load the README summary.'
+      : ['pending','processing'].includes(summaryQuery.data?.status??'') ? 'Preparing README summary…'
+        : summaryQuery.isLoading ? 'Loading README summary…' : preparedSummary.markdown;
   const languages = useMemo(() => repository?.languages ?? [], [repository?.languages]);
 
   const queueActivity = useCallback(async (action: 'share' | 'github_open') => {
@@ -257,8 +267,20 @@ export function RepositoryDetailScreen({ repositoryId }: { repositoryId: string 
         </View>
 
         <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Summary</Text>
+          <Text style={styles.sectionTitle}>README summary</Text>
           <Text selectable style={styles.summary}>{summary}</Text>
+          {preparedSummary.source==='summary' ? (
+            <Pressable accessibilityRole="button" accessibilityLabel={`Read more about ${repository.name}`}
+              accessibilityHint="Opens the complete structured README summary"
+              onPress={() => setSummaryVisible(true)} style={styles.readmeButton}>
+              <Text style={styles.readmeButtonLabel}>Read more</Text>
+            </Pressable>
+          ) : summaryQuery.isError || summaryQuery.data?.status==='failed' ? (
+            <Pressable accessibilityRole="button" accessibilityLabel="Check README summary again"
+              accessibilityHint="Checks whether a summary is available" onPress={() => void summaryQuery.refetch()} style={styles.readmeButton}>
+              <Text style={styles.readmeButtonLabel}>Check again</Text>
+            </Pressable>
+          ) : null}
         </View>
 
         {languages.length > 0 ? (
@@ -350,6 +372,12 @@ export function RepositoryDetailScreen({ repositoryId }: { repositoryId: string 
         repositoryDetails={repository}
         repositoryId={repository.id}
       />
+      {summaryVisible ? <ReadmePopup
+        isVisible contentKind="summary" onClose={() => setSummaryVisible(false)}
+        readmeText={prepareReadmeSummaryDocument({ ...repository, readmeDigest: summaryQuery.digest })}
+        readmeSource={{ fullName: repository.fullName, githubUrl: repository.githubUrl }}
+        title={repository.name}
+      /> : null}
       <ReadmePopup
         isVisible={readmeVisible}
         onClose={() => setReadmeVisible(false)}
@@ -443,7 +471,7 @@ const styles = StyleSheet.create({
   readmeHeading: { alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between' },
   readmeTitleRow: { alignItems: 'center', flexDirection: 'row', gap: 7 },
   membershipText: { color: REFERENCE_THEME.textTertiary, fontFamily: 'NataSans-Regular', fontSize: 12 },
-  readmeButton: { alignItems: 'center', alignSelf: 'flex-start', backgroundColor: 'rgba(48,209,88,0.14)', borderRadius: 12, paddingHorizontal: 16, paddingVertical: 11 },
+  readmeButton: { minHeight: 44, justifyContent: 'center', alignItems: 'center', alignSelf: 'flex-start', backgroundColor: 'rgba(48,209,88,0.14)', borderRadius: 12, paddingHorizontal: 16, paddingVertical: 11 },
   readmeButtonLabel: { color: REFERENCE_THEME.accentLight, fontFamily: 'NataSans-SemiBold', fontSize: 14 },
   githubButton: { alignItems: 'center', alignSelf: 'center', borderColor: REFERENCE_THEME.border, borderRadius: 14, borderWidth: 1, flexDirection: 'row', gap: 8, minHeight: 50, paddingHorizontal: 20 },
   githubButtonLabel: { color: REFERENCE_THEME.text, fontFamily: 'NataSans-SemiBold', fontSize: 14 },

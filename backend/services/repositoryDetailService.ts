@@ -1,3 +1,4 @@
+import { readmeSummaryProjection } from './readmeSummaryService.js';
 import type { RepositoryDetailV2, RepositoryStatus } from '../contracts/repository.v2.js';
 import { sqlClient } from '../db/index.js';
 
@@ -60,6 +61,7 @@ export function mapRepositoryDetailRow(row: Record<string, unknown>): Repository
     summary_format_version: optionalString(row.summary_format_version),
     summary_source: row.summary_source === 'generated' || row.summary_source === 'description_fallback'
       ? row.summary_source : null,
+    readme_digest: (row.readme_digest ?? null) as RepositoryDetailV2['readme_digest'],
     readme_md: optionalString(row.readme_md),
     readme_source_path: optionalString(row.readme_source_path),
     readme_default_branch: optionalString(row.readme_default_branch),
@@ -103,6 +105,7 @@ export async function getRepositoryDetails(
     SELECT
       repo.repo_id,repo.github_id,repo.full_name,repo.owner,repo.owner_github_id,
       repo.name,repo.url,repo.status,repo.created_at,repo.updated_at,
+      ${sqlClient.unsafe(readmeSummaryProjection('repo','content'))},
       content.description,CASE WHEN ${includeReadme} THEN content.readme ELSE NULL END AS readme_md,to_jsonb(content)->>'readme_source_path' AS readme_source_path,
       to_jsonb(content)->>'readme_default_branch' AS readme_default_branch,to_jsonb(content)->>'readme_base_url' AS readme_base_url,content.primary_language,
       COALESCE(content.languages,'[]'::jsonb) AS languages,

@@ -1,3 +1,4 @@
+import type { ReadmeDigest } from './readme-digest';
 export type RepositoryReaction = 'like' | 'dislike' | null;
 export type RepositoryStatus = 'active' | 'archived' | 'deleted' | 'blocked' | null;
 
@@ -31,6 +32,7 @@ export type RepositoryDetail = {
   description: string;
   summaryId: string | null;
   readmeSummary: string | null;
+  readmeDigest?: ReadmeDigest | null;
   readmeFull: string | null;
   readmeSourcePath: string | null;
   readmeDefaultBranch: string | null;

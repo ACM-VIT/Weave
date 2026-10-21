@@ -1,3 +1,4 @@
+import { parseReadmeDigest, type ReadmeDigest } from '@/models/readme-digest';
 import { apiV2 } from '@/api/client';
 import type { RepositoryDetail } from '@/models/repository';
 import { mapRepositoryDetail } from '@/utils/repository-mapper';
@@ -38,6 +39,7 @@ export type RepositoryApiPayload = {
   views_count?: unknown;
   summary?: unknown;
   readme_summary?: unknown;
+  readme_digest?: unknown;
   readme_md?: unknown;
   readme?: unknown;
   readme_source_path?: unknown;
@@ -91,4 +93,19 @@ export async function fetchRepositoryDetail(
   const repository = mapRepositoryDetail(payload);
   if (!repository) throw new Error('The repository response was incomplete.');
   return repository;
+}
+
+export type RepositoryReadmeSummary = {
+  status: 'ready' | 'pending' | 'processing' | 'failed' | 'unavailable';
+  content_version: number;
+  summary: ReadmeDigest | null;
+};
+
+export async function fetchRepositoryReadmeSummary(repositoryId: string, token: string, signal?: AbortSignal): Promise<RepositoryReadmeSummary> {
+  const payload=await apiV2<RepositoryReadmeSummary>(`/repositories/${encodeURIComponent(repositoryId)}/readme-summary`,{signal},token);
+  if (!['ready','pending','processing','failed','unavailable'].includes(payload.status)
+    || !Number.isInteger(payload.content_version) || payload.content_version<1) throw new Error('The README summary response was incomplete.');
+  const summary=parseReadmeDigest(payload.summary);
+  if (payload.status==='ready' && !summary) throw new Error('The README summary response was incomplete.');
+  return {...payload,summary};
 }

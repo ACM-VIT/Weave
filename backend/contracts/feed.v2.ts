@@ -1,3 +1,4 @@
+import type { ReadmeSummaryArtifact } from './readmeSummary.v2.js';
 export const FEED_SCHEMA_VERSION = 2 as const;
 
 export type FeedSource = 'personalized' | 'trending' | 'popular' | 'fresh' | 'fallback';
@@ -35,6 +36,7 @@ export interface RepositoryProjection {
   summary_model_version: string | null;
   summary_format_version: string | null;
   summary_source: 'generated' | 'description_fallback' | null;
+  readme_digest?: ReadmeSummaryArtifact | null;
   readme_md: string | null;
   readme_source_path: string | null;
   readme_default_branch: string | null;

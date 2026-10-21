@@ -1,8 +1,8 @@
+import { readmeDigestMarkdown, type ReadmeDigest } from '../models/readme-digest';
 export const README_MAX_CHARACTERS = 1_000_000;
 export const README_PREVIEW_MAX_CHARACTERS = 360;
-export const README_COMPACT_PREVIEW_MAX_CHARACTERS = 260;
 export const README_CARD_SUMMARY_MAX_CHARACTERS = 360;
-export const README_SUMMARY_PENDING = 'Summary is being generated';
+export const README_SUMMARY_PENDING = 'README summary unavailable';
 
 const README_FALLBACK = 'No README content is available for this repository.';
 
@@ -21,6 +21,7 @@ const LEGACY_MISSING_CONTENT_SENTINELS = new Set([
   'readme is being generated',
   'readme not available',
   'readme unavailable',
+  'readme summary unavailable',
   'summary is being generated',
   'summary not available',
   'summary unavailable',
@@ -30,14 +31,16 @@ const LEGACY_MISSING_CONTENT_SENTINELS = new Set([
 export type PreparedReadmePreview = {
   isTruncated: boolean;
   markdown: string;
-  source: 'summary' | 'description' | 'pending';
+  source: 'summary' | 'pending';
 };
 
 export type PrepareReadmePreviewOptions = {
+  digest?: ReadmeDigest | null;
   summary?: string | null;
   description?: string | null;
   fullReadme?: string | null;
   maximumCharacters?: number;
+  summarySource?: 'generated' | 'description_fallback' | null;
 };
 
 function sentinelKey(value: string): string {
@@ -178,25 +181,27 @@ export function prepareReadmeForDisplay(readmeText?: string | null): string {
 }
 
 export function prepareReadmePreview({
+  digest,
   summary,
   description,
   fullReadme,
   maximumCharacters = README_PREVIEW_MAX_CHARACTERS,
+  summarySource,
 }: PrepareReadmePreviewOptions): PreparedReadmePreview {
+  if (digest) return {
+    isTruncated: false,
+    markdown: [digest.overview, ...digest.capabilities.map((item) => `• ${item}`), ...digest.use_cases.map((item) => `• ${item}`)].join('\n\n'),
+    source: 'summary',
+  };
   const normalizedDescription = normalizedContent(description);
   const normalizedFullReadme = normalizedContent(fullReadme);
   const normalizedSummary = normalizeRepositoryCardSummary(summary, normalizedFullReadme) ?? '';
-  const hasUsableSummary = Boolean(normalizedSummary);
-  const source = hasUsableSummary
-    ? 'summary'
-    : normalizedDescription
-      ? 'description'
-      : 'pending';
-  const content = source === 'summary'
-    ? normalizedSummary
-    : source === 'description'
-      ? normalizedDescription
-      : README_SUMMARY_PENDING;
+  const hasUsableSummary = Boolean(normalizedSummary)
+    && summarySource !== 'description_fallback'
+    && comparableMarkdownText(normalizedSummary) !== comparableMarkdownText(normalizedDescription);
+  const source = hasUsableSummary ? 'summary' : 'pending';
+  const content = hasUsableSummary ? normalizedSummary : README_SUMMARY_PENDING;
+  if (!hasUsableSummary) return { isTruncated: false, markdown: content, source };
   const safeMaximum = Math.max(
     Math.min(Math.floor(maximumCharacters), README_PREVIEW_MAX_CHARACTERS),
     1,
@@ -211,4 +216,34 @@ export function prepareReadmePreview({
     markdown: truncateCardPreview(content, safeMaximum),
     source,
   };
+}
+
+/** The feed preview and its popup always read the same summary artifact. */
+export function prepareReadmeSummaryDocument(repository: {
+  readmeSummary: string | null;
+  readmeDigest?: ReadmeDigest | null;
+  readmeFull: string | null;
+  description: string;
+  summarySource?: 'generated' | 'description_fallback' | null;
+  summaryHighlights?: string[];
+}): string | null {
+  if (repository.readmeDigest) return readmeDigestMarkdown(repository.readmeDigest);
+  const preview = prepareReadmePreview({
+    summary: repository.readmeSummary,
+    description: repository.description,
+    fullReadme: repository.readmeFull,
+    summarySource: repository.summarySource,
+  });
+  if (preview.source !== 'summary') return null;
+  const highlights = (repository.summaryHighlights ?? [])
+    .map(normalizeOptionalRepositoryText)
+    .filter((item): item is string => item !== null && item.length <= 96)
+    .slice(0, 3);
+  return [preview.markdown, highlights.map((item) => `- ${item}`).join('\n')]
+    .filter(Boolean).join('\n\n');
+}
+
+/** Reserve two text lines before the action, using the actual laid-out space. */
+export function readmePreviewLineCount(viewportHeight: number, lineHeight: number, fontScale: number): number {
+  return Math.max(1, Math.floor(viewportHeight / (lineHeight * Math.max(fontScale, 1))) - 2);
 }

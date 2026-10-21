@@ -231,7 +231,36 @@ async function adoptStructurallyVerifiedV2History(): Promise<void> {
   }
 }
 
+async function applyReadmePipelineMigrations(): Promise<void> {
+  const entries = migrationEntries(['0024_repository_summary_artifacts','0026_readme_summary_pipeline']);
+  const recorded = await recordedMigrationHashes();
+  const pending = entries.filter((entry) => !recorded.has(entry.hash));
+  console.log(`README pipeline migrations: ${pending.map((entry) => entry.tag).join(', ') || 'current'}`);
+  if (!process.argv.includes('--execute')) {
+    console.log('Dry run only. Add --execute to apply these README migrations; unrelated migrations are not applied.');
+    return;
+  }
+  for (const [schema, table] of [['app','repos'],['app','repo_content'],['app','repo_card_summaries'],['telemetry','ml_outbox']]) {
+    if (!await relationExists(schema,table)) throw new Error('The canonical V2 baseline is required before README migrations.');
+  }
+  await ensureMigrationHistoryTable();
+  await client.begin(async (tx) => {
+    await tx`SELECT pg_advisory_xact_lock(hashtextextended('weave-readme-migrations',0))`;
+    await tx`SET LOCAL lock_timeout='5s'`;
+    await tx`SET LOCAL statement_timeout='30s'`;
+    for (const entry of pending) {
+      await tx.unsafe(entry.sql).simple();
+      await tx`INSERT INTO drizzle.__drizzle_migrations (hash,created_at)
+        SELECT ${entry.hash},${entry.when} WHERE NOT EXISTS (SELECT 1 FROM drizzle.__drizzle_migrations WHERE hash=${entry.hash})`;
+      console.log(`Applied ${entry.tag}`);
+    }
+  });
+}
+
 try {
+  if (process.argv.includes('--readme-summary-only')) {
+    await applyReadmePipelineMigrations();
+  } else {
   await bootstrapSupabaseAuthStub();
   await adoptLegacyHistory();
   await applyRetroactiveLegacyMigrations();
@@ -243,6 +272,7 @@ try {
     migrationsTable: '__drizzle_migrations',
   });
   console.log('Drizzle migrations are current.');
+  }
 } finally {
   await client.end();
 }

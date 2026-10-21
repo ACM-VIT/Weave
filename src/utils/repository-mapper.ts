@@ -1,3 +1,4 @@
+import { parseReadmeDigest } from '@/models/readme-digest';
 import type { RepositoryApiPayload } from '@/api/repositories';
 import type { RepositoryDetail, RepositoryStats, RepositoryStatus } from '@/models/repository';
 import type { PinnedRepository } from '@/services/pinnedRepositoryCodec';
@@ -124,6 +125,7 @@ export function mapRepositoryDetail(
     githubUrl,
     status: repositoryStatus(payload.status),
     description: normalizeOptionalRepositoryText(payload.description) ?? '',
+    readmeDigest: parseReadmeDigest(payload.readme_digest),
     summaryId: nullableText(payload.summary_id),
     readmeSummary: normalizeRepositoryCardSummary(
       normalizeOptionalRepositoryText(payload.summary)

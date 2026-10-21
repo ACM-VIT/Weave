@@ -7,5 +7,7 @@ test('retroactive V2 migrations include collection storage before reconciliation
   assert.deepEqual([...RETROACTIVE_V2_TAGS], [
     '0020_repository_collection_actions',
     '0021_v2_reconciliation_indexes',
+    '0024_repository_summary_artifacts',
+    '0025_explore_search',
   ]);
 });

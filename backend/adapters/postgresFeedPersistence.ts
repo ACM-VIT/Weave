@@ -1,3 +1,4 @@
+import { readmeSummaryProjection } from '../services/readmeSummaryService.js';
 import type {
   CreateServeInput,
   RepositoryProjection,
@@ -35,6 +36,7 @@ function projection(row: Record<string, unknown>): RepositoryProjection {
     summary_format_version: row.summary_format_version == null ? null : String(row.summary_format_version),
     summary_source: row.summary_source === 'generated' || row.summary_source === 'description_fallback'
       ? row.summary_source : null,
+    readme_digest: (row.readme_digest ?? null) as RepositoryProjection['readme_digest'],
     readme_md: row.readme == null ? null : String(row.readme),
     readme_source_path: row.readme_source_path == null ? null : String(row.readme_source_path),
     readme_default_branch: row.readme_default_branch == null ? null : String(row.readme_default_branch),
@@ -198,6 +200,7 @@ export class PostgresFeedPersistence implements FeedPersistencePort {
     const rows = await sqlClient`
       SELECT item.serve_id,item.position,item.repo_id,item.score,item.source,item.model_version,
              COALESCE(exact_summary.summary_id,current_summary.summary_id) AS summary_id,
+             ${sqlClient.unsafe(readmeSummaryProjection('repo','content'))},
              repo.full_name, repo.updated_at, content.description, content.primary_language,
              content.languages, content.readme,to_jsonb(content)->>'readme_source_path' AS readme_source_path,
              to_jsonb(content)->>'readme_default_branch' AS readme_default_branch,to_jsonb(content)->>'readme_base_url' AS readme_base_url,
@@ -325,7 +328,8 @@ export class PostgresFeedPersistence implements FeedPersistencePort {
   async listActiveRepositories(repoIds: string[], viewerUserId?: string): Promise<RepositoryProjection[]> {
     if (repoIds.length === 0) return [];
     const rows = await sqlClient`
-      SELECT repo.repo_id, repo.full_name, repo.status, repo.updated_at, content.description,
+      SELECT ${sqlClient.unsafe(readmeSummaryProjection('repo','content'))},
+             repo.repo_id, repo.full_name, repo.status, repo.updated_at, content.description,
              content.primary_language,content.languages,content.readme,to_jsonb(content)->>'readme_source_path' AS readme_source_path,
              to_jsonb(content)->>'readme_default_branch' AS readme_default_branch,to_jsonb(content)->>'readme_base_url' AS readme_base_url,
              COALESCE(topic_values.topics, '[]'::jsonb) AS topics,

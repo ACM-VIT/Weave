@@ -24,6 +24,7 @@ router.put('/onboarding', product.completeOnboarding);
 router.get('/repositories', product.listRepositories);
 router.get('/repositories/trending', product.listTrending);
 router.get('/repositories/saved', product.listSaved);
+router.get('/repositories/:repoId/readme-summary', product.getRepositoryReadmeSummary);
 router.get('/repositories/:repoId', product.getRepository);
 router.get('/repositories/:repoId/comments', product.listComments);
 router.post('/repositories/:repoId/comments', product.createComment);

@@ -1,3 +1,5 @@
+import { useRepositoryReadmeSummary } from '@/hooks/use-repository-readme-summary';
+import type { ReadmeDigest } from '@/models/readme-digest';
 import React, { useEffect, useMemo, useRef } from 'react';
 import {
   Animated,
@@ -6,6 +8,7 @@ import {
   StyleSheet,
   Text,
   View,
+  useWindowDimensions,
 } from 'react-native';
 import { BookOpen, ChevronRight } from 'lucide-react-native';
 import { useReducedMotion } from 'react-native-reanimated';
@@ -15,15 +18,17 @@ import { useTypewriterText } from '@/hooks/use-typewriter-text';
 import { extractReadmePreviewImage } from '@/utils/readme-images';
 import {
   prepareReadmePreview,
-  README_COMPACT_PREVIEW_MAX_CHARACTERS,
-  README_PREVIEW_MAX_CHARACTERS,
+  readmePreviewLineCount,
 } from '@/utils/readme';
 import { SafeReadmeImage } from './SafeReadmeImage';
 
 type RepositoryData = {
+  id: string;
   name: string;
   description: string;
   readmeSummary: string | null;
+  readmeDigest?: ReadmeDigest | null;
+  summarySource?: 'generated' | 'description_fallback' | null;
   readmeFull: string | null;
   fullName: string;
   githubUrl: string;
@@ -36,7 +41,7 @@ type ReadmeCardProps = {
   repository: RepositoryData;
   availableWidth: number;
   isActive?: boolean;
-  onReadFullPress: () => void;
+  onReadFullPress: (digest?: ReadmeDigest | null) => void;
   compact?: boolean;
 };
 
@@ -50,30 +55,36 @@ export default function ReadmeCard({
   compact = false,
 }: ReadmeCardProps) {
   const reduceMotion = useReducedMotion();
+  const summaryQuery = useRepositoryReadmeSummary(repository, isActive);
   const entranceProgress = useMemo(() => new Animated.Value(0), []);
   const summaryProgress = useMemo(() => new Animated.Value(0), []);
   const skeletonOpacity = useMemo(() => new Animated.Value(1), []);
   const shimmerProgress = useMemo(() => new Animated.Value(0), []);
   const readMoreScale = useMemo(() => new Animated.Value(1), []);
   const hasAnimated = useRef(false);
-  const previewLimit = compact
-    ? README_COMPACT_PREVIEW_MAX_CHARACTERS
-    : README_PREVIEW_MAX_CHARACTERS;
+  const { fontScale } = useWindowDimensions();
+  const [previewHeight, setPreviewHeight] = React.useState(0);
+  const previewLines = readmePreviewLineCount(previewHeight, compact ? 17 : 21, fontScale);
   const preview = useMemo(
     () => prepareReadmePreview({
       summary: repository.readmeSummary,
       description: repository.description,
       fullReadme: repository.readmeFull,
-      maximumCharacters: previewLimit,
+      digest: summaryQuery.digest,
+      summarySource: repository.summarySource,
     }),
     [
-      previewLimit,
+      repository.summarySource,
+      summaryQuery.digest,
       repository.description,
       repository.readmeFull,
       repository.readmeSummary,
     ],
   );
-  const typedSummary = useTypewriterText(preview.markdown, {
+  const statusText = summaryQuery.isError ? "Couldn’t load the README summary."
+    : summaryQuery.data?.status==='pending' || summaryQuery.data?.status==='processing' ? 'Preparing README summary…'
+      : summaryQuery.isLoading ? 'Loading README summary…' : preview.markdown;
+  const typedSummary = useTypewriterText(preview.source==='summary' ? preview.markdown : statusText, {
     delay: 140,
     duration: 900,
     enabled: isActive,
@@ -99,7 +110,7 @@ export default function ReadmeCard({
       repository.readmeSourcePath,
     ],
   );
-  const showPreviewImage = !compact && availableWidth >= 320 && Boolean(previewImage);
+  const showPreviewImage = preview.source === 'summary' && !compact && availableWidth >= 320 && Boolean(previewImage);
   const previewImageWidth = Math.min(112, Math.max(88, availableWidth * 0.3));
   useEffect(() => {
     if (!isActive || hasAnimated.current) return;
@@ -197,7 +208,12 @@ export default function ReadmeCard({
   };
 
   return (
-    <Animated.View style={[styles.card, compact && styles.cardCompact, animatedCardStyle]}>
+    <Animated.View style={[
+      styles.card,
+      compact && styles.cardCompact,
+      preview.source === 'pending' && styles.cardUnavailable,
+      animatedCardStyle,
+    ]}>
       <View style={[styles.header, compact && styles.headerCompact]}>
         <View style={styles.headerLabel}>
           <BookOpen size={12} color={REFERENCE_THEME.accentLight} strokeWidth={2} />
@@ -205,14 +221,24 @@ export default function ReadmeCard({
         </View>
       </View>
 
-      <View style={[styles.body, compact && styles.bodyCompact]}>
-        <View style={[styles.markdownViewport, compact && styles.markdownViewportCompact]}>
+      <View style={[
+        styles.body,
+        compact && styles.bodyCompact,
+        preview.source === 'pending' && styles.cardUnavailable,
+      ]}>
+        <View
+          onLayout={(event) => setPreviewHeight(event.nativeEvent.layout.height)}
+          style={[
+            styles.markdownViewport,
+            preview.source === 'pending' && { flex: 0, minHeight: (compact ? 17 : 21) * fontScale * 2 },
+          ]}
+        >
           <Animated.View
             style={[styles.summaryRow, { opacity: summaryProgress }]}
           >
             <Text
               ellipsizeMode="tail"
-              numberOfLines={compact ? 6 : 7}
+              numberOfLines={preview.source === 'pending' ? 2 : previewLines}
               selectable
               style={[
                 styles.summaryText,
@@ -255,12 +281,12 @@ export default function ReadmeCard({
             />
           </Animated.View>
         </View>
-        <AnimatedPressable
-          accessibilityHint="Opens the complete README in a scrollable view"
-          accessibilityLabel={`View README for ${repository.name}`}
+        {preview.source === 'summary' ? <AnimatedPressable
+          accessibilityHint="Opens the complete README summary in a scrollable popup"
+          accessibilityLabel={`Read more about ${repository.name}`}
           accessibilityRole="button"
           hitSlop={6}
-          onPress={onReadFullPress}
+          onPress={() => onReadFullPress(summaryQuery.digest)}
           onPressIn={() => animateReadMore(0.97, 120)}
           onPressOut={() => animateReadMore(1, 220)}
           style={[
@@ -276,14 +302,20 @@ export default function ReadmeCard({
           ]}
         >
           <Text style={[styles.readFullText, compact && styles.readFullTextCompact]}>
-            View README
+            Read more
           </Text>
           <ChevronRight
             size={compact ? 10 : 11}
             color={REFERENCE_THEME.accentLight}
             strokeWidth={2.4}
           />
-        </AnimatedPressable>
+        </AnimatedPressable> : summaryQuery.isError || summaryQuery.data?.status==='failed' ? (
+          <Pressable accessibilityRole="button" accessibilityLabel="Check README summary again"
+            accessibilityHint="Checks whether a summary is available" onPress={() => void summaryQuery.refetch()}
+            style={[styles.readFull,compact && styles.readFullCompact]}>
+            <Text style={[styles.readFullText,compact && styles.readFullTextCompact]}>Check again</Text>
+          </Pressable>
+        ) : null}
       </View>
     </Animated.View>
   );
@@ -291,12 +323,17 @@ export default function ReadmeCard({
 
 const styles = StyleSheet.create({
   card: {
+    flex: 1,
+    minHeight: 0,
     marginTop: 14,
     borderRadius: 18,
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: 'rgba(255,255,255,0.10)',
     backgroundColor: 'rgba(28,28,30,0.78)',
     overflow: 'hidden',
+  },
+  cardUnavailable: {
+    flex: 0,
   },
   cardCompact: {
     marginTop: 8,
@@ -330,25 +367,23 @@ const styles = StyleSheet.create({
     letterSpacing: 0.75,
   },
   body: {
+    flex: 1,
+    minHeight: 0,
     paddingTop: 15,
     paddingHorizontal: 18,
     paddingBottom: 17,
-    gap: 11,
+    gap: 0,
   },
   bodyCompact: {
     paddingTop: 9,
     paddingHorizontal: 14,
     paddingBottom: 9,
-    gap: 6,
+    gap: 0,
   },
   markdownViewport: {
-    minHeight: 150,
-    maxHeight: 150,
+    flex: 1,
+    minHeight: 0,
     overflow: 'hidden',
-  },
-  markdownViewportCompact: {
-    minHeight: 54,
-    maxHeight: 104,
   },
   summaryRow: {
     flexDirection: 'row',
@@ -408,7 +443,7 @@ const styles = StyleSheet.create({
   },
   readFull: {
     alignSelf: 'flex-start',
-    minHeight: 34,
+    minHeight: 44,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
@@ -421,7 +456,7 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(48,209,88,0.09)',
   },
   readFullCompact: {
-    minHeight: 32,
+    minHeight: 44,
     paddingHorizontal: 9,
     paddingVertical: 3,
   },

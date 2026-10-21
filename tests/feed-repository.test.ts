@@ -9,7 +9,7 @@ import {
   patchFeedSaved,
   reconcileFeedItemSavedState,
 } from '../src/utils/feed-repository';
-import { prepareReadmePreview } from '../src/utils/readme';
+import { prepareReadmePreview, README_SUMMARY_PENDING } from '../src/utils/readme';
 
 function feedRepository(
   overrides: Partial<FeedRepositoryPayload> = {},
@@ -70,8 +70,8 @@ test('legacy placeholders map to missing content without borrowing from a long R
     description: mapped.description,
     fullReadme: mapped.readmeFull,
   });
-  assert.equal(preview.source, 'description');
-  assert.equal(preview.markdown, mapped.description);
+  assert.equal(preview.source, 'pending');
+  assert.equal(preview.markdown, README_SUMMARY_PENDING);
   assert.equal(preview.markdown.includes('Implementation detail'), false);
 });
 
@@ -90,7 +90,7 @@ test('mapped README-equivalent summaries resolve to the exact pending state', ()
     fullReadme: mapped.readmeFull,
   }), {
     isTruncated: false,
-    markdown: 'Summary is being generated',
+    markdown: README_SUMMARY_PENDING,
     source: 'pending',
   });
 });

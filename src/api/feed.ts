@@ -20,6 +20,7 @@ export type FeedRepositoryPayload = {
   // Active concise V2 summary artifact for the larger feed card.
   summary: string | null;
   readme_md: string | null;
+  readme_digest?: unknown;
   readme_source_path?: string | null;
   readme_default_branch?: string | null;
   readme_base_url?: string | null;

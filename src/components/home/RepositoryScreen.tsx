@@ -1,3 +1,4 @@
+import type { ReadmeDigest } from '@/models/readme-digest';
 import React from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import {
@@ -178,7 +179,7 @@ export function RepositoryScreen({
   isActive?: boolean;
   isSaved?: boolean;
   commentCount?: number;
-  onReadFullPress: () => void;
+  onReadFullPress: (digest?: ReadmeDigest | null) => void;
   onSavePress: () => void;
   onSharePress: () => void;
   onCommentPress: () => void;
