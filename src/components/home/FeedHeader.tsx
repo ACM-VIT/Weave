@@ -1,12 +1,14 @@
-import { Image, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Image, Pressable, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Svg, { Defs, LinearGradient, Rect, Stop } from 'react-native-svg';
+
+import { RefreshCw } from 'lucide-react-native';
 
 import { REFERENCE_THEME } from '@/constants/theme';
 
 const WEAVE_LOGO = require('../../../assets/images/logo/weavelogo.png');
 
-export function FeedHeader({ pageWidth }: { pageWidth: number }) {
+export function FeedHeader({ pageWidth, onRefresh, refreshing = false }: { pageWidth: number; onRefresh?: () => void; refreshing?: boolean }) {
   const insets = useSafeAreaInsets();
   const compact = pageWidth < 360;
   const outerGutter = pageWidth < 330 ? 10 : 14;
@@ -14,8 +16,8 @@ export function FeedHeader({ pageWidth }: { pageWidth: number }) {
   const imageSize = logoSize * 1.4;
 
   return (
-    <View pointerEvents="none" style={styles.root}>
-      <Svg style={styles.fade} width={pageWidth} height={150}>
+    <View pointerEvents="box-none" style={styles.root}>
+      <Svg pointerEvents="none" style={styles.fade} width={pageWidth} height={150}>
         <Defs>
           <LinearGradient id="fixedTopFade" x1="0" y1="0" x2="0" y2="1">
             <Stop offset="0.35" stopColor="#000000" stopOpacity="0.88" />
@@ -26,6 +28,7 @@ export function FeedHeader({ pageWidth }: { pageWidth: number }) {
       </Svg>
 
       <View
+        pointerEvents="box-none"
         style={[
           styles.topBar,
           {
@@ -59,6 +62,10 @@ export function FeedHeader({ pageWidth }: { pageWidth: number }) {
             Wea<Text style={styles.brandAccent}>v</Text>e
           </Text>
         </View>
+        {onRefresh && <Pressable accessibilityRole="button" accessibilityLabel="Refresh recommendations"
+          disabled={refreshing} onPress={onRefresh} style={styles.refresh}>
+          {refreshing ? <ActivityIndicator color={REFERENCE_THEME.accent} /> : <RefreshCw size={22} color={REFERENCE_THEME.text} />}
+        </Pressable>}
       </View>
     </View>
   );
@@ -81,7 +88,9 @@ const styles = StyleSheet.create({
   topBar: {
     position: 'absolute',
     top: 0,
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
   },
+  refresh: { minWidth: 44, minHeight: 44, alignItems: 'center', justifyContent: 'center' },
   brandRow: {
     flexDirection: 'row',
     alignItems: 'center',

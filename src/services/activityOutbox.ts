@@ -11,6 +11,7 @@ export type ActivityFlushResult = {
   delivered: number;
   invalidatedFeed: boolean;
   deferred: boolean;
+  feedVersion?: string;
 };
 
 export type ActivityOutboxDependencies = {
@@ -32,6 +33,7 @@ export class DurableActivityOutbox {
   private retryNotBefore = 0;
   private feedResetGeneration = 0;
   private acknowledgedFeedResetGeneration = 0;
+  private lastFeedVersion: string | undefined;
 
   constructor(private readonly dependencies: ActivityOutboxDependencies) {
     this.ready = dependencies.load().then((stored) => {
@@ -46,6 +48,7 @@ export class DurableActivityOutbox {
         delivered: 0,
         invalidatedFeed: true,
         deferred: false,
+        feedVersion: this.lastFeedVersion,
       });
     }
     return () => this.listeners.delete(listener);
@@ -105,12 +108,14 @@ export class DurableActivityOutbox {
 
     let delivered = 0;
     let invalidatedFeed = false;
+    let snapshot = [...this.events];
     try {
-      while (this.events.length > 0) {
+      while (snapshot.length > 0) {
         await this.dependencies.persist(this.events);
-        const batch = nextActivityBatch(this.events);
+        const batch = nextActivityBatch(snapshot);
         const result = await this.dependencies.send(batch, token);
         if (!result) throw new Error('The activity service did not acknowledge the batch.');
+        this.lastFeedVersion = result.feed_version;
 
         const acknowledgement = applyActivityAcknowledgement(this.events, batch, result);
         if (acknowledgement.acknowledgedIds.size === 0) {
@@ -118,6 +123,7 @@ export class DurableActivityOutbox {
         }
 
         this.events = acknowledgement.remaining;
+        snapshot = snapshot.filter((event) => !acknowledgement.acknowledgedIds.has(event.event_id));
         delivered += acknowledgement.acknowledgedIds.size;
         invalidatedFeed ||= acknowledgement.invalidatesFeed;
         await this.dependencies.persist(this.events);
@@ -134,7 +140,7 @@ export class DurableActivityOutbox {
       throw error;
     } finally {
       if (delivered > 0) {
-        const outcome = { delivered, invalidatedFeed, deferred: false };
+        const outcome = { delivered, invalidatedFeed, deferred: false, feedVersion: this.lastFeedVersion };
         if (invalidatedFeed) {
           this.feedResetGeneration += 1;
           const generation = this.feedResetGeneration;
@@ -147,6 +153,6 @@ export class DurableActivityOutbox {
       }
     }
 
-    return { delivered, invalidatedFeed, deferred: false };
+    return { delivered, invalidatedFeed, deferred: false, feedVersion: this.lastFeedVersion };
   }
 }
