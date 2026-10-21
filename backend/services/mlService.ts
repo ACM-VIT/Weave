@@ -50,7 +50,9 @@ function boundedVersion(value: unknown, maximum = 200): value is string {
 function hasTwoOrThreeCompleteSentences(value: string): boolean {
   // These inline abbreviations introduce examples/explanations, not sentences.
   const prose = value.replace(/\b(?:e\.g|i\.e)\./giu, (match) => match.replaceAll('.', ''))
-    .replace(/\b(?:Mr|Mrs|Ms|Dr|Prof|Jr|Sr)\.(?=\s+\p{L})/gu, (match) => match.slice(0, -1));
+    .replace(/\b(?:Mr|Mrs|Ms|Dr|Prof|Jr|Sr|vs)\.(?=\s+\p{L})/gu, (match) => match.slice(0, -1))
+    // Ambiguous abbreviations retain their ending before a new capitalized sentence.
+    .replace(/\b(?:etc\.|(?:[A-Z]\.){2,})(?=\s+\p{Ll})/gu, (match) => match.replaceAll('.', ''));
   const endings = prose.match(/[.!?](?:["')\]]+)?(?=\s|$)/gu) ?? [];
   return (endings.length === 2 || endings.length === 3)
     && /[.!?](?:["')\]]+)?(?=\s|$)/u.test(value.slice(-4));

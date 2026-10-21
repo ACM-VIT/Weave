@@ -223,6 +223,33 @@ test('ordinary documentation tools and abbreviated prose remain valid summary re
   }
 });
 
+test('inline abbreviations do not inflate the summary sentence count', () => {
+  for (const summary of [
+    'It compares SQL vs. NoSQL stores. Teams can inspect latency vs. throughput tradeoffs.',
+    'It supports JSON, YAML, etc. for configuration. Teams can extend the available formats. Developers can add parsers.',
+    'It indexes U.S. projects. Teams can browse U.K. repositories. Developers can filter results.',
+    'It supports JSON, YAML, etc. Teams can extend the available formats.',
+  ]) {
+    const expected = repositoryResponse({ card_summary: { ...repositoryResponse().card_summary, summary } });
+    assert.deepEqual(parseMlRepositoryIndexResponse(expected, repositoryJob), expected, summary);
+  }
+});
+
+test('abbreviations do not bypass summary sentence limits or final punctuation', () => {
+  for (const summary of [
+    'It compares SQL vs. NoSQL stores.',
+    'It supports JSON, YAML, etc. for configuration.',
+    'It indexes U.S. projects.',
+    'It supports JSON, YAML, etc.',
+    'It supports JSON, YAML, etc. Teams can extend it. Developers can add parsers. Users can share results.',
+    'It compares SQL vs. NoSQL stores. Teams inspect latency vs. throughput tradeoffs',
+  ]) {
+    assert.throws(() => parseMlRepositoryIndexResponse(repositoryResponse({
+      card_summary: { ...repositoryResponse().card_summary, summary },
+    }), repositoryJob), /invalid bounded content/, summary);
+  }
+});
+
 test('repository-index transport preserves HTTP failures without requiring JSON', async () => {
   for (const [status, retryable, text] of [
     [429, true, 'rate limited'], [503, true, '<html>upstream unavailable</html>'],
