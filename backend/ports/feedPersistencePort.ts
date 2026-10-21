@@ -4,11 +4,14 @@ import type {
   StoredServe,
 } from '../contracts/feed.v2.js';
 
+export type RepositoryIdentityProjection = Pick<RepositoryProjection, 'repo_id' | 'summary_id'>;
+
 export interface FeedPersistencePort {
   getFeedVersion(userId: string): Promise<bigint>;
   listFollowedRepositoryIds(userId: string, limit: number): Promise<string[]>;
   getServeByRequest(userId: string, feedRequestId: string): Promise<StoredServe | null>;
   createServe(input: CreateServeInput): Promise<StoredServe>;
+  listActiveRepositoryIdentities(repoIds: string[]): Promise<RepositoryIdentityProjection[]>;
   listActiveRepositories(repoIds: string[], viewerUserId?: string): Promise<RepositoryProjection[]>;
   getTrendingFallback(
     limit: number,
