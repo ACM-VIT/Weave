@@ -26,6 +26,13 @@ export interface SearchSnapshotStore {
 }
 export class SearchRateLimitError extends Error { readonly statusCode = 429; }
 
+// Three times the missing slots amortizes rejected rows; the floor also bounds
+// serial top-ups for small pages. A normal snapshot has at most 400 references
+// (200 merged repositories, 100 people, 100 Lists).
+const HYDRATION_MIN_WINDOW = 24;
+const HYDRATION_MAX_WINDOW = 100;
+const HYDRATION_PAGE_BUDGET = 400;
+
 /** Local store for isolated tests. The HTTP controller supplies shared Redis storage. */
 export class MemorySearchSnapshotStore implements SearchSnapshotStore {
   private readonly snapshots = new Map<string, SearchSnapshot>();
@@ -120,9 +127,17 @@ export class SearchService {
         const excluded = new Set(request.exclude_repo_ids);
         const repos: SearchRef[] = hybridRank(lexical, semantic.items).filter(id => !excluded.has(id)).map(id => ({ type: 'repository', id }));
         const refs: SearchRef[] = [];
+        const seen = new Set<string>();
         // All interleaves groups; per-group order is retained and filters don't guess intent.
         for (let i = 0; i < Math.max(repos.length, people.length, lists.length); i++) {
-          for (const group of [repos,people,lists]) if (group[i]) refs.push(group[i]);
+          for (const group of [repos,people,lists]) {
+            const ref = group[i];
+            if (!ref) continue;
+            const identity = `${ref.type}:${ref.id}`;
+            if (seen.has(identity)) continue;
+            seen.add(identity);
+            refs.push(ref);
+          }
         }
         return { binding, refs, mode: semantic.ok ? 'hybrid' as const : 'lexical' as const, expires: this.now()+120_000 };
       };
@@ -135,12 +150,22 @@ export class SearchService {
       }
     }
     const items: SearchResult[] = [];
+    let examined = 0;
     // Revalidate every page against PostgreSQL; deleted/private results are skipped and topped up.
-    while (items.length < request.limit && offset < snapshot.refs.length) {
+    while (items.length < request.limit && offset < snapshot.refs.length && examined < HYDRATION_PAGE_BUDGET) {
       signal?.throwIfAborted();
-      const refs = snapshot.refs.slice(offset, offset + request.limit-items.length);
-      offset += refs.length;
-      items.push(...preserveHydrationOrder(refs, await this.persistence.hydrate(viewer, refs, request)));
+      const missing = request.limit - items.length;
+      const window = Math.min(HYDRATION_MAX_WINDOW, Math.max(HYDRATION_MIN_WINDOW, missing * 3), HYDRATION_PAGE_BUDGET - examined);
+      const refs = snapshot.refs.slice(offset, offset + window);
+      examined += refs.length;
+      const accepted = preserveHydrationOrder(refs, await this.persistence.hydrate(viewer, refs, request)).slice(0, missing);
+      items.push(...accepted);
+      // Hydrated surplus is not consumed or cached: leave it behind the cursor
+      // so the next page rechecks its permissions, active state and filters.
+      const last = accepted.at(-1);
+      offset += accepted.length === missing
+        ? refs.findIndex(ref => ref.type === last!.type && ref.id === last!.id) + 1
+        : refs.length;
     }
     return { schema_version: 2, search_id: request.search_id, mode: snapshot.mode, items,
       next_cursor: offset < snapshot.refs.length ? `${key!}:${offset}` : null };
