@@ -5,12 +5,16 @@ export async function setRepositorySaved(
   userId: string,
   repoId: string,
   saved: boolean,
+  options: { engagementLocked?: boolean } = {},
 ): Promise<boolean> {
+  // engagementLocked is used only by the activity batch after its sorted bulk lock.
   // Repository engagement is the shared lock for save transitions. Taking it
   // before touching app.saves keeps board and activity writes in the same lock
   // order and prevents concurrent requests from double-counting.
-  await tx`INSERT INTO app.repo_engagement (repo_id) VALUES (${repoId}::uuid) ON CONFLICT DO NOTHING`;
-  await tx`SELECT repo_id FROM app.repo_engagement WHERE repo_id=${repoId}::uuid FOR UPDATE`;
+  if (!options.engagementLocked) {
+    await tx`INSERT INTO app.repo_engagement (repo_id) VALUES (${repoId}::uuid) ON CONFLICT DO NOTHING`;
+    await tx`SELECT repo_id FROM app.repo_engagement WHERE repo_id=${repoId}::uuid FOR UPDATE`;
+  }
 
   const changed = saved
     ? await tx`

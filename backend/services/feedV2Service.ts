@@ -6,6 +6,7 @@ import type { FeedQueuePort } from '../redis/feedQueue.js';
 import { ReservationOwnedError } from '../redis/feedQueue.js';
 import { incrementMetric } from '../observability/metrics.js';
 import { FeedCursorCodec } from './feedCursor.js';
+import type { FeedGenerationOutcome } from './feedGenerationService.js';
 
 export class FeedRequestInProgressError extends Error {
   constructor() {
@@ -30,7 +31,7 @@ export class FeedV2Service {
   constructor(
     private readonly persistence: FeedPersistencePort,
     private readonly queue: FeedQueuePort,
-    private readonly generateOnMiss?: (userId: string, limit: number, excludeRepoIds: string[]) => Promise<unknown>,
+    private readonly generateOnMiss?: (userId: string, limit: number, excludeRepoIds: string[], sessionId?: string) => Promise<FeedGenerationOutcome>,
     private readonly fallbackEnabled = true,
     private readonly reservationWaitMs = 1_500,
     private readonly reservationPollMs = 25,
@@ -53,7 +54,8 @@ export class FeedV2Service {
     let reservation = { requestId, token, items: [] as RecommendationEntry[] };
     do {
       reservation = await this.queue.refill(userId, version, requestId, limit, token);
-      if (reservation.items.length > 0 || Date.now() >= deadline) return reservation;
+      if (reservation.items.length > 0) return reservation;
+      if (Date.now() >= deadline) throw new FeedRequestInProgressError();
       await new Promise((resolve) => setTimeout(resolve, Math.max(1, this.reservationPollMs)));
     } while (true);
   }
@@ -86,7 +88,12 @@ export class FeedV2Service {
       feed_version: version.toString(),
     });
     const token = crypto.randomUUID();
+    const releaseReservation = async () => {
+      try { await this.queue.release(userId, version, request.feed_request_id, token); }
+      catch (error) { console.error('[FeedV2Service] Failed to release reservation:', error); }
+    };
     let queueAvailable = true;
+    let generationCompleted = false;
     let reservation;
     try {
       reservation = await this.queue.reserve(
@@ -96,6 +103,9 @@ export class FeedV2Service {
       if (error instanceof ReservationOwnedError) {
         return this.waitForServe(userId, request.feed_request_id);
       }
+      // A timed-out reserve may have succeeded remotely; only our token can release it.
+      await releaseReservation();
+      if (request.cursor !== null || !this.fallbackEnabled) throw error;
       queueAvailable = false;
       reservation = { token, requestId: request.feed_request_id, items: [] };
       incrementMetric('feed_v2_redis_failures_total');
@@ -104,18 +114,27 @@ export class FeedV2Service {
 
     if (queueAvailable && reservation.items.length === 0 && this.generateOnMiss) {
       try {
-        const outcome = await this.generateOnMiss(userId, request.limit, []);
-        reservation = outcome === 'coalesced'
+        const outcome = await this.generateOnMiss(userId, request.limit, [], request.session_id);
+        if (outcome.status === 'stale' || outcome.feedVersion !== version) throw new FeedRequestInProgressError();
+        reservation = outcome.status === 'coalesced'
           ? await this.waitForGeneratedReservation(
             userId, version, request.feed_request_id, request.limit, token,
           )
           : await this.queue.refill(
             userId, version, request.feed_request_id, request.limit, token,
           );
+        if (reservation.items.length === 0 && (
+          (outcome.status === 'generated' && outcome.count > 0)
+          || await this.persistence.getFeedVersion(userId) !== version
+        )) throw new FeedRequestInProgressError();
+        generationCompleted = true;
       } catch (error) {
         if (error instanceof ReservationOwnedError) {
           return this.waitForServe(userId, request.feed_request_id);
         }
+        await releaseReservation();
+        if (request.cursor !== null || !this.fallbackEnabled || error instanceof FeedRequestInProgressError) throw error;
+        queueAvailable = false;
         console.error('[FeedV2Service] Generation failed; evaluating fallback:', error);
         reservation = { token, requestId: request.feed_request_id, items: [] };
       }
@@ -126,17 +145,22 @@ export class FeedV2Service {
     let source: FeedSource = 'personalized';
     if (entries.length === 0) {
       if (request.cursor === null) {
-        if (!this.fallbackEnabled) throw new Error('Feed queue is empty and trending fallback is disabled.');
-        const fallback = await this.persistence.getTrendingFallback(
-          request.limit,
-          [],
-          userId,
-        );
-        entries = fallback.map((repo) => ({
-          repo_id: repo.repo_id, score: 0, source: 'fallback', model_version: 'backend-fallback', summary_id: repo.summary_id,
-        }));
-        source = 'fallback';
-        incrementMetric('feed_v2_fallback_total');
+        if (!this.fallbackEnabled && !generationCompleted) {
+          await releaseReservation();
+          throw new Error('Feed queue is empty and trending fallback is disabled.');
+        }
+        if (this.fallbackEnabled) {
+          const fallback = await this.persistence.getTrendingFallback(
+            request.limit,
+            await this.persistence.listExcludedRepositoryIds(userId, request.session_id, 500),
+            userId,
+          );
+          entries = fallback.map((repo) => ({
+            repo_id: repo.repo_id, score: 0, source: 'fallback', model_version: 'backend-fallback', summary_id: repo.summary_id,
+          }));
+          source = 'fallback';
+          incrementMetric('feed_v2_fallback_total');
+        }
       }
     }
 
@@ -155,7 +179,7 @@ export class FeedV2Service {
       let nextCursor: string | null = null;
       if (queueAvailable && source === 'personalized' && usable.length > 0) {
         try {
-          if (await this.queue.depth(userId, version) > 0) {
+          if (this.generateOnMiss || await this.queue.depth(userId, version) > 0) {
             nextCursor = this.cursorCodec.encode({
               user_id: userId,
               session_id: request.session_id,

@@ -1,3 +1,16 @@
+export const AUTH_TRANSITION_REFRESH_WAIT_MS = 15_000;
+
+/** Retryable UI failure: the old response still owns the cookie-rotation flight. */
+export class SessionRefreshPendingError extends Error {
+  readonly code = 'SESSION_REFRESH_PENDING';
+  readonly retryable = true;
+
+  constructor() {
+    super('Your previous session is still finishing. Please try signing in again shortly.');
+    this.name = 'SessionRefreshPendingError';
+  }
+}
+
 export class SessionChangedError extends Error {
   readonly code = 'SESSION_CHANGED';
 
@@ -76,8 +89,11 @@ export class SessionLifecycle {
     const generation = this.generation;
     if (this.pendingTransitions > 0) return Promise.reject(new SessionChangedError());
 
-    if (this.refreshFlight?.generation === generation) {
-      return this.refreshFlight.promise as Promise<T>;
+    if (this.refreshFlight) {
+      if (this.refreshFlight.generation === generation) return this.refreshFlight.promise as Promise<T>;
+      // A timed-out auth wait can retire a generation before its response arrives.
+      // Never start another one-use rotation alongside that older flight.
+      return Promise.reject(new SessionRefreshPendingError());
     }
 
     const flight: RefreshFlight = { generation, promise: Promise.resolve() };
@@ -96,6 +112,21 @@ export class SessionLifecycle {
     return promise;
   }
 
+  private async waitForRefresh(refresh: Promise<unknown> | undefined): Promise<void> {
+    if (!refresh) return;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(() => reject(new SessionRefreshPendingError()), AUTH_TRANSITION_REFRESH_WAIT_MS);
+    });
+    try {
+      // Bound the caller's wait, never the rotation itself. A timeout skips the
+      // auth request; retaining the flight prevents stale Set-Cookie reordering.
+      await Promise.race([refresh.catch(() => undefined), deadline]);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   runTransition<T, TPreparation = undefined>(
     operation: (lease: SessionLease, preparation: TPreparation) => Promise<T>,
     prepare?: (lease: SessionLease) => Promise<TPreparation>,
@@ -107,6 +138,9 @@ export class SessionLifecycle {
     const preparation = prepare
       ? prepare(lease)
       : Promise.resolve(undefined as TPreparation);
+    // A timed-out wait may leave preparation unconsumed; observe its rejection
+    // immediately while still propagating it normally when this attempt runs.
+    void preparation.catch(() => undefined);
     this.pendingTransitions += 1;
 
     let releaseTransition!: () => void;
@@ -120,7 +154,7 @@ export class SessionLifecycle {
     return (async () => {
       try {
         await previousTransition.catch(() => undefined);
-        await refreshToSettle?.catch(() => undefined);
+        await this.waitForRefresh(refreshToSettle);
         const prepared = await preparation;
         lease.assertCurrent();
         const value = await operation(lease, prepared);

@@ -38,7 +38,7 @@ import { useModalScrollLock } from '@/hooks/use-modal-scroll-lock';
 import { useAuth } from '@/store/AuthContext';
 import * as SecureStore from '@/utils/storage';
 
-export type SavePopupMutationState = { save: boolean; create: boolean };
+export type SavePopupMutationState = { save: boolean; create: boolean; error: string | null };
 
 type SavePopupProps = {
   mutations?: {
@@ -126,10 +126,17 @@ export function SavePopup({
   const [hasLocalChanges, setHasLocalChanges] = useState(false);
   const [isCreating, setIsCreating] = useState(false);
   const [newCollectionName, setNewCollectionName] = useState('');
-  const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
-  const [localMutations, setLocalMutations] = useState<SavePopupMutationState>({ save: false, create: false });
+  const [localMessage, setLocalMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [localMutations, setLocalMutations] = useState<SavePopupMutationState>({ save: false, create: false, error: null });
   const pending = mutations?.state ?? localMutations;
   const setPending = mutations?.onChange ?? setLocalMutations;
+  // Mutations outlive a dismissed sheet. Keep their errors with the row's busy
+  // flags so the next sheet instance observes the original failure too.
+  const message = pending.error ? { type: 'error' as const, text: pending.error } : localMessage;
+  const setMessage = useCallback((value: typeof localMessage) => {
+    setLocalMessage(value);
+    setPending(current => ({ ...current, error: value?.type === 'error' ? value.text : null }));
+  }, [setPending]);
   const mountedRef = useRef(false);
 
   useModalScrollLock(isVisible);
@@ -190,7 +197,7 @@ export function SavePopup({
     ]).start(({ finished }) => {
       if (!finished || !mountedRef.current) return;
       setSearch('');
-      setMessage(null);
+      setLocalMessage(null);
       setIsCreating(false);
       setNewCollectionName('');
       setLocalSelectedIds(new Set());
@@ -236,7 +243,10 @@ export function SavePopup({
   }, [isCreating]);
 
   const createMutation = useMutation({
-    onMutate: () => setPending(current => ({ ...current, create: true })),
+    onMutate: () => {
+      setMessage(null);
+      setPending(current => ({ ...current, create: true }));
+    },
     mutationFn: async () => {
       const name = newCollectionName.trim();
       if (!name) throw new Error('Collection name is required.');
@@ -268,6 +278,7 @@ export function SavePopup({
       });
     },
     onMutate: async (collectionIds) => {
+      setMessage(null);
       setPending(current => ({ ...current, save: true }));
       const key = collectionQueryKey(repoId);
       await queryClient.cancelQueries({ queryKey: key });

@@ -79,9 +79,6 @@ export class MlV2Client implements RecommendationPort, OutboxTransportPort {
         || !Array.isArray(value.items)) {
         throw new Error('ML recommendation response violated the v2 envelope.');
       }
-      if (value.items.length === 0) {
-        throw new Error('ML recommendation response contained no items.');
-      }
       const ids = new Set<string>();
       for (const item of value.items) {
         if (!isValidUuid(item.repo_id) || ids.has(item.repo_id) || !Number.isFinite(item.score)

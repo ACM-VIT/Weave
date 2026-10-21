@@ -15,6 +15,10 @@ export class InvalidFeedCursorError extends Error {
   }
 }
 
+export class StaleFeedCursorError extends InvalidFeedCursorError {
+  readonly code = 'FEED_CURSOR_STALE';
+}
+
 export class FeedCursorCodec {
   constructor(private readonly secret: string | undefined) {}
 
@@ -39,8 +43,13 @@ export class FeedCursorCodec {
         || !crypto.timingSafeEqual(suppliedSignature, expectedSignature)) throw new InvalidFeedCursorError();
       const payload = JSON.parse(Buffer.from(body, 'base64url').toString('utf8')) as Partial<CursorPayload>;
       if (payload.schema !== 1 || payload.user_id !== expected.user_id
-        || payload.session_id !== expected.session_id || payload.feed_version !== expected.feed_version
+        || payload.session_id !== expected.session_id
+        || typeof payload.feed_version !== 'string' || !/^\d+$/.test(payload.feed_version)
         || !Number.isInteger(payload.offset) || Number(payload.offset) < 0 || Number(payload.offset) > 32_767) {
+        throw new InvalidFeedCursorError();
+      }
+      if (payload.feed_version !== expected.feed_version) {
+        if (BigInt(payload.feed_version) < BigInt(expected.feed_version)) throw new StaleFeedCursorError();
         throw new InvalidFeedCursorError();
       }
       return Number(payload.offset);

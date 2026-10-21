@@ -4,7 +4,7 @@ import type { AuthRequest } from '../middlewares/authMiddleware.js';
 import { isValidUuid } from '../utils/validators.js';
 import { getApplicationRuntime } from '../runtime/applicationRuntime.js';
 import { FeedRequestInProgressError } from '../services/feedV2Service.js';
-import { InvalidFeedCursorError } from '../services/feedCursor.js';
+import { InvalidFeedCursorError, StaleFeedCursorError } from '../services/feedCursor.js';
 
 export async function getFeedV2(req: AuthRequest, res: Response): Promise<void> {
   const userId = req.user?.userId;
@@ -21,7 +21,9 @@ export async function getFeedV2(req: AuthRequest, res: Response): Promise<void> 
     res.status(200).json(await runtime.feed.getFeed(userId, { feed_request_id, session_id, limit, cursor }));
   } catch (error) {
     if (error instanceof InvalidFeedCursorError) {
-      res.status(400).json({ error: error.message });
+      res.status(400).json({ error: error.message,
+        ...(error instanceof StaleFeedCursorError ? { code: error.code } : {}),
+      });
       return;
     }
     if (error instanceof FeedRequestInProgressError) {

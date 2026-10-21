@@ -1,6 +1,7 @@
 import * as WebBrowser from 'expo-web-browser';
 import * as Linking from 'expo-linking';
-import { useState } from 'react';
+import { useRef, useState } from 'react';
+import { SessionRefreshPendingError } from '../api/session-lifecycle';
 import { useAuth } from '@/store/AuthContext';
 import { getOAuthUrl, exchangeCode } from '@/api/auth';
 import {
@@ -14,6 +15,9 @@ export function useOAuth() {
   const { setSession } = useAuth();
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const pendingExchange = useRef<{
+    code: string; verifier: string; provider: 'github' | 'google'; authIntent: 'login' | 'signup';
+  } | null>(null);
 
   const signInWithProvider = async (
     provider: 'github' | 'google',
@@ -22,7 +26,19 @@ export function useOAuth() {
     setIsLoading(true);
     setError(null);
 
+    const completeExchange = async (code: string, verifier: string) => {
+      const data = await exchangeCode(code, verifier);
+      pendingExchange.current = null;
+      await clearOAuthClientVerifier().catch(() => undefined);
+      await setSession(data);
+    };
     try {
+      const pending = pendingExchange.current;
+      if (pending?.provider === provider && pending.authIntent === authIntent) {
+        await completeExchange(pending.code, pending.verifier);
+        return;
+      }
+      pendingExchange.current = null;
       const clientPkce = await createOAuthClientPkce();
       await persistOAuthClientVerifier(clientPkce.verifier);
 
@@ -61,15 +77,16 @@ export function useOAuth() {
       }
 
       // 5. Exchange code for our custom JWT + refresh token
-      const data = await exchangeCode(code, clientPkce.verifier);
-      await clearOAuthClientVerifier().catch(() => undefined);
-
-      // 6. Persist session — AuthContext fetches profile which includes onboarding_completed.
-      //    _layout.tsx will then automatically redirect to onboarding or tabs.
-      await setSession(data);
+      pendingExchange.current = { code, verifier: clientPkce.verifier, provider, authIntent };
+      await completeExchange(code, clientPkce.verifier);
 
     } catch (err: any) {
-      await clearOAuthClientVerifier().catch(() => undefined);
+      // A bounded wait happens before the code request is sent. Keep its verifier
+      // so tapping the same provider retries that unconsumed code until expiry.
+      if (!(err instanceof SessionRefreshPendingError)) {
+        pendingExchange.current = null;
+        await clearOAuthClientVerifier().catch(() => undefined);
+      }
       setError(err.message || 'OAuth sign-in failed');
     } finally {
       setIsLoading(false);
