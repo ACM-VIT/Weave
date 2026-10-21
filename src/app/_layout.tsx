@@ -68,14 +68,20 @@ function RootLayoutNav({ fontsReady }: { fontsReady: boolean }) {
   if (fontsReady && startupError && !startupComplete) {
     return (
       <View style={{ flex: 1, justifyContent: 'center', padding: 24, gap: 16, backgroundColor: REFERENCE_THEME.background }}>
-        <Text accessibilityRole="alert" style={{ color: REFERENCE_THEME.text }}>{startupError}</Text>
+        <Text accessibilityRole="alert" style={{ color: REFERENCE_THEME.text }}>
+          {isLoading ? 'Restoring your session…' : startupError}
+        </Text>
         <Pressable
           accessibilityRole="button"
           accessibilityLabel="Try restoring session again"
-          onPress={() => { void retryStartupSession(); }}
-          style={{ padding: 16, backgroundColor: REFERENCE_THEME.accent, borderRadius: 9 }}
+          accessibilityState={{ disabled: isLoading, busy: isLoading }}
+          disabled={isLoading}
+          onPress={() => { if (!isLoading) void retryStartupSession(); }}
+          style={{ padding: 16, backgroundColor: REFERENCE_THEME.accent, borderRadius: 9, opacity: isLoading ? 0.65 : 1 }}
         >
-          <Text style={{ color: REFERENCE_THEME.background, textAlign: 'center' }}>Try again</Text>
+          <Text style={{ color: REFERENCE_THEME.background, textAlign: 'center' }}>
+            {isLoading ? 'Restoring…' : 'Try again'}
+          </Text>
         </Pressable>
       </View>
     );

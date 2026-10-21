@@ -149,6 +149,7 @@ function startup({
     setProfileRequest(request: Promise<Viewer>) { profileRequest = request; },
     setRefreshRequest(request: Promise<string>) { refreshRequest = request; },
     retry() { root.root.findByProps({ accessibilityLabel: 'Try restoring session again' }).props.onPress(); },
+    get recoveryButton() { return root.root.findAllByProps({ accessibilityLabel: 'Try restoring session again' })[0]?.props; },
     get navigationMounts() { return navigationMounts; },
     get navigationUnmounts() { return navigationUnmounts; },
     get splashHides() { return splashHides; },
@@ -551,6 +552,45 @@ test('signing out during startup cancels the pending profile instead of restorin
     assert.equal(app.auth.isLoading, false);
     assert.equal(app.navigationMounts, 1);
   } finally {
+    await app.unmount();
+  }
+});
+
+test('a stalled retry keeps recovery visible with progress and blocks duplicate submits until it completes', async (t) => {
+  const app = startup();
+  const initialProfile = deferred<Viewer>();
+  app.setProfileRequest(initialProfile.promise);
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  await app.mount(() => t.mock.timers.tick(0));
+  try {
+    await act(async () => { app.session.resolve('valid-token'); app.fonts.resolve(); });
+    await act(async () => { t.mock.timers.tick(15_000); });
+    assert.ok(app.recoveryButton);
+    const retryProfile = deferred<Viewer>();
+    app.setProfileRequest(retryProfile.promise);
+    await act(async () => { app.retry(); });
+    assert.ok(app.recoveryButton, 'retry must not leave an empty screen after hiding the splash');
+    assert.equal(app.recoveryButton.disabled, true);
+    assert.deepEqual(app.recoveryButton.accessibilityState, { disabled: true, busy: true });
+    assert.equal(app.recoveryButton.children.props.children, 'Restoring…');
+    assert.equal(app.navigationMounts, 0);
+    assert.equal(app.splashHides, 1);
+    const restoresStarted = app.events.filter(event => event === 'session:start').length;
+    await act(async () => { app.retry(); t.mock.timers.tick(14_999); });
+    assert.equal(app.events.filter(event => event === 'session:start').length, restoresStarted);
+    assert.equal(app.recoveryButton.disabled, true);
+    assert.equal(app.auth.isLoading, true);
+    await act(async () => {
+      retryProfile.resolve({ user_id: 'alice', username: 'alice', onboarding_completed: true });
+    });
+    assert.equal(app.auth.startupError, null);
+    assert.equal(app.auth.isLoading, false);
+    assert.equal(app.recoveryButton, undefined);
+    assert.equal(app.navigationMounts, 1);
+    assert.equal(app.splashHides, 1);
+    assert.equal(app.storedToken, 'valid-token');
+  } finally {
+    t.mock.timers.reset();
     await app.unmount();
   }
 });

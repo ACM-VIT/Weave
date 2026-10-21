@@ -123,7 +123,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     startupController.current?.abort();
     const controller = new AbortController();
     startupController.current = controller;
-    setStartupError(null);
+    // Keep the recovery view visible while a retry is pending. Only a current
+    // completed restore (or a superseding auth transition) can clear its error.
     setIsLoading(true);
     try {
       await withStartupSessionDeadline(controller, async (signal) => {
@@ -159,6 +160,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           }),
         });
       });
+      if (!controller.signal.aborted
+        && startupController.current === controller
+        && authSessionLifecycle.isCurrent(sessionGeneration)) setStartupError(null);
     } catch (e) {
       if (startupController.current !== controller || !authSessionLifecycle.isCurrent(sessionGeneration)) return;
       if (e instanceof StartupSessionTimeoutError) {
