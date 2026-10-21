@@ -50,12 +50,13 @@ import { REFERENCE_THEME } from '@/constants/theme';
 import { useModalScrollLock } from '@/hooks/use-modal-scroll-lock';
 import { useAuth } from '@/store/AuthContext';
 import { feedQueryKey, patchFeedSaved } from '@/utils/feed-repository';
+import { listRepositoryQueryKey } from '@/services/accountQueryCache';
 import * as SecureStore from '@/utils/storage';
 
 type SavePopupProps = {
   isVisible: boolean;
   onClose: () => void;
-  onSaved?: (saved: boolean) => void;
+  onSaved?: (saved: boolean, saveStateChanged: boolean) => void;
   onListMembershipsChanged?: (listIds: string[], saved: boolean) => void;
   repoId?: string;
   repoName?: string;
@@ -327,7 +328,7 @@ export function SavePopup({
           (current) => patchFeedSaved(current, { repoId }, result.saved),
         );
       }
-      onSaved?.(result.saved);
+      onSaved?.(result.saved, result.saveStateChanged);
       onListMembershipsChanged?.(result.selectedListIds, result.saved);
       await haptic('success');
       await Promise.all([
@@ -351,10 +352,11 @@ export function SavePopup({
           exact: true,
         }),
         ...changedLists.map((list) => queryClient.invalidateQueries({
-          queryKey: [
-            list.source === 'collection' ? 'collection-repositories' : 'board-repositories',
+          queryKey: listRepositoryQueryKey(
+            list.source === 'collection' ? 'collection' : 'board',
+            viewerUserId,
             list.id,
-          ],
+          ),
         })),
       ]);
       void checkOnboardingStatus().catch(() => undefined);

@@ -1,3 +1,4 @@
+import type { QueryClient } from '@tanstack/react-query';
 import type { FeedPage } from '../api/feed';
 import type { RepositoryApiPayload } from '../api/repositories';
 
@@ -46,4 +47,17 @@ export function homeFeedItems(pages: FeedPage[]): RepositoryApiPayload[] {
 
 export function canContinueHomeFeed(mode: FeedPage['mode'], invalidationGeneration: number): boolean {
   return mode === 'discovery' || invalidationGeneration === 0;
+}
+
+/** Direct follows invalidate the query without refetching/remounting loaded cards. */
+export function subscribeToHomeFeedInvalidations(
+  client: QueryClient,
+  key: readonly unknown[],
+  onInvalidated: () => void,
+): () => void {
+  return client.getQueryCache().subscribe(event => {
+    if (event.type === 'updated' && event.action.type === 'invalidate'
+      && event.query.queryKey.length === key.length
+      && event.query.queryKey.every((value: unknown, index: number) => value === key[index])) onInvalidated();
+  });
 }

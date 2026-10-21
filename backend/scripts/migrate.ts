@@ -265,12 +265,14 @@ try {
   await adoptLegacyHistory();
   await applyRetroactiveLegacyMigrations();
   await adoptStructurallyVerifiedV2History();
-  await applyRetroactiveV2Migrations();
   await migrate(drizzle(client), {
     migrationsFolder,
     migrationsSchema: 'drizzle',
     migrationsTable: '__drizzle_migrations',
   });
+  // Run repairs after Drizzle applies pending migrations in timestamp order.
+  // Recording a newer repair first would make Drizzle skip older required DDL.
+  await applyRetroactiveV2Migrations();
   console.log('Drizzle migrations are current.');
   }
 } finally {

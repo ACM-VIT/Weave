@@ -780,15 +780,15 @@ export async function saveRepositoryCollections(req: AuthRequest, res: Response)
   const id = userId(req, res); if (!id) return;
   const repositoryId = req.body?.repositoryId;
   const rawCollectionIds = req.body?.collectionIds;
-  const rawBoardIds = req.body?.boardIds ?? [];
-  if (!isValidUuid(repositoryId) || !Array.isArray(rawCollectionIds) || !Array.isArray(rawBoardIds)
-    || rawCollectionIds.length + rawBoardIds.length > 100
+  const rawBoardIds = Object.hasOwn(req.body ?? {}, 'boardIds') ? req.body.boardIds : undefined;
+  if (!isValidUuid(repositoryId) || !Array.isArray(rawCollectionIds) || (rawBoardIds !== undefined && !Array.isArray(rawBoardIds))
+    || rawCollectionIds.length + (rawBoardIds?.length ?? 0) > 100
     || !rawCollectionIds.every((value) => isValidUuid(value))
-    || !rawBoardIds.every((value) => isValidUuid(value))) {
+    || (rawBoardIds !== undefined && !rawBoardIds.every((value: unknown) => typeof value === 'string' && isValidUuid(value)))) {
     return sendError(res, 400, 'repositoryId must be a UUID and List IDs must contain at most 100 UUIDs.');
   }
   const collectionIds = [...new Set(rawCollectionIds as string[])];
-  const boardIds = [...new Set(rawBoardIds as string[])];
+  const boardIds = rawBoardIds === undefined ? undefined : [...new Set(rawBoardIds as string[])];
   const event = req.body?.event;
   if (event !== undefined && (!isInteractionEventV2(event)
     || (event.event_type !== 'save' && event.event_type !== 'unsave')

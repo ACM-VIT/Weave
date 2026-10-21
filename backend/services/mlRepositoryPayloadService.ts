@@ -36,7 +36,7 @@ export function repositoryContentHash(repository: RepositoryUpsert): string {
   for (const key of [
     'content_hash', 'star_count', 'fork_count', 'open_issues_count', 'pushed_days_ago',
     'delta_3d', 'delta_7d', 'delta_30d', 'mentionable_users_count', 'readme_length',
-    'readme_to_codebase_ratio', 'recent_commits', 'created_at', 'updated_at', 'pushed_at',
+    'created_at', 'updated_at', 'pushed_at',
     'discovery_category', 'discovery_band',
   ]) delete hashable[key];
   if (Array.isArray(hashable.languages)) hashable.languages = [...hashable.languages].sort();

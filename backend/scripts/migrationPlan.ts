@@ -18,12 +18,15 @@ export const RETROACTIVE_LEGACY_TAGS = [
   '0005_add_is_saved',
 ] as const;
 
-// These migrations were merged after some environments had already recorded
-// newer V2 journal timestamps. Drizzle skips older timestamps, so execute the
-// idempotent SQL explicitly before handing control back to the normal migrator.
+// Targeted migrations can record a newer timestamp while earlier required DDL
+// is still absent. Normal migration runs first; these idempotent repairs then
+// fill any skipped structures and record their hashes.
 export const RETROACTIVE_V2_TAGS = [
   '0020_repository_collection_actions',
   '0021_v2_reconciliation_indexes',
+  // A targeted README migration may advance history before required profile DDL.
+  '0022_repo_owner_github_identity',
+  '0023_active_social_profile_handles',
   // A targeted README migration may record 0026 before unrelated Search DDL.
   '0024_repository_summary_artifacts',
   '0024_explore_search',

@@ -147,12 +147,12 @@ export async function syncRepositoryLists(
   userId: string,
   repositoryId: string,
   desiredCollectionIds: string[],
-  desiredBoardIds: string[],
+  desiredBoardIds: string[] | undefined,
   event?: InteractionEventV2,
 ): Promise<RepositoryListSyncResult> {
   const selectedCollectionIds = [...new Set(desiredCollectionIds)];
-  const selectedBoardIds = [...new Set(desiredBoardIds)];
   return sqlClient.begin(async (tx) => {
+    let selectedBoardIds = [...new Set(desiredBoardIds ?? [])];
     await lockUserMembershipState(tx, userId);
     await lockRepositoryMemberships(tx, userId, [repositoryId]);
 
@@ -195,6 +195,9 @@ export async function syncRepositoryLists(
       JOIN app.boards board USING(board_id)
       WHERE membership.repo_id=${repositoryId}::uuid AND board.user_id=${userId}::uuid
     `;
+    if (desiredBoardIds === undefined) {
+      selectedBoardIds = currentBoardRows.map((row) => String(row.board_id));
+    }
     const collectionDifference = diffListMemberships(
       currentCollectionRows.map((row) => String(row.collection_id)),
       selectedCollectionIds,

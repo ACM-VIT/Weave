@@ -1,4 +1,4 @@
-import { Alert, Linking } from 'react-native';
+import { Alert, Linking, Platform } from 'react-native';
 
 function isSupportedExternalLink(href: string): boolean {
   return /^(https?:|mailto:)/i.test(href);
@@ -31,12 +31,13 @@ export function openReadmeExternalLink(href: string): void {
     return;
   }
 
-  Alert.alert(
-    'Open on GitHub?',
-    'This README link will leave Weave and open GitHub.',
-    [
-      { text: 'Cancel', style: 'cancel' },
-      { text: 'Open on GitHub', onPress: openLink },
-    ],
-  );
+  if (Platform.OS === 'web' && typeof window !== 'undefined') {
+    if (window.confirm('This README link will leave Weave and open GitHub. Continue?')) openLink();
+    return;
+  }
+
+  Alert.alert('Open on GitHub?', 'This README link will leave Weave and open GitHub.', [
+    { text: 'Cancel', style: 'cancel' },
+    { text: 'Open on GitHub', onPress: openLink },
+  ]);
 }

@@ -70,16 +70,19 @@ test('README GitHub links use the shared explicit confirmation policy', async ()
   assert.match(popup, /openReadmeExternalLink\(href\)/);
   assert.doesNotMatch(popup, /Linking\.openURL/);
 
+  const policy = await readFile(
+    new URL('../src/utils/readme-external-link.ts', import.meta.url),
+    'utf8',
+  );
+  assert.match(policy, /Platform\.OS === 'web'[\s\S]*window\.confirm/);
+  assert.match(policy, /Alert\.alert/);
+
   const card = await readFile(
     new URL('../src/components/home/ReadmeCard.tsx', import.meta.url),
     'utf8',
   );
   assert.doesNotMatch(card, /RenderHtml|Linking\.openURL/);
 
-  const policy = await readFile(
-    new URL('../src/utils/readme-external-link.ts', import.meta.url),
-    'utf8',
-  );
   assert.match(policy, /isGithubReadmeLink\(href\)/);
   assert.match(policy, /Alert\.alert\(/);
   assert.match(policy, /text: 'Open on GitHub'/);

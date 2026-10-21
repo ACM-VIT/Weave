@@ -6,6 +6,7 @@ import {
   Easing,
   Linking,
   Modal,
+  Platform,
   Pressable,
   Share,
   StyleSheet,
@@ -117,7 +118,8 @@ export function ShareRepositorySheet({
       const nativeUrl = ExpoLinking.createURL(path.slice(1));
       return resolveRepositoryShareUrl({
         repoId: repositoryId,
-        webBaseUrl: configuredWebUrl,
+        webBaseUrl: configuredWebUrl
+          ?? (Platform.OS === 'web' && typeof window !== 'undefined' ? window.location.origin : null),
         nativeUrl,
       });
     } catch {

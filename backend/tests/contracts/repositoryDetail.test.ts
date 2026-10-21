@@ -63,6 +63,7 @@ test('repository detail mapper keeps summary, README, viewer state, and Lists di
   assert.equal(detail.owner_github_id, '7');
   assert.equal(detail.summary, 'Generated concise summary.');
   assert.equal(detail.readme_md, '# Complete README\n\nThis remains the full document.');
+  assert.equal(detail.readme, '# Complete README\n\nThis remains the full document.');
   assert.deepEqual(detail.summary_highlights, ['Internal navigation']);
   assert.equal(detail.summary_prompt_version, 'repo-card-summary-v1');
   assert.equal(detail.summary_format_version, 'repo-card-summary-json-v1');

@@ -122,7 +122,7 @@ test('repository-refresh projection uses observed ML fields and never fabricates
   assert.equal(Object.hasOwn(projected, 'trending_score'), false);
 });
 
-test('empty and null README publishers share one canonical content identity', () => {
+test('empty README publisher metadata remains part of canonical content identity', () => {
   const absent = {
     ...ingestionRecord,
     readme: null,
@@ -147,5 +147,16 @@ test('empty and null README publishers share one canonical content identity', ()
   assert.equal(projected.readme_default_branch, null);
   assert.equal(projected.readme_base_url, null);
   assert.equal(projected.readme_length, 0);
-  assert.equal(repositoryContentHash(emptyPublisher), repositoryContentHash(absent));
+  assert.notEqual(repositoryContentHash(emptyPublisher), repositoryContentHash(absent));
+});
+
+test('refresh-only feature fields remain in the hash until the refresh contract carries them', () => {
+  assert.notEqual(repositoryContentHash(ingestionRecord), repositoryContentHash({
+    ...ingestionRecord,
+    recent_commits: [],
+  }));
+  assert.notEqual(repositoryContentHash(ingestionRecord), repositoryContentHash({
+    ...ingestionRecord,
+    readme_to_codebase_ratio: 0.5,
+  }));
 });

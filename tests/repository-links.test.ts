@@ -88,6 +88,12 @@ test('share URL prefers configured web origin and otherwise requires the matchin
     nativeUrl: 'ghsocial://repository/7be6d88f',
   }), 'ghsocial://repository/7be6d88f');
 
+  assert.equal(resolveRepositoryShareUrl({
+    repoId: '7be6d88f',
+    webBaseUrl: 'http://localhost:8096',
+    nativeUrl: 'http://localhost:8096/repository/7be6d88f',
+  }), 'http://localhost:8096/repository/7be6d88f');
+
   assert.throws(() => resolveRepositoryShareUrl({
     repoId: '7be6d88f',
     nativeUrl: 'https://github.com/acme/project',

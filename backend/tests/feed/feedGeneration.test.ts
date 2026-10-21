@@ -65,6 +65,12 @@ class GenerationPersistence implements FeedPersistencePort {
 class GenerationQueue implements FeedQueuePort {
   replaced = false;
   entries: Array<{ repo_id: string }> = [];
+  owned = true;
+  async renewGenerationLock() { return this.owned; }
+  async publishGeneration(user: string, version: bigint, _token: string, entries: Array<{repo_id:string}>) {
+    if (!this.owned) return false;
+    await this.replace(user,version,entries); return true;
+  }
   async acquireGenerationLock() { return true; }
   async releaseGenerationLock() {}
   async replace(_userId: string, _version: bigint, entries: Array<{ repo_id: string }>) {
@@ -158,4 +164,30 @@ test('feed generation drops stale ML repository IDs while preserving valid perso
 
   assert.equal(result, 'generated');
   assert.deepEqual(queue.entries.map((entry) => entry.repo_id), [otherRepoId]);
+});
+
+test('an expired generation cannot overwrite recommendations published by a newer owner',async()=>{
+  const queue=new GenerationQueue();const recommendations=new CapturingRecommendations();
+  const original=recommendations.generate.bind(recommendations);
+  recommendations.generate=async input=>{queue.owned=false;queue.entries=[{repo_id:'newer-owner-result'}];return original(input);};
+  const result=await new FeedGenerationService(new GenerationPersistence(),queue,recommendations).generate(userId);
+  assert.equal(result,'stale');assert.equal(queue.replaced,false);
+  assert.deepEqual(queue.entries,[{repo_id:'newer-owner-result'}]);
+});
+
+test('long persona repair renews its lease before publishing',async()=>{
+  const queue=new GenerationQueue();let renewed!:()=>void;
+  const renewal=new Promise<void>(resolve=>{renewed=resolve;});let renewals=0;
+  queue.renewGenerationLock=async()=>{renewals++;renewed();return true;};
+  const recommendations=new CapturingRecommendations();const original=recommendations.generate.bind(recommendations);let calls=0;
+  recommendations.generate=async input=>{if(calls++===0)throw new MlRecommendationError('No persona',503,'persona_unavailable','User vector unavailable');return original(input);};
+  // Keep this deterministic without depending on a 30-second provider request.
+  const alive=setTimeout(()=>{},1000);
+  try {
+    const result=await new FeedGenerationService(new GenerationPersistence(),queue,recommendations,600,9,
+      {repair:async()=>{await renewal;}}).generate(userId);
+    assert.equal(result,'generated');assert.ok(renewals>=1);assert.equal(queue.replaced,true);
+    const atCompletion=renewals;await new Promise(resolve=>setTimeout(resolve,15));
+    assert.equal(renewals,atCompletion,'Heartbeat stops when generation finishes');
+  }finally{clearTimeout(alive);}
 });

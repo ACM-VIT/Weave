@@ -43,7 +43,16 @@ export function readmeDigestMarkdown(digest: ReadmeDigest): string {
 export function resolveReadmeDigest(
   initial: ReadmeDigest | null | undefined,
   reported: { content_version: number; summary: ReadmeDigest | null } | undefined,
+  contentVersion?: number | null,
 ): ReadmeDigest | null {
+  if (contentVersion != null) {
+    if (initial && initial.content_version < contentVersion) initial = null;
+    if (reported && reported.content_version < contentVersion) reported = undefined;
+  }
   if (!reported || (initial && initial.content_version>reported.content_version)) return initial??null;
   return reported.summary ?? (initial?.content_version===reported.content_version ? initial : null);
+}
+
+export function readmeSummaryQueryKey(viewer: string | undefined, repositoryId: string | undefined, contentVersion: number | null | undefined) {
+  return ['readme-summary', viewer, repositoryId, contentVersion ?? null] as const;
 }

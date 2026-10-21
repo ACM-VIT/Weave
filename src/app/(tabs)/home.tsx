@@ -26,7 +26,7 @@ import {
 import * as SecureStore from '../../utils/storage';
 import { type FeedPage } from '@/api/feed';
 import { fetchHomeFeed } from '@/api/home-feed';
-import { homeFeedItems, canContinueHomeFeed } from '@/utils/home-feed';
+import { homeFeedItems, canContinueHomeFeed, subscribeToHomeFeedInvalidations } from '@/utils/home-feed';
 import { type ActivityInput } from '@/api/activity';
 import { useAuth } from '@/store/AuthContext';
 import { getActivityOutbox } from '@/services/activityOutboxClient';
@@ -51,6 +51,14 @@ export default function HomeScreen() {
   const queryClient = useQueryClient();
   const feedQueryKey = useMemo(() => getFeedQueryKey(user?.user_id), [user?.user_id]);
   const feedInvalidationGenerationRef = useRef(0);
+  const [refreshViewer, setRefreshViewer] = useState<string>();
+  const feedNeedsRefresh = Boolean(user?.user_id && refreshViewer === user.user_id);
+  const markFeedInvalidated = useCallback(() => {
+    feedInvalidationGenerationRef.current += 1;
+    setRefreshViewer(user?.user_id);
+  }, [user?.user_id]);
+  useEffect(() => subscribeToHomeFeedInvalidations(queryClient, feedQueryKey, markFeedInvalidated),
+    [queryClient, feedQueryKey, markFeedInvalidated]);
   const activityOutbox = user?.user_id
     ? getActivityOutbox(user.user_id)
     : null;
@@ -135,8 +143,9 @@ export default function HomeScreen() {
   const handleSavedChange = useCallback((
     repository: RepositoryData,
     saved: boolean,
+    saveStateChanged: boolean,
   ) => {
-    feedInvalidationGenerationRef.current += 1;
+    if (saveStateChanged) markFeedInvalidated();
     queryClient.setQueryData<InfiniteData<FeedPage, string | null>>(
       feedQueryKey,
       (cachedFeed) => patchFeedSaved(cachedFeed, {
@@ -145,7 +154,7 @@ export default function HomeScreen() {
         position: repository.feedPosition,
       }, saved),
     );
-  }, [feedQueryKey, queryClient]);
+  }, [feedQueryKey, queryClient, markFeedInvalidated]);
 
   const openOwnerProfile = useCallback((repository: RepositoryData) => {
     const normalizedOwner = repository.owner.trim().toLocaleLowerCase();
@@ -177,7 +186,7 @@ export default function HomeScreen() {
   useEffect(() => {
     if (!activityOutbox) return;
     const unsubscribe = activityOutbox.subscribe(({ invalidatedFeed }) => {
-      if (invalidatedFeed) feedInvalidationGenerationRef.current += 1;
+      if (invalidatedFeed) markFeedInvalidated();
     });
     void flushActivityBatch().catch(() => undefined);
 
@@ -193,7 +202,7 @@ export default function HomeScreen() {
       subscription.remove();
       unsubscribe();
     };
-  }, [activityOutbox, flushActivityBatch]);
+  }, [activityOutbox, flushActivityBatch, markFeedInvalidated]);
 
   const handleDeliberateRefresh = useCallback(async () => {
     await flushActivityBatch().catch(() => undefined);
@@ -202,6 +211,7 @@ export default function HomeScreen() {
     if (!result.isError
       && feedInvalidationGenerationRef.current === generationAtStart) {
       feedInvalidationGenerationRef.current = 0;
+      setRefreshViewer(undefined);
     }
   }, [flushActivityBatch, refetch]);
 
@@ -275,7 +285,7 @@ export default function HomeScreen() {
               pageWidth={pageWidth}
               pageHeight={pageHeight}
               onQueueActivity={handleQueueActivity}
-              onSavedChange={(saved) => handleSavedChange(item.repository, saved)}
+              onSavedChange={(saved, changed) => handleSavedChange(item.repository, saved, changed)}
               onOwnerPress={() => openOwnerProfile(item.repository)}
               onRepositoryPress={() => router.push(repositoryHref(item.repository.id))}
               isViewable={viewableItems.includes(item.feedId)}
@@ -309,6 +319,22 @@ export default function HomeScreen() {
                 .catch(() => undefined);
             }
           }}
+          ListFooterComponent={feedNeedsRefresh && data?.pages[0]?.mode !== 'discovery' ? (
+            <View style={[styles.message, { paddingVertical: 24 }]}>
+              <Text accessibilityLiveRegion="polite" style={styles.messageBody}>Your preferences changed. Refresh to load more repositories.</Text>
+              <Pressable accessibilityRole="button" accessibilityLabel="Refresh recommendations" disabled={isRefetching}
+                style={styles.retryButton} onPress={handleDeliberateRefresh}>
+                <Text style={styles.retryText}>{isRefetching ? 'Refreshing…' : 'Refresh recommendations'}</Text>
+              </Pressable>
+            </View>
+          ) : isError ? (
+            <View style={[styles.message, { paddingVertical: 24 }]}>
+              <Text accessibilityLiveRegion="polite" style={styles.messageBody}>Could not load more repositories. Your loaded cards are still available.</Text>
+              <Pressable accessibilityRole="button" style={styles.retryButton} onPress={handleDeliberateRefresh}>
+                <Text style={styles.retryText}>Refresh Home</Text>
+              </Pressable>
+            </View>
+          ) : null}
           onEndReachedThreshold={0.75}
           initialNumToRender={4}
           maxToRenderPerBatch={4}

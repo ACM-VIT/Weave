@@ -68,6 +68,8 @@ class FakeQueue implements FeedQueuePort {
   async commit() { this.committed++; return true; }
   async release() { this.released++; return true; }
   async replace() {}
+  async renewGenerationLock() { return true; }
+  async publishGeneration() { return true; }
   async depth() { return 0; }
   async acquireGenerationLock() { return true; }
   async releaseGenerationLock() {}

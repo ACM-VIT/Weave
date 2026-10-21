@@ -3,6 +3,8 @@ import type { Redis } from 'ioredis';
 
 import {
   COMMIT_FEED_LUA,
+  RENEW_GENERATION_LOCK_LUA,
+  PUBLISH_GENERATION_LUA,
   REFILL_FEED_LUA,
   RELEASE_FEED_LUA,
   RELEASE_LOCK_LUA,
@@ -28,6 +30,8 @@ export interface FeedQueuePort {
   commit(userId: string, version: bigint, requestId: string, token: string): Promise<boolean>;
   release(userId: string, version: bigint, requestId: string, token: string): Promise<boolean>;
   replace(userId: string, version: bigint, items: RecommendationEntry[], ttlSeconds: number): Promise<void>;
+  renewGenerationLock(userId: string, version: bigint, token: string, ttlMs: number): Promise<boolean>;
+  publishGeneration(userId: string, version: bigint, token: string, items: RecommendationEntry[], ttlSeconds: number): Promise<boolean>;
   depth(userId: string, version: bigint): Promise<number>;
   acquireGenerationLock(userId: string, version: bigint, token: string, ttlMs: number): Promise<boolean>;
   releaseGenerationLock(userId: string, version: bigint, token: string): Promise<void>;
@@ -107,6 +111,17 @@ export class RedisFeedQueue implements FeedQueuePort {
     for (const item of items) pipeline.rpush(key, JSON.stringify(item));
     pipeline.expire(key, ttlSeconds);
     await pipeline.exec();
+  }
+
+  async renewGenerationLock(userId: string, version: bigint, token: string, ttlMs: number): Promise<boolean> {
+    return Number(await this.redis.eval(RENEW_GENERATION_LOCK_LUA, 1,
+      this.lockKey(userId, version), token, ttlMs)) === 1;
+  }
+
+  async publishGeneration(userId: string, version: bigint, token: string, items: RecommendationEntry[], ttlSeconds: number): Promise<boolean> {
+    return Number(await this.redis.eval(PUBLISH_GENERATION_LUA, 2,
+      this.lockKey(userId, version), this.queueKey(userId, version), token, ttlSeconds,
+      ...items.map(item => JSON.stringify(item)))) === 1;
   }
 
   async depth(userId: string, version: bigint): Promise<number> {

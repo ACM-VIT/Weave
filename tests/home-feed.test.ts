@@ -61,3 +61,19 @@ test('catalogue reaction patches preserve item identity, counts and source mode'
   assert.equal(after.stats.likes,8);assert.equal(after.viewerReaction,'like');
   assert.equal(getFeedItemIdentity(before,0),getFeedItemIdentity(after,0));assert.equal(patched.pages[0].mode,'discovery');
 });
+
+test('direct follow invalidation blocks old personalized cursors without dropping loaded cards',async()=>{
+  const {QueryClient}=await import('@tanstack/react-query');
+  const {subscribeToHomeFeedInvalidations}=await import('../src/utils/home-feed');
+  const client=new QueryClient();const key=['feed','viewer'] as const;
+  const loaded={pages:[{mode:'personalized',items:[repository],nextCursor:'old-version'}],pageParams:[null]};
+  client.setQueryData(key,loaded);let invalidations=0;
+  const stop=subscribeToHomeFeedInvalidations(client,key,()=>invalidations++);
+  await client.invalidateQueries({queryKey:['feed','other'],refetchType:'none'});
+  assert.equal(invalidations,0);
+  await client.invalidateQueries({queryKey:key,exact:true,refetchType:'none'});
+  assert.equal(invalidations,1);assert.equal(canContinueHomeFeed('personalized',invalidations),false);
+  assert.equal(client.getQueryData(key),loaded,'Cards stay mounted with their original query data');
+  assert.equal(canContinueHomeFeed('discovery',invalidations),true);
+  stop();client.clear();
+});

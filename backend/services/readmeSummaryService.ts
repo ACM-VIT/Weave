@@ -1,3 +1,4 @@
+import { isTransientReadmeStorageError } from './readmeStorageErrors.js';
 import type { Sql, TransactionSql } from 'postgres';
 import {
   README_SUMMARY_FORMAT_VERSION, README_SUMMARY_PROMPT_VERSION,
@@ -113,7 +114,7 @@ export class ReadmeSummaryService {
       return { status: await this.complete(job, content) ? 'completed' : 'superseded', repo_id: job.repo_id };
     } catch (error) {
       const code = error instanceof ReadmeSummaryError ? error.code : 'readme_summary_worker_failed';
-      const retry = error instanceof ReadmeSummaryError && error.retryable && job.attempts<4;
+      const retry = (error instanceof ReadmeSummaryError ? error.retryable : isTransientReadmeStorageError(error)) && job.attempts<4;
       const delay = error instanceof ReadmeSummaryError && error.retryAfterSeconds
         ? error.retryAfterSeconds : Math.min(900, 15 * 2 ** job.attempts);
       await this.db`UPDATE telemetry.readme_summary_jobs SET status=${retry ? 'pending' : 'failed'},

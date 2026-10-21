@@ -49,3 +49,24 @@ integration('reservation recovery survives client restart before commit', async 
   await restarted.flushdb();
   await restarted.quit();
 });
+
+integration('generation renewal and publish are atomically fenced by the current lock token',async()=>{
+  const url=new URL(process.env.REDIS_TEST_URL??'redis://127.0.0.1:6379/15');
+  assert.ok(['127.0.0.1','localhost'].includes(url.hostname)&&url.pathname==='/15');
+  const redis=new Redis(url.toString(),{maxRetriesPerRequest:1});const queue=new RedisFeedQueue(redis);
+  const user='generation-fence-test';const lock=`feed:v2:generation-lock:${user}:1`;
+  const latest=[{repo_id:'latest-repo',score:1,source:'semantic',model_version:'test',summary_id:null}];
+  try{
+    await redis.del(lock,`feed:v2:${user}:1`);
+    assert.equal(await queue.acquireGenerationLock(user,1n,'old',1000),true);
+    await redis.pexpire(lock,0); // Deterministically expire the old lease.
+    assert.equal(await queue.acquireGenerationLock(user,1n,'new',1000),true);
+    assert.equal(await queue.renewGenerationLock(user,1n,'old',5000),false);
+    assert.equal(await queue.renewGenerationLock(user,1n,'new',5000),true);
+    assert.ok(await redis.pttl(lock)>1000);
+    assert.equal(await queue.publishGeneration(user,1n,'new',latest,60),true);
+    assert.equal(await queue.publishGeneration(user,1n,'old',[],60),false);
+    await queue.releaseGenerationLock(user,1n,'old');assert.equal(await redis.get(lock),'new');
+    assert.deepEqual((await redis.lrange(`feed:v2:${user}:1`,0,-1)).map(value=>JSON.parse(value)),latest);
+  }finally{await redis.del(lock,`feed:v2:${user}:1`);await redis.quit();}
+});

@@ -35,6 +35,16 @@ export class FeedGenerationService {
       });
       return 'coalesced';
     }
+    let leaseLost = false;
+    let renewal: Promise<void> | undefined;
+    const heartbeat = setInterval(() => {
+      if (renewal || leaseLost) return;
+      renewal = this.queue.renewGenerationLock(userId, feedVersion, token, this.lockTtlMs)
+        .then(owned => { if (!owned) leaseLost = true; })
+        .catch(() => { leaseLost = true; })
+        .finally(() => { renewal = undefined; });
+    }, Math.max(1, Math.floor(this.lockTtlMs / 3)));
+    heartbeat.unref();
     try {
       let socialRepoIds: string[] = [];
       try {
@@ -64,7 +74,7 @@ export class FeedGenerationService {
           generation_id: crypto.randomUUID(),
         });
       }
-      if (await this.persistence.getFeedVersion(userId) !== feedVersion) {
+      if (leaseLost || await this.persistence.getFeedVersion(userId) !== feedVersion) {
         await this.persistence.recordGenerationAttempt?.({
           generation_id: generationId, user_id: userId, feed_version: feedVersion, mode,
           status: 'stale', latency_ms: Date.now() - started, result_count: response.items.length,
@@ -80,17 +90,18 @@ export class FeedGenerationService {
         incrementMetric('feed_v2_invalid_repository_recommendations_total');
       }
       if (usableItems.length === 0) throw new Error('ML returned no active canonical repositories.');
-      await this.queue.replace(
+      const published = await this.queue.publishGeneration(
         userId,
         feedVersion,
+        token,
         canonicalEntries(usableItems, response.model_version, summaries, response.generation_id),
         this.queueTtlSeconds,
       );
       await this.persistence.recordGenerationAttempt?.({
         generation_id: generationId, user_id: userId, feed_version: feedVersion, mode,
-        status: 'completed', latency_ms: Date.now() - started, result_count: usableItems.length,
+        status: published ? 'completed' : 'stale', latency_ms: Date.now() - started, result_count: usableItems.length,
       });
-      return 'generated';
+      return published ? 'generated' : 'stale';
     } catch (error) {
       await this.persistence.recordGenerationAttempt?.({
         generation_id: generationId, user_id: userId, feed_version: feedVersion, mode,
@@ -99,6 +110,8 @@ export class FeedGenerationService {
       });
       throw error;
     } finally {
+      clearInterval(heartbeat);
+      await renewal;
       await this.queue.releaseGenerationLock(userId, feedVersion, token);
     }
   }

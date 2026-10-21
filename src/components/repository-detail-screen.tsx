@@ -133,6 +133,13 @@ export function RepositoryDetailScreen({ repositoryId }: { repositoryId: string 
         : summaryQuery.isLoading ? 'Loading README summary…' : preparedSummary.markdown;
   const languages = useMemo(() => repository?.languages ?? [], [repository?.languages]);
 
+  const readmeSource = useMemo(() => ({
+    fullName: repository?.fullName ?? '', githubUrl: repository?.githubUrl ?? '',
+    readmeBaseUrl: repository?.readmeBaseUrl, readmeDefaultBranch: repository?.readmeDefaultBranch,
+    readmeSourcePath: repository?.readmeSourcePath,
+  }), [repository?.fullName, repository?.githubUrl, repository?.readmeBaseUrl,
+    repository?.readmeDefaultBranch, repository?.readmeSourcePath]);
+
   const queueActivity = useCallback(async (action: 'share' | 'github_open') => {
     if (!viewerUserId || !repository) return;
     const outbox = getActivityOutbox(viewerUserId);
@@ -378,19 +385,10 @@ export function RepositoryDetailScreen({ repositoryId }: { repositoryId: string 
         readmeSource={{ fullName: repository.fullName, githubUrl: repository.githubUrl }}
         title={repository.name}
       /> : null}
-      <ReadmePopup
-        isVisible={readmeVisible}
-        onClose={() => setReadmeVisible(false)}
-        readmeText={repository.readmeFull}
-        readmeSource={{
-          fullName: repository.fullName,
-          githubUrl: repository.githubUrl,
-          readmeBaseUrl: repository.readmeBaseUrl,
-          readmeDefaultBranch: repository.readmeDefaultBranch,
-          readmeSourcePath: repository.readmeSourcePath,
-        }}
-        title={repository.name}
-      />
+      {readmeVisible ? <ReadmePopup
+        isVisible onClose={() => setReadmeVisible(false)}
+        readmeText={repository.readmeFull} readmeSource={readmeSource} title={repository.name}
+      /> : null}
     </View>
   );
 }

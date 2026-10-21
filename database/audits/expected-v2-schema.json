@@ -3,7 +3,7 @@
   "tables": {
     "app": [
       "board_collections", "board_repos", "boards", "collection_repos", "comments", "follows",
-      "reactions", "repo_card_summaries", "repo_content", "repo_engagement",
+      "reactions", "repo_readme_summaries", "repo_card_summaries", "repo_content", "repo_engagement",
       "repo_stat_snapshots", "repo_topics", "repos", "saves", "topics",
       "oauth_codes", "refresh_tokens", "social_profile_follows", "social_profiles",
       "trending_snapshot_items", "trending_snapshots", "user_feed_state",
@@ -11,7 +11,7 @@
     ],
     "telemetry": [
       "feed_serve_items", "feed_serves", "generation_attempts", "interaction_events",
-      "ml_outbox", "sessions", "user_repo_engagement"
+      "ml_outbox", "readme_summary_jobs", "sessions", "user_repo_engagement"
     ]
   },
   "indexes": [
@@ -28,6 +28,9 @@
     "app_repos_owner_github_id_idx",
     "app_collection_repos_repo_idx", "app_collection_repos_added_idx",
     "repo_card_summaries_one_active_uidx", "repo_card_summaries_versioned_uidx",
+    "repo_readme_summaries_pkey", "repo_readme_summaries_generation_id_key",
+    "repo_readme_summaries_active_uidx", "readme_summary_jobs_pkey",
+    "readme_summary_jobs_repo_id_content_version_content_hash_pr_key", "readme_summary_jobs_pending_idx",
     "repo_card_summaries_repo_active_idx", "repos_full_name_key",
     "repos_github_id_key", "trending_one_active_period_uidx"
   ],

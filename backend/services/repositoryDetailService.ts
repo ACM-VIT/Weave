@@ -62,6 +62,8 @@ export function mapRepositoryDetailRow(row: Record<string, unknown>): Repository
     summary_source: row.summary_source === 'generated' || row.summary_source === 'description_fallback'
       ? row.summary_source : null,
     readme_digest: (row.readme_digest ?? null) as RepositoryDetailV2['readme_digest'],
+    // Keep the legacy field until older mobile clients stop reading `readme`.
+    readme: optionalString(row.readme_md),
     readme_md: optionalString(row.readme_md),
     readme_source_path: optionalString(row.readme_source_path),
     readme_default_branch: optionalString(row.readme_default_branch),

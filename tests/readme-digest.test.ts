@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { parseReadmeDigest, readmeDigestMarkdown, resolveReadmeDigest, type ReadmeDigest } from '../src/models/readme-digest';
+import { parseReadmeDigest, readmeSummaryQueryKey, readmeDigestMarkdown, resolveReadmeDigest, type ReadmeDigest } from '../src/models/readme-digest';
 import { prepareReadmePreview, prepareReadmeSummaryDocument } from '../src/utils/readme';
 import { mapRepositoryDetail } from '../src/utils/repository-mapper';
 
@@ -58,4 +58,17 @@ test('async digest refresh preserves useful cached content and excludes a newer 
   assert.equal(resolveReadmeDigest(digest,{content_version:4,summary:refreshed}),refreshed);
   const popup=prepareReadmeSummaryDocument({readmeSummary:null,readmeFull:'# Raw source',description:'Subtitle',readmeDigest:refreshed});
   assert.ok(popup?.includes(refreshed.overview));
+});
+
+test('a newer canonical README excludes cached old digests even before its fetch returns',()=>{
+  assert.equal(resolveReadmeDigest(null,{content_version:4,summary:digest},5),null);
+  assert.equal(resolveReadmeDigest(digest,undefined,5),null);
+  assert.equal(resolveReadmeDigest(digest,{content_version:3,summary:null},4),digest);
+  const newer={...digest,content_version:5,content_hash:'hash-v5'};
+  assert.equal(resolveReadmeDigest(null,{content_version:5,summary:newer},5),newer);
+});
+
+test('digest query caches separate canonical content versions and accounts',()=>{
+  assert.notDeepEqual(readmeSummaryQueryKey('viewer','repo',4),readmeSummaryQueryKey('viewer','repo',5));
+  assert.notDeepEqual(readmeSummaryQueryKey('viewer','repo',4),readmeSummaryQueryKey('other','repo',4));
 });

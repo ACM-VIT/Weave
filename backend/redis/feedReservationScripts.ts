@@ -49,3 +49,18 @@ export const RELEASE_LOCK_LUA = `
 if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) end
 return 0
 `;
+
+export const RENEW_GENERATION_LOCK_LUA = `
+if redis.call('get', KEYS[1]) ~= ARGV[1] then return 0 end
+return redis.call('pexpire', KEYS[1], ARGV[2])
+`;
+
+// Lease ownership and queue replacement are one Redis operation; a late builder
+// cannot overwrite the queue published by a newer lock owner.
+export const PUBLISH_GENERATION_LUA = `
+if redis.call('get', KEYS[1]) ~= ARGV[1] then return 0 end
+redis.call('del', KEYS[2])
+for i = 3, #ARGV do redis.call('rpush', KEYS[2], ARGV[i]) end
+redis.call('expire', KEYS[2], ARGV[2])
+return 1
+`;

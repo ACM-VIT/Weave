@@ -70,7 +70,7 @@ export function RepositoryFeedItem({
   isViewable?: boolean;
   onOwnerPress?: () => void;
   onRepositoryPress?: () => void;
-  onSavedChange?: (saved: boolean) => void;
+  onSavedChange?: (saved: boolean, saveStateChanged: boolean) => void;
   onQueueActivity?: (
     event: {
       repo_id: string;
@@ -201,9 +201,9 @@ export function RepositoryFeedItem({
     setIsSaveVisible(true);
   }, [closeSaveReveal]);
 
-  const handleSavedChange = React.useCallback((saved: boolean) => {
+  const handleSavedChange = React.useCallback((saved: boolean, saveStateChanged: boolean) => {
     setSavedState({ repositoryId: repository.id, serverSaved, saved });
-    onSavedChange?.(saved);
+    onSavedChange?.(saved, saveStateChanged);
   }, [onSavedChange, repository.id, serverSaved]);
 
   const saveSwipeGesture = React.useMemo(() => Gesture.Pan()

@@ -825,6 +825,20 @@ integration('registered v2 HTTP paths complete controlled integration flows', as
       WHERE event_id=${mixedSaveEvent.event_id}::uuid
     `)[0].count), 0, 'moving an already-saved repository does not duplicate save feedback');
 
+    const versionBeforeLegacySave=await feedPersistence.getFeedVersion(userId);
+    const legacySave=await fetch(`${base}/api/v2/collections/save`,{
+      method:'POST',headers:authHeaders,body:JSON.stringify({repositoryId:repoId,collectionIds:[]}),
+    });
+    assert.equal(legacySave.status,200);
+    const legacySaved=(await legacySave.json() as {data:{board_ids:string[];saved:boolean;save_state_changed:boolean}}).data;
+    assert.deepEqual(legacySaved.board_ids,[boardId]);assert.equal(legacySaved.saved,true);
+    assert.equal(legacySaved.save_state_changed,false);
+    assert.equal(await feedPersistence.getFeedVersion(userId),versionBeforeLegacySave,'No-op saved state must not invalidate pagination');
+    const invalidBoardIds=await fetch(`${base}/api/v2/collections/save`,{
+      method:'POST',headers:authHeaders,body:JSON.stringify({repositoryId:repoId,collectionIds:[],boardIds:null}),
+    });
+    assert.equal(invalidBoardIds.status,400,'Only omission preserves existing Boards; malformed values are rejected');
+
     const keepBoardEvent = { ...saveEvent, event_id: crypto.randomUUID() };
     const keepBoardOnly = await fetch(`${base}/api/v2/collections/save`, {
       method: 'POST', headers: authHeaders,
