@@ -1,5 +1,5 @@
 import '@/global.css';
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { Stack, useRouter, useSegments } from "expo-router";
 import Head from 'expo-router/head';
 import { useFonts } from 'expo-font';
@@ -21,17 +21,20 @@ Sentry.init({
   tracesSampleRate: 0.1,
 });
 
-function RootLayoutNav() {
+function RootLayoutNav({ fontsReady }: { fontsReady: boolean }) {
   const { user, isLoading } = useAuth();
   const segments = useSegments();
   const router = useRouter();
+  const isReady = fontsReady && !isLoading;
+  const [startupComplete, setStartupComplete] = useState(false);
+  if (isReady && !startupComplete) setStartupComplete(true);
 
   useEffect(() => {
     Sentry.setUser(user?.user_id ? { id: user.user_id } : null);
   }, [user?.user_id]);
 
   useEffect(() => {
-    if (isLoading) return;
+    if (!isReady) return;
 
     const inAuthGroup = segments[0] === '(auth)';
     const inOnboardingGroup = segments[0] === 'onboarding';
@@ -47,7 +50,18 @@ function RootLayoutNav() {
         router.replace('/(tabs)/home');
       }
     }
-  }, [user, isLoading, segments, router]);
+  }, [user, isReady, segments, router]);
+
+  useEffect(() => {
+    if (startupComplete) {
+      SplashScreen.hideAsync();
+    }
+  }, [startupComplete]);
+
+  // Restore authentication in parallel with fonts, but never mount a route
+  // (including a protected deep link) until both startup tasks have settled.
+  // Later sign-in/profile transitions must not reset the mounted navigator.
+  if (!isReady && !startupComplete) return null;
 
   return <Stack screenOptions={{ headerShown: false }} />;
 }
@@ -62,16 +76,6 @@ function Layout() {
     'NataSans-Bold': require('../../assets/fonts/NataSans-Bold.ttf'),
   });
 
-  useEffect(() => {
-    if (loaded || error) {
-      SplashScreen.hideAsync();
-    }
-  }, [loaded, error]);
-
-  if (!loaded && !error) {
-    return null;
-  }
-
   return (
     <>
       <Head>
@@ -84,7 +88,7 @@ function Layout() {
       <QueryClientProvider client={queryClient}>
         <GestureHandlerRootView style={{ flex: 1 }}>
           <AuthProvider>
-            <RootLayoutNav />
+            <RootLayoutNav fontsReady={loaded || Boolean(error)} />
           </AuthProvider>
         </GestureHandlerRootView>
       </QueryClientProvider>
