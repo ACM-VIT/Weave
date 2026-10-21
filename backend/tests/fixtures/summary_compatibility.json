@@ -1,0 +1,88 @@
+[
+  {
+    "name": "repeated examples",
+    "summary": "It supports common formats, e.g. JSON and YAML. Developers can extend it, e.g. with custom parsers.",
+    "valid": true
+  },
+  {
+    "name": "inline comparison",
+    "summary": "It compares SQL vs. NoSQL stores. Teams inspect latency vs. throughput tradeoffs.",
+    "valid": true
+  },
+  {
+    "name": "inline list",
+    "summary": "It supports JSON, YAML, etc. for configuration. Teams can add parsers. Developers can extend formats.",
+    "valid": true
+  },
+  {
+    "name": "initialisms",
+    "summary": "It indexes U.S. projects. Teams can browse U.K. repositories. Developers can filter results.",
+    "valid": true
+  },
+  {
+    "name": "titles",
+    "summary": "Dr. Smith built these parsers. Prof. Jones maintains them.",
+    "valid": true
+  },
+  {
+    "name": "abbreviation at sentence boundary",
+    "summary": "It supports JSON, YAML, etc. Teams can add parsers.",
+    "valid": true
+  },
+  {
+    "name": "one semantic sentence",
+    "summary": "It supports common formats, e.g. JSON and YAML.",
+    "valid": false
+  },
+  {
+    "name": "one comparison",
+    "summary": "It compares SQL vs. NoSQL stores.",
+    "valid": false
+  },
+  {
+    "name": "four sentences",
+    "summary": "It supports JSON, YAML, etc. Teams extend it. Developers add parsers. Users share results.",
+    "valid": false
+  },
+  {
+    "name": "unfinished",
+    "summary": "It supports JSON, YAML, etc. for configuration. Teams add parsers",
+    "valid": false
+  },
+  {
+    "name": "GPL subject matter",
+    "summary": "Tools detect GPL boundaries across projects. Teams can track policy changes.",
+    "valid": true
+  },
+  {
+    "name": "GPL boilerplate",
+    "summary": "GPL. Teams can redistribute the software.",
+    "valid": false
+  },
+  {
+    "name": "license clause",
+    "summary": "It is licensed under GPL. Teams can redistribute the software.",
+    "valid": false
+  },
+  {
+    "name": "360 codepoints",
+    "summary": "The 🚀 workspace helps maintainers compare repository activity, review context, and coordinate changes across shared projects before they affect downstream teams. Developers can inspect ownership decisions, follow release progress, and identify useful tools through concise project context while keeping the complete source material available for investigation.",
+    "valid": true,
+    "highlights": [
+      "🚀 Repository activity, ownership decisions, and release progress in shared engineering workspace"
+    ]
+  },
+  {
+    "name": "361 codepoints",
+    "summary": "The 🚀 workspace helps maintainers compare repository activity, review context, and coordinate changes across shared projects before they affect downstream teams. Developers can inspect ownership decisions, follow release progress, and identify useful tools through concise project context while keeping the complete source material available for investigations.",
+    "valid": false
+  },
+  {
+    "name": "97 codepoint highlight",
+    "summary": "A workspace helps maintainers coordinate changes. Teams can inspect project activity.",
+    "valid": false,
+    "highlights": [
+      "🚀 Repository activity, ownership decisions, and release progress in shared engineering workspaces"
+    ]
+  }
+]
