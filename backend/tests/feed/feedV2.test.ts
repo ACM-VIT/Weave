@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { createServer } from 'node:http';
+import { MlV2Client } from '../../services/mlService.js';
+import { FeedGenerationService } from '../../services/feedGenerationService.js';
 
 import type { CreateServeInput, RepositoryProjection, StoredServe } from '../../contracts/feed.v2.js';
 import type { FeedPersistencePort } from '../../ports/feedPersistencePort.js';
@@ -24,6 +27,7 @@ class FakePersistence implements FeedPersistencePort {
   fallbackCalls = 0;
   fallbackViewerId: string | undefined;
   async getFeedVersion() { return this.version; }
+  async listExcludedRepositoryIds(_user: string, _session: string | undefined, _limit: number): Promise<string[]> { return []; }
   async listFollowedRepositoryIds() { return []; }
   async getServeByRequest(_userId?: string, requestId?: string) {
     if (this.missesBeforeServe > 0) { this.missesBeforeServe--; return null; }
@@ -167,6 +171,7 @@ test('generation keeps reservation ownership and concurrent retries replay perso
   const service = new FeedV2Service(persistence, queue, async () => {
     generationStarted();
     await finish;
+    return { status: 'generated', feedVersion: 3n, count: 1 };
   }, true, 1_000, 1);
   const userId = '00000000-0000-4000-8000-000000000030';
   const request = {
@@ -205,7 +210,7 @@ test('coalesced generation waits for the lock owner to populate the queue', asyn
   const service = new FeedV2Service(
     persistence,
     queue,
-    async () => 'coalesced',
+    async () => ({ status: 'coalesced', feedVersion: 3n }),
     true,
     1_500,
     1,
@@ -297,4 +302,123 @@ test('feed replay cache-hit service p95 stays below 250ms', async () => {
   }
   samples.sort((a, b) => a - b);
   assert.ok(samples[Math.floor(samples.length * 0.95)] < 250);
+});
+
+test('depleting one generated batch keeps a cursor and refills with the same browsing session',async()=>{
+  const persistence=new FakePersistence(); const queue=new FakeQueue(); let generationArgs:unknown[]=[];
+  let available=true;
+  queue.reserve=async(_u,_v,requestId,_limit,token)=>({requestId,token,items:available?[{repo_id:repo.repo_id,score:1,source:'semantic',model_version:'m1',summary_id:null}]:[]});
+  queue.refill=async(_u,_v,requestId,_limit,token)=>({requestId,token,items:[]});
+  const service=new FeedV2Service(persistence,queue,async(...args:unknown[])=>{generationArgs=args;return {status:'generated',feedVersion:3n,count:0};},false,1500,25,'cursor-secret');
+  const request={feed_request_id:'00000000-0000-4000-8000-000000000081',session_id:'00000000-0000-4000-8000-000000000082',limit:10,cursor:null};
+  const viewer='00000000-0000-4000-8000-000000000083';
+  const first=await service.getFeed(viewer,request);
+  assert.ok(first.next_cursor,'queue depletion must not prematurely end a personalized feed');
+  available=false;
+  const end=await service.getFeed(viewer,{...request,feed_request_id:'00000000-0000-4000-8000-000000000084',cursor:first.next_cursor});
+  assert.deepEqual(generationArgs,[viewer,10,[],request.session_id]);
+  assert.deepEqual(end.items,[]);
+  assert.equal(end.next_cursor,null);
+});
+
+test('configured fallback also excludes viewed and current-session repositories',async()=>{
+  const persistence=new FakePersistence();const queue=new FakeQueue();let received:string[]=[];
+  const viewed='00000000-0000-4000-8000-000000000097';
+  persistence.listExcludedRepositoryIds=async()=>[viewed];
+  persistence.getTrendingFallback=async(_limit,excluded)=>{received=excluded;return [repo];};
+  queue.reserve=async()=>{throw new Error('offline');};
+  const response=await new FeedV2Service(persistence,queue).getFeed('00000000-0000-4000-8000-000000000030',{
+    feed_request_id:'00000000-0000-4000-8000-000000000096',session_id:'00000000-0000-4000-8000-000000000095',limit:10,cursor:null,
+  });
+  assert.equal(response.source,'fallback');
+  assert.deepEqual(received,[viewed]);
+});
+
+for (const failureStage of ['reserve', 'generate', 'refill', 'coalesced', 'stale', 'version-race', 'consumed'] as const) {
+  test(`continuation ${failureStage} failure stays retryable without persisting exhaustion`, async () => {
+    const persistence = new FakePersistence();
+    const queue = new FakeQueue();
+    let fail = false;
+    let recovered = false;
+    const reserve = queue.reserve.bind(queue);
+    queue.reserve = async (...args) => {
+      if (fail && !recovered && failureStage === 'reserve') throw new Error('redis unavailable');
+      if (fail) return { requestId: args[2], token: args[4], items: [] };
+      return reserve(...args);
+    };
+    queue.refill = async (...args) => {
+      if (!recovered && failureStage === 'refill') throw new Error('refill unavailable');
+      return recovered ? reserve(...args) : { requestId: args[2], token: args[4], items: [] };
+    };
+    const service = new FeedV2Service(persistence, queue, async () => {
+      if (recovered) return { status: 'generated', feedVersion: 3n, count: 1 };
+      if (failureStage === 'generate') throw new Error('ml unavailable');
+      if (failureStage === 'version-race') return { status: 'generated', feedVersion: 4n, count: 1 };
+      if (failureStage === 'consumed') return { status: 'generated', feedVersion: 3n, count: 45 };
+      return { status: failureStage === 'stale' ? 'stale' : failureStage === 'coalesced' ? 'coalesced' : 'generated', feedVersion: 3n, count: 0 };
+    }, true, 1, 1, 'cursor-secret', 1);
+    const viewer = '00000000-0000-4000-8000-000000000030';
+    const request = { feed_request_id: '00000000-0000-4000-8000-000000000090',
+      session_id: '00000000-0000-4000-8000-000000000020', limit: 10, cursor: null };
+    const first = await service.getFeed(viewer, request);
+    const continuation = { ...request, feed_request_id: '00000000-0000-4000-8000-000000000091', cursor: first.next_cursor };
+    fail = true;
+    await assert.rejects(service.getFeed(viewer, continuation),
+      ['coalesced', 'stale', 'version-race', 'consumed'].includes(failureStage) ? FeedRequestInProgressError : /unavailable/);
+    assert.equal(persistence.serve?.feed_request_id, request.feed_request_id);
+    assert.equal(persistence.fallbackCalls, 0);
+    assert.ok(queue.released > 0, 'release only this request token so a same-id retry can proceed');
+    recovered = true;
+    const next = await service.getFeed(viewer, continuation);
+    assert.equal(next.items.length, 1);
+    assert.equal(next.items[0].position, 1);
+    assert.equal(persistence.serve?.feed_request_id, continuation.feed_request_id);
+  });
+}
+
+test('validated empty ML success ends continuation without opening the circuit', async () => {
+  let calls = 0;
+  const server = createServer((request, response) => {
+    const chunks: Buffer[] = [];
+    request.on('data', (chunk: Buffer) => chunks.push(chunk));
+    request.on('end', () => {
+      const input = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+      calls++;
+      response.writeHead(200, { 'content-type': 'application/json' });
+      response.end(JSON.stringify({ schema_version: 2, generation_id: input.generation_id,
+        user_id: input.user_id, feed_version: input.feed_version,
+        model_version: 'test-heavy', embedding_version: 'test-embedding', items: [] }));
+    });
+  });
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  try {
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('test server did not bind');
+    const ml = new MlV2Client({ baseUrl: `http://127.0.0.1:${address.port}`, internalSecret: 'test', timeoutMs: 500, maxResponseBytes: 10_000 });
+    const persistence = new FakePersistence();
+    const queue = new FakeQueue();
+    const generation = new FeedGenerationService(persistence, queue, ml);
+    const service = new FeedV2Service(persistence, queue,
+      (userId, limit, excluded, session) => generation.generate(userId, limit, excluded, 'live', session),
+      false, 1, 1, 'cursor-secret');
+    const viewer = '00000000-0000-4000-8000-000000000030';
+    const request = { feed_request_id: '00000000-0000-4000-8000-000000000093',
+      session_id: '00000000-0000-4000-8000-000000000020', limit: 10, cursor: null };
+    const first = await service.getFeed(viewer, request);
+    queue.reserve = async (_u, _v, requestId, _l, token) => ({ requestId, token, items: [] });
+    queue.refill = queue.reserve;
+    const next = { ...request, feed_request_id: '00000000-0000-4000-8000-000000000094', cursor: first.next_cursor };
+    const empty = await service.getFeed(viewer, next);
+    assert.deepEqual(empty.items, []);
+    assert.equal(empty.next_cursor, null);
+    assert.deepEqual(await service.getFeed(viewer, next), empty);
+    // A valid empty result is not a dependency failure, including after the circuit threshold.
+    for (let index = 0; index < 6; index++) {
+      await service.getFeed(viewer, { ...next, feed_request_id: `00000000-0000-4000-8000-${String(index + 100).padStart(12, '0')}` });
+    }
+    assert.equal(calls, 7);
+    assert.equal(persistence.fallbackCalls, 0);
+  } finally {
+    await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+  }
 });

@@ -43,6 +43,7 @@ function projection(repoId: string): RepositoryProjection {
 
 class GenerationPersistence implements FeedPersistencePort {
   async getFeedVersion() { return 1n; }
+  async listExcludedRepositoryIds(_user: string, _session: string | undefined, _limit: number): Promise<string[]> { return []; }
   async listFollowedRepositoryIds() { return [socialRepoId]; }
   async listActiveRepositories(repoIds: string[]) { return repoIds.map(projection); }
   async getServeByRequest(): Promise<StoredServe | null> { return null; }
@@ -93,7 +94,36 @@ test('feed generation sends followed-owner repositories as bounded ML context', 
     recommendations,
   ).generate(userId, 45);
 
-  assert.equal(result, 'generated');
+  assert.deepEqual(result, { status: 'generated', feedVersion: 1n, count: 2 });
   assert.deepEqual(recommendations.request?.social_repo_ids, [socialRepoId]);
   assert.equal(queue.replaced, true);
+});
+
+test('generation excludes actual exposure and current-session deliveries before enqueueing recommendations', async () => {
+  const persistence = new GenerationPersistence();
+  let historyArgs: unknown[] = [];
+  Object.assign(persistence, {listExcludedRepositoryIds:async (...args:unknown[])=>{historyArgs=args;return [socialRepoId];}});
+  const queue = new GenerationQueue(); let queued: string[] = [];
+  let completedCount: number | undefined;
+  Object.assign(persistence, { recordGenerationAttempt: async (attempt: {status: string; result_count: number}) => {
+    if (attempt.status === 'completed') completedCount = attempt.result_count;
+  } });
+  queue.replace = async (...args: unknown[])=>{queued=(args[2] as {repo_id:string}[]).map(item=>item.repo_id);};
+  const recommendations = new CapturingRecommendations();
+  await new FeedGenerationService(persistence,queue,recommendations).generate(userId,45,[],'live','browsing-session');
+  assert.deepEqual(historyArgs,[userId,'browsing-session',500]);
+  assert.deepEqual(recommendations.request?.exclude_repo_ids,[socialRepoId]);
+  assert.deepEqual(queued,[otherRepoId]);
+  assert.equal(completedCount, 1, 'record the canonical items actually enqueued');
+});
+
+test('generation combines unique exclusions within the existing 500-ID ML contract',async()=>{
+  const persistence = new GenerationPersistence();
+  const history=Array.from({length:500},(_,i)=>`00000000-0000-4000-8000-${String(i+10).padStart(12,'0')}`);
+  Object.assign(persistence,{listExcludedRepositoryIds:async()=>history});
+  const recommendations = new CapturingRecommendations();
+  await new FeedGenerationService(persistence,new GenerationQueue(),recommendations).generate(userId,45,[socialRepoId,socialRepoId]);
+  assert.equal(recommendations.request?.exclude_repo_ids.length,500);
+  assert.equal(new Set(recommendations.request?.exclude_repo_ids).size,500);
+  assert.equal(recommendations.request?.exclude_repo_ids[0],socialRepoId);
 });

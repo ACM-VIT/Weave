@@ -52,7 +52,7 @@ export class ApplicationRuntime {
     this.persistence,
     this.queue,
     this.generation
-      ? (userId, limit, excluded) => this.generation!.generate(userId, Math.max(45, limit), excluded)
+      ? (userId, limit, excluded, sessionId) => this.generation!.generate(userId, Math.max(45, limit), excluded, 'live', sessionId)
       : undefined,
     this.flags.TRENDING_FALLBACK,
     1_500,

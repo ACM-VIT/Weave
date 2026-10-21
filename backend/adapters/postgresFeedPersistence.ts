@@ -51,12 +51,35 @@ export class PostgresFeedPersistence implements FeedPersistencePort {
   }
 
   async getFeedVersion(userId: string): Promise<bigint> {
-    const rows = await sqlClient`
+    const rows = await sqlClient`SELECT feed_version FROM app.user_feed_state WHERE user_id=${userId}::uuid`;
+    if (rows.length) return BigInt(rows[0].feed_version);
+    const inserted = await sqlClient`
       INSERT INTO app.user_feed_state (user_id) VALUES (${userId}::uuid)
-      ON CONFLICT (user_id) DO UPDATE SET user_id = EXCLUDED.user_id
-      RETURNING feed_version
+      ON CONFLICT (user_id) DO NOTHING RETURNING feed_version
     `;
-    return BigInt(rows[0].feed_version);
+    if (inserted.length) return BigInt(inserted[0].feed_version);
+    const current = await sqlClient`SELECT feed_version FROM app.user_feed_state WHERE user_id=${userId}::uuid`;
+    if (!current.length) throw new Error('User feed state is unavailable.');
+    return BigInt(current[0].feed_version);
+  }
+
+  async listExcludedRepositoryIds(userId: string, sessionId: string | undefined, limit: number): Promise<string[]> {
+    const boundedLimit = Number.isFinite(limit) ? Math.max(0, Math.min(Math.trunc(limit), 500)) : 0;
+    if (!boundedLimit) return [];
+    const rows = await sqlClient`
+      WITH exposures AS (
+        SELECT item.repo_id,serve.created_at AS observed_at,0 AS priority
+        FROM telemetry.feed_serves serve
+        JOIN telemetry.feed_serve_items item ON item.serve_id=serve.serve_id
+        WHERE serve.user_id=${userId}::uuid AND serve.session_id=${sessionId ?? null}::uuid
+        UNION ALL
+        SELECT repo_id,last_event_at AS observed_at,1 AS priority
+        FROM telemetry.user_repo_engagement WHERE user_id=${userId}::uuid
+      )
+      SELECT repo_id FROM exposures GROUP BY repo_id
+      ORDER BY min(priority),max(observed_at) DESC,repo_id LIMIT ${boundedLimit}
+    `;
+    return rows.map(row => String(row.repo_id));
   }
 
   async listFollowedRepositoryIds(userId: string, limit: number): Promise<string[]> {
@@ -191,31 +214,45 @@ export class PostgresFeedPersistence implements FeedPersistencePort {
   }
 
   async createServe(input: CreateServeInput): Promise<StoredServe> {
-    await sqlClient.begin(async (tx) => {
-      const existing = await tx`
-        SELECT serve_id FROM telemetry.feed_serves
-        WHERE user_id=${input.user_id}::uuid AND feed_request_id=${input.feed_request_id}::uuid
-      `;
-      if (existing.length > 0) return;
-      const serves = await tx`
+    if (input.items.length > 100) throw new Error('A feed serve cannot contain more than 100 items.');
+    const created = await sqlClient.begin(async (tx) => {
+      const headers = await tx`
         INSERT INTO telemetry.feed_serves (
           feed_request_id,user_id,session_id,feed_version,generation_id,source,model_version,next_cursor
         ) VALUES (
           ${input.feed_request_id}::uuid,${input.user_id}::uuid,${input.session_id}::uuid,
           ${input.feed_version.toString()}::bigint,${input.generation_id}::uuid,${input.source},${input.model_version},${input.next_cursor}
-        ) RETURNING serve_id
+        ) ON CONFLICT (feed_request_id) DO NOTHING RETURNING serve_id,created_at
       `;
-      const serveId = String(serves[0].serve_id);
-      for (const item of input.items) {
+      if (!headers.length) return null;
+      const header = headers[0];
+      if (input.items.length) {
+        const items = input.items.map(item => ({ position: item.position,repo_id: item.repo_id,score: item.score,
+          source: item.source,model_version: item.model_version,summary_id: item.summary_id }));
         await tx`
           INSERT INTO telemetry.feed_serve_items (serve_id,position,repo_id,score,source,model_version,summary_id)
-          VALUES (${serveId}::uuid,${item.position},${item.repo_id}::uuid,${item.score},${item.source},${item.model_version},${item.summary_id}::uuid)
+          SELECT ${String(header.serve_id)}::uuid,position,repo_id,score,source,model_version,summary_id
+          FROM jsonb_to_recordset(${JSON.stringify(items)}::jsonb) AS item(
+            position integer,repo_id uuid,score double precision,source text,model_version text,summary_id uuid
+          )
         `;
       }
+      return header;
     });
-    const stored = await this.getServeByRequest(input.user_id, input.feed_request_id);
-    if (!stored) throw new Error('Serve was not persisted.');
-    return stored;
+    if (!created || input.items.some(item => item.summary_id !== item.repository.summary_id)) {
+      const replay = await this.getServeByRequest(input.user_id, input.feed_request_id);
+      if (!replay) throw new Error('Serve was not persisted.');
+      return replay;
+    }
+    // Creation uses the canonical projections already hydrated for this serve.
+    // Replays/conflicts read current mutable product fields from storage.
+    return {
+      ...input,serve_id: String(created.serve_id),created_at: new Date(created.created_at as string).toISOString(),
+      items: [...input.items].sort((a,b) => a.position-b.position).map(item => ({
+        position: item.position,repo_id: item.repo_id,score: item.score,source: item.source,
+        model_version: item.model_version,summary_id: item.summary_id,repository: item.repository,
+      })),
+    };
   }
 
   async listActiveRepositories(repoIds: string[], viewerUserId?: string): Promise<RepositoryProjection[]> {

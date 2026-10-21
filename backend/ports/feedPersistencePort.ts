@@ -6,6 +6,7 @@ import type {
 
 export interface FeedPersistencePort {
   getFeedVersion(userId: string): Promise<bigint>;
+  listExcludedRepositoryIds(userId: string, sessionId: string | undefined, limit: number): Promise<string[]>;
   listFollowedRepositoryIds(userId: string, limit: number): Promise<string[]>;
   getServeByRequest(userId: string, feedRequestId: string): Promise<StoredServe | null>;
   createServe(input: CreateServeInput): Promise<StoredServe>;

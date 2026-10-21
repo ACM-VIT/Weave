@@ -6,6 +6,7 @@ import jwt from 'jsonwebtoken';
 
 import { sqlClient } from '../../db/index.js';
 import { PostgresFeedPersistence } from '../../adapters/postgresFeedPersistence.js';
+import { FeedCursorCodec } from '../../services/feedCursor.js';
 
 const integration = process.env.RUN_HTTP_INTEGRATION === '1' ? test : test.skip;
 const userId = '00000000-0000-4000-8000-000000000201';
@@ -108,6 +109,17 @@ integration('registered v2 HTTP paths complete controlled integration flows', as
   const token = jwt.sign({ userId, email: 'test@example.com' }, process.env.JWT_SECRET!);
   const authHeaders = { authorization: `Bearer ${token}`, 'content-type': 'application/json' };
   try {
+    const codec = new FeedCursorCodec(process.env.JWT_SECRET);
+    for (const [cursor, expectedCode] of [
+      [codec.encode({ user_id: userId, session_id: sessionId, feed_version: '0', offset: 0 }), 'FEED_CURSOR_STALE'],
+      [codec.encode({ user_id: ownerUserId, session_id: sessionId, feed_version: '0', offset: 0 }), undefined],
+      ['malformed', undefined],
+    ] as const) {
+      const rejected = await fetch(`${base}/api/v2/feed`, { method: 'POST', headers: authHeaders,
+        body: JSON.stringify({ feed_request_id: crypto.randomUUID(), session_id: sessionId, limit: 10, cursor }) });
+      assert.equal(rejected.status, 400);
+      assert.equal(((await rejected.json()) as { code?: string }).code, expectedCode);
+    }
     const publicShare = await fetch(`${base}/api/v2/repositories/${repoId}/share`);
     assert.equal(publicShare.status, 200);
     const publicShareData = (await publicShare.json()) as { data: { full_name: string; url: string } };

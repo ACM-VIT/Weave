@@ -110,7 +110,7 @@ test('ML recommendation client still requires JSON', async () => {
   });
 });
 
-test('ML recommendation client rejects an empty successful result', async () => {
+test('ML recommendation client accepts validated empty success', async () => {
   const generationId = '00000000-0000-4000-8000-000000000001';
   const userId = '00000000-0000-4000-8000-000000000002';
   await withServer((_req, response) => {
@@ -126,15 +126,11 @@ test('ML recommendation client rejects an empty successful result', async () => 
     }));
   }, async (url) => {
     const client = new MlV2Client({ baseUrl: url, internalSecret: 'test', timeoutMs: 500, maxResponseBytes: 10_000 });
-    await assert.rejects(client.generate({
-      schema_version: 2,
-      generation_id: generationId,
-      user_id: userId,
-      feed_version: 1,
-      limit: 10,
-      exclude_repo_ids: [],
-      context: { cold_start: false },
-    }), /contained no items/);
+    const result = await client.generate({
+      schema_version: 2, generation_id: generationId, user_id: userId, feed_version: 1,
+      limit: 10, exclude_repo_ids: [], context: { cold_start: false },
+    });
+    assert.deepEqual(result.items, []);
   });
 });
 
