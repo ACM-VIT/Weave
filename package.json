@@ -10,6 +10,8 @@
     "@react-native-community/netinfo": "12.0.1",
     "@sentry/react-native": "~7.11.0",
     "@tanstack/react-query": "^5.101.2",
+    "braces": "file:./vendor/braces",
+    "decode-uri-component": "file:./vendor/decode-uri-component",
     "expo": "~56.0.16",
     "expo-blur": "~56.0.4",
     "expo-clipboard": "~56.0.4",
@@ -52,6 +54,7 @@
     "eslint-config-expo": "~56.0.4",
     "expo-doctor": "^1.20.1",
     "react-native-svg-transformer": "^1.5.3",
+    "react-test-renderer": "19.2.3",
     "tailwindcss": "^3.4.19",
     "tsx": "^4.23.1",
     "typescript": "~6.0.3"
@@ -74,5 +77,25 @@
   "allowScripts": {
     "msgpackr-extract@3.0.4": true,
     "unrs-resolver@1.12.2": true
+  },
+  "overrides": {
+    "micromatch": {
+      "braces": "$braces"
+    },
+    "chokidar": {
+      "braces": "$braces"
+    },
+    "query-string": {
+      "decode-uri-component": "$decode-uri-component"
+    },
+    "xcode": {
+      "uuid": "11.1.1"
+    },
+    "postcss-nested": {
+      "postcss-selector-parser": "7.1.6"
+    },
+    "tailwindcss": {
+      "postcss-selector-parser": "7.1.6"
+    }
   }
 }
