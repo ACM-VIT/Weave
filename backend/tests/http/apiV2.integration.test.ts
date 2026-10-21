@@ -35,11 +35,11 @@ async function seed(): Promise<void> {
   `;
   await sqlClient`
     INSERT INTO app.users (
-      user_id,username,github_id,github_handle,github_identity_verified_at,status
+      user_id,username,full_name,date_of_birth,github_id,github_handle,github_identity_verified_at,status
     ) VALUES
-      (${userId}::uuid,'http_test',NULL,'http-viewer',NULL,'active'),
-      (${spoofOwnerUserId}::uuid,'http_spoof',NULL,'owner',NULL,'active'),
-      (${ownerUserId}::uuid,'http_owner','9001','owner',now(),'active')
+      (${userId}::uuid,'http_test','Synthetic HTTP Viewer','1990-01-01',NULL,'http-viewer',NULL,'active'),
+      (${spoofOwnerUserId}::uuid,'http_spoof',NULL,NULL,NULL,'owner',NULL,'active'),
+      (${ownerUserId}::uuid,'http_owner',NULL,NULL,'9001','owner',now(),'active')
   `;
   await sqlClient`INSERT INTO app.user_stats (user_id) VALUES (${userId}::uuid),(${ownerUserId}::uuid)`;
   await sqlClient`INSERT INTO app.user_feed_state (user_id) VALUES (${userId}::uuid)`;
