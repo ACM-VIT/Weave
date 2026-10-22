@@ -1,144 +1,130 @@
 import { Platform } from 'react-native';
 
+import type { QueuedActivity } from '../api/activity';
 import {
-  prepareQueuedActivity,
-  type ActivityInput,
-  type QueuedActivity,
-} from '../api/activity';
-import { FEEDBACK_ACTIONS, type FeedbackAction } from '../constants/feedbackActions';
-import {
+  deserializeActivitySnapshot,
   loadNativeActivitySnapshot,
-  writeNativeActivitySnapshot,
   type ActivitySnapshotFileSystem,
 } from './activityOutboxFileStorage';
+import { IncrementalActivityStorage, type ActivityRecordFileSystem } from './activityOutboxRecordStorage';
 
-const WEB_KEY_PREFIX = 'ghsocial.activity-outbox.v2';
-const pendingWrites = new Map<string, Promise<void>>();
-const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const activityActions = new Set<string>(Object.values(FEEDBACK_ACTIONS));
+const LEGACY_KEY_PREFIX = 'ghsocial.activity-outbox.v2';
+const RECORD_KEY_PREFIX = 'ghsocial.activity-outbox.v3';
+const ACCOUNT_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const userStores = new Map<string, Promise<IncrementalActivityStorage>>();
 
-function safeUserId(userId: string): string {
-  return userId.replace(/[^a-zA-Z0-9-]/g, '_');
+function legacyUserId(userId: string): string {
+  // v2 records have no embedded owner. Only canonical account IDs have an unambiguous old key;
+  // arbitrary strings could alias another user's lossy character-replacement namespace.
+  if (!ACCOUNT_UUID.test(userId)) throw new Error('A canonical account UUID is required for activity migration.');
+  return userId;
 }
 
-function normalize(value: unknown): QueuedActivity[] {
-  if (!Array.isArray(value)) return [];
-  const normalized: QueuedActivity[] = [];
-  for (const valueEvent of value) {
-    if (!valueEvent || typeof valueEvent !== 'object') continue;
-    const event = valueEvent as Record<string, unknown>;
-    if (typeof event.event_id !== 'string' || !UUID_PATTERN.test(event.event_id)
-      || typeof event.repo_id !== 'string' || !UUID_PATTERN.test(event.repo_id)
-      || typeof event.client_occurred_at !== 'string' || Number.isNaN(Date.parse(event.client_occurred_at))
-      || typeof event.action !== 'string' || !activityActions.has(event.action)
-      || (event.session_id !== undefined
-        && (typeof event.session_id !== 'string' || !UUID_PATTERN.test(event.session_id)))
-      || (event.serve_id !== undefined && event.serve_id !== null
-        && (typeof event.serve_id !== 'string' || !UUID_PATTERN.test(event.serve_id)))
-      || (event.position !== undefined && event.position !== null
-        && (!Number.isInteger(event.position) || Number(event.position) < 0))
-      || (event.dwell_seconds !== undefined
-        && (typeof event.dwell_seconds !== 'number' || !Number.isFinite(event.dwell_seconds)))) {
-      continue;
-    }
-
-    const input: ActivityInput = {
-      event_id: event.event_id,
-      client_occurred_at: event.client_occurred_at,
-      repo_id: event.repo_id,
-      action: event.action as FeedbackAction,
-      ...(typeof event.session_id === 'string' ? { session_id: event.session_id } : {}),
-      ...(typeof event.serve_id === 'string' || event.serve_id === null
-        ? { serve_id: event.serve_id } : {}),
-      ...(typeof event.position === 'number' || event.position === null
-        ? { position: event.position } : {}),
-      ...(typeof event.dwell_seconds === 'number'
-        ? { dwell_seconds: event.dwell_seconds } : {}),
-    };
-    normalized.push(prepareQueuedActivity(input));
-  }
-  return normalized;
-}
-
-export async function loadActivityOutbox(userId: string): Promise<QueuedActivity[]> {
-  try {
-    await pendingWrites.get(userId)?.catch(() => undefined);
-    if (Platform.OS === 'web') {
-      if (typeof localStorage === 'undefined') return [];
-      const value = localStorage.getItem(`${WEB_KEY_PREFIX}.${safeUserId(userId)}`);
-      return value ? normalize(JSON.parse(value)) : [];
-    }
-
-    const { File, Paths } = await import('expo-file-system');
-    const fileName = `${WEB_KEY_PREFIX}.${safeUserId(userId)}.json`;
-    const temporaryFileName = `${fileName}.tmp`;
-    const fileSystem: ActivitySnapshotFileSystem = {
-      exists: (path) => new File(Paths.document, path).exists,
-      read: (path) => new File(Paths.document, path).text(),
-      writeFresh: (path, contents) => {
-        const file = new File(Paths.document, path);
-        file.create({ intermediates: true, overwrite: true });
-        file.write(contents);
+async function createStorage(userId: string): Promise<IncrementalActivityStorage> {
+  // Use an injective, path-safe encoding rather than replacing characters or interpolating URI separators.
+  const encodedUser = userId.split('').map(character => character.charCodeAt(0).toString(16).padStart(4, '0')).join('');
+  const namespace = `${RECORD_KEY_PREFIX}.${encodedUser}`;
+  if (Platform.OS === 'web') {
+    if (typeof localStorage === 'undefined') throw new Error('Activity outbox storage is unavailable.');
+    const prefix = `${namespace}.`;
+    const fileSystem: ActivityRecordFileSystem = {
+      exists: path => localStorage.getItem(prefix + path) !== null,
+      read: async path => {
+        const contents = localStorage.getItem(prefix + path);
+        if (contents === null) throw new Error('Activity record is missing.');
+        return contents;
       },
+      writeFresh: (path, contents) => localStorage.setItem(prefix + path, contents),
       move: async (source, destination, overwrite) => {
-        await new File(Paths.document, source).move(
-          new File(Paths.document, destination),
-          { overwrite },
-        );
+        const contents = localStorage.getItem(prefix + source);
+        if (contents === null) throw new Error('Activity record is missing.');
+        if (!overwrite && localStorage.getItem(prefix + destination) !== null) throw new Error('Activity record already exists.');
+        // setItem is atomic; quota failure leaves the source and previous destination untouched.
+        localStorage.setItem(prefix + destination, contents);
+        localStorage.removeItem(prefix + source);
       },
+      list: async () => {
+        const paths: string[] = [];
+        for (let index = 0; index < localStorage.length; index += 1) {
+          const key = localStorage.key(index);
+          if (key?.startsWith(prefix)) paths.push(key.slice(prefix.length));
+        }
+        return paths;
+      },
+      remove: async path => localStorage.removeItem(prefix + path),
       warn: (message, error) => console.warn(message, error),
     };
-    return loadNativeActivitySnapshot(fileSystem, fileName, temporaryFileName);
-  } catch (error) {
-    console.warn('Could not restore the activity outbox:', error);
-    return [];
-  }
-}
-
-async function writeActivityOutbox(userId: string, events: readonly QueuedActivity[]): Promise<void> {
-  const snapshot = [...events];
-  if (Platform.OS === 'web') {
-    if (typeof localStorage === 'undefined') return;
-    const key = `${WEB_KEY_PREFIX}.${safeUserId(userId)}`;
-    if (snapshot.length === 0) localStorage.removeItem(key);
-    else localStorage.setItem(key, JSON.stringify(snapshot));
-    return;
+    return new IncrementalActivityStorage(fileSystem, async () => {
+      const value = localStorage.getItem(`${LEGACY_KEY_PREFIX}.${legacyUserId(userId)}`);
+      // Do not overwrite or silently normalize away a malformed legacy event.
+      return value === null ? [] : deserializeActivitySnapshot(value);
+    });
   }
 
-  const { File, Paths } = await import('expo-file-system');
-  const fileName = `${WEB_KEY_PREFIX}.${safeUserId(userId)}.json`;
-  const temporaryFileName = `${fileName}.tmp`;
-  const fileSystem: ActivitySnapshotFileSystem = {
-    exists: (path) => new File(Paths.document, path).exists,
-    read: (path) => new File(Paths.document, path).text(),
+  const { Directory, File, Paths } = await import('expo-file-system');
+  const directory = new Directory(Paths.document, namespace);
+  directory.create({ intermediates: true, idempotent: true });
+  const snapshotFileSystem = (root: typeof directory): ActivitySnapshotFileSystem => ({
+    exists: path => new File(root, path).exists,
+    read: path => new File(root, path).text(),
     writeFresh: (path, contents) => {
-      const file = new File(Paths.document, path);
+      const file = new File(root, path);
       file.create({ intermediates: true, overwrite: true });
       file.write(contents);
     },
     move: async (source, destination, overwrite) => {
-      await new File(Paths.document, source).move(
-        new File(Paths.document, destination),
-        { overwrite },
-      );
+      await new File(root, source).move(new File(root, destination), { overwrite });
     },
     warn: (message, error) => console.warn(message, error),
+  });
+  const fileSystem: ActivityRecordFileSystem = {
+    ...snapshotFileSystem(directory),
+    list: async () => directory.list().filter(entry => entry instanceof File).map(entry => entry.name),
+    remove: async path => {
+      const file = new File(directory, path);
+      if (file.exists) file.delete();
+    },
   };
-  await writeNativeActivitySnapshot(fileSystem, fileName, temporaryFileName, snapshot);
+  return new IncrementalActivityStorage(fileSystem, async () => {
+    const legacy = snapshotFileSystem(Paths.document);
+    const path = `${LEGACY_KEY_PREFIX}.${legacyUserId(userId)}.json`;
+    const temporaryPath = `${path}.tmp`;
+    const existed = legacy.exists(path) || legacy.exists(temporaryPath);
+    // A corrupt main must remain in place if neither source is readable.
+    // Existing recovery then promotes valid temp data and preserves corrupt copies as before.
+    if (existed) {
+      let readable = false;
+      for (const candidate of [path, temporaryPath]) {
+        if (!legacy.exists(candidate)) continue;
+        try { deserializeActivitySnapshot(await legacy.read(candidate)); readable = true; }
+        catch { /* The other copy may still be recoverable. */ }
+      }
+      if (!readable) throw new Error('The legacy activity outbox is corrupt; its files were left untouched.');
+    }
+    return loadNativeActivitySnapshot(legacy, path, temporaryPath);
+  });
 }
 
-export function persistActivityOutbox(userId: string, events: readonly QueuedActivity[]): Promise<void> {
-  const snapshot = [...events];
-  const previous = pendingWrites.get(userId) ?? Promise.resolve();
-  const write = previous
-    .catch(() => undefined)
-    .then(() => writeActivityOutbox(userId, snapshot));
-  pendingWrites.set(userId, write);
+function getStorage(userId: string): Promise<IncrementalActivityStorage> {
+  let store = userStores.get(userId);
+  if (!store) {
+    store = createStorage(userId);
+    userStores.set(userId, store);
+    void store.catch(() => {
+      if (userStores.get(userId) === store) userStores.delete(userId);
+    });
+  }
+  return store;
+}
 
-  return write.catch((error) => {
-    console.warn('Could not persist the activity outbox:', error);
-    throw error;
-  }).finally(() => {
-    if (pendingWrites.get(userId) === write) pendingWrites.delete(userId);
-  });
+export async function loadActivityOutbox(userId: string): Promise<QueuedActivity[]> {
+  return (await getStorage(userId)).load();
+}
+
+export async function appendActivityOutboxEvent(userId: string, event: QueuedActivity): Promise<void> {
+  return (await getStorage(userId)).append(event);
+}
+
+export async function acknowledgeActivityOutboxEvents(userId: string, eventIds: ReadonlySet<string>): Promise<void> {
+  return (await getStorage(userId)).acknowledge(eventIds);
 }
