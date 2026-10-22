@@ -722,6 +722,60 @@ integration('registered v2 HTTP paths complete controlled integration flows', as
     assert.equal(multiListData.data.saved, true);
     assert.equal(multiListData.data.save_state_changed, false);
 
+    // Keyset pages must not truncate legacy complete-selection reads or lose timestamp ties.
+    type CollectionPage = {
+      items: Array<{ collection_id: string; selected: boolean; repo_count: number }>;
+      next_cursor: string | null; has_more: boolean;
+    };
+    const collectionPageUrl = `${base}/api/v2/collections?pagination=keyset&limit=1&repository_id=${repoId}`;
+    let firstCollectionCursor = '';
+    for (const distinctMicroseconds of [false, true]) {
+      await sqlClient`
+        UPDATE app.board_collections SET created_at='2026-01-01T00:00:00.123456Z'::timestamptz,
+          updated_at=CASE WHEN collection_id=${collectionId}::uuid AND ${distinctMicroseconds}
+            THEN '2026-01-01T00:00:00.123457Z'::timestamptz
+            ELSE '2026-01-01T00:00:00.123456Z'::timestamptz END
+        WHERE collection_id IN (${collectionId}::uuid,${secondCollectionId}::uuid)
+      `;
+      const first = await fetch(collectionPageUrl, { headers: authHeaders });
+      assert.equal(first.status, 200);
+      const firstPage = ((await first.json()) as { data: CollectionPage }).data;
+      assert.equal(firstPage.items.length, 1);
+      assert.equal(firstPage.has_more, true);
+      assert.ok(firstPage.next_cursor);
+      firstCollectionCursor = firstPage.next_cursor;
+      const second = await fetch(`${collectionPageUrl}&cursor=${encodeURIComponent(firstCollectionCursor)}`, { headers: authHeaders });
+      assert.equal(second.status, 200);
+      const secondPage = ((await second.json()) as { data: CollectionPage }).data;
+      assert.equal(secondPage.has_more, false);
+      assert.equal(secondPage.next_cursor, null);
+      assert.deepEqual([...firstPage.items, ...secondPage.items].map(item => item.collection_id).sort(),
+        [collectionId, secondCollectionId].sort());
+      for (const item of [...firstPage.items, ...secondPage.items]) {
+        assert.equal(item.selected, true);
+        assert.equal(item.repo_count, 1);
+        assert.equal('__page_timestamp' in item, false);
+      }
+    }
+    const completeLists = await fetch(`${base}/api/v2/collections?repository_id=${repoId}`, { headers: authHeaders });
+    const completeData = ((await completeLists.json()) as { data: CollectionPage }).data;
+    assert.equal(completeData.items.length, 2);
+    assert.equal('next_cursor' in completeData, false);
+    const encodedCursor = encodeURIComponent(firstCollectionCursor);
+    for (const invalidUrl of [
+      `${collectionPageUrl}&cursor=${encodeURIComponent(`x${firstCollectionCursor.slice(1)}`)}`,
+      `${base}/api/v2/collections?pagination=keyset&cursor=${encodedCursor}`,
+      `${base}/api/v2/boards?pagination=keyset&repository_id=${repoId}&cursor=${encodedCursor}`,
+      `${collectionPageUrl}&offset=0`, `${collectionPageUrl}&cursor=${'x'.repeat(2049)}`,
+      `${base}/api/v2/collections?cursor=${encodedCursor}`,
+    ]) {
+      assert.equal((await fetch(invalidUrl, { headers: authHeaders })).status, 400);
+    }
+    const otherViewerHeaders = { authorization: `Bearer ${jwt.sign({ userId: ownerUserId, email: 'owner@example.com' }, process.env.JWT_SECRET!)}` };
+    assert.equal((await fetch(`${collectionPageUrl}&cursor=${encodedCursor}`, { headers: otherViewerHeaders })).status, 400);
+    assert.equal((await fetch(`${base}/api/v2/collections/${collectionId}/repositories?pagination=keyset`,
+      { headers: otherViewerHeaders })).status, 404);
+
     const selectedDetail = await fetch(`${base}/api/v2/repositories/${repoId}`, { headers: authHeaders });
     assert.equal(selectedDetail.status, 200);
     const selectedDetailData = ((await selectedDetail.json()) as {
@@ -1077,6 +1131,73 @@ integration('registered v2 HTTP paths complete controlled integration flows', as
       ingestedOwnerProfileData.data.repositories.map((repository) => repository.repo_id),
       [ingested.mappings[0].repo_id],
     );
+
+    // Each independently implemented query must traverse a tied two-row dataset,
+    // preserve its legacy complete read, and terminate without repeating the boundary.
+    const pageViewer = '00000000-0000-4000-8000-000000000327';
+    const pageProfile = '00000000-0000-4000-8000-000000000323';
+    const pageCollection = '00000000-0000-4000-8000-000000000326';
+    const pageRepoIds = [
+      '00000000-0000-4000-8000-000000000322',
+      '00000000-0000-4000-8000-000000000321',
+    ];
+    const pageBoardIds = [
+      '00000000-0000-4000-8000-000000000325',
+      '00000000-0000-4000-8000-000000000324',
+    ];
+    await sqlClient`INSERT INTO auth.users(id,raw_user_meta_data) VALUES(${pageViewer}::uuid,'{}'::jsonb) ON CONFLICT (id) DO NOTHING`;
+    await sqlClient`INSERT INTO app.users(user_id,username,status) VALUES(${pageViewer}::uuid,'page_fixture','active')`;
+    await sqlClient`INSERT INTO app.social_profiles(profile_id,provider,handle,profile_kind)
+      VALUES(${pageProfile}::uuid,'github','page-fixture-owner','organization')`;
+    for (const [index, id] of pageRepoIds.entries()) {
+      await sqlClient`INSERT INTO app.repos(repo_id,github_id,full_name,owner,name,url,status,updated_at)
+        VALUES(${id}::uuid,${99122001 + index},${`page-fixture-owner/repo-${index}`},'page-fixture-owner',
+          ${`repo-${index}`},${`https://github.com/page-fixture-owner/repo-${index}`},'active',
+          '2026-01-01T00:00:00.123456Z'::timestamptz)`;
+      await sqlClient`INSERT INTO app.repo_content(repo_id,content_hash) VALUES(${id}::uuid,${`page-${index}`})`;
+      await sqlClient`INSERT INTO app.repo_engagement(repo_id) VALUES(${id}::uuid)`;
+    }
+    await sqlClient`INSERT INTO app.board_collections(collection_id,user_id,name)
+      VALUES(${pageCollection}::uuid,${pageViewer}::uuid,'Page collection')`;
+    for (const [index, id] of pageBoardIds.entries()) {
+      await sqlClient`INSERT INTO app.boards(board_id,user_id,name,created_at)
+        VALUES(${id}::uuid,${pageViewer}::uuid,${`Page board ${index}`},'2026-01-01T00:00:00.123456Z'::timestamptz)`;
+    }
+    for (const id of pageRepoIds) {
+      await sqlClient`INSERT INTO app.collection_repos(collection_id,repo_id,added_by,added_at)
+        VALUES(${pageCollection}::uuid,${id}::uuid,${pageViewer}::uuid,'2026-01-01T00:00:00.123456Z'::timestamptz)`;
+      await sqlClient`INSERT INTO app.board_repos(board_id,repo_id,added_by,added_at)
+        VALUES(${pageBoardIds[0]}::uuid,${id}::uuid,${pageViewer}::uuid,'2026-01-01T00:00:00.123456Z'::timestamptz)`;
+    }
+    const pageHeaders = { authorization: `Bearer ${jwt.sign({ userId: pageViewer, email: 'pages@example.com' }, process.env.JWT_SECRET!)}` };
+    for (const endpoint of [
+      { path: `/profiles/${pageProfile}`, key: 'repositories', id: 'repo_id', expected: pageRepoIds },
+      { path: '/boards', key: 'items', id: 'board_id', expected: pageBoardIds },
+      { path: `/collections/${pageCollection}/repositories`, key: 'items', id: 'repo_id', expected: pageRepoIds },
+      { path: `/boards/${pageBoardIds[0]}/repositories`, key: 'items', id: 'repo_id', expected: pageRepoIds },
+    ]) {
+      const read = async (query: string) => {
+        const response = await fetch(`${base}/api/v2${endpoint.path}${query}`, { headers: pageHeaders });
+        assert.equal(response.status, 200, endpoint.path);
+        return ((await response.json()) as { data: Record<string, unknown> }).data;
+      };
+      const ids = (data: Record<string, unknown>) =>
+        (data[endpoint.key] as Array<Record<string, string>>).map(row => row[endpoint.id]);
+      const legacy = await read('');
+      assert.deepEqual(ids(legacy), endpoint.expected, endpoint.path);
+      assert.equal('next_cursor' in legacy, false);
+      assert.equal('has_more' in legacy, false);
+      const first = await read('?pagination=keyset&limit=1');
+      assert.deepEqual(ids(first), endpoint.expected.slice(0, 1), endpoint.path);
+      assert.equal(first.has_more, true);
+      assert.equal(typeof first.next_cursor, 'string');
+      assert.ok(first.next_cursor);
+      const last = await read(`?pagination=keyset&limit=1&cursor=${encodeURIComponent(String(first.next_cursor))}`);
+      assert.deepEqual(ids(last), endpoint.expected.slice(1), endpoint.path);
+      assert.equal(last.has_more, false);
+      assert.equal(last.next_cursor, null);
+      assert.deepEqual([...ids(first), ...ids(last)], ids(legacy));
+    }
 
     const status = await fetch(`${base}/api/internal/v2/operations/status`, {
       headers: { 'x-internal-secret': process.env.INTERNAL_API_SECRET! },

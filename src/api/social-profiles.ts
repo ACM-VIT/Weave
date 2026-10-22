@@ -1,5 +1,6 @@
 import { apiV2, apiV2Raw } from './client';
 import type { RepositoryApiPayload } from './repositories';
+import { keysetPageQuery, validateKeysetPageResponse, type KeysetPageMetadata, type KeysetPageOptions } from './keyset-pagination';
 
 export type SocialProfile = {
   profile_id: string;
@@ -32,6 +33,24 @@ export async function getSocialProfile(
     { signal },
     token,
   );
+}
+
+/** Profile metadata with one bounded page of repositories, not the full portfolio. */
+export type SocialProfilePage = SocialProfile & KeysetPageMetadata;
+
+export async function getSocialProfilePage(
+  profileId: string,
+  token: string,
+  options: KeysetPageOptions = {},
+  signal?: AbortSignal,
+): Promise<SocialProfilePage> {
+  const data = await apiV2<SocialProfilePage>(
+    `/profiles/${encodeURIComponent(profileId)}?${keysetPageQuery(options)}`,
+    { signal },
+    token,
+  );
+  validateKeysetPageResponse(data, 'repositories');
+  return data;
 }
 
 export async function setSocialProfileFollowing(
