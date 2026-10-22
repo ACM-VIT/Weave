@@ -28,6 +28,7 @@ export interface FeedPersistencePort {
   createServe(input: CreateServeInput): Promise<StoredServe>;
   listActiveRepositoryIdentities(repoIds: string[]): Promise<RepositoryIdentityProjection[]>;
   listActiveRepositories(repoIds: string[], viewerUserId?: string): Promise<RepositoryProjection[]>;
+  /** Fresh active cards for this viewer; callers may reuse them within the requesting serve only. */
   getTrendingFallback(
     limit: number,
     excludeRepoIds: string[],
