@@ -1,4 +1,6 @@
 import crypto from 'node:crypto';
+import { startSpan, mlOperation, httpOutcome } from '../observability/tracing.js';
+import type { StageOutcome } from '../observability/metrics.js';
 import { performance } from 'node:perf_hooks';
 import type { RecommendationPort } from '../ports/recommendationPort.js';
 import type { OutboxTransportPort } from '../ports/outboxTransportPort.js';
@@ -265,6 +267,8 @@ export class MlV2Client implements RecommendationPort, OutboxTransportPort {
     timeoutMs = this.config.timeoutMs,
     responseFormat: 'required-json' | 'optional-json' = 'required-json',
   ): Promise<{ status: number; body: unknown; retryAfterMs?: number }> {
+    const span = startSpan(mlOperation(path), 'ml_transport');
+    let outcome: StageOutcome = 'failure';
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
@@ -274,6 +278,7 @@ export class MlV2Client implements RecommendationPort, OutboxTransportPort {
           'content-type': 'application/json',
           'x-internal-secret': this.config.internalSecret,
           'x-request-id': crypto.randomUUID(),
+          traceparent: span.traceparent,
           'idempotency-key': idempotencyKey,
         },
         body: JSON.stringify(payload),
@@ -308,9 +313,11 @@ export class MlV2Client implements RecommendationPort, OutboxTransportPort {
         const parsed = Number.isFinite(seconds) ? seconds * 1_000 : Date.parse(retryAfter) - Date.now();
         if (Number.isFinite(parsed) && parsed > 0) retryAfterMs = Math.min(15 * 60_000, Math.round(parsed));
       }
+      outcome = httpOutcome(response.status);
       return { status: response.status, body, retryAfterMs };
     } finally {
       clearTimeout(timer);
+      span.finish(controller.signal.aborted ? 'timeout' : outcome);
     }
   }
 
@@ -460,6 +467,8 @@ export class MlV2Client implements RecommendationPort, OutboxTransportPort {
   }
 
   async health(): Promise<{ healthy: boolean; status: number; body: unknown }> {
+    const span = startSpan('health', 'ml_transport');
+    let outcome: StageOutcome = 'failure';
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.config.timeoutMs);
     try {
@@ -467,15 +476,18 @@ export class MlV2Client implements RecommendationPort, OutboxTransportPort {
         headers: {
           'x-internal-secret': this.config.internalSecret,
           'x-request-id': crypto.randomUUID(),
+          traceparent: span.traceparent,
         },
         signal: controller.signal,
       });
       const text = await response.text();
       let body: unknown = null;
       try { body = text ? JSON.parse(text) : null; } catch { body = text; }
+      outcome = httpOutcome(response.status);
       return { healthy: response.ok, status: response.status, body };
     } finally {
       clearTimeout(timer);
+      span.finish(controller.signal.aborted ? 'timeout' : outcome);
     }
   }
 }
