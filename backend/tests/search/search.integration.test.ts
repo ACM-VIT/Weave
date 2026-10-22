@@ -8,6 +8,7 @@ import jwt from 'jsonwebtoken';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { sqlClient } from '../../db/index.js';
+import { closeSearchSql, observeSearchSqlQueries } from '../../db/searchSqlLane.js';
 import { PostgresSearchPersistence } from '../../adapters/postgresSearchPersistence.js';
 import { parseSearchRequest, SearchService, type SearchRef } from '../../services/searchService.js';
 import { semanticSearch } from '../../controllers/searchController.js';
@@ -134,13 +135,15 @@ integration('isolated PostgreSQL search: hydration, people deduplication, List p
       { type: 'list', id: 'legacy-board:' },
       { type: 'list', id: `collection:${ownCollection} ` },
     ];
-    let invalidQueries = 0;
-    const previousDebug = sqlClient.options.debug;
-    sqlClient.options.debug = () => { invalidQueries++; };
+    let searchQueries = 0;
+    const stopObserving = observeSearchSqlQueries(() => { searchQueries++; });
     try {
+      assert.equal((await persistence.hydrate(viewer, [{ type: 'repository', id: repo }])).length, 1);
+      assert.ok(searchQueries > 0, 'the counter observes valid hydration on the search pool');
+      searchQueries = 0;
       assert.deepEqual(await persistence.hydrate(viewer, malformed), [], 'malformed references are discarded before UUID casts');
-    } finally { sqlClient.options.debug = previousDebug; }
-    assert.equal(invalidQueries, 0, 'invalid-only references do not query the database');
+      assert.equal(searchQueries, 0, 'invalid-only references do not query the database');
+    } finally { stopObserving(); }
     const mixed: SearchRef[] = [
       { type: 'list', id: `legacy-board:${publicBoard}` },
       { type: 'repository', id: repo2.toUpperCase() },
@@ -243,6 +246,7 @@ integration('isolated PostgreSQL search: hydration, people deduplication, List p
       import { PostgresSearchPersistence } from './adapters/postgresSearchPersistence.ts';
       import { parseSearchRequest } from './services/searchService.ts';
       import { sqlClient } from './db/index.ts';
+      import { closeSearchSql } from './db/searchSqlLane.ts';
       try {
         assert.equal((await sqlClient\`SELECT current_user AS role\`)[0].role, 'ghsocial_backend');
         const persistence = new PostgresSearchPersistence();
@@ -250,7 +254,7 @@ integration('isolated PostgreSQL search: hydration, people deduplication, List p
         assert.deepEqual((await persistence.lexical(request)).map(row => row.id), [${JSON.stringify(repo)}]);
         assert.ok(!(await persistence.lists(${JSON.stringify(viewer)},request)).some(row => row.id === ${JSON.stringify(`collection:${otherCollection}`)}));
         assert.equal((await persistence.hydrate(${JSON.stringify(viewer)}, [{type:'repository',id:${JSON.stringify(repo)}}], request)).length, 1);
-      } finally { await sqlClient.end({timeout:1}); }
+      } finally { await Promise.all([closeSearchSql(), sqlClient.end({timeout:1})]); }
     `], { cwd: new URL('../../', import.meta.url), env: { ...process.env, DATABASE_URL: runtimeUrl.toString() } });
 
     process.env.JWT_SECRET = 'search-integration-test-secret';
@@ -330,11 +334,14 @@ integration('isolated PostgreSQL search: hydration, people deduplication, List p
     const indexes = await sqlClient`SELECT indexname FROM pg_indexes WHERE schemaname='app' AND indexname IN ('repos_active_search_trgm','users_active_search_trgm','boards_public_search_trgm')`;
     assert.equal(indexes.length,3);
   } finally {
-    await sqlClient`DELETE FROM app.trending_snapshots WHERE snapshot_id=ANY(${[ids[14],ids[15]]}::uuid[])`;
-    await sqlClient`DELETE FROM app.social_profiles WHERE profile_id=ANY(${[claimed,external]}::uuid[])`;
-    await sqlClient`DELETE FROM app.users WHERE user_id=ANY(${[viewer,other]}::uuid[])`;
-    await sqlClient`DELETE FROM app.repos WHERE repo_id=ANY(${[repo,repo2,deleted,archived]}::uuid[])`;
-    await sqlClient.end({timeout:1});
+    try {
+      await sqlClient`DELETE FROM app.trending_snapshots WHERE snapshot_id=ANY(${[ids[14],ids[15]]}::uuid[])`;
+      await sqlClient`DELETE FROM app.social_profiles WHERE profile_id=ANY(${[claimed,external]}::uuid[])`;
+      await sqlClient`DELETE FROM app.users WHERE user_id=ANY(${[viewer,other]}::uuid[])`;
+      await sqlClient`DELETE FROM app.repos WHERE repo_id=ANY(${[repo,repo2,deleted,archived]}::uuid[])`;
+    } finally {
+      await Promise.all([closeSearchSql(), sqlClient.end({timeout:1})]);
+    }
   }
 });
 

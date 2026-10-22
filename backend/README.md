@@ -455,6 +455,34 @@ obsolete are classified, never replayed, with
 worker runbook. A historical repository job can use the same endpoint only
 after a newer canonical job for that repository has been delivered.
 
+## Search SQL capacity
+
+Search uses three lazy, exclusive single-connection slots with at most three
+additional PostgreSQL connections per API process, separate from the main pool. Admission allows three
+active transactions and at most 16 waiting operations. Waiting operations are
+removed on cancellation or deadline before submitting `BEGIN`; an admitted
+transaction retains its permit through actual commit/rollback. Cancellation or
+deadline retires only that operation's slot and destroys its owned TCP/TLS
+transport, including connection startup and a proxy-blocked `BEGIN`. The slot
+is not reused until native work, its callback and real socket close have settled;
+other slots and callers are not cancelled. A retired client cannot reconnect. The common search
+budget is five seconds, with each search statement limited to at most 1.8 seconds
+or the remaining budget. TCP connection establishment and driver startup each
+have a two-second timeout, both covered by the same caller deadline. There is no
+reconnect backoff; idle search connections close after 20 seconds. Both
+API and worker shutdown retire existing slots and drain ownership without creating
+unused clients. Array-type discovery is disabled only for search slots to avoid
+the pinned driver's uncaught initialization-query rejection; explicit text[] and
+uuid[] input serializers preserve the search queries, whose collection outputs
+are JSON/JSONB. Transport close bounds owned client connections, not an
+acknowledgment that the server has completed rollback after a disconnect.
+
+Compatibility restriction: search fails closed with multi-host or target-session
+failover configurations because the pinned driver does not reliably bound those
+retry paths. A single endpoint (including a one-element host list) and the default,
+unset target are supported. The configured endpoint,
+credentials, main pool and existing v2 search cursors are unchanged.
+
 ## Database deployment and clean ingestion
 
 1. Back up Supabase and verify restore access.

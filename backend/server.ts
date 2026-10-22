@@ -2,6 +2,7 @@ import 'dotenv/config';
 import app from './app.js';
 import redisClient from './config/redis.js';
 import { sqlClient } from './db/index.js';
+import { closeSearchSql } from './db/searchSqlLane.js';
 import { getApplicationRuntime } from './runtime/applicationRuntime.js';
 
 const port: number = parseInt(process.env.PORT ?? '5000', 10);
@@ -19,7 +20,7 @@ async function shutdown(): Promise<void> {
   console.log('\nShutting down gracefully...');
   await new Promise<void>((resolve) => server.close(() => resolve()));
   await runtime.supervisor.stop();
-  await Promise.allSettled([redisClient.quit(), sqlClient.end({ timeout: 5 })]);
+  await Promise.allSettled([redisClient.quit(), sqlClient.end({ timeout: 5 }), closeSearchSql()]);
   console.log('Server closed');
   process.exit(0);
 }
