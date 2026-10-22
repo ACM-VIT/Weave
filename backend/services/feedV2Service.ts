@@ -65,6 +65,8 @@ export class FeedV2Service {
     this.stopping = true;
     // Drain actual operations, not the caller promises that may have aborted.
     await Promise.allSettled(this.foreground);
+    // Aborted/expired observers can leave their shared physical probes running.
+    await Promise.allSettled([this.serveWaits.drain(), this.generationWaits.drain()]);
   }
 
   private requestKey(userId: string, requestId: string): string {
@@ -117,7 +119,9 @@ export class FeedV2Service {
 
   async getFeed(userId: string, request: FeedRequestV2, signal?: AbortSignal): Promise<FeedResponseV2> {
     signal?.throwIfAborted();
-    if (this.stopping || this.foreground.size >= MAX_FOREGROUND_FEED_OPERATIONS) {
+    if (this.stopping || this.foreground.size
+      + this.serveWaits.unobservedProbeCount + this.generationWaits.unobservedProbeCount
+      >= MAX_FOREGROUND_FEED_OPERATIONS) {
       throw new FeedRequestInProgressError();
     }
     // Register admission before starting any work; there is no pending queue.

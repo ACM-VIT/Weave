@@ -16,6 +16,7 @@ interface WaitGroup<T> {
 /** Notifications only accelerate durable probes; they never supply completion data. */
 export class FeedWaitCoordinator<T> {
   private readonly groups = new Map<string, WaitGroup<T>>();
+  private readonly probes = new Set<Promise<T | undefined>>();
   private subscriberCount = 0;
 
   constructor(
@@ -25,6 +26,19 @@ export class FeedWaitCoordinator<T> {
     private readonly maxSubscribersPerKey = 128,
     private readonly maxSubscribers = 2_048,
   ) {}
+
+  get unobservedProbeCount(): number {
+    let count = 0;
+    for (const group of this.groups.values()) {
+      if (group.checking && group.waiters.size === 0) count++;
+    }
+    return count;
+  }
+
+  /** Call after closing admissions and settling the coordinator's observers. */
+  async drain(): Promise<void> {
+    while (this.probes.size > 0) await Promise.allSettled(this.probes);
+  }
 
   wait(key: string, probe: () => Promise<T | undefined>, timeoutMs: number, signal?: AbortSignal): Promise<T> {
     signal?.throwIfAborted();
@@ -87,8 +101,10 @@ export class FeedWaitCoordinator<T> {
   private async check(key: string, group: WaitGroup<T>): Promise<void> {
     if (group.checking || group.waiters.size === 0) return;
     group.checking = true;
+    const probe = Promise.resolve().then(() => group.probe());
+    this.probes.add(probe);
     try {
-      const result = await group.probe();
+      const result = await probe;
       if (result !== undefined) {
         for (const waiter of group.waiters) { waiter.cleanup(); waiter.resolve(result); }
         group.waiters.clear();
@@ -97,6 +113,7 @@ export class FeedWaitCoordinator<T> {
       for (const waiter of group.waiters) { waiter.cleanup(); waiter.reject(error); }
       group.waiters.clear();
     } finally {
+      this.probes.delete(probe);
       group.checking = false;
       this.removeIfIdle(key, group);
       if (group.waiters.size > 0) {
