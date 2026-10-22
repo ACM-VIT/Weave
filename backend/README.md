@@ -124,6 +124,15 @@ The frontend cannot import or mutate repository metadata. It records likes, save
 
 The response contains `serve_id`, `feed_version`, `source`, `model_version`, `items`, and `next_cursor`. Reusing the same `feed_request_id` is an idempotent replay and returns the same persisted serve. Pass a non-null `next_cursor` with a new `feed_request_id` to consume the next queue page. Cursors are opaque, signed, and bound to the user, session, feed version, and next position; invalid or stale cursors return `400`. `limit` is 1-25. Home feed fails closed: if live generation is unavailable, it may reuse only a previously served personalized ranking for the same user and feed version. It never substitutes a generic or trending list.
 
+Foreground feed admission is bounded to 256 active operations per process,
+including replay checks and same-request waiters, with no pending queue. New
+requests during shutdown or above that bound use the existing retryable `409`
+response (`Retry-After: 1`); request/response and cursor formats are unchanged.
+A disconnected caller stops observing, but an already-owned reservation keeps
+its writer through durable publication/release so live same-ID waiters can
+replay it. Shutdown closes admission and drains actual foreground operations
+before Redis/SQL close; cancelling an observer never releases their resources.
+
 ### Interactions
 
 `POST /api/v2/interactions/batch` accepts 1-50 events:
@@ -558,3 +567,70 @@ remain eligible for recovery. Repeating the same campaign does not duplicate
 its jobs; use a new campaign ID to retry a completed fallback after provider
 recovery. Roll back the application first if necessary and retain the additive
 summary columns/artifacts; do not delete canonical content or migration history.
+
+### Opt-in product keyset pages (Refs ACM-VIT/Weave#122)
+
+The existing authenticated product GET endpoints support an additive `pagination=keyset`
+contract. Without that parameter they retain complete legacy responses, including the
+profile `repositories` and list `items` fields. Do not silently switch old clients to a
+bounded response: existing membership editors submit complete selection sets.
+
+- `/profiles/:profileId`: page the `repositories` preview; other profile fields remain.
+- `/collections` and `/boards`: page owned lists. Optional `repository_id` is a UUID
+  that decorates each list with `selected`; it does not filter the list set.
+- `/collections/:collectionId/repositories` and `/boards/:boardId/repositories`:
+  page repository contents with their existing DTOs.
+
+Use `pagination=keyset&limit=25` for the first page, then append the returned opaque
+`cursor`. `limit` is an integer decimal string from 1 to 100 (default 25). Do not
+send `offset`; an empty, malformed, oversized, tampered or wrong-scope cursor is a
+400. A cursor without `pagination=keyset` is also a 400. Keep the same endpoint,
+viewer, resource and `repository_id` on subsequent pages. Page size may change.
+Responses add `next_cursor: string | null` and `has_more: boolean` at the data root
+(alongside `items`, or alongside profile `repositories`). An empty/final page has
+`next_cursor: null, has_more: false`. The extra look-ahead row is not returned.
+
+Order is explicit and not client-configurable: profile repositories use
+`updated_at DESC, repo_id DESC`; collections use `updated_at DESC, created_at DESC,
+collection_id DESC`; boards use `created_at DESC, board_id DESC`; contents use
+`added_at DESC, repo_id DESC`. All ties use unique IDs. Cursors contain exact SQL
+UTC microsecond timestamps, not JavaScript's rounded millisecond dates. They are
+HMAC-SHA256 authenticated with the existing `JWT_SECRET`, domain-separated from
+feed cursors, and bound to endpoint, viewer, resource, selection and sort. Rotating
+that secret invalidates outstanding cursors; restart from the first page on 400.
+A cursor is a position, not an authorization grant. Ownership/public/unlisted
+visibility and active repositories are checked on every request, including in the
+contents query itself. Deleted cursor rows need not exist to continue.
+
+Counts (`repo_count`, `board_count`, profile statistics) retain full-set semantics,
+not page length. `last_updated_at` and `selected` also retain their meanings. No new
+portfolio total is inferred from a bounded preview. Existing search endpoints and
+query semantics are unchanged.
+
+These are live keyset pages, not a cross-request database snapshot. Stable datasets
+have deterministic, non-overlapping pages. Newer inserts ahead of the cursor appear
+on refresh, not later pages; inserts behind it can appear later. Deletes/visibility
+changes remove entries. Updating a sort timestamp or removing/re-adding membership
+can move an entry across the cursor and cause a repeated or missed item. Clients
+should deduplicate by ID and refresh after edits; do not treat pages as a complete
+selection snapshot for replacement writes.
+
+Rollout: deploy additive API first, then use explicit page functions in app #102;
+leave legacy complete-list readers and replacement-selection editors unchanged
+until their UX/state supports every selected membership. A client talking to an
+older backend must not treat missing page metadata as a valid bounded page. Roll
+back page consumers to legacy readers before removing backend support. No legacy
+field or OFFSET endpoint is removed by this slice.
+
+Verification remains deferred to the authorized whole-app test phase: large/empty
+portfolios, equal timestamps including sub-millisecond differences, invalid and
+cross-viewer/resource/filter cursors, deep pages, concurrent inserts/updates,
+deleted boundary rows and visibility revocation. Also compare response bytes and
+first/middle/deep query plans against representative disposable fixtures. Existing
+indexes include `app_repo_stats_latest_idx (repo_id, observed_at DESC)`,
+`app_boards_user_idx (user_id, created_at DESC)`,
+`app_board_collections_user_idx (user_id, created_at DESC)`,
+`app_collection_repos_added_idx (collection_id, added_at DESC)`, the board membership
+primary key, and the owner-GitHub-ID index. No index or migration is added without
+representative plans. Follow/like/save/comment OFFSET conversion and app rollout
+remain outside this core-surface slice, so this change alone does not close #122.

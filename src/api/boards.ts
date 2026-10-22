@@ -1,5 +1,6 @@
 import { apiV2, apiV2Raw } from './client';
 import type { RepositoryApiPayload } from './repositories';
+import { keysetPageQuery, validateKeysetPageResponse, type KeysetPage, type KeysetPageOptions } from './keyset-pagination';
 import type { RepositoryDetail } from '@/models/repository';
 import { mapRepositoryList } from '@/utils/repository-mapper';
 import {
@@ -66,6 +67,37 @@ export async function getCollectionRepositories(
     token,
   );
   return mapRepositoryList(data.items);
+}
+
+export async function getBoardRepositoriesPage(
+  boardId: string,
+  token: string,
+  options: KeysetPageOptions = {},
+  signal?: AbortSignal,
+): Promise<KeysetPage<RepositoryDetail>> {
+  const data = await apiV2<KeysetPage<BoardRepositoryRecord>>(
+    `/boards/${encodeURIComponent(boardId)}/repositories?${keysetPageQuery(options)}`,
+    { signal },
+    token,
+  );
+  // Keep the server cursor even if mapping drops an invalid repository record.
+  validateKeysetPageResponse(data);
+  return { ...data, items: mapRepositoryList(data.items) };
+}
+
+export async function getCollectionRepositoriesPage(
+  collectionId: string,
+  token: string,
+  options: KeysetPageOptions = {},
+  signal?: AbortSignal,
+): Promise<KeysetPage<RepositoryDetail>> {
+  const data = await apiV2<KeysetPage<BoardRepositoryRecord>>(
+    `/collections/${encodeURIComponent(collectionId)}/repositories?${keysetPageQuery(options)}`,
+    { signal },
+    token,
+  );
+  validateKeysetPageResponse(data);
+  return { ...data, items: mapRepositoryList(data.items) };
 }
 
 export async function createBoard(_userId: string, boardName: string, token: string) {

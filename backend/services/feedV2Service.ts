@@ -9,6 +9,8 @@ import { FeedCursorCodec } from './feedCursor.js';
 import type { FeedGenerationOutcome } from './feedGenerationService.js';
 import { FeedWaitCoordinator } from './feedWaitCoordinator.js';
 
+const MAX_FOREGROUND_FEED_OPERATIONS = 256;
+
 export class FeedRequestInProgressError extends Error {
   constructor() {
     super('A feed request with this id is still being prepared.');
@@ -56,6 +58,14 @@ export class FeedV2Service {
   private readonly cursorCodec: FeedCursorCodec;
   private readonly serveWaits: FeedWaitCoordinator<FeedResponseV2>;
   private readonly generationWaits: FeedWaitCoordinator<true>;
+  private readonly foreground = new Set<Promise<FeedResponseV2>>();
+  private stopping = false;
+
+  async stop(): Promise<void> {
+    this.stopping = true;
+    // Drain actual operations, not the caller promises that may have aborted.
+    await Promise.allSettled(this.foreground);
+  }
 
   private requestKey(userId: string, requestId: string): string {
     return JSON.stringify([userId, requestId]);
@@ -107,6 +117,31 @@ export class FeedV2Service {
 
   async getFeed(userId: string, request: FeedRequestV2, signal?: AbortSignal): Promise<FeedResponseV2> {
     signal?.throwIfAborted();
+    if (this.stopping || this.foreground.size >= MAX_FOREGROUND_FEED_OPERATIONS) {
+      throw new FeedRequestInProgressError();
+    }
+    // Register admission before starting any work; there is no pending queue.
+    const operation = Promise.resolve().then(() => this.prepareFeed(userId, request, signal));
+    this.foreground.add(operation);
+    const finish = () => this.foreground.delete(operation);
+    void operation.then(finish, finish);
+    if (!signal) return operation;
+    return new Promise<FeedResponseV2>((resolve, reject) => {
+      const cleanup = () => signal.removeEventListener('abort', cancel);
+      const cancel = () => { cleanup(); reject(signal.reason); };
+      signal.addEventListener('abort', cancel, { once: true });
+      // Cancellation belongs to this observer, not to a writer that may own a
+      // reservation for live same-ID waiters. Always handle its eventual error.
+      void operation.then(
+        response => { cleanup(); resolve(response); },
+        error => { cleanup(); reject(error); },
+      );
+      if (signal.aborted) cancel();
+    });
+  }
+
+  private async prepareFeed(userId: string, request: FeedRequestV2, signal?: AbortSignal): Promise<FeedResponseV2> {
+    signal?.throwIfAborted();
     const replay = await this.persistence.getServeByRequest(userId, request.feed_request_id);
     if (replay) {
       incrementMetric('feed_v2_duplicate_requests_total');
@@ -119,6 +154,8 @@ export class FeedV2Service {
       session_id: request.session_id,
       feed_version: version.toString(),
     });
+    // Before claiming ownership there is no shared writer to preserve.
+    signal?.throwIfAborted();
     const token = crypto.randomUUID();
     const releaseReservation = async () => {
       try { await this.queue.release(userId, version, request.feed_request_id, token); }
@@ -149,11 +186,10 @@ export class FeedV2Service {
       try {
         const outcome = await this.generateOnMiss(userId, request.limit, [], request.session_id);
         if (outcome.status !== 'coalesced') this.generationWaits.notify(this.generationKey(userId, version));
-        signal?.throwIfAborted();
         if (outcome.status === 'stale' || outcome.feedVersion !== version) throw new FeedRequestInProgressError();
         reservation = outcome.status === 'coalesced'
           ? await this.waitForGeneratedReservation(
-            userId, version, request.feed_request_id, request.limit, token, signal,
+            userId, version, request.feed_request_id, request.limit, token,
           )
           : await this.queue.refill(
             userId, version, request.feed_request_id, request.limit, token,
@@ -169,7 +205,6 @@ export class FeedV2Service {
           return this.waitForServe(userId, request.feed_request_id, signal);
         }
         await releaseReservation();
-        signal?.throwIfAborted();
         if (error instanceof FeedRequestInProgressError || request.cursor !== null) throw error;
         generationError = error;
         reservation = { token, requestId: request.feed_request_id, items: [] };

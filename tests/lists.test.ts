@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { validateKeysetPageResponse } from '../src/api/keyset-pagination';
 
 import {
   mapCollectionList,
@@ -79,3 +80,28 @@ test('repository List query identity is centralized by viewer and repository', (
     ['repository-lists', 'viewer-1', 'repo-1'],
   );
 });
+
+for (const itemsKey of ['items', 'repositories'] as const) {
+  test(`${itemsKey} pages accept continuing/final metadata and reject legacy or inconsistent responses`, () => {
+    const items = [{ repo_id: 'repository-1' }];
+    assert.doesNotThrow(() => validateKeysetPageResponse({ [itemsKey]: items, has_more: true, next_cursor: 'opaque-cursor' }, itemsKey));
+    assert.doesNotThrow(() => validateKeysetPageResponse({ [itemsKey]: items, has_more: false, next_cursor: null }, itemsKey));
+    assert.doesNotThrow(() => validateKeysetPageResponse({ [itemsKey]: [], has_more: false, next_cursor: null }, itemsKey));
+    for (const response of [
+      null, [], {}, { [itemsKey]: items },
+      { [itemsKey]: items, next_cursor: null },
+      { [itemsKey]: items, has_more: false },
+      { [itemsKey]: items, has_more: 'false', next_cursor: null },
+      { has_more: false, next_cursor: null },
+      { [itemsKey]: {}, has_more: false, next_cursor: null },
+      { [itemsKey]: items, has_more: true, next_cursor: null },
+      { [itemsKey]: items, has_more: true, next_cursor: '' },
+      { [itemsKey]: items, has_more: true, next_cursor: '  ' },
+      { [itemsKey]: items, has_more: true, next_cursor: 1 },
+      { [itemsKey]: items, has_more: true, next_cursor: 'x'.repeat(2049) },
+      { [itemsKey]: items, has_more: false, next_cursor: 'unexpected' },
+    ]) {
+      assert.throws(() => validateKeysetPageResponse(response, itemsKey), /Unsupported or invalid pagination response/);
+    }
+  });
+}
