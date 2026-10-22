@@ -38,6 +38,7 @@ import DescriptionCard from './DescriptionCard';
 import ReadmeCard from './ReadmeCard';
 import type { FeedbackAction } from '../../api/activity';
 import { FEEDBACK_ACTIONS } from '../../constants/feedbackActions';
+import { RecommendationReason } from './RecommendationReason';
 import { FollowButton } from '../follow-button';
 
 type QueueActivity = (
@@ -307,6 +308,7 @@ export function RepositoryScreen({
         />
 
         <View style={[styles.repoDetails, compact && styles.repoDetailsCompact]}>
+          <RecommendationReason source={repository.recommendationSource} />
           <View style={[styles.ownerRow, compact && styles.ownerRowCompact]}>
             <View
               style={[
