@@ -55,8 +55,18 @@ gives the container 300 seconds after `SIGTERM` (plus 30 seconds of supervisor
 margin), which exceeds the 240-second repository-index request bound and lets
 the single active row finish before shutdown.
 `SIGTERM` completes the active run and closes Redis/PostgreSQL connections.
+The outbox unit gives Docker 300 seconds to stop and systemd 330 seconds,
+covering the default 240-second index request and cleanup. When increasing
+`ML_REPOSITORY_INDEX_TIMEOUT_MS`, increase Docker's `ExecStop --time` to at least
+the request timeout in seconds plus 60, and `TimeoutStopSec` to at least another
+30 seconds beyond that. For a 600000 ms index timeout, use 660 and 690 seconds.
 Avoid `SIGKILL`, which can leave the current row claimed until reconciliation
 releases its lease.
+
+The backend test command runs files serially because database integration files
+share destructive fixtures. Use `RUN_DATABASE_INTEGRATION=1 npm test` only with
+an isolated disposable PostgreSQL database and isolated Redis test database;
+direct test invocations must also set `--test-concurrency=1` across those files.
 
 ## Acceptance before ingestion
 

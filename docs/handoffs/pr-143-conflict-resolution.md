@@ -33,3 +33,9 @@ After restarting the local API and Expo preview, browser checks at 470×674 conf
 The existing review of the prior head raises additional issues in Save backward compatibility, outbox retention, generation lock ownership, follow/save pagination, README retry/cache/rendering behavior, API default ports and the schema audit manifest. These are not claimed fixed by this merge. The offline-cache and expired-search findings are addressed by retaining dev's search fixes; the outdated HTTP fixture is corrected and its full flow passes.
 
 The separate #136 compatibility review remains outstanding, including prose validation, Unicode summary length and producer/consumer sentence semantics. No #136 branch or ML-service code was silently merged. Conflict-free does not mean approved to merge or deploy. The PR is kept Draft.
+
+## Integration after #136 merged
+
+The merged backend companion names the summary DDL `0025_repository_summary_artifacts`; this branch previously published the byte-identical SQL as `0024_repository_summary_artifacts`. Retain one journal entry with this branch's existing timestamp and the unchanged SQL hash, rather than executing the same DDL twice. Existing #136 hashes/timestamps remain untouched. The `dev-summary-recovery-first` PostgreSQL regression exercises that history through normal and scoped README upgrades, checking that immutable revision indexes survive and migration hashes are not duplicated.
+
+Keep the README worker's repository-first lock order, stored-artifact validation, immutable successor recovery and generated-preservation guard. Preserve typed persona-repair errors alongside `dev`'s HTTP status/retry handling for oversized non-success bodies. Keep both README commands and serial backend test execution.

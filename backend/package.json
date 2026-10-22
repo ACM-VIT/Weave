@@ -21,7 +21,7 @@
     "reindex:personas": "tsx scripts/reindex-user-personas.ts",
     "ingest:trending": "tsx scripts/ingest-github-trending.ts",
     "load:feed:v2": "node scripts/load-feed-v2.mjs",
-    "test": "npm run typecheck:test && tsx --test tests/**/*.test.ts",
+    "test": "npm run typecheck:test && tsx --test --test-concurrency=1 tests/**/*.test.ts",
     "worker:readme": "node dist/scripts/process-readme-summaries.js",
     "readme:regenerate": "tsx scripts/process-readme-summaries.ts"
   },

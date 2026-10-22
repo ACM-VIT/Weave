@@ -368,6 +368,55 @@ print(json.dumps(exchanges))
   }
 });
 
+test('repository-index transport preserves HTTP failures without requiring JSON', async () => {
+  for (const [status, retryable, text] of [
+    [429, true, 'rate limited'], [503, true, '<html>upstream unavailable</html>'],
+    [400, false, 'bad repository payload'],
+  ] as const) {
+    await withServer((_request, response) => {
+      response.writeHead(status, { 'content-type': 'text/plain', 'retry-after': '2' });
+      response.end(text);
+    }, async (url) => {
+      const result = await new MlV2Client({
+        baseUrl: url, internalSecret: 'test', timeoutMs: 500, maxResponseBytes: 10_000,
+      }).deliverRepositoryIndex(repositoryJob);
+      assert.equal(result.accepted, false);
+      assert.equal(result.status_code, status);
+      assert.equal(result.retryable, retryable);
+      assert.equal(result.retry_after_ms, 2_000);
+      assert.equal(result.detail, text);
+    });
+  }
+});
+
+test('oversized HTTP failures preserve retry policy while oversized recommendation success is a contract error', async () => {
+  for (const [status, retryable] of [[400, false], [429, true], [503, true]] as const) {
+    await withServer((_request, response) => {
+      response.writeHead(status, { 'content-type': 'text/plain', 'retry-after': '2' });
+      response.end('x'.repeat(8_000));
+    }, async (url) => {
+      const result = await new MlV2Client({
+        baseUrl: url, internalSecret: 'test', timeoutMs: 500, maxResponseBytes: 100,
+      }).deliverRepositoryIndex(repositoryJob);
+      assert.equal(result.accepted, false);
+      assert.equal(result.status_code, status);
+      assert.equal(result.retryable, retryable);
+      assert.equal(result.retry_after_ms, 2_000);
+      assert.equal(result.detail?.length, 4_000);
+    });
+  }
+  await withServer((_request, response) => {
+    response.writeHead(200, { 'content-type': 'application/json' });
+    response.end(JSON.stringify({ padding: 'x'.repeat(8_000) }));
+  }, async (url) => {
+    const client = new MlV2Client({
+      baseUrl: url, internalSecret: 'test', timeoutMs: 500, maxResponseBytes: 100,
+    });
+    await assert.rejects(client.generate(recommendationInput), (error: unknown) =>
+      error instanceof MlRecommendationError && error.kind === 'contract' && error.statusCode === 200);
+  });
+});
+
 test('description fallback may repeat its canonical description even when README repeats it', () => {
   const description = 'This repository helps engineering teams evaluate unfamiliar projects with focused context and clear discovery guidance.';
   const fallbackJob = {

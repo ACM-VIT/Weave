@@ -39,6 +39,8 @@ export function repositoryContentHash(repository: RepositoryUpsert): string {
     'created_at', 'updated_at', 'pushed_at',
     'discovery_category', 'discovery_band',
   ]) delete hashable[key];
+  // Commit history and README/code ratio are index-only ML fields. Keep them
+  // in this hash until the strict refresh contract supports updating them.
   if (Array.isArray(hashable.languages)) hashable.languages = [...hashable.languages].sort();
   if (Array.isArray(hashable.topics)) {
     hashable.topics = hashable.topics.map((topic) => String(topic).toLowerCase()).sort();

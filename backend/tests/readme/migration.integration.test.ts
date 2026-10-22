@@ -7,7 +7,7 @@ import test from 'node:test';
 import postgres from 'postgres';
 
 const integration=process.env.RUN_README_SUMMARY_INTEGRATION==='1'?test:test.skip;
-for (const history of ['readme-first', 'search-first', 'incomplete-baseline'] as const)
+for (const history of ['readme-first', 'search-first', 'incomplete-baseline', 'dev-summary-recovery-first'] as const)
 integration(`V2 migration histories reconcile safely: ${history}`,async()=>{
   const url=new URL(process.env.README_SUMMARY_TEST_DATABASE_URL??'');
   assert.ok(['127.0.0.1','localhost','[::1]'].includes(url.hostname));
@@ -42,6 +42,29 @@ integration(`V2 migration histories reconcile safely: ${history}`,async()=>{
       assert.equal(result.status,expectedStatus,result.stderr||result.stdout);
       return result;
     };
+    if (history === 'dev-summary-recovery-first') {
+      // Merged #136 published this same summary SQL as 0025 with a newer
+      // timestamp. Its hash, not its filename, identifies the applied DDL.
+      const summary=journal.entries.find((entry:{tag:string})=>entry.tag==='0024_repository_summary_artifacts');
+      const recovery=journal.entries.find((entry:{tag:string})=>entry.tag==='0027_summary_artifact_revisions');
+      for(const [entry,when] of [[summary,1792454400000],[recovery,recovery.when]] as const){
+        const source=fs.readFileSync(new URL(entry.tag+'.sql',folder),'utf8');
+        await isolated.unsafe(source).simple();
+        await isolated`INSERT INTO drizzle.__drizzle_migrations(hash,created_at) VALUES(${crypto.createHash('sha256').update(source).digest('hex')},${when})`;
+      }
+      const applied=await isolated`SELECT hash,created_at FROM drizzle.__drizzle_migrations ORDER BY id`;
+      run([]);
+      run(['--readme-summary-only','--execute']);
+      run([]);
+      const after=await isolated`SELECT hash,created_at FROM drizzle.__drizzle_migrations ORDER BY id`;
+      assert.deepEqual(after.slice(0,applied.length),Array.from(applied),'Existing hashes and timestamps must remain unchanged');
+      assert.equal(new Set(after.map(row=>row.hash)).size,after.length,'The renamed migration must not be recorded twice');
+      assert.ok((await isolated`SELECT to_regclass('app.repo_readme_summaries') AS present`)[0].present);
+      const indexes=(await isolated`SELECT to_regclass('app.repo_card_summaries_revisioned_uidx') AS revisioned,to_regclass('app.repo_card_summaries_versioned_uidx') AS obsolete`)[0];
+      assert.ok(indexes.revisioned);
+      assert.equal(indexes.obsolete,null,'README upgrades must not recreate the old first-writer index');
+      return;
+    }
     if (history === 'incomplete-baseline') {
       const before=await isolated`SELECT hash,created_at FROM drizzle.__drizzle_migrations ORDER BY id`;
       const blocked=run(['--readme-summary-only','--execute'],1);

@@ -80,4 +80,15 @@ test('ingestion rejects optional values that would deterministically fail DB or 
   }), false);
   assert.equal(isRepositoryUpsert({ ...valid, readme_source_path: '' }), false);
   assert.equal(isRepositoryUpsert({ ...valid, full_name: 'owner /name' }), false);
+  assert.equal(isRepositoryUpsert({ ...valid, readme_source_path: 'docs/README.md',
+    readme_default_branch: 'release/stable',
+    readme_base_url: 'https://raw.githubusercontent.com/owner/name/refs/heads/release/stable/docs/' }), true);
+  for (const path of ['/README.md', '../README.md', 'docs//README.md', 'docs\\README.md']) {
+    assert.equal(isRepositoryUpsert({ ...valid, readme_source_path: path }), false);
+  }
+  for (const url of [
+    'https://example.com/owner/name/refs/heads/main/',
+    'https://raw.githubusercontent.com/owner/name/refs/heads/main/?token=secret',
+    'https://user:secret@raw.githubusercontent.com/owner/name/refs/heads/main/',
+  ]) assert.equal(isRepositoryUpsert({ ...valid, readme_base_url: url }), false);
 });

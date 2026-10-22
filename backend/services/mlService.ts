@@ -280,14 +280,18 @@ export class MlV2Client implements RecommendationPort, OutboxTransportPort {
         signal: controller.signal,
       });
       const text = await response.text();
-      if (Buffer.byteLength(text) > this.config.maxResponseBytes) {
-        if (response.ok && responseFormat === 'required-json') {
+      const oversized = Buffer.byteLength(text) > this.config.maxResponseBytes;
+      if (oversized && response.ok) {
+        if (responseFormat === 'required-json') {
+          if (path === '/api/v2/recommendations/generate') {
+            throw new MlRecommendationError('ML response exceeded size limit.', response.status, 'contract');
+          }
           repositoryIndexContractError('ML successful response exceeded size limit.');
         }
         throw new Error('ML response exceeded size limit.');
       }
-      let body: unknown = null;
-      if (text) {
+      let body: unknown = oversized ? text.slice(0, 4_000) : null;
+      if (text && !oversized) {
         try { body = JSON.parse(text); }
         catch {
           if (responseFormat === 'required-json' && response.ok) {

@@ -68,6 +68,12 @@ test('default JSON routes retain 256 KB while authenticated canonical ingestion 
       assert.equal(parsedResponse.status, 200);
       assert.deepEqual(await parsedResponse.json(), { parsed_length: mediumPadding.length });
 
+      const unauthenticated = await fetch(
+        `${baseUrl}/api/internal/v2/ingestion/repositories/upsert`,
+        { method: 'POST', headers, body: JSON.stringify({ padding: overIngestionPadding }) },
+      );
+      assert.equal(unauthenticated.status, 401, 'authentication runs before the larger parser');
+
       const overIngestionResponse = await fetch(
         `${baseUrl}/api/internal/v2/ingestion/repositories/upsert`,
         {
