@@ -315,6 +315,22 @@ Databases with the known parent-journal history are upgraded directly: the migra
 
 For verification use `npm run build`, `npm test`, database integration with `RUN_DATABASE_INTEGRATION=1`, parent-history migration integration with `RUN_MIGRATION_UPGRADE_INTEGRATION=1`, and HTTP integration with `RUN_HTTP_INTEGRATION=1`. The integration suite uses Redis database 14 by default and clears only that test database.
 
+Run the PostgreSQL Trending cache checks separately from other database suites:
+
+```sh
+# From backend/, after migrating an otherwise empty disposable weave_scroll database:
+DATABASE_URL=postgresql://postgres@127.0.0.1:55424/weave_scroll \
+  RUN_TRENDING_INTEGRATION=1 \
+  node --import tsx --test tests/trending/trending.integration.test.ts
+```
+
+Use your disposable PostgreSQL instance's port and credentials. This suite requires
+a migrated database named `weave_scroll` on a loopback host, outside production,
+with no URL query/hash and no pre-existing active, complete Trending snapshots.
+It creates and removes its own synthetic repositories and snapshots; do not run
+it alongside other suites that change those tables. Redis and ML are not needed.
+Without `RUN_TRENDING_INTEGRATION=1`, these PostgreSQL checks are skipped.
+
 For a strict ML collection rebuild, run `npm run reindex:ml -- --campaign=<id>`
 first as a dry run, then repeat with `--execute` only after reviewing the counts
 and confirming the ML target collection. The campaign is idempotent and only
