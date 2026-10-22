@@ -24,6 +24,6 @@ export class FeedPrewarmWorker {
     } finally {
       observeMetric('feed_prewarm_run_ms', performance.now()-started);
     }
-    return { processed: 1, nextRunInMs: await this.queue.nextRunInMs() };
+    return { processed: 1 };
   }
 }
