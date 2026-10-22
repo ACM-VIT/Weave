@@ -217,6 +217,13 @@
       "when": 1792713600000,
       "tag": "0028_counter_reconciliation_progress",
       "breakpoints": true
+    },
+    {
+      "idx": 31,
+      "version": "7",
+      "when": 1792800000000,
+      "tag": "0029_outbox_wakeups_prewarm",
+      "breakpoints": true
     }
   ]
 }

@@ -16,12 +16,27 @@ interface Task {
   idleIntervalMs?: number;
   run: () => Promise<unknown>;
   timer?: NodeJS.Timeout;
+  loopRunning?: boolean;
+  wakeRequested?: boolean;
+  runLoop?: () => Promise<void>;
   status: WorkerStatus;
 }
 
 export class WorkerSupervisor {
   private readonly tasks: Task[] = [];
   private started = false;
+  private readonly cleanups: (() => Promise<void>)[] = [];
+
+  onStop(cleanup: () => Promise<void>): void { this.cleanups.push(cleanup); }
+
+  /** Notifications are hints; one in-flight run and one pending wake per task. */
+  wake(name: string): void {
+    const task = this.tasks.find(candidate => candidate.name === name);
+    if (!this.started || !task?.runLoop) return;
+    if (task.loopRunning) { task.wakeRequested = true; return; }
+    if (task.timer) clearTimeout(task.timer);
+    void task.runLoop();
+  }
 
   register(name: string, intervalMs: number, run: () => Promise<unknown>): void {
     this.tasks.push({
@@ -87,18 +102,20 @@ export class WorkerSupervisor {
 
   private startAdaptive(task: Task): void {
     const runAndSchedule = async (): Promise<void> => {
-      const result = await this.execute(task);
-      if (!this.started) return;
-      const delay = typeof result === 'number' && result > 0
-        ? task.activeIntervalMs!
-        : task.idleIntervalMs!;
-      const timer = setTimeout(
-        () => void runAndSchedule(),
-        delay,
-      ) as unknown as NodeJS.Timeout;
-      timer.unref();
-      task.timer = timer;
+      if (task.loopRunning) return;
+      task.loopRunning = true;
+      try {
+        const result = await this.execute(task);
+        if (!this.started) return;
+        const delay = task.wakeRequested ? 0 : typeof result === 'number' && result > 0
+          ? task.activeIntervalMs! : task.idleIntervalMs!;
+        task.wakeRequested = false;
+        const timer = setTimeout(() => void runAndSchedule(), delay) as unknown as NodeJS.Timeout;
+        timer.unref();
+        task.timer = timer;
+      } finally { task.loopRunning = false; }
     };
+    task.runLoop = runAndSchedule;
     void runAndSchedule();
   }
 
@@ -106,6 +123,7 @@ export class WorkerSupervisor {
     if (this.started) return;
     this.started = true;
     for (const task of this.tasks) {
+      task.wakeRequested = false;
       if (task.activeIntervalMs !== undefined) {
         this.startAdaptive(task);
         continue;
@@ -131,6 +149,10 @@ export class WorkerSupervisor {
     }
     while (this.tasks.some((task) => task.status.running)) {
       await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    const results = await Promise.allSettled(this.cleanups.map(cleanup => cleanup()));
+    for (const result of results) {
+      if (result.status === 'rejected') console.error('[Worker] Shutdown cleanup failed:', result.reason);
     }
   }
 

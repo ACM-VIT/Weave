@@ -19,7 +19,6 @@ export class OutboxWorker {
   constructor(
     private readonly outbox: OutboxService,
     private readonly transport: OutboxTransportPort,
-    private readonly onDelivered?: (row: OutboxRow) => Promise<void>,
   ) {}
 
   private deliver(row: OutboxRow) {
@@ -40,7 +39,6 @@ export class OutboxWorker {
       if (!row) break;
       const result = await this.deliver(row);
       if (result.accepted) {
-        let completed = true;
         if (row.job_type === 'repo_index') {
           if (!result.response_body) {
             await this.outbox.markFailed(
@@ -48,11 +46,10 @@ export class OutboxWorker {
               'ML accepted repository index without a versioned card-summary response.',
               true,
             );
-            completed = false;
           } else {
             try {
               const job = row.payload as unknown as MlRepositoryIndexJob;
-              completed = await this.outbox.completeRepositoryIndex(
+              await this.outbox.completeRepositoryIndex(
                 row,
                 parseMlRepositoryIndexResponse(result.response_body, job),
               );
@@ -60,7 +57,6 @@ export class OutboxWorker {
               if (error instanceof MlRepositoryIndexContractError
                 || error instanceof RepositoryIndexCompletionConflictError) {
                 await this.outbox.markFailed(row, error.message, false);
-                completed = false;
               } else {
                 // Unknown database/process failures retain the claim so the
                 // lease can recover atomic completion after a crash.
@@ -70,10 +66,6 @@ export class OutboxWorker {
           }
         } else {
           await this.outbox.markDelivered(row);
-        }
-        if (completed && this.onDelivered) {
-          try { await this.onDelivered(row); }
-          catch (error) { console.error(`[OutboxWorker] Post-delivery hook failed for ${row.outbox_id}:`, error); }
         }
       }
       else await this.outbox.markFailed(

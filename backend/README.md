@@ -290,6 +290,54 @@ Required production environment variables: `DATABASE_URL`, `SUPABASE_URL`, `SUPA
 
 The outbox launch script sets `--role=outbox` portably and fails startup when `ML_FEEDBACK_OUTBOX` is disabled. A hardened systemd template and install/acceptance procedure are in [the outbox worker runbook](../docs/runbooks/outbox-worker.md).
 
+Apply `0029_outbox_wakeups_prewarm` before starting the updated outbox worker.
+Migration `0028` is reserved by pending PR #162: reconcile both journals against
+the merge base and apply them in timestamp order before deployment. Do not apply
+0029 ahead of an unrecorded 0028; the migration runner uses chronological history.
+
+Outbox inserts and pending transitions emit payload-free PostgreSQL notifications
+only after commit. Notifications wake idle workers; they never acknowledge jobs.
+The existing bounded idle poll (default 30 seconds) remains the recovery path
+when a signal is lost or the listener is unavailable. Reconnection subscribes
+again and immediately checks durable work. Wake hints coalesce into one pending
+run while a task is busy; delivery tasks never overlap within one process.
+
+LISTEN needs a direct or session-pool PostgreSQL connection. If `DATABASE_URL`
+uses transaction pooling, set `OUTBOX_LISTEN_DATABASE_URL` to a direct/session
+connection to **the same database**. Credentials stay in the worker environment.
+Each outbox process uses one dedicated notification session, closed on shutdown;
+failed startup/reconnect attempts fall back to polling and retry every 30 seconds.
+
+Successful onboarding delivery atomically records `telemetry.feed_prewarm_jobs`.
+Prewarm runs separately when both ML delivery and recommendations are enabled:
+one generation at a time per process, with one durable slot per user. Repeated
+deliveries of the same profile/feed version coalesce. New profile versions
+supersede old claims; older deliveries cannot replace newer profile targets.
+Claims adopt the current feed version and wait if a newer profile has not reached
+ML yet. Failed/stale/coalesced generations retry durably, with generation failures
+backing off up to 60 seconds; crashed claims expire after `ML_TIMEOUT_MS + 60000`
+milliseconds (65 seconds by default). Disabled users are skipped and deleted
+users cascade out of the queue. Existing feed generation/version guards remain
+authoritative for cache publication. Completed slots stay until user deletion;
+this migration schedules future deliveries and does not backfill old ones.
+
+`feed_prewarm_run_ms` measures generation-lane occupancy. Run focused PostgreSQL
+checks alone on a migrated disposable loopback database (no live ML needed):
+
+```sh
+DATABASE_URL=postgresql://postgres@127.0.0.1:55425/weave_scroll \
+  RUN_OUTBOX_WAKEUPS_INTEGRATION=1 \
+  node --import tsx --test tests/database/outboxWakeups.integration.test.ts
+```
+
+The fixtures create/remove their own users/jobs and test commit/rollback,
+reconnection without polling, notification loss, version fencing and slow/failed
+prewarm. Timing diagnostics compare actual producer-call-to-claim-response upper
+bounds at the same fallback interval, including transaction execution. They are
+local samples, not production latency guarantees. Rollback may stop the new
+scheduler and retain its additive table/triggers; pending prewarm can resume
+after re-upgrade. Old workers still use their synchronous prewarm hook.
+
 The coordinated backend, ML, OAuth, corpus, device, and load gates for v2 are in [the Weave v2 release runbook](../docs/runbooks/weave-v2-release.md).
 
 Set `TRUST_PROXY=true` only when exactly one trusted ingress proxy is in front of the service. Authentication endpoints have a Redis-backed per-IP/path limit of 20 requests per minute; configure broader request and connection limits at the ingress as well.

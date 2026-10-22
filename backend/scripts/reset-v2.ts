@@ -14,7 +14,7 @@ const sql = postgres(databaseUrl, { max: 1, prepare: false });
 try {
   await sql.begin(async (tx) => {
     await tx.unsafe(`TRUNCATE TABLE
-      telemetry.generation_attempts, telemetry.ml_outbox, telemetry.user_repo_engagement,
+      telemetry.feed_prewarm_jobs, telemetry.generation_attempts, telemetry.ml_outbox, telemetry.user_repo_engagement,
       telemetry.interaction_events, telemetry.feed_serve_items, telemetry.feed_serves, telemetry.sessions,
       app.trending_snapshot_items, app.trending_snapshots, app.board_repos, app.boards,
       app.board_collections, app.comments, app.follows, app.saves, app.reactions,
