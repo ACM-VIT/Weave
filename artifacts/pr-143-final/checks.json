@@ -1,0 +1,471 @@
+{
+  "validated_source_head": "4d70762a6e96de8c313c774b29f99039d957acab",
+  "node": "22.23.2",
+  "recorded_at": "2026-10-22T17:33:09.694172+00:00",
+  "scope": "Developer validation against disposable loopback PostgreSQL/Redis and intercepted local UI fixtures; no production writes.",
+  "commands": [
+    {
+      "name": "migrate-weave_scroll",
+      "exit": 0,
+      "seconds": 1.29,
+      "command": [
+        "npm",
+        "run",
+        "migrate",
+        "--prefix",
+        "backend"
+      ],
+      "totals": {}
+    },
+    {
+      "name": "migrate-weave_phase4",
+      "exit": 0,
+      "seconds": 0.87,
+      "command": [
+        "npm",
+        "run",
+        "migrate",
+        "--prefix",
+        "backend"
+      ],
+      "totals": {}
+    },
+    {
+      "name": "migrate-weave_review",
+      "exit": 0,
+      "seconds": 0.86,
+      "command": [
+        "npm",
+        "run",
+        "migrate",
+        "--prefix",
+        "backend"
+      ],
+      "totals": {}
+    },
+    {
+      "name": "migrate-weave_feed_projection_test",
+      "exit": 0,
+      "seconds": 0.86,
+      "command": [
+        "npm",
+        "run",
+        "migrate",
+        "--prefix",
+        "backend"
+      ],
+      "totals": {}
+    },
+    {
+      "name": "schema-audit",
+      "exit": 0,
+      "seconds": 0.61,
+      "command": [
+        "npm",
+        "run",
+        "schema:audit",
+        "--prefix",
+        "backend"
+      ],
+      "totals": {}
+    },
+    {
+      "name": "migration-repeat",
+      "exit": 0,
+      "seconds": 0.87,
+      "command": [
+        "npm",
+        "run",
+        "migrate",
+        "--prefix",
+        "backend"
+      ],
+      "totals": {}
+    },
+    {
+      "name": "counter-reconciliation",
+      "exit": 0,
+      "seconds": 1.83,
+      "command": [
+        "node",
+        "--import",
+        "tsx",
+        "--test",
+        "backend/tests/database/counterReconciliation.integration.test.ts"
+      ],
+      "totals": {
+        "tests": 10,
+        "pass": 10,
+        "fail": 0,
+        "skipped": 0
+      }
+    },
+    {
+      "name": "trending",
+      "exit": 0,
+      "seconds": 4.83,
+      "command": [
+        "node",
+        "--import",
+        "tsx",
+        "--test",
+        "backend/tests/trending/trending.integration.test.ts"
+      ],
+      "totals": {
+        "tests": 2,
+        "pass": 2,
+        "fail": 0,
+        "skipped": 0
+      }
+    },
+    {
+      "name": "database",
+      "exit": 0,
+      "seconds": 9.39,
+      "command": [
+        "node",
+        "--import",
+        "tsx",
+        "--test",
+        "--test-concurrency=1",
+        "backend/tests/database/activityBatch.integration.test.ts",
+        "backend/tests/database/counterReconciliation.integration.test.ts",
+        "backend/tests/database/disposableDatabase.test.ts",
+        "backend/tests/database/feedGenerationProjection.integration.test.ts",
+        "backend/tests/database/feedPersistence.integration.test.ts",
+        "backend/tests/database/membershipRemoval.integration.test.ts",
+        "backend/tests/database/outboxLease.integration.test.ts",
+        "backend/tests/database/repositoryJobRecovery.integration.test.ts",
+        "backend/tests/database/repositorySummary.integration.test.ts",
+        "backend/tests/database/summaryReadCompatibility.integration.test.ts",
+        "backend/tests/database/v2Flows.integration.test.ts"
+      ],
+      "totals": {
+        "tests": 46,
+        "pass": 35,
+        "fail": 0,
+        "skipped": 11
+      }
+    },
+    {
+      "name": "http",
+      "exit": 0,
+      "seconds": 2.07,
+      "command": [
+        "node",
+        "--import",
+        "tsx",
+        "--test",
+        "backend/tests/http/apiV2.integration.test.ts"
+      ],
+      "totals": {
+        "tests": 1,
+        "pass": 1,
+        "fail": 0,
+        "skipped": 0
+      }
+    },
+    {
+      "name": "readme",
+      "exit": 0,
+      "seconds": 10.54,
+      "command": [
+        "node",
+        "--import",
+        "tsx",
+        "--test",
+        "--test-concurrency=1",
+        "backend/tests/readme/generator.test.ts",
+        "backend/tests/readme/migration.integration.test.ts",
+        "backend/tests/readme/pipeline.integration.test.ts",
+        "backend/tests/readme/schema.test.ts",
+        "backend/tests/readme/storageErrors.test.ts"
+      ],
+      "totals": {
+        "tests": 21,
+        "pass": 21,
+        "fail": 0,
+        "skipped": 0
+      }
+    },
+    {
+      "name": "redis",
+      "exit": 0,
+      "seconds": 0.38,
+      "command": [
+        "node",
+        "--import",
+        "tsx",
+        "--test",
+        "backend/tests/redis/feedReservation.integration.test.ts"
+      ],
+      "totals": {
+        "tests": 2,
+        "pass": 2,
+        "fail": 0,
+        "skipped": 0
+      }
+    },
+    {
+      "name": "search",
+      "exit": 0,
+      "seconds": 4.85,
+      "command": [
+        "node",
+        "--import",
+        "tsx",
+        "--test",
+        "backend/tests/search/search.integration.test.ts"
+      ],
+      "totals": {
+        "tests": 4,
+        "pass": 4,
+        "fail": 0,
+        "skipped": 0
+      }
+    },
+    {
+      "name": "retention",
+      "exit": 0,
+      "seconds": 0.83,
+      "command": [
+        "node",
+        "--import",
+        "tsx",
+        "--test",
+        "backend/tests/retention/retention.integration.test.ts"
+      ],
+      "totals": {
+        "tests": 2,
+        "pass": 2,
+        "fail": 0,
+        "skipped": 0
+      }
+    },
+    {
+      "name": "catalogue",
+      "exit": 0,
+      "seconds": 0.66,
+      "command": [
+        "node",
+        "--import",
+        "tsx",
+        "--test",
+        "backend/tests/repositories/catalogue.integration.test.ts"
+      ],
+      "totals": {
+        "tests": 1,
+        "pass": 1,
+        "fail": 0,
+        "skipped": 0
+      }
+    },
+    {
+      "name": "feed-projection",
+      "exit": 0,
+      "seconds": 0.71,
+      "command": [
+        "node",
+        "--import",
+        "tsx",
+        "--test",
+        "backend/tests/database/feedGenerationProjection.integration.test.ts"
+      ],
+      "totals": {
+        "tests": 1,
+        "pass": 1,
+        "fail": 0,
+        "skipped": 0
+      }
+    },
+    {
+      "name": "old-schema-compatibility",
+      "exit": 0,
+      "seconds": 0.35,
+      "command": [
+        "node",
+        "--import",
+        "tsx",
+        "--test",
+        "backend/tests/database/summaryReadCompatibility.integration.test.ts"
+      ],
+      "totals": {
+        "tests": 1,
+        "pass": 1,
+        "fail": 0,
+        "skipped": 0
+      }
+    },
+    {
+      "name": "legacy-upgrade",
+      "exit": 0,
+      "seconds": 0.98,
+      "command": [
+        "node",
+        "--import",
+        "tsx",
+        "--test",
+        "backend/tests/migrations/legacyUpgrade.integration.test.ts"
+      ],
+      "totals": {
+        "tests": 1,
+        "pass": 1,
+        "fail": 0,
+        "skipped": 0
+      }
+    },
+    {
+      "name": "summary-reapply",
+      "exit": 0,
+      "seconds": 0.4,
+      "command": [
+        "node",
+        "--import",
+        "tsx",
+        "--test",
+        "backend/tests/migrations/repositorySummaryReapply.integration.test.ts"
+      ],
+      "totals": {
+        "tests": 1,
+        "pass": 1,
+        "fail": 0,
+        "skipped": 0
+      }
+    },
+    {
+      "name": "paired-producer-consumer",
+      "exit": 0,
+      "seconds": 6.87,
+      "command": [
+        "node",
+        "--import",
+        "tsx",
+        "--test",
+        "backend/tests/ml/clientFailures.test.ts"
+      ],
+      "totals": {
+        "tests": 69,
+        "pass": 69,
+        "fail": 0,
+        "skipped": 0
+      }
+    },
+    {
+      "name": "integrated-backend-build",
+      "exit": 0,
+      "seconds": 7.0,
+      "command": [
+        "npm",
+        "run",
+        "build",
+        "--prefix",
+        "backend"
+      ],
+      "totals": {}
+    },
+    {
+      "name": "integrated-backend-tests",
+      "exit": 0,
+      "seconds": 70.79,
+      "command": [
+        "npm",
+        "test",
+        "--prefix",
+        "backend"
+      ],
+      "totals": {
+        "tests": 327,
+        "pass": 264,
+        "fail": 0,
+        "skipped": 63
+      }
+    },
+    {
+      "name": "integrated-lint",
+      "exit": 0,
+      "seconds": 2.78,
+      "command": [
+        "npm",
+        "run",
+        "lint"
+      ],
+      "totals": {}
+    },
+    {
+      "name": "integrated-typecheck",
+      "exit": 0,
+      "seconds": 4.49,
+      "command": [
+        "npm",
+        "run",
+        "typecheck"
+      ],
+      "totals": {}
+    },
+    {
+      "name": "integrated-frontend",
+      "exit": 0,
+      "seconds": 7.16,
+      "command": [
+        "npm",
+        "test"
+      ],
+      "totals": {
+        "tests": 258,
+        "pass": 258,
+        "fail": 0,
+        "skipped": 0
+      }
+    },
+    {
+      "name": "integrated-doctor",
+      "exit": 1,
+      "seconds": 6.17,
+      "command": [
+        "npm",
+        "run",
+        "doctor"
+      ],
+      "totals": {}
+    },
+    {
+      "name": "integrated-expo-dependencies",
+      "exit": 0,
+      "seconds": 1.12,
+      "command": [
+        "npx",
+        "expo",
+        "install",
+        "--check"
+      ],
+      "totals": {}
+    },
+    {
+      "name": "integrated-export",
+      "exit": 0,
+      "seconds": 138.97,
+      "command": [
+        "npm",
+        "run",
+        "export:all",
+        "--",
+        "--output-dir",
+        "dist"
+      ],
+      "totals": {}
+    }
+  ],
+  "ml": {
+    "head": "1f49cdb47f393d20fe2cd74c9d3b082a30a79986",
+    "tests_passed": 233,
+    "provider_encoder_lock_boundaries": "test doubles",
+    "paired_authenticated_http_responses": 189
+  },
+  "manual_gates": [
+    "Independent review of final integrated head",
+    "Native iOS matrix",
+    "Remaining Android authenticated sheet/gesture/accessibility matrix",
+    "Standalone Android resize configuration",
+    "Authorized production migration/schema audit and recovery rollout"
+  ]
+}
