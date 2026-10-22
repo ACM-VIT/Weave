@@ -10,6 +10,7 @@ import {
   MlV2Client,
   parseMlRepositoryIndexResponse,
 } from '../../services/mlService.js';
+import { snapshotMetrics } from '../../observability/metrics.js';
 
 async function withServer(handler: RequestListener, run: (url: string) => Promise<void>): Promise<void> {
   const server: Server = createServer(handler);
@@ -472,7 +473,7 @@ test('ML recommendation client still requires JSON', async () => {
   });
 });
 
-test('ML recommendation client rejects an empty successful result', async () => {
+test('ML recommendation client accepts validated empty success', async () => {
   const generationId = '00000000-0000-4000-8000-000000000001';
   const userId = '00000000-0000-4000-8000-000000000002';
   await withServer((_req, response) => {
@@ -488,15 +489,11 @@ test('ML recommendation client rejects an empty successful result', async () => 
     }));
   }, async (url) => {
     const client = new MlV2Client({ baseUrl: url, internalSecret: 'test', timeoutMs: 500, maxResponseBytes: 10_000 });
-    await assert.rejects(client.generate({
-      schema_version: 2,
-      generation_id: generationId,
-      user_id: userId,
-      feed_version: 1,
-      limit: 10,
-      exclude_repo_ids: [],
-      context: { cold_start: false },
-    }), /contained no items/);
+    const result = await client.generate({
+      schema_version: 2, generation_id: generationId, user_id: userId, feed_version: 1,
+      limit: 10, exclude_repo_ids: [], context: { cold_start: false },
+    });
+    assert.deepEqual(result.items, []);
   });
 });
 
@@ -571,4 +568,138 @@ test('repository indexing uses its dedicated generation-and-embedding timeout', 
     assert.equal(result.accepted, true);
     assert.equal(result.status_code, 200);
   });
+});
+
+const recommendationInput = {
+  schema_version: 2 as const,
+  generation_id: '00000000-0000-4000-8000-000000000001',
+  user_id: '00000000-0000-4000-8000-000000000002',
+  feed_version: 1, limit: 10, exclude_repo_ids: [], context: { cold_start: false },
+};
+const validRecommendation = {
+  ...recommendationInput, model_version: 'test-model', embedding_version: 'test-embedding', items: [],
+};
+const recommendationConfig = { baseUrl: 'http://ml.test', internalSecret: 'test', timeoutMs: 100, maxResponseBytes: 10_000 };
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<T>((res, rej) => { resolve = res; reject = rej; });
+  return { promise, resolve, reject };
+}
+
+test('recommendation recovery admits one probe and closes only after validated success', async (context) => {
+  let now = 0;
+  let calls = 0;
+  const probe = deferred<Response>();
+  const countersBefore = snapshotMetrics().counters as Record<string, number>;
+  context.mock.method(globalThis, 'fetch', async () => {
+    calls++;
+    if (calls === 1) return new Response('unavailable', { status: 503 });
+    if (calls === 2) return probe.promise;
+    return Response.json(validRecommendation);
+  });
+  const client = new MlV2Client(recommendationConfig, { now: () => now, failureThreshold: 1, openMs: 100 });
+  await assert.rejects(client.generate(recommendationInput), /status 503/);
+  now = 99;
+  await assert.rejects(client.generate(recommendationInput), /circuit is open/);
+  assert.equal(calls, 1);
+  now = 100;
+  const recovering = client.generate(recommendationInput);
+  const rejected = await Promise.allSettled(Array.from({ length: 32 }, () => client.generate(recommendationInput)));
+  assert.ok(rejected.every((result) => result.status === 'rejected'));
+  assert.equal(calls, 2, 'cooldown expiry must not fan out concurrent ML requests');
+  probe.resolve(Response.json(validRecommendation));
+  assert.deepEqual((await recovering).items, [], 'validated empty success still closes recovery');
+  await client.generate(recommendationInput);
+  assert.equal(calls, 3);
+  const counters = snapshotMetrics().counters as Record<string, number>;
+  for (const key of [
+    'ml_recommendation_circuit_transition_total:[["from","closed"],["reason","dependency"],["to","open"]]',
+    'ml_recommendation_circuit_transition_total:[["from","open"],["reason","cooldown"],["to","half-open"]]',
+    'ml_recommendation_circuit_transition_total:[["from","half-open"],["reason","success"],["to","closed"]]',
+    'ml_recommendation_probe_total:[["outcome","success"]]',
+  ]) assert.equal(counters[key] - (countersBefore[key] ?? 0), 1);
+});
+
+test('stale closed-state success cannot close a newer open circuit', async (context) => {
+  let calls = 0;
+  const oldSuccess = deferred<Response>();
+  context.mock.method(globalThis, 'fetch', async () => {
+    calls++;
+    return calls === 1 ? oldSuccess.promise : new Response('unavailable', { status: 503 });
+  });
+  const client = new MlV2Client(recommendationConfig, { now: () => 0, failureThreshold: 1, openMs: 100 });
+  const oldCall = client.generate(recommendationInput);
+  await assert.rejects(client.generate(recommendationInput), /status 503/);
+  oldSuccess.resolve(Response.json(validRecommendation));
+  await oldCall;
+  await assert.rejects(client.generate(recommendationInput), /circuit is open/);
+  assert.equal(calls, 2);
+});
+
+test('contract failures remain visible without consuming the dependency failure threshold', async (context) => {
+  let body: unknown = { schema_version: 1 };
+  let status = 200;
+  let calls = 0;
+  context.mock.method(globalThis, 'fetch', async () => { calls++; return Response.json(body, { status }); });
+  const client = new MlV2Client(recommendationConfig, { now: () => 0, failureThreshold: 1, openMs: 100 });
+  for (let index = 0; index < 6; index++) {
+    await assert.rejects(client.generate(recommendationInput), { kind: 'contract' });
+  }
+  body = { ...validRecommendation, items: [null] };
+  await assert.rejects(client.generate(recommendationInput), { kind: 'contract' });
+  status = 400;
+  await assert.rejects(client.generate(recommendationInput), { kind: 'contract', statusCode: 400 });
+  status = 429;
+  await assert.rejects(client.generate(recommendationInput), { kind: 'dependency', statusCode: 429 });
+  await assert.rejects(client.generate(recommendationInput), /circuit is open/);
+  assert.equal(calls, 9);
+});
+
+test('failed or malformed half-open probes reopen and release their slot', async (context) => {
+  let now = 0;
+  let calls = 0;
+  const responses = [
+    new Response('{}', { status: 503 }),
+    new Response('not-json'),
+    new Response(''),
+    new Response('{}', { status: 503 }),
+    Response.json(validRecommendation),
+  ];
+  context.mock.method(globalThis, 'fetch', async () => responses[calls++]!);
+  const client = new MlV2Client(recommendationConfig, { now: () => now, failureThreshold: 1, openMs: 100 });
+  await assert.rejects(client.generate(recommendationInput), /status 503/);
+  now = 100;
+  await assert.rejects(client.generate(recommendationInput), { kind: 'contract' });
+  now = 199;
+  await assert.rejects(client.generate(recommendationInput), /circuit is open/);
+  now = 200;
+  await assert.rejects(client.generate(recommendationInput), /violated the v2 envelope/);
+  now = 300;
+  await assert.rejects(client.generate(recommendationInput), { kind: 'dependency' });
+  now = 400;
+  assert.deepEqual((await client.generate(recommendationInput)).items, []);
+  assert.equal(calls, 5);
+});
+
+test('a timed-out recovery probe releases its slot before the next cooldown', async (context) => {
+  let now = 0;
+  let calls = 0;
+  context.mock.method(globalThis, 'fetch', async (_url: unknown, options: RequestInit) => {
+    calls++;
+    if (calls === 1) return new Response('{}', { status: 503 });
+    if (calls === 2) return new Promise<Response>((_resolve, reject) => {
+      options.signal!.addEventListener('abort', () => reject(options.signal!.reason), { once: true });
+    });
+    return Response.json(validRecommendation);
+  });
+  const client = new MlV2Client({ ...recommendationConfig, timeoutMs: 5 }, { now: () => now, failureThreshold: 1, openMs: 100 });
+  await assert.rejects(client.generate(recommendationInput));
+  now = 100;
+  await assert.rejects(client.generate(recommendationInput), /abort/i);
+  await assert.rejects(client.generate(recommendationInput), /circuit is open/);
+  now = 200;
+  await client.generate(recommendationInput);
+  assert.equal(calls, 3);
 });

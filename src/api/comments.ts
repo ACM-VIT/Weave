@@ -1,22 +1,8 @@
 import { apiV2 } from './client';
 import { getStorageItem } from '../utils/storage';
 
-export interface CommentRecord {
-  comment_id: string;
-  user_id: string;
-  repo_id: string;
-  parent_comment_id: string | null;
-  comment: string;
-  created_at: string | null;
-  author?: CommentAuthor;
-}
-
-export interface CommentAuthor {
-  user_id: string;
-  username: string;
-  full_name?: string | null;
-  avatar_url?: string | null;
-}
+import { normalizeComment, requestCommentsPage, type CommentAuthor, type CommentRecord, type CommentsPage } from './comments-data';
+export type { CommentAuthor, CommentRecord, CommentsPage } from './comments-data';
 
 export interface CreateCommentInput {
   repoId: string;
@@ -28,61 +14,14 @@ function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
 }
 
-function normalizeComment(value: unknown): CommentRecord | null {
-  if (!isObject(value)) return null;
-
-  const commentId = value.comment_id;
-  const userId = value.user_id;
-  const repoId = value.repo_id;
-  const body = value.comment ?? value.body;
-
-  if (
-    typeof commentId !== 'string' ||
-    typeof userId !== 'string' ||
-    typeof repoId !== 'string' ||
-    typeof body !== 'string'
-  ) {
-    return null;
-  }
-
-  const author = typeof value.username === 'string' ? {
-    user_id: userId,
-    username: value.username,
-    full_name: typeof value.full_name === 'string' ? value.full_name : null,
-    avatar_url: typeof value.avatar_url === 'string' ? value.avatar_url : null,
-  } : undefined;
-
-  return {
-    comment_id: commentId,
-    user_id: userId,
-    repo_id: repoId,
-    parent_comment_id:
-      typeof value.parent_comment_id === 'string' ? value.parent_comment_id : null,
-    comment: body,
-    created_at: typeof value.created_at === 'string' ? value.created_at : null,
-    ...(author ? { author } : {}),
-  };
-}
-
 export async function getCommentsByRepo(
   repoId: string,
+  offset = 0,
   signal?: AbortSignal,
-): Promise<CommentRecord[]> {
-  const normalizedRepoId = repoId.trim();
-  if (!normalizedRepoId) return [];
-
+): Promise<CommentsPage> {
   const token = await getStorageItem('access_token');
   if (!token) throw new Error('Your session has expired.');
-  const data = await apiV2<{ items: unknown[] }>(
-    `/repositories/${encodeURIComponent(normalizedRepoId)}/comments?limit=100&offset=0`, { signal }, token,
-  );
-  if (!Array.isArray(data.items)) {
-    throw new Error('Comments response was not a list');
-  }
-
-  return data.items
-    .map(normalizeComment)
-    .filter((comment): comment is CommentRecord => comment !== null);
+  return requestCommentsPage(repoId, offset, path => apiV2<{ items: unknown[] }>(path, { signal }, token));
 }
 
 export async function createComment(

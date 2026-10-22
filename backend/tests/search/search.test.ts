@@ -108,3 +108,133 @@ test('cancelled shared snapshot waiters stop polling immediately', async () => {
   setTimeout(() => abort.abort(), 10);
   await assert.rejects(waiting, error => error instanceof Error && error.name === 'AbortError');
 });
+
+const fixtureIds = (count: number) => Array.from({ length: count }, (_, index) =>
+  `00000000-0000-4000-8000-${String(index + 1).padStart(12, '0')}`);
+
+test('bounded overfetch fills a page at 90% rejection without serial missing-slot hydration', async () => {
+  const candidates = fixtureIds(100);
+  const accepted = candidates.filter((_, index) => index % 10 === 9);
+  const windows: SearchRef[][] = [];
+  const service = new SearchService(persistence({
+    lexical: async () => candidates.map(id => ({ id, exact: false })),
+    hydrate: async (_viewer, refs) => {
+      windows.push(refs);
+      return refs.filter(ref => accepted.includes(ref.id)).reverse().map(ref => ({ ...ref, data: {} }));
+    },
+  }), async req => body(req, []));
+  const result = await service.search('viewer', request({ group: 'repositories', limit: 10 }));
+  assert.deepEqual(result.items.map(item => item.id), accepted);
+  assert.equal(result.next_cursor, null);
+  assert.ok(windows.length <= 5, `expected at most 5 hydration rounds, got ${windows.length}`);
+  assert.equal(windows.flat().length, 100);
+  assert.ok(windows.every(refs => refs.length <= 100));
+});
+
+test('overfetch leaves every surplus accepted reference reachable across exact-full and final pages', async () => {
+  const candidates = fixtureIds(6);
+  const windows: SearchRef[][] = [];
+  const service = new SearchService(persistence({
+    lexical: async () => candidates.map(id => ({ id, exact: false })),
+    hydrate: async (_viewer, refs) => {
+      windows.push(refs);
+      // Hydration can return duplicates, unexpected rows and arbitrary order.
+      return [...refs, refs[0], { type: 'repository' as const, id: 'unknown' }].reverse()
+        .map(ref => ({ ...ref, data: {} }));
+    },
+  }), async req => body(req, []));
+  const req = request({ group: 'repositories', limit: 2 });
+  const first = await service.search('viewer', req);
+  assert.ok(windows[0].length > req.limit, 'the fixture must exercise surplus hydrated rows');
+  assert.equal(first.next_cursor?.split(':')[1], '2', 'cursor consumes only the returned prefix');
+  const second = await service.search('viewer', { ...req, cursor: first.next_cursor });
+  assert.equal(second.next_cursor?.split(':')[1], '4');
+  const third = await service.search('viewer', { ...req, cursor: second.next_cursor });
+  assert.equal(third.next_cursor, null, 'an exactly full final page needs no empty follow-up');
+  assert.deepEqual([...first.items, ...second.items, ...third.items].map(item => item.id), candidates);
+  assert.ok([first, second, third].every(page => page.items.length === req.limit));
+});
+
+test('surplus references are rehydrated after permission and active-state changes between pages', async () => {
+  const candidates = fixtureIds(4);
+  const hidden = new Set<string>();
+  const windows: SearchRef[][] = [];
+  const service = new SearchService(persistence({
+    lexical: async () => candidates.map(id => ({ id, exact: false })),
+    hydrate: async (_viewer, refs) => {
+      windows.push(refs);
+      return refs.filter(ref => !hidden.has(ref.id)).map(ref => ({ ...ref, data: {} }));
+    },
+  }), async req => body(req, []));
+  const req = request({ group: 'repositories', limit: 1 });
+  const first = await service.search('viewer', req);
+  assert.deepEqual(windows[0].map(ref => ref.id), candidates);
+  hidden.add(candidates[1]); // Now private.
+  hidden.add(candidates[2]); // Now inactive/deleted or no longer matches filters.
+  const second = await service.search('viewer', { ...req, cursor: first.next_cursor });
+  assert.deepEqual(second.items.map(item => item.id), [candidates[3]]);
+  assert.deepEqual(windows[1].map(ref => ref.id), candidates.slice(1));
+  assert.equal(second.next_cursor, null);
+});
+
+test('all-rejected windows have fixed work bounds and leave an oversized snapshot suffix reachable', async () => {
+  const candidates: SearchRef[] = fixtureIds(405).map(id => ({ type: 'repository', id }));
+  for (const [limit, rounds] of [[1, 17], [24, 6], [50, 4]]) {
+    const req = request({ group: 'repositories', limit });
+    const key = crypto.randomUUID();
+    const binding = JSON.stringify(['viewer', req.query, req.group, [], [], []]);
+    const windows: SearchRef[][] = [];
+    const service = new SearchService(persistence({ hydrate: async (_viewer, refs) => {
+      windows.push(refs);
+      return refs.filter(ref => ref.id === candidates.at(-1)!.id).map(ref => ({ ...ref, data: {} }));
+    } }), async () => { throw new Error('cursor must reuse its snapshot'); }, Date.now, {
+      get: async () => ({ binding, refs: candidates, mode: 'lexical', expires: Date.now() + 120_000 }),
+      set: async () => { throw new Error('cursor must not replace its snapshot'); },
+    });
+    const first = await service.search('viewer', { ...req, cursor: `${key}:0` });
+    assert.deepEqual(first.items, []);
+    assert.equal(first.next_cursor, `${key}:400`, 'budget exhaustion is not snapshot exhaustion');
+    assert.equal(windows.length, rounds);
+    assert.equal(windows.flat().length, 400);
+    assert.ok(windows.every(refs => refs.length <= 100));
+    const second = await service.search('viewer', { ...req, cursor: first.next_cursor });
+    assert.deepEqual(second.items.map(item => item.id), [candidates.at(-1)!.id]);
+    assert.equal(second.next_cursor, null);
+    assert.equal(windows.flat().length, candidates.length);
+  }
+});
+
+test('search snapshot deduplication prevents repeated typed references on later pages', async () => {
+  const person = (id: string): SearchRef => ({ type: 'person', id: `user:${id}` });
+  const list = (id: string): SearchRef => ({ type: 'list', id: `collection:${id}` });
+  const service = new SearchService(persistence({
+    lexical: async () => [],
+    people: async () => [person(ids[0]), person(ids[0]), person(ids[1]), person(ids[0])],
+    lists: async () => [list(ids[0]), list(ids[0])],
+  }), async req => body(req, []));
+  const req = request({ limit: 1 });
+  const all: SearchRef[] = [];
+  let cursor: string | null = null;
+  do {
+    const page = await service.search('viewer', { ...req, cursor });
+    all.push(...page.items);
+    cursor = page.next_cursor;
+    assert.ok(all.length <= 3, 'duplicate candidates must not reappear on later pages');
+  } while (cursor);
+  assert.deepEqual(all.map(({ type, id }) => ({ type, id })), [person(ids[0]), list(ids[0]), person(ids[1])]);
+});
+
+test('empty snapshots do not hydrate, and rejected final windows end without a cursor', async () => {
+  let calls = 0;
+  const empty = new SearchService(persistence({ lexical: async () => [], hydrate: async () => {
+    calls++; throw new Error('an empty snapshot needs no hydration');
+  } }), async req => body(req, []));
+  const result = await empty.search('viewer', request({ group: 'repositories' }));
+  assert.deepEqual(result.items, []);
+  assert.equal(result.next_cursor, null);
+  assert.equal(calls, 0);
+  const rejected = new SearchService(persistence({ hydrate: async () => [] }), async req => body(req, []));
+  const final = await rejected.search('viewer', request());
+  assert.deepEqual(final.items, []);
+  assert.equal(final.next_cursor, null);
+});

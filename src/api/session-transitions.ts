@@ -6,6 +6,7 @@ import {
 } from '../utils/storage';
 import {
   authSessionLifecycle,
+  SessionRefreshPendingError,
   type SessionLease,
 } from './session-lifecycle';
 
@@ -22,7 +23,7 @@ const SESSION_RESTORE_BLOCKED_KEY = 'session_restore_blocked';
 let storageMutationTail: Promise<void> = Promise.resolve();
 
 export class LogoutNotCompletedError extends Error {
-  constructor(cause: unknown) {
+  constructor(cause: unknown, readonly restoreUserWhenPrepared?: Promise<boolean>) {
     super('Logout could not be completed safely. Please try again.');
     this.name = 'LogoutNotCompletedError';
     Object.assign(this, { cause });
@@ -149,17 +150,42 @@ export async function establishSession<TUser>(
 export async function revokeSession<T>(
   request: (accessToken: string | null) => Promise<T>,
 ): Promise<T> {
-  return authSessionLifecycle.runTransition(async (_lease, preparation) => {
-    // The coordinator waits for any older refresh response first. Reading and
-    // clearing is prepared as soon as logout starts; the network request still
-    // waits for the rotated cookie and therefore wins last.
-    try {
-      const result = await request(preparation.accessToken);
-      if (!preparation.restoreBlocked) await clearAccessTokenAfterServerLogout();
-      return result;
-    } catch (error) {
-      if (!preparation.restoreBlocked) throw new LogoutNotCompletedError(error);
-      throw error;
+  let logoutPreparation: LogoutPreparation | undefined;
+  let logoutPreparationPromise: Promise<LogoutPreparation> | undefined;
+  let logoutGeneration: number | undefined;
+  try {
+    return await authSessionLifecycle.runTransition(async (_lease, preparation) => {
+      // The coordinator waits for any older refresh response first. Reading and
+      // clearing is prepared as soon as logout starts; the network request still
+      // waits for the rotated cookie and therefore wins last.
+      try {
+        const result = await request(preparation.accessToken);
+        if (!preparation.restoreBlocked) await clearAccessTokenAfterServerLogout();
+        return result;
+      } catch (error) {
+        if (!preparation.restoreBlocked) throw new LogoutNotCompletedError(error);
+        throw error;
+      }
+    }, async (lease) => {
+      logoutGeneration = lease.generation;
+      logoutPreparationPromise = prepareLogout();
+      logoutPreparation = await logoutPreparationPromise;
+      return logoutPreparation;
+    });
+  } catch (error) {
+    // A bounded wait can fail before the request callback's own error wrapper.
+    // Unknown preparation reports failure now, but its eventual cleanup outcome
+    // must be reconciled before restoring a viewer. Never wait on storage here
+    // or reclassify supersession as failure of the current session.
+    if (error instanceof SessionRefreshPendingError
+      && !logoutPreparation?.restoreBlocked
+      && logoutGeneration !== undefined
+      && authSessionLifecycle.isCurrent(logoutGeneration)) {
+      const restoreUserWhenPrepared = logoutPreparation === undefined
+        ? logoutPreparationPromise?.then(result => !result.restoreBlocked, () => false) ?? Promise.resolve(false)
+        : undefined;
+      throw new LogoutNotCompletedError(error, restoreUserWhenPrepared);
     }
-  }, () => prepareLogout());
+    throw error;
+  }
 }

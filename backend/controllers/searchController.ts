@@ -5,19 +5,25 @@ import type { AuthRequest } from '../middlewares/authMiddleware.js';
 import { PostgresSearchPersistence } from '../adapters/postgresSearchPersistence.js';
 import { RedisSearchSnapshotStore } from '../adapters/redisSearchSnapshotStore.js';
 import redisClient from '../config/redis.js';
-import { SearchService, SearchRateLimitError, parseSearchRequest, type SearchRequest } from '../services/searchService.js';
+import { SearchService, SearchRateLimitError, parseSearchRequest, parseSemanticResponse, type SearchRequest } from '../services/searchService.js';
+import { SemanticSearchCircuit } from '../services/semanticSearchCircuit.js';
 import { SearchRequestGuard } from '../services/searchRequestGuard.js';
 import { sendControllerError, sendError, sendSuccess } from '../utils/response.js';
 
+const semanticCircuit = new SemanticSearchCircuit();
 export async function semanticSearch(request: SearchRequest, signal?: AbortSignal) {
-  const config = getMlRuntimeConfig();
-  const { group: _group, cursor: _cursor, ...contract } = request;
-  const response = await axios.post(`${config.baseUrl}/api/v2/search/repositories`, { ...contract, limit: 100 }, {
-    headers: { 'X-Internal-Secret': config.internalSecret },
-    timeout: 1800, signal, maxContentLength: config.maxResponseBytes, maxBodyLength: 100_000,
-    maxRedirects: 0,
-  });
-  return response.data;
+  return semanticCircuit.run(async attemptSignal => {
+    const config = getMlRuntimeConfig();
+    const { group: _group, cursor: _cursor, ...contract } = request;
+    const response = await axios.post(`${config.baseUrl}/api/v2/search/repositories`, { ...contract, limit: 100 }, {
+      headers: { 'X-Internal-Secret': config.internalSecret },
+      timeout: 1800, signal: attemptSignal, maxContentLength: config.maxResponseBytes, maxBodyLength: 100_000,
+      maxRedirects: 0,
+    });
+    // An invalid envelope must not close a half-open circuit.
+    parseSemanticResponse(response.data, request.search_id);
+    return response.data;
+  }, signal);
 }
 export const searchService = new SearchService(new PostgresSearchPersistence(), semanticSearch, Date.now, new RedisSearchSnapshotStore(redisClient));
 const searchGuard = new SearchRequestGuard(redisClient);

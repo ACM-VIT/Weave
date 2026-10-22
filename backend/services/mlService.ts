@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import { performance } from 'node:perf_hooks';
 import type { RecommendationPort } from '../ports/recommendationPort.js';
 import type { OutboxTransportPort } from '../ports/outboxTransportPort.js';
 import type {
@@ -14,6 +15,33 @@ import type {
 import { ML_DESCRIPTION_FALLBACK_MODEL_VERSION } from '../contracts/ml.v2.js';
 import { getMlRuntimeConfig, type MlRuntimeConfig } from '../config/ml.js';
 import { isValidUuid } from '../utils/validators.js';
+import { incrementMetric, observeMetric } from '../observability/metrics.js';
+
+type RecommendationFailureKind = 'dependency' | 'contract';
+type RecommendationCircuitState = 'closed' | 'open' | 'half-open';
+
+export class MlRecommendationError extends Error {
+  constructor(message: string, readonly kind: RecommendationFailureKind, readonly statusCode?: number) {
+    super(message);
+    this.name = 'MlRecommendationError';
+  }
+}
+
+interface RecommendationCircuitOptions {
+  /** Monotonic milliseconds; injectable for deterministic recovery checks. */
+  now?: () => number;
+  failureThreshold?: number;
+  openMs?: number;
+}
+
+function positiveInt(value: unknown, fallback: number): number {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function isDependencyStatus(status: number): boolean {
+  return status === 408 || status === 425 || status === 429 || status >= 500;
+}
 
 export class MlRepositoryIndexContractError extends Error {
   constructor(message: string) {
@@ -164,11 +192,30 @@ export function parseMlRepositoryIndexResponse(
 
 export class MlV2Client implements RecommendationPort, OutboxTransportPort {
   private consecutiveGenerateFailures = 0;
+  private circuitState: RecommendationCircuitState = 'closed';
+  private circuitEpoch = 0;
   private circuitOpenedAt = 0;
-  private readonly circuitFailureThreshold = Number(process.env.ML_CIRCUIT_FAILURE_THRESHOLD ?? 5);
-  private readonly circuitOpenMs = Number(process.env.ML_CIRCUIT_OPEN_MS ?? 30_000);
+  private probeInFlight = false;
+  private readonly circuitFailureThreshold: number;
+  private readonly circuitOpenMs: number;
+  private readonly now: () => number;
 
-  constructor(private readonly config: MlRuntimeConfig = getMlRuntimeConfig()) {}
+  constructor(
+    private readonly config: MlRuntimeConfig = getMlRuntimeConfig(),
+    circuit: RecommendationCircuitOptions = {},
+  ) {
+    this.circuitFailureThreshold = positiveInt(circuit.failureThreshold ?? process.env.ML_CIRCUIT_FAILURE_THRESHOLD, 5);
+    this.circuitOpenMs = positiveInt(circuit.openMs ?? process.env.ML_CIRCUIT_OPEN_MS, 30_000);
+    this.now = circuit.now ?? (() => performance.now());
+  }
+
+  private transitionCircuit(state: RecommendationCircuitState, reason: string): void {
+    const previous = this.circuitState;
+    this.circuitState = state;
+    this.circuitEpoch++;
+    if (state === 'open') this.circuitOpenedAt = this.now();
+    incrementMetric('ml_recommendation_circuit_transition_total', { from: previous, to: state, reason });
+  }
 
   private async request(
     path: string,
@@ -197,7 +244,7 @@ export class MlV2Client implements RecommendationPort, OutboxTransportPort {
         if (path === '/api/v2/repositories/embed' && response.ok) {
           throw new MlRepositoryIndexContractError('ML response exceeded size limit.');
         }
-        throw new Error('ML response exceeded size limit.');
+        throw new MlRecommendationError('ML response exceeded size limit.', 'contract', response.status);
       }
       let body: unknown = oversized ? text.slice(0, 4_000) : null;
       if (text && !oversized) {
@@ -207,7 +254,7 @@ export class MlV2Client implements RecommendationPort, OutboxTransportPort {
             if (path === '/api/v2/repositories/embed' && response.ok) {
               throw new MlRepositoryIndexContractError('ML returned invalid JSON.');
             }
-            throw new Error('ML returned invalid JSON.');
+            throw new MlRecommendationError('ML returned invalid JSON.', 'contract', response.status);
           }
           body = text;
         }
@@ -226,37 +273,63 @@ export class MlV2Client implements RecommendationPort, OutboxTransportPort {
   }
 
   async generate(input: MlRecommendationRequest): Promise<MlRecommendationResponse> {
-    if (this.circuitOpenedAt && Date.now() - this.circuitOpenedAt < this.circuitOpenMs) {
+    if (this.circuitState === 'open' && this.now() - this.circuitOpenedAt >= this.circuitOpenMs) {
+      this.transitionCircuit('half-open', 'cooldown');
+    }
+    // Admission is synchronous, before the first await. Recovery has exactly one slot.
+    if (this.circuitState === 'open' || (this.circuitState === 'half-open' && this.probeInFlight)) {
+      incrementMetric('ml_recommendation_generate_total', { outcome: this.circuitState });
       throw new Error('ML recommendation circuit is open.');
     }
+    const probe = this.circuitState === 'half-open';
+    if (probe) this.probeInFlight = true;
+    const epoch = this.circuitEpoch;
+    const started = this.now();
+    let outcome = 'success';
     try {
       const { status, body } = await this.request('/api/v2/recommendations/generate', input, input.generation_id);
-      if (status < 200 || status >= 300) throw new Error(`ML recommendation request failed with status ${status}.`);
+      if (status < 200 || status >= 300) {
+        throw new MlRecommendationError(`ML recommendation request failed with status ${status}.`,
+          isDependencyStatus(status) ? 'dependency' : 'contract', status);
+      }
       const value = body as MlRecommendationResponse;
       if (!value || value.schema_version !== 2 || value.generation_id !== input.generation_id
         || value.user_id !== input.user_id || value.feed_version !== input.feed_version
         || typeof value.model_version !== 'string' || typeof value.embedding_version !== 'string'
         || !Array.isArray(value.items)) {
-        throw new Error('ML recommendation response violated the v2 envelope.');
-      }
-      if (value.items.length === 0) {
-        throw new Error('ML recommendation response contained no items.');
+        throw new MlRecommendationError('ML recommendation response violated the v2 envelope.', 'contract');
       }
       const ids = new Set<string>();
       for (const item of value.items) {
-        if (!isValidUuid(item.repo_id) || ids.has(item.repo_id) || !Number.isFinite(item.score)
+        if (!item || !isValidUuid(item.repo_id) || ids.has(item.repo_id) || !Number.isFinite(item.score)
           || typeof item.source !== 'string' || item.source.length === 0) {
-          throw new Error('ML recommendation response contains an invalid or duplicate item.');
+          throw new MlRecommendationError('ML recommendation response contains an invalid or duplicate item.', 'contract');
         }
         ids.add(item.repo_id);
       }
-      this.consecutiveGenerateFailures = 0;
-      this.circuitOpenedAt = 0;
+      // A call admitted before a newer opening must not reset that circuit.
+      if (epoch === this.circuitEpoch) {
+        this.consecutiveGenerateFailures = 0;
+        if (probe) this.transitionCircuit('closed', 'success');
+      }
       return value;
     } catch (error) {
-      this.consecutiveGenerateFailures++;
-      if (this.consecutiveGenerateFailures >= this.circuitFailureThreshold) this.circuitOpenedAt = Date.now();
+      outcome = error instanceof MlRecommendationError ? error.kind : 'dependency';
+      if (epoch === this.circuitEpoch) {
+        if (outcome === 'dependency') this.consecutiveGenerateFailures++;
+        if (probe || this.consecutiveGenerateFailures >= this.circuitFailureThreshold) {
+          this.transitionCircuit('open', outcome);
+        }
+      }
       throw error;
+    } finally {
+      // Includes fetch/body aborts and validation failures; no failed probe can retain the slot.
+      if (probe) {
+        this.probeInFlight = false;
+        incrementMetric('ml_recommendation_probe_total', { outcome });
+      }
+      incrementMetric('ml_recommendation_generate_total', { outcome });
+      observeMetric('ml_recommendation_generate_duration_ms', Math.max(0, this.now() - started), { outcome });
     }
   }
 

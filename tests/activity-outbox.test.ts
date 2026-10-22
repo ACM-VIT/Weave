@@ -6,7 +6,7 @@ import type {
   InteractionBatchResultV2,
   QueuedActivity,
 } from '../src/api/activity';
-import { DurableActivityOutbox } from '../src/services/activityOutbox';
+import { DurableActivityOutbox, type ActivityFlushResult } from '../src/services/activityOutbox';
 
 function event(index: number, action: QueuedActivity['action'] = 'impression'): QueuedActivity {
   return {
@@ -53,10 +53,12 @@ test('durable outbox persists before sending, chunks at 50, and retains a feed r
   assert.equal(result.invalidatedFeed, true);
   assert.deepEqual(stored, []);
 
-  const retainedReset = new Promise<boolean>((resolve) => {
-    outbox.subscribe((outcome) => resolve(outcome.invalidatedFeed));
+  const retainedReset = new Promise<ActivityFlushResult>((resolve) => {
+    outbox.subscribe((outcome) => resolve(outcome));
   });
-  assert.equal(await retainedReset, true);
+  const retained = await retainedReset;
+  assert.equal(retained.invalidatedFeed, true);
+  assert.equal((retained as ActivityFlushResult & { feedVersion?: string }).feedVersion, '2');
 });
 
 test('durable outbox shares a single network flush and keeps events after an offline failure', async () => {
@@ -117,4 +119,35 @@ test('partial acknowledgement removes only confirmed event IDs', async () => {
     stored.map((queued) => queued.event_id),
     [initial[1].event_id, initial[2].event_id],
   );
+});
+
+test('a flush delivers its starting snapshot and retains events queued during delivery', async () => {
+  let stored = [event(1, 'like')];
+  let release!: () => void;
+  let started!: () => void;
+  const sending = new Promise<void>((resolve) => { started = resolve; });
+  const response = new Promise<void>((resolve) => { release = resolve; });
+  const sent: string[][] = [];
+  const outbox = new DurableActivityOutbox({
+    load: async () => [...stored],
+    persist: async (events) => { stored = [...events]; },
+    prepare,
+    send: async (batch) => {
+      sent.push(batch.map((item) => item.event_id));
+      started();
+      await response;
+      return acknowledgement(batch);
+    },
+  });
+  const first = outbox.flush('token');
+  await sending;
+  await outbox.enqueue(event(2, 'dwell'));
+  release();
+  const result = await first;
+  assert.equal(result.delivered, 1);
+  assert.deepEqual(sent, [[event(1).event_id]]);
+  assert.deepEqual(stored.map((item) => item.event_id), [event(2).event_id]);
+  assert.equal(await outbox.pendingCount(), 1);
+  await outbox.flush('token');
+  assert.deepEqual(stored, []);
 });

@@ -224,7 +224,7 @@ export async function apiV2Raw<T>(
 ): Promise<{ data: T; response: Response }> {
   const result = await requestV2(path, options, token);
   const { response } = result;
-  const payload = await readJson(response) as T | { error?: string } | null;
+  const payload = await readJson(response) as T | { error?: string; code?: string } | null;
   authSessionLifecycle.assertCurrent(result.generation);
   if (!response.ok) {
     const error = new Error(payload && typeof payload === 'object' && 'error' in payload && payload.error
@@ -233,6 +233,7 @@ export async function apiV2Raw<T>(
       status: response.status,
       retryAfter: response.headers.get('retry-after'),
       accessToken: result.token,
+      code: payload && typeof payload === 'object' && 'code' in payload ? payload.code : undefined,
     });
     throw error;
   }
