@@ -6,6 +6,7 @@ import express from 'express';
 import jwt from 'jsonwebtoken';
 import {
   TRENDING_FRESHNESS_MS,
+  TrendingUnavailableError,
   TrendingSnapshotService,
   type TrendingSnapshot,
 } from '../../services/trendingSnapshotService.js';
@@ -122,7 +123,37 @@ test('coalesces concurrent hydration and retries failed loads instead of caching
   assert.ok(results.every(value => value === results[0]));
 });
 
-test('an older failed hydration cannot evict a newer snapshot', async () => {
+test('expired pending hydration cannot serve late callers or start unbounded replacement queries', async () => {
+  const { state } = fixture();
+  const stale = structuredClone(state.cards);
+  let finish!: () => void;
+  let calls = 0;
+  const service = new TrendingSnapshotService({
+    available: async () => structuredClone(state.available),
+    cards: async () => {
+      calls++;
+      if (calls === 1) return new Promise(resolve => { finish = () => resolve(stale); });
+      return structuredClone(state.cards);
+    },
+  }, () => state.time);
+  const first = service.get();
+  await new Promise(resolve => setImmediate(resolve));
+  state.time = TRENDING_FRESHNESS_MS;
+  state.cards = [{ repo_id: 'current-repo', likes_count: 9 }];
+  const later = Array.from({ length: 20 }, () => service.get());
+  const results = Promise.allSettled([first, ...later]);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(calls, 1, 'expired work retains its admission slot until it actually finishes');
+  finish();
+  for (const result of await results) {
+    assert.equal(result.status, 'rejected', 'neither the original caller nor late callers may receive expired data');
+    if (result.status === 'rejected') assert.equal(result.reason.statusCode, 503);
+  }
+  assert.deepEqual(data(await service.get()).items, state.cards, 'retry reads a fresh database snapshot');
+  assert.equal(calls, 2);
+});
+
+test('a newer snapshot waits for the old query to release its admission slot', async () => {
   const { state } = fixture();
   let failOld!: (error: Error) => void;
   let calls = 0;
@@ -137,9 +168,11 @@ test('an older failed hydration cannot evict a newer snapshot', async () => {
   const old = assert.rejects(service.get(), /old query failed/);
   await new Promise(resolve => setImmediate(resolve));
   state.available[0].snapshot_id = 'snapshot-2';
-  const current = await service.get();
+  await assert.rejects(service.get(), { statusCode: 503 });
+  assert.equal(calls, 1);
   failOld(new Error('old query failed'));
   await old;
+  const current = await service.get();
   assert.equal(await service.get(), current);
   assert.equal(calls, 2);
 });
@@ -151,8 +184,34 @@ test('a slow hydration does not start a new freshness budget on completion', asy
     available: async () => state.available,
     cards: async () => { calls++; state.time += TRENDING_FRESHNESS_MS; return state.cards; },
   }, () => state.time);
-  await service.get();
-  await service.get();
+  await assert.rejects(service.get(), { statusCode: 503 });
+  await assert.rejects(service.get(), { statusCode: 503 });
+  assert.equal(calls, 2);
+});
+
+test('the wall-clock deadline returns 503 while retaining admission until underlying work settles', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const { state } = fixture();
+  let calls = 0;
+  let finish!: () => void;
+  const service = new TrendingSnapshotService({
+    available: async () => state.available,
+    cards: async () => {
+      calls++;
+      if (calls === 1) return new Promise(resolve => { finish = () => resolve(state.cards); });
+      return state.cards;
+    },
+  }, () => state.time);
+  const first = assert.rejects(service.get(), { statusCode: 503 });
+  await new Promise(resolve => setImmediate(resolve));
+  state.time = TRENDING_FRESHNESS_MS;
+  t.mock.timers.tick(TRENDING_FRESHNESS_MS);
+  await first;
+  await assert.rejects(service.get(), { statusCode: 503 });
+  assert.equal(calls, 1, 'a caller deadline must not admit another database query');
+  finish();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(data(await service.get()).items, state.cards);
   assert.equal(calls, 2);
 });
 
@@ -183,6 +242,19 @@ async function serve(t: test.TestContext, service: TrendingSnapshotService) {
 }
 
 const authorization = (user = 'viewer-1') => `Bearer ${jwt.sign({ userId: user }, process.env.JWT_SECRET!)}`;
+
+test('HTTP hydration deadlines and PostgreSQL cancellation return retryable 503 rather than cached content', async t => {
+  const { state } = fixture();
+  for (const error of [new TrendingUnavailableError(), Object.assign(new Error('statement timeout'), { code: '57014' })]) {
+    const service = new TrendingSnapshotService({ available: async () => state.available, cards: async () => { throw error; } });
+    const url = await serve(t, service);
+    const response = await get(url, { authorization: authorization(), 'if-none-match': '*' });
+    assert.equal(response.status, 503);
+    assert.equal(response.headers['retry-after'], '1');
+    assert.equal(response.headers['cache-control'], 'no-store');
+    assert.equal(JSON.parse(response.body).success, false);
+  }
+});
 
 test('HTTP validators support weak/list/wildcard matches, HEAD, auth and forced revalidation', async t => {
   const { state, service } = fixture();
@@ -231,5 +303,5 @@ test('repeated local conditional requests reduce card queries and transferred bo
   assert.equal(state.probes, requests);
   assert.equal(state.hydrations.length, 1);
   assert.equal(bodyBytes, Buffer.byteLength(first.body));
-  t.diagnostic(`${requests} local requests: ${state.probes} snapshot probes + 1 card hydration versus ${requests * 2} uncached queries; 96% card-cache hits; ${bodyBytes} body bytes versus ${bodyBytes * requests} uncached bytes (headers excluded).`);
+  t.diagnostic(`${requests} local requests: ${state.probes} snapshot probes + 1 bounded card hydration; 96% card-cache hits; ${bodyBytes} body bytes versus ${bodyBytes * requests} uncached bytes (headers excluded).`);
 });

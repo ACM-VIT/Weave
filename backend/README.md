@@ -93,6 +93,12 @@ changes invalidate the response immediately, including ingestion from another
 process. `ETag` covers the exact JSON response. Conditional GET/HEAD requests
 return an empty `304` when unchanged; `Cache-Control: private, no-cache` requires
 clients to revalidate through authentication rather than serving stale responses.
+Hydration has a five-second caller deadline and a transaction-local four-second
+PostgreSQL statement timeout. Expired pending work accepts no new waiters or
+replacement query for that period until the underlying operation settles;
+over-budget/busy requests return `503` with `Retry-After: 1` rather than stale cards.
+Viewer reactions, saves and List selections must be loaded outside this shared
+public cache; any viewer overlay must have its final response ETag recomputed.
 
 The frontend cannot import or mutate repository metadata. It records likes, saves, views, and other behavior through the interaction endpoint below. Repository details come from PostgreSQL, not ML/Qdrant.
 

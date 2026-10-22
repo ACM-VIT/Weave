@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import test from 'node:test';
+import postgres from 'postgres';
 import { sqlClient } from '../../db/index.js';
-import { trendingSnapshotSource } from '../../controllers/trendingController.js';
+import { createTrendingSnapshotSource, trendingSnapshotSource } from '../../controllers/trendingController.js';
 import { TRENDING_FRESHNESS_MS, TrendingSnapshotService } from '../../services/trendingSnapshotService.js';
 import { assertDisposableDatabase } from '../database/disposableDatabase.js';
 
@@ -52,6 +53,9 @@ integration('PostgreSQL Trending preserves ranking, freshness, snapshot activati
         (${snapshots[0]}::uuid,1,${repos[2]}::uuid,1.0,'{}'),
         (${snapshots[1]}::uuid,3,${repos[0]}::uuid,0.7,'{}')
     `;
+    let queryCount = 0;
+    const previousDebug = sqlClient.options.debug;
+    sqlClient.options.debug = () => { queryCount++; };
     const first = await service.get();
     assert.deepEqual(unpack(first).items.map(row => row.repo_id), [repos[1], repos[0]]);
     assert.deepEqual(unpack(first).items.map(row => row.position), [2, 7]);
@@ -59,9 +63,11 @@ integration('PostgreSQL Trending preserves ranking, freshness, snapshot activati
     assert.equal(unpack(first).captured_at, '2026-10-22T00:00:00.000Z');
     const requests = 25;
     for (let n = 1; n < requests; n++) assert.equal(await service.get('weekly'), first);
+    sqlClient.options.debug = previousDebug;
     assert.equal(probes, requests);
     assert.equal(hydrations, 1);
-    t.diagnostic(`${requests} real PostgreSQL reads: ${probes} eligibility queries + ${hydrations} card query; uncached handler would issue ${requests * 2} queries.`);
+    assert.equal(queryCount, 29, 'include BEGIN, local timeout setup and COMMIT in the measured SQL count');
+    t.diagnostic(`${requests} real PostgreSQL reads: ${queryCount} SQL statements including timeout transaction overhead, versus ${requests * 2} for the uncached handler; ${probes} eligibility probes + ${hydrations} card hydration.`);
 
     await sqlClient`UPDATE app.repo_engagement SET likes_count=4 WHERE repo_id=${repos[0]}::uuid`;
     await sqlClient`UPDATE app.repos SET status='deleted' WHERE repo_id=${repos[1]}::uuid`;
@@ -111,5 +117,23 @@ integration('PostgreSQL Trending preserves ranking, freshness, snapshot activati
   } finally {
     await sqlClient`DELETE FROM app.trending_snapshots WHERE snapshot_id=ANY(${snapshots}::uuid[])`;
     await sqlClient`DELETE FROM app.repos WHERE repo_id=ANY(${repos}::uuid[])`;
+  }
+});
+
+integration('a blocked Trending SELECT times out and restores the same pooled connection settings', { timeout: 12_000 }, async () => {
+  assertDisposableDatabase();
+  const client = postgres(process.env.DATABASE_URL!, { max: 1, prepare: false });
+  const source = createTrendingSnapshotSource(client);
+  try {
+    const before = (await client`SHOW statement_timeout`)[0].statement_timeout;
+    await sqlClient.begin(async tx => {
+      await tx`LOCK TABLE app.repo_content IN ACCESS EXCLUSIVE MODE`;
+      await assert.rejects(source.cards(randomUUID()), { code: '57014' });
+    });
+    assert.equal((await client`SHOW statement_timeout`)[0].statement_timeout, before,
+      'SET LOCAL must not leak to a later request on the same one-connection pool');
+    assert.equal((await source.cards(randomUUID())).length, 0, 'the connection remains usable after timeout rollback');
+  } finally {
+    await client.end({ timeout: 1 });
   }
 });

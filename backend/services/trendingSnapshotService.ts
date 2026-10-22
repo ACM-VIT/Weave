@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { performance } from 'node:perf_hooks';
 import { incrementMetric } from '../observability/metrics.js';
 
 export type TrendingPeriod = 'daily' | 'weekly' | 'monthly';
@@ -23,6 +24,12 @@ export interface TrendingResponse {
 // Each API process holds at most three 100-card responses. Counters, content,
 // summaries and repository status can be stale for at most this cache lifetime.
 export const TRENDING_FRESHNESS_MS = 5_000;
+export const TRENDING_QUERY_TIMEOUT_MS = 4_000;
+
+export class TrendingUnavailableError extends Error {
+  readonly statusCode = 503;
+  constructor() { super('Trending refresh is temporarily unavailable. Try again shortly.'); }
+}
 
 interface CacheEntry {
   key: string;
@@ -36,7 +43,7 @@ export class TrendingSnapshotService {
 
   constructor(
     private readonly source: TrendingSnapshotSource,
-    private readonly now: () => number = Date.now,
+    private readonly now: () => number = () => performance.now(),
   ) {}
 
   async get(requestedPeriod?: TrendingPeriod): Promise<TrendingResponse> {
@@ -61,10 +68,14 @@ export class TrendingSnapshotService {
       metadata,
     ]);
     const cached = this.cache.get(period);
-    if (cached?.key === key && (cached.pending || this.now() < cached.expiresAt)) {
+    if (cached?.key === key && this.now() < cached.expiresAt) {
       incrementMetric('trending_snapshot_cache_total', { outcome: cached.pending ? 'coalesced' : 'hit' });
       return cached.response;
     }
+    // At most one hydration per period may own a database slot. Expired work
+    // must not accept new waiters or release admission before the query exits,
+    // even if a new snapshot is activated while the old query is still running.
+    if (cached?.pending) throw new TrendingUnavailableError();
 
     incrementMetric('trending_snapshot_cache_total', { outcome: 'miss' });
     const entry: CacheEntry = {
@@ -74,19 +85,27 @@ export class TrendingSnapshotService {
       pending: true,
       response: Promise.resolve().then(async () => {
         const items = snapshot ? await this.source.cards(snapshot.snapshot_id) : [];
+        if (this.now() >= entry.expiresAt) throw new TrendingUnavailableError();
         const body = JSON.stringify({ success: true, data: { ...metadata, items } });
-        return { body, etag: `"${createHash('sha256').update(body).digest('hex')}"` };
+        const response = { body, etag: `"${createHash('sha256').update(body).digest('hex')}"` };
+        if (this.now() >= entry.expiresAt) throw new TrendingUnavailableError();
+        return response;
       }),
     };
     this.cache.set(period, entry);
-    try {
-      return await entry.response;
-    } catch (error) {
-      // A failed older request must not evict a newer snapshot's entry.
-      if (this.cache.get(period) === entry) this.cache.delete(period);
-      throw error;
-    } finally {
+    const work = entry.response;
+    let timer: ReturnType<typeof setTimeout>;
+    const deadline = new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(() => reject(new TrendingUnavailableError()), TRENDING_FRESHNESS_MS);
+    });
+    entry.response = Promise.race([work, deadline]).finally(() => clearTimeout(timer));
+    const release = (failed: boolean) => {
       entry.pending = false;
-    }
+      // Deadline response completion is not query completion. Keep admission
+      // occupied until work settles, and preserve identity-checked eviction.
+      if ((failed || this.now() >= entry.expiresAt) && this.cache.get(period) === entry) this.cache.delete(period);
+    };
+    void work.then(() => release(false), () => release(true));
+    return entry.response;
   }
 }
