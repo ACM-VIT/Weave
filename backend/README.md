@@ -346,6 +346,100 @@ Required production environment variables: `DATABASE_URL`, `SUPABASE_URL`, `SUPA
 
 The outbox launch script sets `--role=outbox` portably and fails startup when `ML_FEEDBACK_OUTBOX` is disabled. A hardened systemd template and install/acceptance procedure are in [the outbox worker runbook](../docs/runbooks/outbox-worker.md).
 
+Apply migrations through `0031_profile_generation_epoch` before starting the updated workers.
+Migration `0028_counter_reconciliation_progress` is already in the journal.
+Apply migrations in journal order: `0028`, the unchanged published `0029`, then
+the additive `0030` safety upgrade and `0031` profile-epoch boundary. Existing
+installations apply only unapplied migrations; fresh installations apply the full sequence. This integrated
+history also retains `0026_readme_summary_pipeline`; do not combine the alternate
+JSON-outbox prewarm migration with this dedicated-table migration. Before applying
+`0031` or enabling the new code, drain and replace ALL old API, outbox and
+feed-generation processes, not only dedicated workers. API processes can also
+generate feeds and write profiles; old instances can publish into the new namespace
+or change profiles without advancing it. Old outbox workers can still run the
+synchronous prewarm hook and do not write publication witnesses.
+
+Outbox inserts and pending transitions emit payload-free PostgreSQL notifications
+only after commit. Notifications wake idle workers; they never acknowledge jobs.
+The existing bounded idle poll (default 30 seconds) remains the recovery path
+when a signal is lost or the listener is unavailable. Reconnection subscribes
+again and immediately checks durable work. Wake hints coalesce into one pending
+run while a task is busy; delivery tasks never overlap within one process.
+Prewarm checks also report the next eligible job or expired claim, so an early
+notification cannot replace a scheduled retry with the full idle interval.
+
+LISTEN needs a direct or session-pool PostgreSQL connection. If `DATABASE_URL`
+uses transaction pooling, set `OUTBOX_LISTEN_DATABASE_URL` to a direct/session
+connection to **the same database**. Credentials stay in the worker environment.
+Each outbox process uses one dedicated notification session, closed on shutdown;
+failed startup/reconnect attempts fall back to polling and retry every 30 seconds.
+
+Successful onboarding delivery atomically records `telemetry.feed_prewarm_jobs`.
+Prewarm runs separately when both ML delivery and recommendations are enabled:
+one generation at a time per process, with one durable slot per user. Repeated
+deliveries of the same profile/feed version coalesce. New profile versions
+supersede old claims; older deliveries cannot replace newer profile targets.
+Claims adopt the current feed version and require exact equality with the current
+ML profile version. Every profile-version increment (including non-material edits)
+advances the feed namespace in its source transaction. Before requesting ML,
+generation requires exact-profile successful delivery evidence in the durable
+prewarm slot, then rechecks both captured versions before publication. Missing
+legacy evidence uses synchronous persona repair under the generation lock and
+heartbeat. Repair acknowledges only a still-active, unchanged profile in a short
+user-before-feed transaction after network I/O; repeated identical proof preserves
+the existing retry horizon. Migration `0031` invalidates every existing feed
+namespace once and removes only ephemeral slots lacking retained exact-profile
+delivered-outbox proof. Lost legacy proof forces repair, never assumed success;
+serve history and business data remain intact. Failed/stale/coalesced generations retry durably, with generation failures
+backing off up to 60 seconds; crashed claims expire after `ML_TIMEOUT_MS + 60000`
+milliseconds (65 seconds by default). Disabled users are skipped and deleted
+users cascade out of the queue. An immutable scheduling time bounds retries to
+seven days; older jobs become visibly `expired`. For jobs already present when
+`0030` is applied, the horizon starts at upgrade because original `0029` had no
+immutable scheduling timestamp. Their status, claims and retry counters are retained.
+Only a new profile/feed target
+resets this horizon, never a retry. Claim tokens, lease expiry and current profile
+and feed versions are rechecked before prewarm publication and are required for
+completion. PostgreSQL checks and Redis publication are not one transaction: a
+claim that expires in that gap may make an identical-version first publication,
+but cannot acknowledge a replaced claim or overwrite an existing Redis success
+witness. No PostgreSQL row lock is held across Redis or ML network I/O.
+
+A successful live or prewarm publication satisfies later prewarm for that feed
+version without resetting the remaining queue, even for empty/consumed feeds.
+The Redis publication script atomically checks generation-lock ownership and
+writes an eight-day success witness with the queue; prewarm cannot replace an
+existing witness. PostgreSQL stores a monotonic `last_published_feed_version`
+after publication. Retained completed generation attempts are
+also success evidence when a Redis witness is missing. A prior serve alone may
+be fallback or an ambiguous lost publication, so prewarm fails closed without
+marking it successful and eventually expires visibly. These
+checks preserve process-crash/retry recovery, including a crash after Redis
+publication but before SQL completion. They are not an exactly-once guarantee
+under simultaneous Redis data loss and process failure before a durable witness;
+existing durable success/serve evidence is handled fail-closed. Completed slots stay until user deletion;
+this migration schedules future deliveries and does not backfill old ones.
+
+The authenticated operations response includes separate prewarm pending, claimed,
+expired, retrying, expired-claim counts and oldest-pending age. Its aggregate SQL
+has a two-second statement budget; expiry cleanup handles at most 100 jobs/run.
+`feed_prewarm_run_ms` measures generation-lane occupancy. Run focused PostgreSQL
+checks alone on a migrated disposable loopback database (no live ML needed):
+
+```sh
+DATABASE_URL=postgresql://postgres@127.0.0.1:55425/weave_scroll \
+  RUN_OUTBOX_WAKEUPS_INTEGRATION=1 \
+  node --import tsx --test tests/database/outboxWakeups.integration.test.ts
+```
+
+The fixtures create/remove their own users/jobs and test commit/rollback,
+reconnection without polling, notification loss, version fencing and slow/failed
+prewarm. Timing diagnostics compare actual producer-call-to-claim-response upper
+bounds at the same fallback interval, including transaction execution. They are
+local samples, not production latency guarantees. Rollback may stop the new
+scheduler and retain its additive table/triggers; pending prewarm can resume
+after re-upgrade. Old workers still use their synchronous prewarm hook.
+
 The coordinated backend, ML, OAuth, corpus, device, and load gates for v2 are in [the Weave v2 release runbook](../docs/runbooks/weave-v2-release.md).
 
 Set `TRUST_PROXY=true` only when exactly one trusted ingress proxy is in front of the service. Authentication endpoints have a Redis-backed per-IP/path limit of 20 requests per minute; configure broader request and connection limits at the ingress as well.

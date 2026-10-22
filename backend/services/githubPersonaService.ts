@@ -282,6 +282,12 @@ class PostgresGitHubPersonaTransactionStore implements GitHubPersonaTransactionS
       displayName: update.fullName,
       avatarUrl: update.avatarUrl,
     });
+    // Only material persona changes call updateProfile; repair retries retain
+    // their namespace. Follow existing user/social-profile locks before feed.
+    await this.tx`
+      INSERT INTO app.user_feed_state(user_id,feed_version) VALUES(${userId}::uuid,2)
+      ON CONFLICT(user_id) DO UPDATE SET feed_version=app.user_feed_state.feed_version+1,updated_at=now()
+    `;
     return BigInt(String(rows[0].profile_version));
   }
 

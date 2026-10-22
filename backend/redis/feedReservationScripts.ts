@@ -59,8 +59,12 @@ return redis.call('pexpire', KEYS[1], ARGV[2])
 // cannot overwrite the queue published by a newer lock owner.
 export const PUBLISH_GENERATION_LUA = `
 if redis.call('get', KEYS[1]) ~= ARGV[1] then return 0 end
+if ARGV[3] == '1' and redis.call('exists', KEYS[3]) == 1 then return 0 end
 redis.call('del', KEYS[2])
-for i = 3, #ARGV do redis.call('rpush', KEYS[2], ARGV[i]) end
+for i = 4, #ARGV do redis.call('rpush', KEYS[2], ARGV[i]) end
 redis.call('expire', KEYS[2], ARGV[2])
+-- Eight days exceeds the hard seven-day prewarm retry horizon. This key is
+-- independent of the list: consuming/expiring an empty feed does not erase it.
+redis.call('set', KEYS[3], '1', 'EX', 691200)
 return 1
 `;

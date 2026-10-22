@@ -135,6 +135,7 @@ export async function updateMe(req: AuthRequest, res: Response): Promise<void> {
   }
   try {
     const updated = await sqlClient.begin(async (tx) => {
+      await tx`SELECT user_id FROM app.users WHERE user_id=${id}::uuid FOR UPDATE`;
       const rows = await tx`
         UPDATE app.users SET username=COALESCE(${usernameValue ?? null},username),
           full_name=CASE WHEN ${req.body.full_name !== undefined} THEN ${fullName ?? null} ELSE full_name END,
@@ -146,6 +147,10 @@ export async function updateMe(req: AuthRequest, res: Response): Promise<void> {
         RETURNING user_id,username,full_name,date_of_birth,bio,github_handle,avatar_url,interests,skills,tech_stack,
           profile_version,updated_at`;
       if (!rows[0]) throw Object.assign(new Error('User profile not found.'), { statusCode: 404 });
+      await tx`
+        INSERT INTO app.user_feed_state(user_id,feed_version) VALUES(${id}::uuid,2)
+        ON CONFLICT(user_id) DO UPDATE SET feed_version=app.user_feed_state.feed_version+1,updated_at=now()
+      `;
       const job = buildMlOnboardingJob(id, Number(rows[0].profile_version), {
         username: String(rows[0].username),
         fullName: rows[0].full_name == null ? null : String(rows[0].full_name),
@@ -202,7 +207,7 @@ export async function completeOnboarding(req: AuthRequest, res: Response): Promi
   try {
     const result = await sqlClient.begin(async (tx) => {
       const profiles = await tx`
-        SELECT username,full_name,date_of_birth
+        SELECT username,full_name,date_of_birth,bio,interests,skills,tech_stack,onboarding_completed
         FROM app.users
         WHERE user_id=${id}::uuid
         FOR UPDATE
@@ -220,6 +225,10 @@ export async function completeOnboarding(req: AuthRequest, res: Response): Promi
         profile_version=profile_version+1,updated_at=now()
         WHERE user_id=${id}::uuid RETURNING profile_version,username,full_name,bio,github_handle,avatar_url`;
       if (!updated[0]) throw Object.assign(new Error('User profile not found.'), { statusCode: 404 });
+      await tx`
+        INSERT INTO app.user_feed_state(user_id,feed_version) VALUES(${id}::uuid,2)
+        ON CONFLICT(user_id) DO UPDATE SET feed_version=app.user_feed_state.feed_version+1,updated_at=now()
+      `;
       await tx`DELETE FROM app.user_topics WHERE user_id=${id}::uuid`;
       for (const slug of uniqueTopics) {
         const topic = await tx`INSERT INTO app.topics(slug,display_name) VALUES (${slug},${slug})

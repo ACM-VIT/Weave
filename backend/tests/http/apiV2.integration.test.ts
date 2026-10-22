@@ -1145,7 +1145,7 @@ integration('registered v2 HTTP paths complete controlled integration flows', as
       '00000000-0000-4000-8000-000000000325',
       '00000000-0000-4000-8000-000000000324',
     ];
-    await sqlClient`INSERT INTO auth.users(id,raw_user_meta_data) VALUES(${pageViewer}::uuid,'{}'::jsonb)`;
+    await sqlClient`INSERT INTO auth.users(id,raw_user_meta_data) VALUES(${pageViewer}::uuid,'{}'::jsonb) ON CONFLICT (id) DO NOTHING`;
     await sqlClient`INSERT INTO app.users(user_id,username,status) VALUES(${pageViewer}::uuid,'page_fixture','active')`;
     await sqlClient`INSERT INTO app.social_profiles(profile_id,provider,handle,profile_kind)
       VALUES(${pageProfile}::uuid,'github','page-fixture-owner','organization')`;
