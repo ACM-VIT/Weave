@@ -41,11 +41,16 @@ const peopleRows = (userPredicate = '', profilePredicate = '') => `SELECT 'user:
 export class PostgresSearchPersistence implements SearchPersistence {
   async lexical(request: SearchRequest) {
     const rows = await sqlClient`
+      WITH candidates AS (
+        SELECT repo_id FROM app.repos
+        WHERE status='active' AND lower(full_name) LIKE ${searchPattern(request.query)}
+        UNION
+        SELECT repo_id FROM app.repo_content
+        WHERE lower(coalesce(description,'')) LIKE ${searchPattern(request.query)}
+      )
       SELECT r.repo_id AS id,(lower(r.name)=lower(${request.query}) OR lower(r.full_name)=lower(${request.query})) AS exact
-      FROM app.repos r LEFT JOIN app.repo_content c USING(repo_id)
+      FROM candidates JOIN app.repos r USING(repo_id) LEFT JOIN app.repo_content c USING(repo_id)
       WHERE r.status='active' AND NOT (r.repo_id=ANY(${request.exclude_repo_ids}::uuid[]))
-        AND (lower(r.full_name) LIKE ${searchPattern(request.query)}
-          OR lower(coalesce(c.description,'')) LIKE ${searchPattern(request.query)})
         AND (${request.filters.languages.length === 0} OR c.primary_language=ANY(${request.filters.languages}::text[]))
         AND (${request.filters.topics.length === 0} OR EXISTS (
           SELECT 1 FROM app.repo_topics rt JOIN app.topics t USING(topic_id)
