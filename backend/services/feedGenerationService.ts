@@ -195,6 +195,11 @@ export class FeedGenerationService {
       // A nonempty ML batch filtered entirely by existing exclusions is not
       // proof of exhaustion either. Never publish it as a terminal empty page.
       if (this.indexedRefill && response.items.length > 0 && canonical.length === 0) {
+        await this.persistence.recordGenerationAttempt?.({
+          generation_id: generationId, user_id: userId, feed_version: feedVersion, mode,
+          status: 'coalesced', latency_ms: Date.now() - started, result_count: 0,
+          error_code: 'FEED_CANDIDATES_EXCLUDED',
+        });
         return { status: 'capacity', feedVersion };
       }
       if (leaseLost || !await current()) return { status: 'stale', feedVersion };

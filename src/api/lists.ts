@@ -1,5 +1,6 @@
 import { apiV2 } from '@/api/client';
 import type { InteractionEventV2 } from '@/api/activity';
+import { keysetPageQuery, validateKeysetPageResponse, type KeysetPage, type KeysetPageOptions } from './keyset-pagination';
 import {
   listMembershipKey,
   mapCollectionList,
@@ -37,6 +38,48 @@ export type ListMembershipSyncResult = {
   saved: boolean;
   saveStateChanged: boolean;
 };
+
+export type ListPageOptions = KeysetPageOptions & {
+  /** Decorates each list's selection state; it does not filter the list results. */
+  repositoryId?: string;
+};
+
+function listPageQuery(options: ListPageOptions): string {
+  const query = keysetPageQuery(options);
+  return options.repositoryId === undefined
+    ? query
+    : `${query}&repository_id=${encodeURIComponent(options.repositoryId)}`;
+}
+
+/** A display page only. Do not use a partial page as a complete membership selection. */
+export async function getCollectionsPage(
+  token: string,
+  options: ListPageOptions = {},
+  signal?: AbortSignal,
+): Promise<KeysetPage<ListDto>> {
+  const data = await apiV2<KeysetPage<CollectionListRecord>>(
+    `/collections?${listPageQuery(options)}`,
+    { signal },
+    token,
+  );
+  validateKeysetPageResponse(data);
+  return { ...data, items: data.items.map(mapCollectionList) };
+}
+
+/** A display page only. Membership mutations still require getRepositoryLists. */
+export async function getBoardsPage(
+  token: string,
+  options: ListPageOptions = {},
+  signal?: AbortSignal,
+): Promise<KeysetPage<ListDto>> {
+  const data = await apiV2<KeysetPage<LegacyBoardListRecord>>(
+    `/boards?${listPageQuery(options)}`,
+    { signal },
+    token,
+  );
+  validateKeysetPageResponse(data);
+  return { ...data, items: data.items.map(mapLegacyBoardList) };
+}
 
 export async function getRepositoryLists(
   repositoryId: string,
