@@ -1,8 +1,11 @@
+import { TRACK_FEED_VERSION_FUNCTION_LUA } from './feedMaintenanceScripts.js';
+
 // KEYS[4] is the per-user/version active-reservation index. Keep its lease
 // aligned with each reservation; generation never deletes reservation data.
-const INDEX_RESERVATION_LUA = `
+const INDEX_RESERVATION_LUA = `${TRACK_FEED_VERSION_FUNCTION_LUA}
 local function trackReservation(ttl)
   if ttl <= 0 then return end
+  trackVersion(KEYS[5], ARGV[#ARGV])
   local time = redis.call('time')
   local now = tonumber(time[1]) * 1000 + math.floor(tonumber(time[2]) / 1000)
   redis.call('zadd', KEYS[4], now + ttl, KEYS[2])
@@ -52,8 +55,9 @@ trackReservation(tonumber(ARGV[3]))
 return {redis.call('llen', KEYS[1]), redis.call('lrange', KEYS[3], 0, -1)}
 `;
 
-export const RELEASE_FEED_LUA = `
+export const RELEASE_FEED_LUA = `${TRACK_FEED_VERSION_FUNCTION_LUA}
 if redis.call('hget', KEYS[2], 'token') ~= ARGV[1] then return 0 end
+trackVersion(KEYS[5], ARGV[2])
 while redis.call('llen', KEYS[3]) > 0 do
   redis.call('lpush', KEYS[1], redis.call('rpop', KEYS[3]))
 end
@@ -104,13 +108,13 @@ if not state then return {-1, {}} end
 return {state.depth, state.ids, state.occupancy}
 `;
 
-export const APPEND_FEED_LUA = `${READ_GENERATION_STATE_LUA}
+export const APPEND_FEED_LUA = `${TRACK_FEED_VERSION_FUNCTION_LUA}${READ_GENERATION_STATE_LUA}
 local state = readState()
 if not state then return {'fenced', 0} end
 if ARGV[4] == '1' and redis.call('exists', KEYS[4]) == 1 then return {'satisfied', 0} end
 local capacity = math.max(0, math.min(tonumber(ARGV[3]) - state.depth, 500 - state.occupancy))
 local added = 0
-for i = 5, #ARGV do
+for i = 6, #ARGV do
   if added >= capacity then break end
   local id = cjson.decode(ARGV[i]).repo_id
   if not state.seen[id] then
@@ -121,8 +125,11 @@ for i = 5, #ARGV do
 end
 -- New candidates rejected by a full queue or current deduplication are not an
 -- empty recommendation source. Preserve retryability if a rival drains them.
-if #ARGV >= 5 and added == 0 then return {'capacity', 0} end
-if added > 0 then redis.call('expire', KEYS[1], ARGV[2]) end
+if #ARGV >= 6 and added == 0 then return {'capacity', 0} end
+if added > 0 then
+  redis.call('expire', KEYS[1], ARGV[2])
+  trackVersion(KEYS[5], ARGV[5])
+end
 -- Accepting an actual empty source is still a publication. Keep its witness
 -- independent of queue consumption, as in the protected replacement path.
 redis.call('set', KEYS[4], '1', 'EX', 691200)
@@ -141,12 +148,13 @@ return redis.call('pexpire', KEYS[1], ARGV[2])
 
 // Lease ownership and queue replacement are one Redis operation; a late builder
 // cannot overwrite the queue published by a newer lock owner.
-export const PUBLISH_GENERATION_LUA = `
+export const PUBLISH_GENERATION_LUA = `${TRACK_FEED_VERSION_FUNCTION_LUA}
 if redis.call('get', KEYS[1]) ~= ARGV[1] then return 0 end
 if ARGV[3] == '1' and redis.call('exists', KEYS[3]) == 1 then return 0 end
 redis.call('del', KEYS[2])
-for i = 4, #ARGV do redis.call('rpush', KEYS[2], ARGV[i]) end
+for i = 5, #ARGV do redis.call('rpush', KEYS[2], ARGV[i]) end
 redis.call('expire', KEYS[2], ARGV[2])
+trackVersion(KEYS[4], ARGV[4])
 -- Eight days exceeds the hard seven-day prewarm retry horizon. This key is
 -- independent of the list: consuming/expiring an empty feed does not erase it.
 redis.call('set', KEYS[3], '1', 'EX', 691200)
