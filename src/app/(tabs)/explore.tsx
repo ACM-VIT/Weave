@@ -7,7 +7,7 @@ import { useInfiniteQuery } from '@tanstack/react-query';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { fetchExploreRepos, mergeExplorePages } from '@/api/explore';
 import { fetchSearch } from '@/api/search';
-import { MIN_SEARCH_LENGTH, searchQueryOptions, isSearchExpired, SearchSessions } from '@/api/search-query';
+import { MIN_SEARCH_LENGTH, searchQueryOptions, isSearchExpired, SearchSessions, SearchRequestTiming } from '@/api/search-query';
 import SearchBar from '@/components/explore/SearchBar';
 import RepoCard from '@/components/explore/RepoCard';
 import TabBar from '@/components/explore/TabBar';
@@ -37,13 +37,20 @@ export default function ExploreScreen() {
   const { user } = useAuth();
   const [activeTab, setActiveTab] = useState<TabName>('Latest');
   const [sessions] = useState(() => new SearchSessions(randomUUID));
+  const [searchTiming] = useState(() => new SearchRequestTiming());
   const [searchInput, setSearchInput] = useState({ value: '', group: 'all' as SearchGroup });
   const { value: searchQuery, group } = searchInput;
   const searchId = sessions.get(user?.user_id, searchQuery, group);
-  const setSearchQuery = (value: string) => setSearchInput(previous => ({ ...previous, value }));
-  const setGroup = (nextGroup: SearchGroup) => setSearchInput(previous => previous.group === nextGroup
-    ? previous : { ...previous, group: nextGroup });
+  const setSearchQuery = (value: string) => {
+    searchTiming.typed();
+    setSearchInput(previous => ({ ...previous, value }));
+  };
+  const setGroup = (nextGroup: SearchGroup) => {
+    searchTiming.explicit();
+    setSearchInput(previous => previous.group === nextGroup ? previous : { ...previous, group: nextGroup });
+  };
   const restartSearch = () => {
+    searchTiming.explicit();
     sessions.get(user?.user_id, searchQuery, group, true);
     setSearchInput(previous => ({ ...previous }));
   };
@@ -52,7 +59,7 @@ export default function ExploreScreen() {
   const query = searchQuery.trim();
   const searching = query.length > 0;
   const search = useInfiniteQuery(searchQueryOptions({
-    viewer: user?.user_id, query, group, searchId, composing, offline,
+    viewer: user?.user_id, query, group, searchId, composing, offline, timing: searchTiming,
     send: (cursor, signal) => fetchSearch(query, group, searchId, cursor, signal),
   }));
   const browse = useInfiniteQuery({
@@ -112,6 +119,7 @@ export default function ExploreScreen() {
       ListEmptyComponent={<View style={{ minHeight: 220, alignItems: 'center', justifyContent: 'center', gap: 16 }}>
         {current.isLoading ? <ActivityIndicator color="#63E6A9" accessibilityLabel="Loading results" /> : <Text selectable accessibilityLiveRegion="polite" style={{ color: '#B8B8C0', textAlign: 'center' }}>{status}</Text>}
         {current.isError ? <Pressable accessibilityRole="button" disabled={offline} onPress={() => {
+          searchTiming.explicit();
           if (searching && isSearchExpired(search.error)) restartSearch();
           else void current.refetch();
         }} style={{ minHeight: 44, justifyContent: 'center' }}><Text style={{ color: '#63E6A9' }}>{searching && isSearchExpired(search.error) ? 'Restart search' : 'Try again'}</Text></Pressable> : null}
@@ -119,6 +127,7 @@ export default function ExploreScreen() {
       ListFooterComponent={current.hasNextPage || current.isFetchNextPageError ? <View style={{ minHeight: 64, alignItems: 'center', justifyContent: 'center' }}>
         {current.isFetchNextPageError ? <Text style={{ color: '#FF6878' }}>Could not load more results.</Text> : null}
         <Pressable accessibilityRole="button" disabled={offline || current.isFetchingNextPage} onPress={() => {
+          searchTiming.explicit();
           if (searching && isSearchExpired(search.error)) restartSearch();
           else void current.fetchNextPage();
         }} style={{ minHeight: 48, minWidth: 160, alignItems: 'center', justifyContent: 'center' }}>

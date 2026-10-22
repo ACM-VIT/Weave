@@ -18,7 +18,7 @@ import {
 } from 'react-native';
 import { ArrowUp, MessageCircle, RotateCcw, X } from 'lucide-react-native';
 import { BlurView } from 'expo-blur';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useInfiniteQuery, useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Svg, { Defs, LinearGradient, Rect, Stop } from 'react-native-svg';
 
@@ -29,6 +29,8 @@ import {
   type CommentAuthor,
   type CommentRecord,
 } from '../../api/comments';
+import { authSessionLifecycle } from '../../api/session-lifecycle';
+import { commentAuthorKey, commentAuthorOptions, mergeCommentPages } from '../../api/comments-data';
 import { REFERENCE_THEME } from '../../constants/theme';
 import { useAuth } from '../../store/AuthContext';
 import * as SecureStore from '../../utils/storage';
@@ -38,14 +40,31 @@ const CLOSE_DURATION = 220;
 const OVERLAY_DURATION = 200;
 const SHEET_EASING = Easing.bezier(0.32, 0.72, 0, 1);
 
+type PendingCommentOwner = { scopeId: string };
+
+type CommentSubmission = {
+  text: string;
+  generation: number;
+  repoId: string;
+  userId: string;
+  queryKey: readonly ['comments', string | undefined, string];
+  localKey: readonly ['comments-local', string | undefined, string];
+  scopeId: string;
+  previousCount: number;
+  pendingOwner: PendingCommentOwner;
+  setComposer: React.Dispatch<React.SetStateAction<CommentComposerState>>;
+};
+
 type OptimisticContext = {
   optimisticId: string;
-  previousComments: CommentRecord[];
+  localKey: readonly ['comments-local', string | undefined, string];
+  generation: number;
+  scopeId: string;
   previousCount: number;
   submittedText: string;
 };
 
-export type CommentComposerState = { draft: string; error: string | null; pending: boolean };
+export type CommentComposerState = { draft: string; error: string | null; pending: boolean; pendingOwner?: PendingCommentOwner };
 
 export interface CommentSheetProps {
   composer?: {
@@ -131,7 +150,20 @@ export function CommentSheet({
   const insets = useSafeAreaInsets();
   const { user } = useAuth();
   const queryClient = useQueryClient();
-  const queryKey = useMemo(() => ['comments', repoId] as const, [repoId]);
+  const queryKey = useMemo(() => ['comments', user?.user_id, repoId] as const, [user?.user_id, repoId]);
+  const localKey = useMemo(() => ['comments-local', user?.user_id, repoId] as const, [user?.user_id, repoId]);
+  const sessionGeneration = authSessionLifecycle.currentGeneration();
+  const scopeId = JSON.stringify([localKey, sessionGeneration]);
+  const activeScope = useRef(scopeId);
+  activeScope.current = scopeId;
+  // Local additions must not change server-page lengths or offsets. Retain them across sheet remounts.
+  const localCommentsQuery = useQuery<CommentRecord[]>({
+    queryKey: localKey,
+    queryFn: async () => [],
+    initialData: [],
+    enabled: false,
+    staleTime: Infinity,
+  });
 
   const overlayOpacity = useMemo(() => new Animated.Value(0), []);
   const sheetTranslateY = useMemo(() => new Animated.Value(0), []);
@@ -147,44 +179,54 @@ export function CommentSheet({
   const setComposerError = useCallback((error: string | null) => {
     setComposer(current => ({ ...current, error }));
   }, [setComposer]);
+  const previousScope = useRef(scopeId);
+  useEffect(() => {
+    if (previousScope.current !== scopeId) {
+      previousScope.current = scopeId;
+      if (!composer) setLocalComposer({ draft: '', error: null, pending: false });
+    }
+  }, [scopeId, composer]);
   const [localCountFloorByRepo, setLocalCountFloorByRepo] = useState<Record<string, number>>({});
 
-  const commentsQuery = useQuery({
+  const commentsQuery = useInfiniteQuery({
     queryKey,
-    queryFn: ({ signal }) => getCommentsByRepo(repoId, signal),
-    enabled: isVisible && repoId.trim().length > 0,
+    queryFn: ({ pageParam, signal }) => getCommentsByRepo(repoId, pageParam, signal),
+    initialPageParam: 0,
+    getNextPageParam: page => page.nextOffset,
+    enabled: isVisible && Boolean(user?.user_id) && repoId.trim().length > 0,
     staleTime: 30_000,
   });
 
-  const comments = useMemo(() => commentsQuery.data ?? [], [commentsQuery.data]);
-  const authorIds = useMemo(
-    () =>
-      Array.from(new Set(comments.map((comment) => comment.user_id)))
-        .filter((userId) => userId !== user?.user_id
-          && !comments.some((comment) => comment.user_id === userId && comment.author))
-        .sort(),
-    [comments, user?.user_id],
-  );
+  const comments = useMemo(() => mergeCommentPages(
+    commentsQuery.data?.pages ?? [], localCommentsQuery.data,
+  ), [commentsQuery.data, localCommentsQuery.data]);
+  const projectedAuthors = useMemo(() => new Map(comments.flatMap(comment =>
+    comment.author ? [[comment.user_id, comment.author] as const] : [])), [comments]);
+  const authorIds = useMemo(() => [...new Set(comments.map(comment => comment.user_id))]
+    .filter(authorId => authorId !== user?.user_id && !projectedAuthors.has(authorId)).sort(),
+  [comments, projectedAuthors, user?.user_id]);
 
-  const authorsQuery = useQuery({
-    queryKey: ['comment-authors', authorIds],
-    queryFn: async ({ signal }) => {
-      const entries = await Promise.all(
-        authorIds.map(async (userId) => {
-          try {
-            const author = await getCommentAuthor(userId, signal);
-            return [userId, author] as const;
-          } catch (error) {
-            if (signal.aborted) throw error;
-            return [userId, undefined] as const;
-          }
-        }),
-      );
+  useEffect(() => {
+    if (!authSessionLifecycle.isCurrent(sessionGeneration)) return;
+    // Reuse projections on another page/sheet without a fallback user request.
+    for (const [authorId, author] of projectedAuthors) {
+      queryClient.setQueryData(commentAuthorKey(user?.user_id, authorId), author);
+    }
+  }, [projectedAuthors, queryClient, user?.user_id, sessionGeneration]);
 
-      return Object.fromEntries(entries) as Record<string, CommentAuthor | undefined>;
-    },
-    enabled: isVisible && authorIds.length > 0,
-    staleTime: 5 * 60_000,
+  useEffect(() => {
+    if (!authSessionLifecycle.isCurrent(sessionGeneration)) return;
+    const serverIds = new Set(commentsQuery.data?.pages.flatMap(page => page.items.map(comment => comment.comment_id)));
+    if (localCommentsQuery.data.some(comment => serverIds.has(comment.comment_id))) {
+      queryClient.setQueryData<CommentRecord[]>(localKey, current => current?.filter(comment => !serverIds.has(comment.comment_id)));
+    }
+  }, [commentsQuery.data, localCommentsQuery.data, localKey, queryClient, sessionGeneration]);
+
+  const authorQueries = useQueries({
+    queries: authorIds.map(authorId => ({
+      ...commentAuthorOptions(user?.user_id, authorId, getCommentAuthor),
+      enabled: isVisible && Boolean(user?.user_id),
+    })),
   });
 
   const currentAuthor = useMemo<CommentAuthor | undefined>(() => {
@@ -204,10 +246,12 @@ export function CommentSheet({
         .filter((comment) => comment.author)
         .map((comment) => [comment.user_id, comment.author]),
     ) as Record<string, CommentAuthor | undefined>;
-    Object.assign(authors, authorsQuery.data ?? {});
+    authorIds.forEach((authorId, index) => {
+      if (authorQueries[index]?.data) authors[authorId] = authorQueries[index].data;
+    });
     if (currentAuthor) authors[currentAuthor.user_id] = currentAuthor;
     return authors;
-  }, [authorsQuery.data, comments, currentAuthor]);
+  }, [authorIds, authorQueries, comments, currentAuthor]);
 
   useEffect(() => {
     if (!isVisible) return;
@@ -256,11 +300,13 @@ export function CommentSheet({
     });
   }, [height, onClose, overlayOpacity, sheetTranslateY]);
 
-  const createMutation = useMutation<CommentRecord, Error, string, OptimisticContext>({
-    mutationFn: async (text) => {
+  const createMutation = useMutation<CommentRecord, Error, CommentSubmission, OptimisticContext>({
+    mutationFn: async ({ text, generation, repoId }) => {
+      authSessionLifecycle.assertCurrent(generation);
       if (!user?.user_id) throw new Error('Sign in to leave a comment');
 
       const token = await SecureStore.getItemAsync('access_token');
+      authSessionLifecycle.assertCurrent(generation);
       if (!token) throw new Error('Your session has expired. Please sign in again.');
 
       return createComment(
@@ -271,76 +317,93 @@ export function CommentSheet({
         token,
       );
     },
-    onMutate: async (submittedText) => {
-      setComposer(current => ({ ...current, pending: true }));
+    onMutate: async ({ text: submittedText, generation, repoId, userId, queryKey, localKey, scopeId, previousCount, pendingOwner, setComposer }) => {
+      authSessionLifecycle.assertCurrent(generation);
+      setComposer(current => ({ ...current, pending: true, pendingOwner }));
       await queryClient.cancelQueries({ queryKey });
+      authSessionLifecycle.assertCurrent(generation);
 
-      const previousComments = queryClient.getQueryData<CommentRecord[]>(queryKey) ?? [];
-      const previousCount = Math.max(initialCommentCount, previousComments.length);
+      if (activeScope.current !== scopeId) throw new Error('The comment target changed.');
       const optimisticId = `optimistic-${Date.now()}`;
       const optimisticComment: CommentRecord = {
         comment_id: optimisticId,
-        user_id: user?.user_id ?? 'unknown',
+        user_id: userId,
         repo_id: repoId,
         parent_comment_id: null,
         comment: submittedText.trim(),
         created_at: new Date().toISOString(),
       };
 
-      queryClient.setQueryData<CommentRecord[]>(queryKey, [
-        ...previousComments,
-        optimisticComment,
+      queryClient.setQueryData<CommentRecord[]>(localKey, (current = []) => [
+        ...current, optimisticComment,
       ]);
       setLocalCountFloorByRepo((current) => ({
         ...current,
-        [repoId]: previousCount + 1,
+        [scopeId]: previousCount + 1,
       }));
       setDraft('');
       setComposerError(null);
       onCommentCountChange?.(previousCount + 1);
       requestAnimationFrame(() => {
-        listRef.current?.scrollToEnd({ animated: true });
+        if (activeScope.current === scopeId) listRef.current?.scrollToEnd({ animated: true });
       });
 
       return {
         optimisticId,
-        previousComments,
+        localKey,
+        generation,
+        scopeId,
         previousCount,
         submittedText,
       };
     },
     onSuccess: (savedComment, _submittedText, context) => {
-      queryClient.setQueryData<CommentRecord[]>(queryKey, (current = []) =>
+      if (!authSessionLifecycle.isCurrent(context.generation)) return;
+      queryClient.setQueryData<CommentRecord[]>(context.localKey, (current = []) =>
         current.map((comment) =>
           comment.comment_id === context.optimisticId ? savedComment : comment,
         ),
       );
     },
-    onError: (error, submittedText, context) => {
+    onError: (error, variables, context) => {
+      if (!authSessionLifecycle.isCurrent(variables.generation)) return;
       if (context) {
-        queryClient.setQueryData(queryKey, context.previousComments);
+        queryClient.setQueryData<CommentRecord[]>(context.localKey, (current = []) =>
+          current.filter(comment => comment.comment_id !== context.optimisticId));
         setLocalCountFloorByRepo((current) => ({
           ...current,
-          [repoId]: context.previousCount,
+          [context.scopeId]: context.previousCount,
         }));
-        onCommentCountChange?.(context.previousCount);
+        if (activeScope.current === context.scopeId) onCommentCountChange?.(context.previousCount);
       }
-      setDraft(context?.submittedText ?? submittedText);
+      if (activeScope.current !== variables.scopeId) return;
+      setDraft(context?.submittedText ?? variables.text);
       setComposerError(error.message);
     },
-    onSettled: () => setComposer(current => ({ ...current, pending: false })),
+    onSettled: (_data, _error, variables) => {
+      // Clear only this submission on its original composer, even after sheet unmount.
+      variables.setComposer(current => current.pendingOwner === variables.pendingOwner
+        ? { ...current, pending: false, pendingOwner: undefined } : current);
+    },
   });
 
-  const isPosting = createMutation.isPending || (composer?.state ?? localComposer).pending;
+  const composerState = composer?.state ?? localComposer;
+  const isPosting = (createMutation.isPending && createMutation.variables?.scopeId === scopeId)
+    || (composerState.pending && (!composerState.pendingOwner || composerState.pendingOwner.scopeId === scopeId));
   const submitComment = useCallback(() => {
     const normalizedDraft = draft.trim();
-    if (!normalizedDraft || isPosting) return;
-    createMutation.mutate(normalizedDraft);
-  }, [createMutation, draft, isPosting]);
+    if (!normalizedDraft || isPosting || !user?.user_id) return;
+    createMutation.mutate({
+      text: normalizedDraft, generation: authSessionLifecycle.currentGeneration(),
+      repoId, userId: user.user_id, queryKey, localKey, scopeId,
+      pendingOwner: { scopeId }, setComposer,
+      previousCount: Math.max(initialCommentCount, comments.length, localCountFloorByRepo[scopeId] ?? 0),
+    });
+  }, [createMutation, draft, isPosting, user?.user_id, repoId, queryKey, localKey, scopeId, initialCommentCount, comments.length, localCountFloorByRepo, setComposer]);
 
   const displayedCount = Math.max(
     initialCommentCount,
-    localCountFloorByRepo[repoId] ?? 0,
+    localCountFloorByRepo[scopeId] ?? 0,
     comments.length,
   );
   const composerDisabled = !draft.trim() || isPosting || !user?.user_id;
@@ -473,6 +536,20 @@ export function CommentSheet({
               keyboardShouldPersistTaps="handled"
               keyExtractor={(item) => item.comment_id}
               ListEmptyComponent={emptyState}
+              ListFooterComponent={commentsQuery.hasNextPage || commentsQuery.isFetchNextPageError ? (
+                <View style={{ alignItems: 'center', paddingVertical: 12 }}>
+                  {commentsQuery.isFetchNextPageError ? <Text style={styles.stateText}>More comments could not load.</Text> : null}
+                  <Pressable
+                    accessibilityRole="button"
+                    disabled={commentsQuery.isFetchingNextPage}
+                    onPress={() => { void commentsQuery.fetchNextPage(); }}
+                    style={styles.retryButton}
+                  >
+                    {commentsQuery.isFetchingNextPage ? <ActivityIndicator color={REFERENCE_THEME.accent} size="small" />
+                      : <Text style={styles.retryText}>{commentsQuery.isFetchNextPageError ? 'Try again' : 'Load more comments'}</Text>}
+                  </Pressable>
+                </View>
+              ) : null}
               renderItem={renderComment}
               showsVerticalScrollIndicator={false}
               style={styles.list}
