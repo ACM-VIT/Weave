@@ -64,6 +64,6 @@ test('Trending retains public repository content while viewer state stays outsid
   for(const field of ['summary_prompt_version','summary_source','languages','topics']) assert.match(publicSource,new RegExp(field));
   assert.match(publicSource,/x.content_version=c.content_version/);
   assert.doesNotMatch(publicSource,/viewer_reaction|viewer_saved|selected_list_ids|readme_md/);
-  const privateSource=source.slice(source.indexOf('export const loadTrendingViewerState'),source.indexOf('export function createTrendingHandler'));
+  const privateSource=source.slice(source.indexOf('export function createTrendingViewerLoader'),source.indexOf('export function createTrendingHandler'));
   for(const field of ['viewer_reaction','viewer_saved','selected_list_ids',"'collection:'","'legacy-board:'"]) assert.ok(privateSource.includes(field));
 });

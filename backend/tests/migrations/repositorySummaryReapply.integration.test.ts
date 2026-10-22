@@ -11,7 +11,7 @@ const integration = process.env.RUN_REPOSITORY_SUMMARY_MIGRATION_INTEGRATION ===
   : test.skip;
 const migration = fs.readFileSync(path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
-  '../../../database/migrations/0024_repository_summary_artifacts.sql',
+  '../../../database/migrations/0025_repository_summary_artifacts.sql',
 ), 'utf8');
 
 async function applyMigration(client: postgres.Sql): Promise<void> {

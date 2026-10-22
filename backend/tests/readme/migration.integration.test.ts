@@ -45,7 +45,7 @@ integration(`V2 migration histories reconcile safely: ${history}`,async()=>{
     if (history === 'dev-summary-recovery-first') {
       // Merged #136 published this same summary SQL as 0025 with a newer
       // timestamp. Its hash, not its filename, identifies the applied DDL.
-      const summary=journal.entries.find((entry:{tag:string})=>entry.tag==='0024_repository_summary_artifacts');
+      const summary=journal.entries.find((entry:{tag:string})=>entry.tag==='0025_repository_summary_artifacts');
       const recovery=journal.entries.find((entry:{tag:string})=>entry.tag==='0027_summary_artifact_revisions');
       for(const [entry,when] of [[summary,1792454400000],[recovery,recovery.when]] as const){
         const source=fs.readFileSync(new URL(entry.tag+'.sql',folder),'utf8');
@@ -94,9 +94,20 @@ integration(`V2 migration histories reconcile safely: ${history}`,async()=>{
     }
     run(['--readme-summary-only']);
     assert.equal((await isolated`SELECT to_regclass('app.repo_readme_summaries') AS present`)[0].present,null,'Default is a dry run');
-    run(['--readme-summary-only','--execute']);
+    const before=await isolated`SELECT hash,created_at FROM drizzle.__drizzle_migrations ORDER BY id`;
+    const blocked=run(['--readme-summary-only','--execute'],1);
+    assert.match(blocked.stderr,/Missing prerequisites:.*0024_explore_search/);
+    assert.deepEqual(await isolated`SELECT hash,created_at FROM drizzle.__drizzle_migrations ORDER BY id`,before);
+    // Reproduce a historical alias/README-first database directly. The current
+    // scoped runner now refuses to create this incomplete Search history.
+    for (const tag of ['0025_repository_summary_artifacts','0026_readme_summary_pipeline']) {
+      const entry=journal.entries.find((entry:{tag:string})=>entry.tag===tag);
+      const source=fs.readFileSync(new URL(entry.tag+'.sql',folder),'utf8');
+      await isolated.unsafe(source).simple();
+      await isolated`INSERT INTO drizzle.__drizzle_migrations(hash,created_at) VALUES(${crypto.createHash('sha256').update(source).digest('hex')},${entry.when})`;
+    }
     assert.ok((await isolated`SELECT to_regclass('app.repo_readme_summaries') AS present`)[0].present);
-    assert.equal((await isolated`SELECT to_regprocedure('app.explore_similarity(text,text)') AS present`)[0].present,null,'Unrelated Search DDL is not applied by the targeted upgrade');
+    assert.equal((await isolated`SELECT to_regprocedure('app.explore_similarity(text,text)') AS present`)[0].present,null,'The historical README-first fixture has not applied Search DDL');
     run([]);
     assert.ok((await isolated`SELECT column_name FROM information_schema.columns WHERE table_schema='app' AND table_name='repos' AND column_name='owner_github_id'`)[0], 'Retroactive repair applies the skipped owner identity migration');
     assert.ok((await isolated`SELECT to_regclass('app.social_profiles_provider_handle_uidx') AS present`)[0].present, 'Retroactive repair applies the skipped active handle index migration');

@@ -394,7 +394,7 @@ async function followList(req: AuthRequest, res: Response, direction: 'followers
 export const listFollowers = (req: AuthRequest, res: Response) => followList(req, res, 'followers');
 export const listFollowing = (req: AuthRequest, res: Response) => followList(req, res, 'following');
 
-// Optional summary/README metadata is read through JSON until migration 0024 is deployed.
+// Optional summary/README metadata is read through JSON until migration 0025 is deployed.
 // Missing provenance excludes legacy text so it can never appear as a concise Summary.
 export async function listLikesGiven(req: AuthRequest, res: Response): Promise<void> {
   const viewer = userId(req, res); const target = idParam(req, res, 'userId'); const page = paging(req);

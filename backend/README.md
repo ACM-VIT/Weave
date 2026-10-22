@@ -85,7 +85,7 @@ Topic slugs are lowercase letters/numbers/hyphens, 1-50 characters. Onboarding a
 | `GET /api/v2/repositories/trending` | `period` default `daily` | Active complete trending snapshot, ordered by position |
 | `GET /api/v2/repositories/saved` | `limit`, `offset` | Current user's saved repositories |
 
-Trending card responses are shared across viewers inside each API process, with
+Public Trending card projections are shared across viewers inside each API process, with
 at most three cached responses of 100 cards and a five-second freshness bound
 for counters, summaries, content and repository status. Every request rechecks
 eligible active snapshots; snapshot IDs, activation versions and available-period
@@ -93,12 +93,19 @@ changes invalidate the response immediately, including ingestion from another
 process. `ETag` covers the exact JSON response. Conditional GET/HEAD requests
 return an empty `304` when unchanged; `Cache-Control: private, no-cache` requires
 clients to revalidate through authentication rather than serving stale responses.
-Hydration has a five-second caller deadline and a transaction-local four-second
-PostgreSQL statement timeout. Expired pending work accepts no new waiters or
+The full handler has one five-second caller deadline across public lookup, private
+hydration and final serialization/hash, with monotonic pre/post work checks. Public
+card hydration also retains its transaction-local four-second PostgreSQL timeout.
+Expired pending work accepts no new waiters or
 replacement query for that period until the underlying operation settles;
 over-budget/busy requests return `503` with `Retry-After: 1` rather than stale cards.
-Viewer reactions, saves and List selections must be loaded outside this shared
-public cache; any viewer overlay must have its final response ETag recomputed.
+Viewer reactions, saves and List selections are batch-loaded on every request
+outside this public cache, with at most three private hydrations in flight. A
+timed-out request retains its private admission slot until its actual transaction
+settles. After connection acquisition, expired work rolls back before projection;
+the local query timeout is the smaller of four seconds and the remaining caller
+budget. The final viewer-specific JSON is serialized and hashed for its ETag;
+conditional requests cannot reuse another viewer's private state or skip this read.
 
 The frontend cannot import or mutate repository metadata. It records likes, saves, views, and other behavior through the interaction endpoint below. Repository details come from PostgreSQL, not ML/Qdrant.
 
@@ -241,7 +248,7 @@ Roll out the Phase 3 contract in this order:
    repository-index response, including its bounded versioned `card_summary`.
    Do not allow repository-index jobs to drain through an older backend during
    this compatibility window, because that backend cannot persist the artifact.
-3. Apply migration `0024_repository_summary_artifacts`, run `schema:audit`, and
+3. Apply migration `0025_repository_summary_artifacts`, run `schema:audit`, and
    deploy the matching backend/outbox worker. The migration deliberately makes
    legacy or ambiguous summary rows inactive; do not reverse that normalization.
 4. Start only the new outbox worker. Verify a live isolated ingestion canary stores `response_payload` and an
@@ -390,6 +397,47 @@ with no URL query/hash and no pre-existing active, complete Trending snapshots.
 It creates and removes its own synthetic repositories and snapshots; do not run
 it alongside other suites that change those tables. Redis and ML are not needed.
 Without `RUN_TRENDING_INTEGRATION=1`, these PostgreSQL checks are skipped.
+
+### Counter reconciliation
+
+Apply `0028_counter_reconciliation_progress` before starting the updated
+maintenance worker. `COUNTER_RECONCILIATION_BATCH_SIZE` bounds each repository
+and user transaction to 250 candidate counter rows by default (range 1–1000).
+The worker continues every second while a sweep has remaining work, then waits
+five minutes. Abandoned outbox claims and superseded repository-job repairs
+retain their independent five-minute scan.
+
+PostgreSQL stores the last UUID and fixed upper UUID for each sweep. Repairs and
+cursor advancement commit together; a restart resumes the same range. A rotating
+audit finds drift without relying on dirty markers. Both scopes finish the same
+sweep before the worker backs off. Inserts behind the cursor
+and rows skipped under foreground locks are retried on the next sweep. Missing
+counter rows themselves are not created by this audit.
+
+Each batch locks only its bounded candidate IDs with `FOR UPDATE SKIP LOCKED`,
+then computes grouped source aggregates in a **new READ COMMITTED statement**.
+Interaction writers must update their source rows and counters in the same
+transaction; maintenance never locks source rows. Separate repository/user
+transactions preserve foreground lock ordering. Only differing counters are
+updated; follow counts are outside this repair's scope. Transaction-local
+statement/lock timeouts are 3000/250 ms. These bound individual statements, not
+the entire sweep; exceptionally large source histories can time out and require
+a smaller batch or query investigation.
+
+`counter_reconciliation_batch_ms` and `counter_reconciliation_rows` expose
+per-scope batch duration and scanned/updated/skipped counts. Run the dedicated
+concurrency, restart, rollback and WAL checks alone against an empty, migrated
+disposable loopback `weave_scroll` database:
+
+```sh
+DATABASE_URL=postgresql://postgres@127.0.0.1:55429/weave_scroll \
+  RUN_RECONCILIATION_INTEGRATION=1 \
+  node --import tsx --test tests/database/counterReconciliation.integration.test.ts
+```
+
+Use your local instance's port and credentials. These fixtures create and remove
+their own users/repositories and reset the maintenance cursors. Redis and ML are
+not needed. The WAL comparison is a local sample, not a production benchmark.
 
 For a strict ML collection rebuild, run `npm run reindex:ml -- --campaign=<id>`
 first as a dry run, then repeat with `--execute` only after reviewing the counts

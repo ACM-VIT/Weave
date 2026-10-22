@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import test from 'node:test';
@@ -6,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 
 const migration = fs.readFileSync(path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
-  '../../../database/migrations/0024_repository_summary_artifacts.sql',
+  '../../../database/migrations/0025_repository_summary_artifacts.sql',
 ), 'utf8');
 const schemaAudit = fs.readFileSync(path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -14,6 +15,9 @@ const schemaAudit = fs.readFileSync(path.resolve(
 ), 'utf8');
 
 test('repository-summary migration preserves canonical README metadata and durable ML responses', () => {
+  assert.equal(createHash('sha256').update(migration).digest('hex'),
+    '7074ebe490eb967b86031010bfcdd202170b951863522120e756f632fcc1abc9',
+    'The canonical filename must preserve the already-applied 0024 alias SQL hash.');
   for (const column of [
     'readme_source_path',
     'readme_default_branch',

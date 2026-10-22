@@ -255,7 +255,7 @@ async function adoptStructurallyVerifiedV2History(): Promise<void> {
 }
 
 async function applyReadmePipelineMigrations(): Promise<void> {
-  const entries = migrationEntries(['0024_repository_summary_artifacts','0026_readme_summary_pipeline']);
+  const entries = migrationEntries(['0025_repository_summary_artifacts','0026_readme_summary_pipeline']);
   const recorded = await recordedMigrationHashes();
   const pending = entries.filter((entry) => !recorded.has(entry.hash));
   console.log(`README pipeline migrations: ${pending.map((entry) => entry.tag).join(', ') || 'current'}`);
@@ -267,9 +267,12 @@ async function applyReadmePipelineMigrations(): Promise<void> {
     if (!await relationExists(schema,table)) throw new Error('The canonical V2 baseline is required before README migrations.');
   }
   // Drizzle uses the newest timestamp, so a scoped upgrade must never leap
-  // over required V2 DDL (including external profiles). Require the complete
-  // pre-0024 journal before recording the newer README migrations.
-  const prerequisites = journal.entries.filter(entry => Number(entry.tag.slice(0, 4)) < 24);
+  // over required V2 DDL, including Search. The scoped entries themselves
+  // are applied below; every other earlier entry must already be recorded.
+  const scopedTags = new Set(entries.map(entry => entry.tag));
+  const newestScopedTimestamp = Math.max(...entries.map(entry => entry.when));
+  const prerequisites = journal.entries.filter(entry =>
+    entry.when <= newestScopedTimestamp && !scopedTags.has(entry.tag));
   const missing = migrationEntries(prerequisites.map(entry => entry.tag))
     .filter(entry => !recorded.has(entry.hash));
   if (missing.length) {
