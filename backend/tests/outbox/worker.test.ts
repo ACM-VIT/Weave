@@ -168,3 +168,20 @@ test('repository-index contract and deterministic completion conflicts become te
   assert.equal(failures[0].retryable, false);
   assert.match(failures[0].detail, /content hash/);
 });
+
+
+test('refresh transport excludes internal content-index dependency metadata', async () => {
+  const item: OutboxRow = { ...row('00000000-0000-4000-8000-000000000099'), job_type: 'repo_refresh',
+    payload: { job_id: '00000000-0000-4000-8000-000000000099',
+      repo_id: '00000000-0000-4000-8000-000000000010', feature_version: 7,
+      features: { star_count: 3 }, required_content_version: 2 } };
+  const outbox = { claim: async () => [item], markDelivered: async () => {},
+    markFailed: async () => { throw new Error('unexpected failure'); } } as unknown as OutboxService;
+  const transport = { deliverRepositoryRefresh: async (payload: unknown) => {
+    assert.deepEqual(payload, { job_id: '00000000-0000-4000-8000-000000000099',
+      repo_id: '00000000-0000-4000-8000-000000000010', feature_version: 7,
+      features: { star_count: 3 } });
+    return { accepted: true, retryable: false, status_code: 200 };
+  } } as unknown as OutboxTransportPort;
+  assert.equal(await new OutboxWorker(outbox, transport).runOnce(1), 1);
+});

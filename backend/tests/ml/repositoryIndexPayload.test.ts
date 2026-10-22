@@ -6,6 +6,7 @@ import {
   buildMlRepositoryFeaturePatch,
   buildMlRepositorySource,
   repositoryContentHash,
+  repositoryRefreshIdempotencyKey,
 } from '../../services/mlRepositoryPayloadService.js';
 
 const ingestionRecord: RepositoryUpsert = {
@@ -163,4 +164,33 @@ test('index-only activity fields trigger delivery even when repository prose is 
     assert.equal(indexed.readme_to_codebase_ratio, updated.readme_to_codebase_ratio);
     assert.deepEqual(indexed.recent_commits, updated.recent_commits?.map((value) => new Date(value).toISOString()));
   }
+});
+
+test('canonical topic identity ignores whitespace, case, duplicates and ordering', () => {
+  const first = { ...ingestionRecord, topics: [' Systems ', 'api', 'SYSTEMS'] };
+  const second = { ...ingestionRecord, topics: ['API', 'systems'] };
+  assert.equal(repositoryContentHash(first), repositoryContentHash(second));
+  assert.deepEqual(buildMlRepositorySource(first, 'hash').topics, ['api', 'systems']);
+  assert.notEqual(repositoryContentHash(first), repositoryContentHash({ ...first, topics: ['api'] }));
+});
+
+test('index-only creation time participates in canonical identity', () => {
+  assert.notEqual(repositoryContentHash(ingestionRecord), repositoryContentHash({
+    ...ingestionRecord, created_at: '2024-01-01T00:00:00Z',
+  }));
+  assert.equal(repositoryContentHash(ingestionRecord), repositoryContentHash({
+    ...ingestionRecord, created_at: '2025-01-01T00:00:00Z',
+  }));
+});
+
+test('refresh identity merges only complete equivalent patches at the same feature version', () => {
+  const patch = buildMlRepositoryFeaturePatch(ingestionRecord);
+  const key = repositoryRefreshIdempotencyKey('repository-id', 100, patch, 1);
+  assert.notEqual(key, repositoryRefreshIdempotencyKey('repository-id', 100, patch, 2));
+  const reordered = Object.fromEntries(Object.entries(patch).reverse());
+  assert.equal(key, repositoryRefreshIdempotencyKey('repository-id', 100, reordered, 1));
+  assert.notEqual(key, repositoryRefreshIdempotencyKey('repository-id', 101, patch, 1));
+  assert.notEqual(key, repositoryRefreshIdempotencyKey('different-repository', 100, patch, 1));
+  assert.notEqual(key, repositoryRefreshIdempotencyKey('repository-id', 100, { ...patch, star_count: 43 }, 1));
+  assert.notEqual(key, repositoryRefreshIdempotencyKey('repository-id', 100, { ...patch, delta_7d: undefined }, 1));
 });

@@ -110,27 +110,31 @@ export class OutboxService {
         )
         AND (
           candidate.job_type<>'repo_refresh'
-          OR (
-            EXISTS (
-              SELECT 1 FROM telemetry.ml_outbox delivered_index
-              WHERE delivered_index.aggregate_id=candidate.aggregate_id
-                AND delivered_index.job_type='repo_index'
-                AND delivered_index.status='delivered'
-            )
-            AND NOT EXISTS (
-              SELECT 1 FROM telemetry.ml_outbox predecessor_index
-              WHERE predecessor_index.aggregate_id=candidate.aggregate_id
-                AND predecessor_index.job_type='repo_index'
-                AND predecessor_index.created_at<=candidate.created_at
-                AND predecessor_index.status<>'delivered'
-                AND NOT EXISTS (
-                  SELECT 1 FROM telemetry.ml_outbox successor_index
-                  WHERE successor_index.aggregate_id=predecessor_index.aggregate_id
-                    AND successor_index.job_type='repo_index'
-                    AND successor_index.status='delivered'
-                    AND successor_index.created_at>=predecessor_index.created_at
-                )
-            )
+          OR EXISTS (
+            SELECT 1 FROM telemetry.ml_outbox delivered_index
+            LEFT JOIN app.repo_content canonical ON canonical.repo_id=candidate.aggregate_id
+            CROSS JOIN LATERAL (
+              -- Missing metadata denotes a legacy job. Never treat malformed
+              -- present metadata as legacy or infer dependencies from timestamps.
+              SELECT CASE WHEN candidate.payload ? 'required_content_version'
+                THEN candidate.payload->>'required_content_version'
+                ELSE canonical.content_version::text END AS content_version
+            ) required_index
+            WHERE delivered_index.aggregate_id=candidate.aggregate_id
+              AND delivered_index.job_type='repo_index'
+              AND delivered_index.status='delivered'
+              AND CASE
+                WHEN delivered_index.payload->>'content_version' ~ '^[1-9][0-9]{0,9}$'
+                  AND required_index.content_version ~ '^[1-9][0-9]{0,9}$'
+                THEN CASE
+                  WHEN (delivered_index.payload->>'content_version')::bigint <= 2147483647
+                    AND required_index.content_version::bigint <= 2147483647
+                  THEN (delivered_index.payload->>'content_version')::bigint
+                    >= required_index.content_version::bigint
+                  ELSE false
+                END
+                ELSE false
+              END
           )
         )
         ORDER BY
@@ -363,7 +367,7 @@ export class OutboxService {
   async supersedeRepositoryJobDeliveredBySuccessor(outboxId: string): Promise<boolean> {
     return sqlClient.begin(async (tx) => {
       const rows = await tx`
-        SELECT outbox_id,job_type,aggregate_id,created_at
+        SELECT outbox_id,job_type,aggregate_id,created_at,payload->>'content_version' AS content_version
         FROM telemetry.ml_outbox
         WHERE outbox_id=${outboxId}::uuid AND status='dead'
           AND job_type IN ('repo_index','repo_refresh')
@@ -371,13 +375,30 @@ export class OutboxService {
       `;
       const row = rows[0];
       if (!row) return false;
+      // Validate stored text before binding a numeric SQL constant. CASE cannot
+      // make a planner-folded cast of malformed parameter text safe.
+      const rawContentVersion = String(row.content_version ?? '');
+      const contentVersion = /^[1-9][0-9]{0,9}$/.test(rawContentVersion)
+        ? Number(rawContentVersion) : null;
+      if (row.job_type === 'repo_index' && (contentVersion === null || contentVersion > 2147483647)) return false;
       const successors = await tx`
         SELECT 1 FROM telemetry.ml_outbox
         WHERE aggregate_id=${String(row.aggregate_id)}::uuid
           AND job_type IN ('repo_index','repo_refresh')
           AND (${String(row.job_type)} <> 'repo_index' OR job_type='repo_index')
           AND status='delivered'
-          AND created_at>=${row.created_at as string}::timestamptz
+          AND CASE WHEN ${String(row.job_type)}='repo_index'
+            THEN CASE
+              WHEN payload->>'content_version' ~ '^[1-9][0-9]{0,9}$'
+              THEN CASE
+                WHEN (payload->>'content_version')::bigint <= 2147483647
+                THEN (payload->>'content_version')::bigint >= ${contentVersion}::integer
+                ELSE false
+              END
+              ELSE false
+            END
+            ELSE created_at>=${row.created_at as string}::timestamptz
+          END
           AND outbox_id<>${outboxId}::uuid
         LIMIT 1
       `;
@@ -406,7 +427,21 @@ export class OutboxService {
               -- A metadata refresh cannot repair a failed content index.
               AND (dead.job_type <> 'repo_index' OR successor.job_type='repo_index')
               AND successor.status='delivered'
-              AND successor.created_at>=dead.created_at
+              AND CASE WHEN dead.job_type='repo_index'
+                THEN CASE
+                  WHEN dead.payload->>'content_version' ~ '^[1-9][0-9]{0,9}$'
+                    AND successor.payload->>'content_version' ~ '^[1-9][0-9]{0,9}$'
+                  THEN CASE
+                    WHEN (dead.payload->>'content_version')::bigint <= 2147483647
+                      AND (successor.payload->>'content_version')::bigint <= 2147483647
+                    THEN (successor.payload->>'content_version')::bigint
+                      >= (dead.payload->>'content_version')::bigint
+                    ELSE false
+                  END
+                  ELSE false
+                END
+                ELSE successor.created_at>=dead.created_at
+              END
               AND successor.outbox_id<>dead.outbox_id
           )
         ORDER BY dead.created_at

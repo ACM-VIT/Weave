@@ -231,7 +231,7 @@ integration('v2 database, outbox, and Redis feed flows preserve invariants', asy
     INSERT INTO telemetry.ml_outbox (
       job_type,aggregate_id,idempotency_key,payload,created_at
     ) VALUES
-      ('repo_index',${repoId}::uuid,'integration:old-repo-index','{}'::jsonb,now()-interval '1 day'),
+      ('repo_index',${repoId}::uuid,'integration:old-repo-index','{"content_version":1}'::jsonb,now()-interval '1 day'),
       ('onboard',${userId}::uuid,'integration:new-onboard','{}'::jsonb,now())
   `;
   const priorityWorker = new OutboxService();
@@ -309,9 +309,9 @@ integration('v2 database, outbox, and Redis feed flows preserve invariants', asy
       outbox_id,job_type,aggregate_id,idempotency_key,payload,status,created_at,delivered_at
     ) VALUES
       (${historicalRepositoryJobId}::uuid,'repo_index',${repoId}::uuid,
-        ${`integration:historical-repository:${historicalRepositoryJobId}`},'{}'::jsonb,'dead',now()-interval '2 minutes',NULL),
+        ${`integration:historical-repository:${historicalRepositoryJobId}`},'{"content_version":1}'::jsonb,'dead',now()-interval '2 minutes',NULL),
       (${successorRepositoryJobId}::uuid,'repo_index',${repoId}::uuid,
-        ${`integration:repository-successor:${successorRepositoryJobId}`},'{}'::jsonb,'delivered',now()-interval '1 minute',now()),
+        ${`integration:repository-successor:${successorRepositoryJobId}`},'{"content_version":2}'::jsonb,'delivered',now()-interval '1 minute',now()),
       (${unresolvedRepositoryJobId}::uuid,'repo_refresh',${repoId}::uuid,
         ${`integration:unresolved-repository:${unresolvedRepositoryJobId}`},'{}'::jsonb,'dead',now(),NULL)
   `;
