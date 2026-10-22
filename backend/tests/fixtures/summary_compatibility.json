@@ -108,5 +108,53 @@
     "name": "GPL version in ordinary prose",
     "summary": "Tools compare GPL v3+ compatibility across projects. Teams can track policy changes.",
     "valid": true
+  },
+  {
+    "name": "GPL after example abbreviation",
+    "summary": "It compares policies, e.g. GPL. Teams can review package choices.",
+    "highlights": [
+      "Policy examples, e.g. GPL"
+    ],
+    "valid": true
+  },
+  {
+    "name": "GPL after explanation abbreviation",
+    "summary": "It compares policies, i.e. GPL. Teams can review package choices.",
+    "valid": true
+  },
+  {
+    "name": "unfinished fourth abbreviation tail",
+    "summary": "It supports shared workflows. Teams can review changes. Users can coordinate updates. Supported formats include, e.g.",
+    "valid": false
+  },
+  {
+    "name": "unfinished third abbreviation tail",
+    "summary": "It supports shared workflows. Teams can review changes. Supported formats include, i.e.",
+    "valid": false
+  },
+  {
+    "name": "quoted sentence ending",
+    "summary": "It provides a review workspace. Teams call it \"easy to follow.\"",
+    "valid": true
+  },
+  {
+    "name": "curly quoted sentence ending",
+    "summary": "It provides a review workspace. Teams call it “easy to follow.”",
+    "valid": true
+  },
+  {
+    "name": "mixed script adjacent abbreviation",
+    "summary": "它支持多种格式e.g. JSON and YAML. Developers can add custom parsers.",
+    "valid": true
+  },
+  {
+    "name": "mixed script explanation abbreviation",
+    "summary": "它支持多种格式i.e. JSON and YAML. Developers can add custom parsers.",
+    "valid": true
+  },
+  {
+    "name": "ASCII embedded abbreviation is not masked",
+    "summary": "It supports somee.g. formats. Teams review changes. Users share updates.",
+    "valid": false
   }
 ]

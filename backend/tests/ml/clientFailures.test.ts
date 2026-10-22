@@ -273,45 +273,89 @@ for (const fixture of compatibilityCases) {
   });
 }
 
-test('real Python pipeline artifacts are accepted by Node HTTP delivery', {
+test('real ML HTTP routes and Qdrant replay deliver compatible summaries to Node', {
   skip: !process.env.WEAVE_ML_ROOT || !process.env.WEAVE_ML_PYTHON,
-}, async () => {
-  const artifacts = JSON.parse(execFileSync(process.env.WEAVE_ML_PYTHON!, ['-c', `
-import json
+}, async (t) => {
+  const exchanges = JSON.parse(execFileSync(process.env.WEAVE_ML_PYTHON!, ['-c', `
+import copy, json, os, sys, uuid
+from contextlib import nullcontext
 from pathlib import Path
+from unittest.mock import patch
+from fastapi.testclient import TestClient
+from api.main import app
+from embedding.embedding_pipeline import RepositoryEmbeddingPipeline
+from summarization.contracts import CardSummaryArtifact, card_summary_payload
 from summarization.pipeline import CardSummaryPipeline
+from tests.test_v2_summary_contract import FakeEmbedder, OwnedLock, _qdrant_store
+os.environ['INTERNAL_API_SECRET'] = 'test'
+os.environ['INTERNAL_API_HEADER'] = 'x-internal-secret'
+template = json.load(sys.stdin)
 cases = json.loads(Path('tests/fixtures/summary_compatibility.json').read_text())
-artifacts = []
-for case in cases:
-    if not case['valid']:
-        continue
-    class Provider:
-        def generate(self, *args, **kwargs):
-            return json.dumps({'summary': case['summary'], 'highlights': case.get('highlights', [])})
-    repo = {'full_name': 'weave/compatibility', 'description': 'A focused developer tool.' if len(case['summary']) >= 180 else case['summary']}
-    pipeline = CardSummaryPipeline(provider=Provider() if len(case['summary']) >= 180 else None)
-    artifact = pipeline.summarize(repo, repo)
-    if len(case['summary']) >= 180:
-        assert artifact.source == 'generated'
-    artifacts.append(artifact.model_dump(mode='json'))
-print(json.dumps(artifacts))
-`], { cwd: process.env.WEAVE_ML_ROOT, encoding: 'utf8', timeout: 30_000 })) as
-    MlRepositoryIndexResponse['card_summary'][];
-  for (const card_summary of artifacts) {
-    for (const status of ['applied', 'duplicate', 'current'] as const) {
-      const expected = repositoryResponse({ status, card_summary });
-      await withServer((_request, response) => {
-        response.writeHead(200, { 'content-type': 'application/json' });
-        response.end(JSON.stringify(expected));
-      }, async (url) => {
-        const result = await new MlV2Client({
-          baseUrl: url, internalSecret: 'test', timeoutMs: 500, maxResponseBytes: 10_000,
-        }).deliverRepositoryIndex(repositoryJob);
-        assert.equal(result.accepted, true, JSON.stringify(result));
-        assert.equal(result.retryable, false);
-        assert.deepEqual(result.response_body, expected);
-      });
-    }
+exchanges = []
+client, store = _qdrant_store()
+http = TestClient(app)
+try:
+    for index, case in enumerate(case for case in cases if case['valid']):
+        job = copy.deepcopy(template)
+        job['job_id'] = str(uuid.uuid4())
+        job['content_version'] = index + 1
+        job['repository']['content_hash'] = str(index)
+        job['repository']['description'] = 'A focused developer tool.' if len(case['summary']) >= 180 else case['summary']
+        class Provider:
+            def generate(self, *args, **kwargs):
+                return json.dumps({'summary': case['summary'], 'highlights': case.get('highlights', [])})
+        pipeline = RepositoryEmbeddingPipeline(embedder=FakeEmbedder(), card_summarizer=CardSummaryPipeline(
+            provider=Provider() if len(case['summary']) >= 180 else None))
+        with patch('api.v2._repository_points', side_effect=lambda repo_id: client.retrieve(
+            store.collection_name, [repo_id], with_payload=True)), patch(
+            'api.v2.repository_embedding_pipeline', return_value=pipeline), patch(
+            'api.v2.repository_store', return_value=store), patch(
+            'api.v2._repository_job_lock', side_effect=lambda _id: nullcontext(OwnedLock())):
+            assert http.post('/api/v2/repositories/embed', json={'schema_version': 2, **job}).status_code == 401
+            for expected_status in ['applied', 'duplicate', 'current']:
+                if expected_status == 'current':
+                    job['job_id'] = str(uuid.uuid4())
+                reply = http.post('/api/v2/repositories/embed', json={'schema_version': 2, **job},
+                                  headers={'x-internal-secret': 'test'})
+                assert reply.status_code == 200, reply.text
+                body = reply.json()
+                assert body['status'] == expected_status
+                exchanges.append({'job': copy.deepcopy(job), 'response': body})
+            # Correct fingerprints do not exempt pre-fix artifacts from validation.
+            for old_summary in ['GPL. Teams can redistribute the software.',
+                'It supports shared workflows. Teams review changes. Users share updates. Formats include, e.g.']:
+                for expected_status in ['duplicate', 'current']:
+                    point = client.retrieve(store.collection_name, [job['repo_id']], with_payload=True)[0]
+                    malformed = CardSummaryArtifact(**{**body['card_summary'], 'summary': old_summary})
+                    client.set_payload(store.collection_name, card_summary_payload(malformed), [job['repo_id']], wait=True)
+                    job['job_id'] = point.payload['content_job_id'] if expected_status == 'duplicate' else str(uuid.uuid4())
+                    reply = http.post('/api/v2/repositories/embed', json={'schema_version': 2, **job},
+                                      headers={'x-internal-secret': 'test'})
+                    assert reply.status_code == 200, reply.text
+                    body = reply.json()
+                    assert body['status'] == expected_status
+                    assert body['card_summary']['summary'] != old_summary
+                    exchanges.append({'job': copy.deepcopy(job), 'response': body})
+finally:
+    http.close()
+    client.close()
+print(json.dumps(exchanges))
+`], { cwd: process.env.WEAVE_ML_ROOT, input: JSON.stringify(repositoryJob), encoding: 'utf8', timeout: 60_000 })) as
+    Array<{ job: MlRepositoryIndexJob; response: MlRepositoryIndexResponse }>;
+  assert.ok(exchanges.length >= 50);
+  t.diagnostic(`${exchanges.length} authenticated ML responses validated through Node HTTP delivery.`);
+  for (const { job, response: expected } of exchanges) {
+    await withServer((_request, response) => {
+      response.writeHead(200, { 'content-type': 'application/json' });
+      response.end(JSON.stringify(expected));
+    }, async (url) => {
+      const result = await new MlV2Client({
+        baseUrl: url, internalSecret: 'test', timeoutMs: 500, maxResponseBytes: 10_000,
+      }).deliverRepositoryIndex(job);
+      assert.equal(result.accepted, true, JSON.stringify(result));
+      assert.equal(result.retryable, false);
+      assert.deepEqual(result.response_body, expected);
+    });
   }
 });
 

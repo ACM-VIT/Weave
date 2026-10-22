@@ -47,15 +47,19 @@ function boundedVersion(value: unknown, maximum = 200): value is string {
     && value.length >= 1 && value.length <= maximum;
 }
 
-function hasTwoOrThreeCompleteSentences(value: string): boolean {
-  // These inline abbreviations introduce examples/explanations, not sentences.
-  const prose = value.replace(/\b(?:e\.g|i\.e)\./giu, (match) => match.replaceAll('.', ''))
-    .replace(/\b(?:Mr|Mrs|Ms|Dr|Prof|Jr|Sr|vs)\.(?=\s+\p{L})/gu, (match) => match.slice(0, -1))
+function maskSummaryAbbreviations(value: string): string {
+  // Explicit ASCII token boundaries match Python, including adjacent non-Latin text.
+  return value.replace(/(?<![A-Za-z0-9_])(?:e\.g|i\.e)\./giu, (match) => match.replaceAll('.', '·'))
+    .replace(/(?<![A-Za-z0-9_])(?:Mr|Mrs|Ms|Dr|Prof|Jr|Sr|vs)\.(?=\s+\p{L})/gu, (match) => match.replaceAll('.', '·'))
     // Ambiguous abbreviations retain their ending before a new capitalized sentence.
-    .replace(/\b(?:etc\.|(?:[A-Z]\.){2,})(?=\s+\p{Ll})/gu, (match) => match.replaceAll('.', ''));
-  const endings = prose.match(/[.!?](?:["')\]]+)?(?=\s|$)/gu) ?? [];
+    .replace(/(?<![A-Za-z0-9_])(?:etc\.|(?:[A-Z]\.){2,})(?=\s+\p{Ll})/gu, (match) => match.replaceAll('.', '·'));
+}
+
+function hasTwoOrThreeCompleteSentences(value: string): boolean {
+  const prose = maskSummaryAbbreviations(value);
+  const endings = prose.match(/[.!?](?:["'”’)\]]+)?(?=\s|$)/gu) ?? [];
   return (endings.length === 2 || endings.length === 3)
-    && /[.!?](?:["')\]]+)?(?=\s|$)/u.test(value.slice(-4));
+    && /[.!?](?:["'”’)\]]+)?$/u.test(prose);
 }
 
 function normalizedProse(value: string): string {
@@ -80,12 +84,13 @@ function containsCopiedPassage(
 }
 
 function hasForbiddenCardContent(value: string): boolean {
+  const prose = maskSummaryAbbreviations(value);
   return /(?:^|\n)\s*#{1,6}\s|```|~~~|`/.test(value)
     || /(?:^|\n)\s*(?:[-+*]|\d+[.)])\s+/u.test(value)
     || /!?\[[^\]\n]*\]\([^)\n]+\)/u.test(value)
-    || /(?:^|[.!?]\s+|\n)[ \t]*(?:installation(?: instructions?)?|license(?: text)?|contribut(?:ing|ors?)(?: section)?|changelog|table of contents|API (?:reference|documentation))\s*[:\-]/i.test(value)
+    || /(?:^|[.!?]\s+|\n)[ \t]*(?:installation(?: instructions?)?|license(?: text)?|contribut(?:ing|ors?)(?: section)?|changelog|table of contents|API (?:reference|documentation))\s*[:\-]/i.test(prose)
     || /\b(?:licensed under|MIT License|Apache License|GNU (?:General Public )?License)\b/i.test(value)
-    || /(?:^|[.!?]\s+|\n)[ \t]*GPL(?:[ \t-]*v?\d+(?:\.\d+)*(?:\+|[ \t]+or[ \t]+later)?|[ \t]*\+|[ \t]+or[ \t]+later)?[ \t]*(?:[.!?:]|$)/i.test(value)
+    || /(?:^|[.!?]\s+|\n)[ \t]*GPL(?:[ \t-]*v?\d+(?:\.\d+)*(?:\+|[ \t]+or[ \t]+later)?|[ \t]*\+|[ \t]+or[ \t]+later)?[ \t]*(?:[.!?:]|$)/i.test(prose)
     || /\b(?:npm|pnpm|yarn|pip|pipx|uv|cargo|go|brew)\s+(?:install|add|run|get)\b/i.test(value);
 }
 
