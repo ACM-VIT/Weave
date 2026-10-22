@@ -25,13 +25,11 @@ const listRows = (collectionPredicate = '', boardPredicate = '') => `SELECT 'col
 
 const peopleRows = (userPredicate = '', profilePredicate = '') => `SELECT 'user:'||u.user_id::text AS id,u.user_id,NULL::uuid AS profile_id,
   u.username::text AS username,u.full_name AS display_name,u.github_handle,u.bio,u.avatar_url,
-  ${userText} AS search_text,
-  COALESCE((SELECT string_agg(p.handle||' '||coalesce(p.display_name,''),' ') FROM app.social_profiles p
-    WHERE p.claimed_by_user_id=u.user_id AND p.status='active'),'') AS social_text
+  ${userText} AS search_text
   FROM app.users u WHERE u.status='active' ${userPredicate}
   UNION ALL
   SELECT 'profile:'||p.profile_id::text,NULL::uuid,p.profile_id,p.handle,p.display_name,p.handle,NULL::text,p.avatar_url,
-  ${profileText},''::text FROM app.social_profiles p
+  ${profileText} FROM app.social_profiles p
   WHERE p.status='active' ${profilePredicate} AND p.claimed_by_user_id IS NULL AND p.profile_kind IN ('user','unknown')
   AND NOT EXISTS (SELECT 1 FROM app.users u WHERE
     (u.github_id IS NOT NULL AND u.github_id=p.provider_subject)
@@ -69,8 +67,14 @@ export class PostgresSearchPersistence implements SearchPersistence {
     return rows.map(row => ({ id: String(row.id), exact: row.exact === true }));
   }
   async people(request: SearchRequest): Promise<SearchRef[]> {
-    const rows = await sqlClient.unsafe(`WITH candidates AS (${peopleRows()}) SELECT id FROM candidates
-      WHERE search_text LIKE $1 OR lower(social_text) LIKE $1
+    const rows = await sqlClient.unsafe(`WITH matching_users AS (
+      SELECT u.user_id FROM app.users u WHERE u.status='active' AND ${userText} LIKE $1
+      UNION
+      SELECT p.claimed_by_user_id FROM app.social_profiles p
+      WHERE p.status='active' AND p.claimed_by_user_id IS NOT NULL AND ${profileText} LIKE $1
+    ), candidates AS (${peopleRows(
+      'AND u.user_id IN (SELECT user_id FROM matching_users)', `AND ${profileText} LIKE $1`,
+    )}) SELECT id FROM candidates
       ORDER BY (lower(username)=lower($2)) DESC,app.explore_similarity(search_text,lower($2)) DESC,id LIMIT 100`, [searchPattern(request.query),request.query]);
     return rows.map(row => ({ type: 'person', id: String(row.id) }));
   }
