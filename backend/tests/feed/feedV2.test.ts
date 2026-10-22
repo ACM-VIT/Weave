@@ -16,7 +16,10 @@ const repo: RepositoryProjection = {
   owner_bio: null, viewer_follows_owner: false,
   primary_language: 'TypeScript', languages: ['TypeScript'], topics: [], star_count: 1, fork_count: 0,
   likes_count: 0, comments_count: 0, views_count: 0, open_issues_count: 0,
-  summary_id: null, summary: null, readme_md: null, updated_at: null, status: 'active',
+  summary_id: null, summary: null, summary_highlights: [], summary_prompt_version: null,
+  summary_model_version: null, summary_format_version: null, summary_source: null,
+  readme_md: null, readme_source_path: null, readme_default_branch: null,
+  readme_base_url: null, updated_at: null, status: 'active',
   viewer_reaction: null, viewer_saved: false,
 };
 
@@ -84,7 +87,42 @@ test('v2 feed reserves, persists, commits, and replays the same serve', async ()
   assert.equal(queue.released, 0);
 });
 
-test('v2 feed persists trending fallback when Redis is unavailable', async () => {
+test('v2 feed replaces a stale queued summary id with the current persisted projection', async () => {
+  const persistence = new FakePersistence();
+  const queue = new FakeQueue();
+  const currentSummaryId = '00000000-0000-4000-8000-000000000091';
+  persistence.listActiveRepositories = async (repoIds: string[]) => repoIds.map((repoId) => ({
+    ...repo,
+    repo_id: repoId,
+    summary_id: currentSummaryId,
+    summary: 'Current persisted summary.',
+  }));
+  queue.reserve = async (_user, _version, requestId, _limit, token) => ({
+    requestId,
+    token,
+    items: [{
+      repo_id: repo.repo_id,
+      score: 1,
+      source: 'semantic',
+      model_version: 'm1',
+      summary_id: '00000000-0000-4000-8000-000000000090',
+    }],
+  });
+
+  const response = await new FeedV2Service(persistence, queue).getFeed(
+    '00000000-0000-4000-8000-000000000030',
+    {
+      feed_request_id: '00000000-0000-4000-8000-000000000018',
+      session_id: '00000000-0000-4000-8000-000000000020',
+      limit: 10,
+      cursor: null,
+    },
+  );
+  assert.equal(response.items[0].summary_id, currentSummaryId);
+  assert.equal(persistence.serve?.items[0].summary_id, currentSummaryId);
+});
+
+test('v2 feed reuses only current-version personalized entries when Redis is unavailable', async () => {
   const persistence = new FakePersistence();
   const queue = new FakeQueue();
   queue.reserve = async () => { throw new Error('redis offline'); };

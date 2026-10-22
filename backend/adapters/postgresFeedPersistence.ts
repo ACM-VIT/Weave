@@ -32,7 +32,16 @@ function projection(row: Record<string, unknown>): RepositoryProjection {
     open_issues_count: Number(row.open_issues_count ?? 0),
     summary_id: row.summary_id == null ? null : String(row.summary_id),
     summary: row.summary == null ? null : String(row.summary),
+    summary_highlights: Array.isArray(row.summary_highlights) ? row.summary_highlights.map(String) : [],
+    summary_prompt_version: row.summary_prompt_version == null ? null : String(row.summary_prompt_version),
+    summary_model_version: row.summary_model_version == null ? null : String(row.summary_model_version),
+    summary_format_version: row.summary_format_version == null ? null : String(row.summary_format_version),
+    summary_source: row.summary_source === 'generated' || row.summary_source === 'description_fallback'
+      ? row.summary_source : null,
     readme_md: row.readme == null ? null : String(row.readme),
+    readme_source_path: row.readme_source_path == null ? null : String(row.readme_source_path),
+    readme_default_branch: row.readme_default_branch == null ? null : String(row.readme_default_branch),
+    readme_base_url: row.readme_base_url == null ? null : String(row.readme_base_url),
     updated_at: row.updated_at == null ? null : String(row.updated_at),
     viewer_reaction: row.viewer_reaction === 'like' || row.viewer_reaction === 'dislike'
       ? row.viewer_reaction : null,
@@ -144,11 +153,21 @@ export class PostgresFeedPersistence implements FeedPersistencePort, FeedReconci
     if (serves.length === 0) return null;
     const serve = serves[0];
     const rows = await sqlClient`
-      SELECT item.*, repo.full_name, repo.updated_at, content.description, content.primary_language, content.languages, content.readme,
+      SELECT item.serve_id,item.position,item.repo_id,item.score,item.source,item.model_version,
+             COALESCE(exact_summary.summary_id,current_summary.summary_id) AS summary_id,
+             repo.full_name, repo.updated_at, content.description, content.primary_language,
+             content.languages, content.readme,content.readme_source_path,
+             content.readme_default_branch,content.readme_base_url,
              COALESCE(topic_values.topics, '[]'::jsonb) AS topics,
              stats.star_count, stats.fork_count, stats.open_issues_count,
              engagement.likes_count, engagement.comments_count, engagement.views_count,
-             summary.summary, reaction.reaction AS viewer_reaction,
+             COALESCE(exact_summary.summary,current_summary.summary) AS summary,
+             COALESCE(exact_summary.highlights,current_summary.highlights,'[]'::jsonb) AS summary_highlights,
+             COALESCE(exact_summary.prompt_version,current_summary.prompt_version) AS summary_prompt_version,
+             COALESCE(exact_summary.model_version,current_summary.model_version) AS summary_model_version,
+             COALESCE(exact_summary.format_version,current_summary.format_version) AS summary_format_version,
+             COALESCE(exact_summary.source,current_summary.source) AS summary_source,
+             reaction.reaction AS viewer_reaction,
              (saved.repo_id IS NOT NULL) AS viewer_saved,
              social_profile.claimed_by_user_id AS owner_user_id,
              social_profile.profile_id AS owner_profile_id,
@@ -197,7 +216,20 @@ export class PostgresFeedPersistence implements FeedPersistencePort, FeedReconci
         WHERE snapshot.repo_id = repo.repo_id ORDER BY observed_at DESC LIMIT 1
       ) stats ON true
       LEFT JOIN app.repo_engagement engagement ON engagement.repo_id = repo.repo_id
-      LEFT JOIN app.repo_card_summaries summary ON summary.summary_id = item.summary_id
+      LEFT JOIN app.repo_card_summaries exact_summary
+        ON exact_summary.summary_id=item.summary_id
+       AND exact_summary.repo_id=repo.repo_id
+       AND exact_summary.content_version=content.content_version
+       AND exact_summary.source<>'legacy'
+       AND char_length(btrim(exact_summary.summary)) BETWEEN 1 AND 360
+      LEFT JOIN LATERAL (
+        SELECT card.summary_id,card.summary,card.highlights,card.prompt_version,
+          card.model_version,card.format_version,card.source
+        FROM app.repo_card_summaries card
+        WHERE card.repo_id=repo.repo_id AND card.active
+          AND card.content_version=content.content_version
+        ORDER BY card.created_at DESC LIMIT 1
+      ) current_summary ON exact_summary.summary_id IS NULL
       LEFT JOIN app.reactions reaction ON reaction.repo_id=repo.repo_id AND reaction.user_id=${String(serve.user_id)}::uuid
       LEFT JOIN app.saves saved ON saved.repo_id=repo.repo_id AND saved.user_id=${String(serve.user_id)}::uuid
       WHERE item.serve_id = ${serve.serve_id}::uuid ORDER BY item.position
@@ -276,11 +308,17 @@ export class PostgresFeedPersistence implements FeedPersistencePort, FeedReconci
   async listActiveRepositories(repoIds: string[], viewerUserId?: string): Promise<RepositoryProjection[]> {
     if (repoIds.length === 0) return [];
     const rows = await sqlClient`
-      SELECT repo.repo_id, repo.full_name, repo.status, repo.updated_at, content.description, content.primary_language, content.languages, content.readme,
+      SELECT repo.repo_id, repo.full_name, repo.status, repo.updated_at, content.description,
+             content.primary_language,content.languages,content.readme,content.readme_source_path,
+             content.readme_default_branch,content.readme_base_url,
              COALESCE(topic_values.topics, '[]'::jsonb) AS topics,
              COALESCE(stats.star_count, 0) AS star_count, COALESCE(stats.fork_count, 0) AS fork_count, COALESCE(stats.open_issues_count, 0) AS open_issues_count,
              COALESCE(engagement.likes_count, 0) AS likes_count, COALESCE(engagement.comments_count, 0) AS comments_count, COALESCE(engagement.views_count, 0) AS views_count,
-             summary.summary_id, summary.summary, reaction.reaction AS viewer_reaction,
+             summary.summary_id,summary.summary,summary.highlights AS summary_highlights,
+             summary.prompt_version AS summary_prompt_version,
+             summary.model_version AS summary_model_version,
+             summary.format_version AS summary_format_version,summary.source AS summary_source,
+             reaction.reaction AS viewer_reaction,
              (saved.repo_id IS NOT NULL) AS viewer_saved,
              social_profile.claimed_by_user_id AS owner_user_id,
              social_profile.profile_id AS owner_profile_id,
@@ -327,6 +365,7 @@ export class PostgresFeedPersistence implements FeedPersistencePort, FeedReconci
       ) stats ON true
       LEFT JOIN app.repo_engagement engagement ON engagement.repo_id = repo.repo_id
       LEFT JOIN app.repo_card_summaries summary ON summary.repo_id=repo.repo_id AND summary.active
+        AND summary.content_version=content.content_version
       LEFT JOIN app.reactions reaction ON reaction.repo_id=repo.repo_id AND reaction.user_id=${viewerUserId ?? null}::uuid
       LEFT JOIN app.saves saved ON saved.repo_id=repo.repo_id AND saved.user_id=${viewerUserId ?? null}::uuid
       WHERE repo.repo_id = ANY(${repoIds}::uuid[]) AND repo.status='active'

@@ -200,9 +200,15 @@ export class FeedV2Service {
         source,
         model_version: usable[0]?.model_version ?? null,
         next_cursor: nextCursor,
-        items: usable.map((entry, position) => ({
-          ...entry, position: pageOffset + position, repository: byId.get(entry.repo_id)!,
-        })),
+        items: usable.map((entry, position) => {
+          const repository = byId.get(entry.repo_id)!;
+          return {
+            ...entry,
+            summary_id: repository.summary_id,
+            position: pageOffset + position,
+            repository,
+          };
+        }),
       });
       if (queueAvailable) await this.queue.commit(userId, version, request.feed_request_id, token);
       return responseFromServe(stored);

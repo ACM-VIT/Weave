@@ -22,6 +22,32 @@ function optionalList(value: unknown, maximumItems: number): boolean {
     && value.every((item) => typeof item === 'string' && item.trim().length >= 1 && item.trim().length <= 128));
 }
 
+function optionalHttpsDirectory(value: unknown): boolean {
+  if (value === undefined || value === null) return true;
+  if (typeof value !== 'string' || value.length > 2_048 || value !== value.trim()) return false;
+  try {
+    const parsed = new URL(value);
+    const segments = parsed.pathname.split('/').filter(Boolean);
+    return parsed.protocol === 'https:' && parsed.hostname === 'raw.githubusercontent.com'
+      && parsed.port === '' && parsed.username === '' && parsed.password === ''
+      && parsed.search === '' && parsed.hash === '' && parsed.pathname.endsWith('/')
+      && parsed.toString() === value
+      && segments.length >= 5 && segments[2] === 'refs' && segments[3] === 'heads';
+  } catch {
+    return false;
+  }
+}
+
+function optionalSafeSlashPath(value: unknown, maximum: number, filePath: boolean): boolean {
+  if (value === undefined || value === null) return true;
+  if (typeof value !== 'string' || value.length < 1 || value.length > maximum
+    || value !== value.trim() || value.includes('\\') || value.startsWith('/')
+    || value.endsWith('/')) return false;
+  const segments = value.split('/');
+  return segments.every((segment) => segment.length > 0 && segment !== '.' && segment !== '..')
+    && (!filePath || segments.at(-1)?.length !== 0);
+}
+
 export function isRepositoryUpsert(value: unknown): value is RepositoryUpsert {
   if (!value || typeof value !== 'object') return false;
   const item = value as Record<string, unknown>;
@@ -39,6 +65,9 @@ export function isRepositoryUpsert(value: unknown): value is RepositoryUpsert {
     && optionalText(item.github_node_id, 512)
     && optionalText(item.description, 10_000)
     && optionalText(item.readme, 1_000_000)
+    && optionalSafeSlashPath(item.readme_source_path, 1_024, true)
+    && optionalSafeSlashPath(item.readme_default_branch, 256, false)
+    && optionalHttpsDirectory(item.readme_base_url)
     && optionalText(item.primary_language, 128)
     && optionalList(item.languages, 100)
     && optionalList(item.topics, 200)

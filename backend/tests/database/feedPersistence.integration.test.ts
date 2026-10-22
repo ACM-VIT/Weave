@@ -21,7 +21,9 @@ async function fixture(count = 3) {
   const projection = (id:string): RepositoryProjection => ({repo_id:id,full_name:`fixture/${id}`,owner_user_id:null,
     owner_profile_id:null,owner_profile_claimed_user_id:null,owner_bio:null,description:null,primary_language:null,
     languages:[],topics:[],star_count:0,fork_count:0,likes_count:0,comments_count:0,views_count:0,open_issues_count:0,
-    summary_id:null,summary:null,readme_md:null,updated_at:null,viewer_reaction:null,viewer_saved:false,
+    summary_id:null,summary:null,summary_highlights:[],summary_prompt_version:null,summary_model_version:null,
+    summary_format_version:null,summary_source:null,readme_md:null,readme_source_path:null,
+    readme_default_branch:null,readme_base_url:null,updated_at:null,viewer_reaction:null,viewer_saved:false,
     viewer_follows_owner:false,status:'active'});
   const input: CreateServeInput = {feed_request_id:crypto.randomUUID(),user_id:user,session_id:session,feed_version:1n,
     generation_id:null,source:'personalized',model_version:'test',next_cursor:'next',
@@ -108,9 +110,16 @@ integration('exclusions isolate accounts and sessions, count actual exposure glo
 integration('creation preserves a queued summary identity when the current hydrated summary has changed',async()=>{
   const f=await fixture(1);const persistence=new PostgresFeedPersistence();
   const queuedSummary=crypto.randomUUID(), currentSummary=crypto.randomUUID();
-  await sqlClient`INSERT INTO app.repo_card_summaries(summary_id,repo_id,content_version,model_version,summary,active)
-    VALUES(${queuedSummary}::uuid,${f.repos[0]}::uuid,1,'test','Queued summary',false),
-          (${currentSummary}::uuid,${f.repos[0]}::uuid,2,'test','New active summary',true)`;
+  // A queued artifact can survive a model upgrade for the same canonical
+  // content; an artifact for an older content version must never be served.
+  await sqlClient`INSERT INTO app.repo_content(repo_id,content_hash,content_version)
+    VALUES(${f.repos[0]}::uuid,'summary-fixture',1)`;
+  await sqlClient`INSERT INTO app.repo_card_summaries(
+    summary_id,repo_id,content_version,prompt_version,model_version,format_version,source,summary,active)
+    VALUES(${queuedSummary}::uuid,${f.repos[0]}::uuid,1,'repo-card-summary-v1','test',
+             'repo-card-summary-json-v1','generated','Queued summary',false),
+          (${currentSummary}::uuid,${f.repos[0]}::uuid,1,'repo-card-summary-v1','new-model',
+             'repo-card-summary-json-v1','generated','New active summary',true)`;
   f.input.items[0].summary_id=queuedSummary;
   f.input.items[0].repository={...f.input.items[0].repository,summary_id:currentSummary,summary:'New active summary'};
   const result=await persistence.createServe(f.input);

@@ -408,7 +408,8 @@ export async function listLikesGiven(req: AuthRequest, res: Response): Promise<v
 
 const repoProjection = `r.repo_id,r.github_id,r.full_name,r.owner,r.name,r.url,c.description,c.primary_language,c.languages,c.content_version,
   e.likes_count,e.dislikes_count,e.saves_count,e.comments_count,e.views_count,
-  s.star_count,s.fork_count,s.open_issues_count,s.observed_at,cs.summary,cs.model_version`;
+  s.star_count,s.fork_count,s.open_issues_count,s.observed_at,cs.summary_id,cs.summary,cs.model_version,cs.prompt_version AS summary_prompt_version,
+  cs.format_version AS summary_format_version,cs.highlights AS summary_highlights,cs.source AS summary_source`;
 
 export async function listRepositories(req: AuthRequest, res: Response): Promise<void> {
   const page = paging(req); if (!page) return sendError(res, 400, 'Invalid pagination.');
@@ -416,7 +417,7 @@ export async function listRepositories(req: AuthRequest, res: Response): Promise
   const rows = await sqlClient.unsafe(`SELECT ${repoProjection} FROM app.repos r
     JOIN app.repo_content c USING(repo_id) JOIN app.repo_engagement e USING(repo_id)
     LEFT JOIN LATERAL (SELECT * FROM app.repo_stat_snapshots x WHERE x.repo_id=r.repo_id ORDER BY observed_at DESC LIMIT 1) s ON true
-    LEFT JOIN LATERAL (SELECT summary,model_version FROM app.repo_card_summaries x WHERE x.repo_id=r.repo_id AND active ORDER BY created_at DESC LIMIT 1) cs ON true
+    LEFT JOIN LATERAL (SELECT summary_id,summary,model_version,prompt_version,format_version,highlights,source FROM app.repo_card_summaries x WHERE x.repo_id=r.repo_id AND active AND x.content_version=c.content_version ORDER BY created_at DESC LIMIT 1) cs ON true
     WHERE r.status='active' AND ($1='' OR r.full_name ILIKE '%'||$1||'%' OR COALESCE(c.description,'') ILIKE '%'||$1||'%')
     ORDER BY r.updated_at DESC,r.repo_id LIMIT $2 OFFSET $3`, [q, page.limit, page.offset]);
   sendSuccess(res, 200, { items: rows, ...page });
@@ -428,7 +429,7 @@ export async function getRepository(req: AuthRequest, res: Response): Promise<vo
     COALESCE((SELECT json_agg(t.slug ORDER BY t.slug) FROM app.repo_topics rt JOIN app.topics t USING(topic_id) WHERE rt.repo_id=r.repo_id),'[]'::json) topics
     FROM app.repos r JOIN app.repo_content c USING(repo_id) JOIN app.repo_engagement e USING(repo_id)
     LEFT JOIN LATERAL (SELECT * FROM app.repo_stat_snapshots x WHERE x.repo_id=r.repo_id ORDER BY observed_at DESC LIMIT 1) s ON true
-    LEFT JOIN LATERAL (SELECT summary,model_version FROM app.repo_card_summaries x WHERE x.repo_id=r.repo_id AND active ORDER BY created_at DESC LIMIT 1) cs ON true
+    LEFT JOIN LATERAL (SELECT summary_id,summary,model_version,prompt_version,format_version,highlights,source FROM app.repo_card_summaries x WHERE x.repo_id=r.repo_id AND active AND x.content_version=c.content_version ORDER BY created_at DESC LIMIT 1) cs ON true
     WHERE r.repo_id=$1::uuid AND r.status='active'`, [repo]);
   if (!rows[0]) return sendError(res, 404, 'Repository not found.');
   sendSuccess(res, 200, rows[0]);

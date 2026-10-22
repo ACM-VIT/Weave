@@ -39,8 +39,12 @@ test('generation projection filters inactive repos and reads only current summar
       [crypto.randomUUID(), inactiveId, true, 1],
     ] as const) {
       await sqlClient`
-        INSERT INTO app.repo_card_summaries (summary_id,repo_id,content_version,model_version,summary,active)
-        VALUES (${summaryId}::uuid,${repoId}::uuid,${version},'projection-test','Not hydrated.',${active})
+        INSERT INTO app.repo_card_summaries (
+          summary_id,repo_id,content_version,prompt_version,model_version,format_version,source,summary,active
+        ) VALUES (
+          ${summaryId}::uuid,${repoId}::uuid,${version},'repo-card-summary-v1','projection-test',
+          'repo-card-summary-json-v1','generated','Not hydrated.',${active}
+        )
       `;
     }
 
@@ -62,8 +66,12 @@ test('generation projection filters inactive repos and reads only current summar
 
     await sqlClient`UPDATE app.repo_card_summaries SET active=false WHERE summary_id=${currentSummaryId}::uuid`;
     await sqlClient`
-      INSERT INTO app.repo_card_summaries (summary_id,repo_id,content_version,model_version,summary,active)
-      VALUES (${nextSummaryId}::uuid,${activeId}::uuid,3,'projection-test','New identity.',true)
+      INSERT INTO app.repo_card_summaries (
+        summary_id,repo_id,content_version,prompt_version,model_version,format_version,source,summary,active
+      ) VALUES (
+        ${nextSummaryId}::uuid,${activeId}::uuid,3,'repo-card-summary-v1','projection-test',
+        'repo-card-summary-json-v1','generated','New identity.',true
+      )
     `;
     assert.deepEqual(await persistence.listActiveRepositoryIdentities([activeId]), [
       { repo_id: activeId, summary_id: nextSummaryId },

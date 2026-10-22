@@ -1,6 +1,7 @@
 import type { InteractionEventType } from './interactions.v2.js';
 
 export const ML_SCHEMA_VERSION = 2 as const;
+export const ML_DESCRIPTION_FALLBACK_MODEL_VERSION = 'repository-description-fallback-v1' as const;
 
 export interface MlRecommendationRequest {
   schema_version: typeof ML_SCHEMA_VERSION;
@@ -60,6 +61,9 @@ export interface MlRepositorySource {
   languages: string[];
   topics: string[];
   readme?: string | null;
+  readme_source_path?: string | null;
+  readme_default_branch?: string | null;
+  readme_base_url?: string | null;
   readme_length?: number;
   star_count: number;
   fork_count: number;
@@ -76,7 +80,7 @@ export interface MlRepositorySource {
   pushed_at?: string | null;
   discovery_category?: string | null;
   discovery_band?: string | null;
-  content_hash?: string | null;
+  content_hash: string;
 }
 
 export interface MlRepositoryIndexJob {
@@ -84,6 +88,28 @@ export interface MlRepositoryIndexJob {
   repo_id: string;
   content_version: number;
   repository: MlRepositorySource;
+}
+
+export type MlRepositoryIndexStatus = 'applied' | 'duplicate' | 'current';
+
+export interface MlRepositoryCardSummary {
+  summary: string;
+  highlights: string[];
+  prompt_version: string;
+  model_version: string;
+  format_version: string;
+  source: 'generated' | 'description_fallback';
+}
+
+export interface MlRepositoryIndexResponse {
+  schema_version: typeof ML_SCHEMA_VERSION;
+  accepted: true;
+  status: MlRepositoryIndexStatus;
+  job_id: string;
+  repo_id: string;
+  content_version: number;
+  embedding_version: string;
+  card_summary: MlRepositoryCardSummary;
 }
 
 export interface MlRepositoryFeaturePatch {
@@ -114,4 +140,5 @@ export interface DeliveryResult {
   status_code: number;
   detail?: string;
   retry_after_ms?: number;
+  response_body?: unknown;
 }

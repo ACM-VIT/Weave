@@ -335,3 +335,24 @@ For a strict ML collection rebuild, run `npm run reindex:ml -- --campaign=<id>`
 first as a dry run, then repeat with `--execute` only after reviewing the counts
 and confirming the ML target collection. The campaign is idempotent and only
 adds new outbox rows; see the outbox worker runbook.
+
+Repository summary compatibility requires the ML repository-index endpoint to
+return its versioned `card_summary` response. Deploy that ML contract before
+enabling this backend worker. Apply `0025_repository_summary_artifacts` and run
+`npm run schema:audit` before starting the updated backend. These are release
+steps requiring the normal environment authorization; local tests do not run
+them against a deployed service.
+
+Authenticated canonical ingestion accepts JSON bodies up to 8 MiB; other JSON
+routes retain 256 KB. Canonical README text and its source metadata are stored
+separately from summaries. Repository-index delivery commits the summary and
+outbox acknowledgement together. `ML_REPOSITORY_INDEX_TIMEOUT_MS` defaults to
+240000, and `OUTBOX_LEASE_MS` must exceed it by at least 60000 milliseconds.
+
+To backfill missing generated summaries, review a dry run with
+`npm run reindex:ml -- --campaign=<id> --summary-backfill`, then add `--execute`
+only after approving the counts and target ML collection. Description fallbacks
+remain eligible for recovery. Repeating the same campaign does not duplicate
+its jobs; use a new campaign ID to retry a completed fallback after provider
+recovery. Roll back the application first if necessary and retain the additive
+summary columns/artifacts; do not delete canonical content or migration history.
