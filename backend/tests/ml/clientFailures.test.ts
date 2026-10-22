@@ -324,6 +324,7 @@ try:
                 exchanges.append({'job': copy.deepcopy(job), 'response': body})
             # Correct fingerprints do not exempt pre-fix artifacts from validation.
             for old_summary in ['GPL. Teams can redistribute the software.',
+                'Maintainers describe it as "a shared workspace for inspecting ownership decisions and coordinating repository changes." GPL. Teams can review package choices and keep their collaborative tooling aligned with project goals.',
                 'It supports shared workflows. Teams review changes. Users share updates. Formats include, e.g.']:
                 for expected_status in ['duplicate', 'current']:
                     point = client.retrieve(store.collection_name, [job['repo_id']], with_payload=True)[0]

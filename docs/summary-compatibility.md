@@ -20,6 +20,13 @@ Keep both fixture copies synchronized when changing this policy.
   Replay checks exclusions, normalized content, sentence endings, model versions,
   and the existing generated-output length and near-copy rules against the
   canonical source. Summary-only CAS retains the content identity and embedding.
+- Sentence-ending and exclusion boundaries share the same permitted closing
+  quotes/brackets. A standalone GPL label following a quoted complete sentence
+  is excluded in generated output and stored replay. JavaScript's ASCII
+  abbreviation lookbehind stays case-sensitive, with explicit `[eE]`/`[gG]`
+  alternatives: Unicode Kelvin-sign/long-s folding must not broaden `[A-Za-z]`.
+  Shared fixtures cover these characters, uppercase abbreviations and ASCII
+  controls without relaxing sentence counts or copy detection.
 - `GPL` as project subject matter is allowed. Standalone and versioned license labels
   such as `GPL v3+` and `GPL v3 or later`, plus `licensed under` clauses, remain
   excluded; commands and section leakage stay blocked.

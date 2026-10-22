@@ -75,9 +75,12 @@ function boundedVersion(value: unknown, maximum = 200): value is string {
     && value.length >= 1 && value.length <= maximum;
 }
 
+const SUMMARY_SENTENCE_END_PATTERN = String.raw`[.!?](?:["'”’)\]]+)?(?=\s|$)`;
+const SUMMARY_SENTENCE_START_PATTERN = String.raw`(?:^|${SUMMARY_SENTENCE_END_PATTERN}\s+|\n)[ \t]*`;
+
 function maskSummaryAbbreviations(value: string): string {
-  // Explicit ASCII token boundaries match Python, including adjacent non-Latin text.
-  return value.replace(/(?<![A-Za-z0-9_])(?:e\.g|i\.e)\./giu, (match) => match.replaceAll('.', '·'))
+  // Keep the ASCII boundary case-sensitive: Unicode /iu folds K and ſ into it.
+  return value.replace(/(?<![A-Za-z0-9_])(?:[eE]\.[gG]|[iI]\.[eE])\./gu, (match) => match.replaceAll('.', '·'))
     .replace(/(?<![A-Za-z0-9_])(?:Mr|Mrs|Ms|Dr|Prof|Jr|Sr|vs)\.(?=\s+\p{L})/gu, (match) => match.replaceAll('.', '·'))
     // Ambiguous abbreviations retain their ending before a new capitalized sentence.
     .replace(/(?<![A-Za-z0-9_])(?:etc\.|(?:[A-Z]\.){2,})(?=\s+\p{Ll})/gu, (match) => match.replaceAll('.', '·'));
@@ -85,9 +88,9 @@ function maskSummaryAbbreviations(value: string): string {
 
 function hasTwoOrThreeCompleteSentences(value: string): boolean {
   const prose = maskSummaryAbbreviations(value);
-  const endings = prose.match(/[.!?](?:["'”’)\]]+)?(?=\s|$)/gu) ?? [];
+  const endings = prose.match(new RegExp(SUMMARY_SENTENCE_END_PATTERN, 'gu')) ?? [];
   return (endings.length === 2 || endings.length === 3)
-    && /[.!?](?:["'”’)\]]+)?$/u.test(prose);
+    && new RegExp(`${SUMMARY_SENTENCE_END_PATTERN}$`, 'u').test(prose);
 }
 
 function normalizedProse(value: string): string {
@@ -116,9 +119,9 @@ function hasForbiddenCardContent(value: string): boolean {
   return /(?:^|\n)\s*#{1,6}\s|```|~~~|`/.test(value)
     || /(?:^|\n)\s*(?:[-+*]|\d+[.)])\s+/u.test(value)
     || /!?\[[^\]\n]*\]\([^)\n]+\)/u.test(value)
-    || /(?:^|[.!?]\s+|\n)[ \t]*(?:installation(?: instructions?)?|license(?: text)?|contribut(?:ing|ors?)(?: section)?|changelog|table of contents|API (?:reference|documentation))\s*[:\-]/i.test(prose)
+    || new RegExp(String.raw`${SUMMARY_SENTENCE_START_PATTERN}(?:installation(?: instructions?)?|license(?: text)?|contribut(?:ing|ors?)(?: section)?|changelog|table of contents|API (?:reference|documentation))\s*[:\-]`, 'iu').test(prose)
     || /\b(?:licensed under|MIT License|Apache License|GNU (?:General Public )?License)\b/i.test(value)
-    || /(?:^|[.!?]\s+|\n)[ \t]*GPL(?:[ \t-]*v?\d+(?:\.\d+)*(?:\+|[ \t]+or[ \t]+later)?|[ \t]*\+|[ \t]+or[ \t]+later)?[ \t]*(?:[.!?:]|$)/i.test(prose)
+    || new RegExp(String.raw`${SUMMARY_SENTENCE_START_PATTERN}GPL(?:[ \t-]*v?\d+(?:\.\d+)*(?:\+|[ \t]+or[ \t]+later)?|[ \t]*\+|[ \t]+or[ \t]+later)?[ \t]*(?:[.!?:]|$)`, 'iu').test(prose)
     || /\b(?:npm|pnpm|yarn|pip|pipx|uv|cargo|go|brew)\s+(?:install|add|run|get)\b/i.test(value);
 }
 
