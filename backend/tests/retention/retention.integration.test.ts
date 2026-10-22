@@ -17,6 +17,23 @@ integration('retention preserves the last delivered repository index so future r
     }
     await sqlClient`INSERT INTO telemetry.ml_outbox(outbox_id,job_type,aggregate_id,idempotency_key,payload)
       VALUES(${refresh}::uuid,'repo_refresh',${aggregate}::uuid,${refresh},'{}')`;
+    // The highest content version must survive an adverse UUID order at one
+    // transaction timestamp, even when a later malformed/legacy row exists.
+    const numericAggregate=crypto.randomUUID();
+    const [highest,lower]=[crypto.randomUUID(),crypto.randomUUID()].sort();
+    const malformed=crypto.randomUUID();
+    try {
+      await sqlClient`INSERT INTO telemetry.ml_outbox(outbox_id,job_type,aggregate_id,idempotency_key,payload,status,created_at,delivered_at)
+        VALUES
+        (${highest}::uuid,'repo_index',${numericAggregate}::uuid,${highest},'{"content_version":10}','delivered',now()-interval '50 days',now()-interval '50 days'),
+        (${lower}::uuid,'repo_index',${numericAggregate}::uuid,${lower},'{"content_version":9}','delivered',now()-interval '50 days',now()-interval '50 days'),
+        (${malformed}::uuid,'repo_index',${numericAggregate}::uuid,${malformed},'{"content_version":"999999999999999999999999999999"}','delivered',now()-interval '40 days',now()-interval '40 days')`;
+      for (let pass=0;pass<2;pass++) {
+        await new RetentionWorker().runOnce(30,30);
+        const witnesses=await sqlClient`SELECT outbox_id FROM telemetry.ml_outbox WHERE aggregate_id=${numericAggregate}::uuid`;
+        assert.deepEqual(new Set(witnesses.map(row=>String(row.outbox_id))),new Set([highest,malformed]));
+      }
+    } finally { await sqlClient`DELETE FROM telemetry.ml_outbox WHERE aggregate_id=${numericAggregate}::uuid`; }
     await new RetentionWorker().runOnce(30,30);
     const remaining=await sqlClient`SELECT outbox_id FROM telemetry.ml_outbox WHERE aggregate_id=${aggregate}::uuid`;
     assert.deepEqual(new Set(remaining.map(row=>String(row.outbox_id))),new Set([checkpoint,refresh]));

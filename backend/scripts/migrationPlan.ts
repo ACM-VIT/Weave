@@ -28,7 +28,7 @@ export const RETROACTIVE_V2_TAGS = [
   '0022_repo_owner_github_identity',
   '0023_active_social_profile_handles',
   // A targeted README migration may record 0026 before unrelated Search DDL.
-  '0024_repository_summary_artifacts',
+  '0025_repository_summary_artifacts',
   '0024_explore_search',
 ] as const;
 

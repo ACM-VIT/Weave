@@ -13,7 +13,7 @@ import {
 
 process.env.DATABASE_URL ??= 'postgresql://test:test@127.0.0.1:1/test';
 process.env.JWT_SECRET ??= 'trending-local-test-secret';
-const [{ createTrendingHandler }, { requireAuth }, { sqlClient }] = await Promise.all([
+const [{ createTrendingHandler, TRENDING_VIEWER_HYDRATION_LIMIT }, { requireAuth }, { sqlClient }] = await Promise.all([
   import('../../controllers/trendingController.js'),
   import('../../middlewares/authMiddleware.js'),
   import('../../db/index.js'),
@@ -215,6 +215,103 @@ test('the wall-clock deadline returns 503 while retaining admission until underl
   assert.equal(calls, 2);
 });
 
+type TrendingHandler = ReturnType<typeof createTrendingHandler>;
+function invokeHandler(handler: TrendingHandler) {
+  const result = { status: 0, body: '', writes: 0, headers: {} as Record<string, string> };
+  const response = {
+    set(name: string, value: string) { result.headers[name] = value; return response; },
+    removeHeader(name: string) { delete result.headers[name]; return response; },
+    vary() { return response; },
+    status(status: number) { result.status = status; return response; },
+    type() { return response; },
+    send(body: string) { result.body = body; result.writes++; return response; },
+    json(body: unknown) { return response.send(JSON.stringify(body)); },
+  };
+  const done = handler(
+    { query: {}, user: { userId: 'viewer-1' } } as Parameters<TrendingHandler>[0],
+    response as unknown as Parameters<TrendingHandler>[1],
+  );
+  return { result, done };
+}
+
+test('handler deadline keeps private admission occupied until timed-out work settles', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const { service } = fixture();
+  await service.get();
+  let time = 0;
+  let calls = 0;
+  let block = true;
+  const release: (() => void)[] = [];
+  const handler = createTrendingHandler(service, async (_viewer, _ids, budget) => {
+    calls++;
+    assert.ok(budget);
+    budget.check();
+    return block ? new Promise(resolve => { release.push(() => resolve([])); }) : [];
+  }, () => time);
+  const requests = Array.from({ length: TRENDING_VIEWER_HYDRATION_LIMIT }, () => invokeHandler(handler));
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(calls, TRENDING_VIEWER_HYDRATION_LIMIT);
+  const excess = invokeHandler(handler);
+  await excess.done;
+  assert.equal(excess.result.status, 503);
+  time = TRENDING_FRESHNESS_MS;
+  t.mock.timers.tick(TRENDING_FRESHNESS_MS);
+  await Promise.all(requests.map(request => request.done));
+  for (const request of requests) {
+    assert.equal(request.result.status, 503);
+    assert.equal(request.result.headers['Cache-Control'], 'no-store');
+    assert.equal(request.result.headers['Retry-After'], '1');
+  }
+  const stillBusy = invokeHandler(handler);
+  await stillBusy.done;
+  assert.equal(stillBusy.result.status, 503);
+  assert.equal(calls, TRENDING_VIEWER_HYDRATION_LIMIT, 'HTTP timeout must not release actual database admission');
+  block = false;
+  release.shift()!();
+  await new Promise(resolve => setImmediate(resolve));
+  const recovered = invokeHandler(handler);
+  await recovered.done;
+  assert.equal(recovered.result.status, 200, 'a slot recovers only after its loader settles');
+  for (const finish of release) finish();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.ok(requests.every(request => request.result.status === 503 && request.result.writes === 1),
+    'late private results must never produce a second or successful response');
+});
+
+test('one handler budget fences public pool waits and synchronous final serialization', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const { state, service } = fixture();
+  let time = 0;
+  let finish!: () => void;
+  let viewerCalls = 0;
+  const pendingPublic = new TrendingSnapshotService({
+    available: () => new Promise(resolve => { finish = () => resolve(state.available); }),
+    cards: async () => state.cards,
+  });
+  const pending = invokeHandler(createTrendingHandler(pendingPublic, async () => { viewerCalls++; return []; }, () => time));
+  await new Promise(resolve => setImmediate(resolve));
+  time = TRENDING_FRESHNESS_MS;
+  t.mock.timers.tick(TRENDING_FRESHNESS_MS);
+  await pending.done;
+  assert.equal(pending.result.status, 503);
+  finish();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(viewerCalls, 0, 'expired public work cannot begin a private query');
+  assert.equal(pending.result.writes, 1);
+
+  time = 0;
+  await service.get();
+  const lateLists = Object.assign([] as string[], {
+    toJSON() { time = TRENDING_FRESHNESS_MS; return []; },
+  });
+  const serialized = invokeHandler(createTrendingHandler(service, async () => [{
+    repo_id: 'repo-1', viewer_reaction: null, viewer_saved: false, selected_list_ids: lateLists,
+  }], () => time));
+  await serialized.done;
+  assert.equal(serialized.result.status, 503, 'a post-stringify clock check catches expiry even before the timer can fire');
+  assert.equal(serialized.result.headers['Cache-Control'], 'no-store');
+});
+
 type HttpResult = { status: number; headers: http.IncomingHttpHeaders; body: string };
 function get(url: string, headers: Record<string, string> = {}, method = 'GET'): Promise<HttpResult> {
   return new Promise((resolve, reject) => {
@@ -229,7 +326,7 @@ function get(url: string, headers: Record<string, string> = {}, method = 'GET'):
   });
 }
 
-async function serve(t: test.TestContext, service: TrendingSnapshotService, viewerState?: Parameters<typeof createTrendingHandler>[1]) {
+async function serve(t: test.TestContext, service: TrendingSnapshotService, viewerState: Parameters<typeof createTrendingHandler>[1] = async () => []) {
   const app = express();
   app.get('/trending', requireAuth, createTrendingHandler(service, viewerState));
   const server = app.listen(0, '127.0.0.1');
@@ -254,6 +351,14 @@ test('HTTP hydration deadlines and PostgreSQL cancellation return retryable 503 
     assert.equal(response.headers['cache-control'], 'no-store');
     assert.equal(JSON.parse(response.body).success, false);
   }
+  const { service } = fixture();
+  const url = await serve(t, service, async () => {
+    throw Object.assign(new Error('private overlay timeout'), { code: '57014' });
+  });
+  const privateTimeout = await get(url, { authorization: authorization(), 'if-none-match': '*' });
+  assert.equal(privateTimeout.status, 503, 'private hydration errors cannot produce a cached public response');
+  assert.equal(privateTimeout.headers['cache-control'], 'no-store');
+  assert.equal(privateTimeout.headers['retry-after'], '1');
 });
 
 test('HTTP validators support weak/list/wildcard matches, HEAD, auth and forced revalidation', async t => {
@@ -324,5 +429,10 @@ test('viewer overlays remain fresh and isolated while public Trending hydration 
   assert.equal(JSON.parse(updated.body).data.items[0].viewer_saved,true);
   assert.deepEqual(JSON.parse(updated.body).data.items[0].selected_list_ids,['collection:owned']);
   assert.equal(state.hydrations.length,1);
-  assert.equal('viewer_saved' in JSON.parse((await service.get()).body).data.items[0],false);
+  const publicItem=JSON.parse((await service.get()).body).data.items[0];
+  for (const field of ['viewer_reaction','viewer_saved','selected_list_ids']) {
+    assert.equal(Object.hasOwn(publicItem,field),false);
+  }
+  assert.equal(other.body.includes('collection:owned'),false);
+  assert.equal(String(updated.headers.etag), `"${createHash('sha256').update(updated.body).digest('hex')}"`);
 });

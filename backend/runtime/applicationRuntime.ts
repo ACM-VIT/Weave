@@ -10,6 +10,7 @@ import { OutboxService, resolveOutboxLeaseMs } from '../services/outboxService.j
 import { OutboxWorker } from '../workers/outboxWorker.js';
 import { FeedReconciliationWorker } from '../workers/feedReconciliationWorker.js';
 import { DataReconciliationWorker } from '../workers/dataReconciliationWorker.js';
+import { DataReconciliationService, DEFAULT_COUNTER_BATCH_SIZE } from '../services/dataReconciliationService.js';
 import { RetentionWorker } from '../workers/retentionWorker.js';
 import { WorkerSupervisor } from './workerSupervisor.js';
 import { FeedShadowService } from '../services/feedShadowService.js';
@@ -109,9 +110,13 @@ export class ApplicationRuntime {
       this.supervisor.register('feed-reconciliation', interval, () => worker.runOnce());
     }
     if ((role === 'maintenance' || role === 'all') && this.flags.DB_SCHEMA_V2_WRITES) {
-      const data = new DataReconciliationWorker();
+      const data = new DataReconciliationWorker(new DataReconciliationService(sqlClient,
+        intervalFromEnvironment('COUNTER_RECONCILIATION_BATCH_SIZE', DEFAULT_COUNTER_BATCH_SIZE, 1, 1_000)));
       const retention = new RetentionWorker();
-      this.supervisor.register('data-reconciliation', 300_000, () => data.runOnce());
+      this.supervisor.registerAdaptive('data-reconciliation', 1_000, 300_000, () => data.runOnce());
+      // Faster counter batches must not turn abandoned-claim or superseded-job
+      // cleanup into once-per-batch scans. Preserve their five-minute cadence.
+      this.supervisor.register('abandoned-outbox-claims', 300_000, () => data.resetAbandonedClaims());
       this.supervisor.register('retention', 86_400_000, () => retention.runOnce());
       if (this.flags.TRENDING_INGESTION) {
         const trending = new TrendingIngestionWorker(new PostgresRepositoryPersistence());

@@ -10,7 +10,7 @@
       "user_stats", "user_topics", "users"
     ],
     "telemetry": [
-      "feed_serve_items", "feed_serves", "generation_attempts", "interaction_events",
+      "counter_reconciliation_progress", "feed_serve_items", "feed_serves", "generation_attempts", "interaction_events",
       "ml_outbox", "readme_summary_jobs", "sessions", "user_repo_engagement"
     ]
   },
