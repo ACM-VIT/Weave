@@ -45,7 +45,7 @@ try {
     SELECT table_schema,table_name,column_name
     FROM information_schema.columns
     WHERE (table_schema='app' AND table_name IN ('users','oauth_codes','repo_content','repo_card_summaries'))
-       OR (table_schema='telemetry' AND table_name='ml_outbox')
+       OR (table_schema='telemetry' AND table_name IN ('ml_outbox','counter_reconciliation_progress'))
   `;
   const columns = new Set(columnRows.map(
     (row) => `${row.table_schema}.${row.table_name}.${row.column_name}`,
@@ -67,6 +67,11 @@ try {
     'app.repo_card_summaries.artifact_revision',
     'app.repo_card_summaries.supersedes_summary_id',
     'telemetry.ml_outbox.response_payload',
+    'telemetry.counter_reconciliation_progress.scope',
+    'telemetry.counter_reconciliation_progress.last_id',
+    'telemetry.counter_reconciliation_progress.upper_id',
+    'telemetry.counter_reconciliation_progress.completed_sweeps',
+    'telemetry.counter_reconciliation_progress.updated_at',
   ]) {
     if (!columns.has(requiredColumn)) missing.push(`column:${requiredColumn}`);
   }
@@ -167,7 +172,14 @@ try {
       'telemetry.ml_outbox',
       'response_payload',
       'UPDATE'
-    ) AS can_store_ml_response
+    ) AS can_store_ml_response,
+    has_table_privilege(
+      'ghsocial_backend',
+      'telemetry.counter_reconciliation_progress',
+      'SELECT'
+    ) AND has_table_privilege(
+      'ghsocial_backend','telemetry.counter_reconciliation_progress','UPDATE'
+    ) AS can_reconcile_counters
   `;
   if (runtimeGrantRows[0]?.can_assign_feedback_version !== true) {
     missing.push('required-grant:ghsocial_backend:telemetry.interaction_events.feedback_version:UPDATE');
@@ -177,6 +189,9 @@ try {
   }
   if (runtimeGrantRows[0]?.can_store_ml_response !== true) {
     missing.push('required-grant:ghsocial_backend:telemetry.ml_outbox.response_payload:UPDATE');
+  }
+  if (runtimeGrantRows[0]?.can_reconcile_counters !== true) {
+    missing.push('required-grant:ghsocial_backend:telemetry.counter_reconciliation_progress:SELECT,UPDATE');
   }
 
   const migrationRows = await client`
