@@ -825,6 +825,38 @@ integration('registered v2 HTTP paths complete controlled integration flows', as
     assert.equal('readme_md' in savedRepoItems[0], false, 'Card lists fetch full README only through detail');
     assert.ok(Buffer.byteLength(JSON.stringify(savedRepoItems[0])) < 20_000, 'Card size stays bounded by metadata despite a million-character README');
 
+    // Backfills commonly assign identical timestamps. Every offset page must
+    // use the same unique secondary order, for both saved and liked repositories.
+    const tiedIds = Array.from({ length: 137 }, (_, index) =>
+      `00000000-0000-4000-8001-${String(index).padStart(12, '0')}`);
+    try {
+      // Insert in reverse order so heap order cannot accidentally satisfy the assertion.
+      for (const id of [...tiedIds].reverse()) {
+        await sqlClient`INSERT INTO app.repos(repo_id,github_id,full_name,owner,name,url,status)
+          VALUES(${id}::uuid,${900000 + tiedIds.indexOf(id)},${`paging/${id}`},'paging',${id},${`https://github.com/paging/${id}`},'active')`;
+        await sqlClient`INSERT INTO app.repo_content(repo_id,content_hash,description)
+          VALUES(${id}::uuid,'paging','Tied timestamp fixture')`;
+        await sqlClient`INSERT INTO app.repo_engagement(repo_id) VALUES(${id}::uuid)`;
+        await sqlClient`INSERT INTO app.saves(user_id,repo_id,created_at)
+          VALUES(${userId}::uuid,${id}::uuid,'2099-01-01T00:00:00Z')`;
+        await sqlClient`INSERT INTO app.reactions(user_id,repo_id,reaction,updated_at)
+          VALUES(${userId}::uuid,${id}::uuid,'like','2099-01-01T00:00:00Z')`;
+      }
+      for (const endpoint of ['repositories/saved', `users/${userId}/likes-given`]) {
+        const seen: string[] = [];
+        for (let offset = 0; offset < 160; offset += 40) {
+          const response = await fetch(`${base}/api/v2/${endpoint}?limit=40&offset=${offset}`, { headers: authHeaders });
+          assert.equal(response.status, 200);
+          const payload = await response.json() as { data: { items: { repo_id: string }[] } };
+          seen.push(...payload.data.items.map(item => item.repo_id));
+        }
+        assert.deepEqual(seen, [...tiedIds, repoId], `${endpoint}: tied timestamps retain complete, deterministic page coverage`);
+        assert.equal(new Set(seen).size, seen.length);
+      }
+    } finally {
+      await sqlClient`DELETE FROM app.repos WHERE repo_id IN ${sqlClient(tiedIds)}`;
+    }
+
     const mixedCollection = await fetch(`${base}/api/v2/collections`, {
       method: 'POST', headers: authHeaders, body: JSON.stringify({ name: 'Mixed membership' }),
     });
