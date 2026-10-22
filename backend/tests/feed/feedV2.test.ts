@@ -499,3 +499,24 @@ test('validated empty ML success ends continuation without opening the circuit',
     await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
   }
 });
+
+for (const fallbackEnabled of [false, true]) {
+  test(`successful empty first-page generation does not replay history or fallback (${fallbackEnabled})`, async () => {
+    const persistence = new FakePersistence();
+    persistence.recentPersonalized = [{ repo_id: repo.repo_id, score: 1, source: 'semantic', model_version: 'old', summary_id: null }];
+    let historyReads = 0;
+    persistence.getRecentPersonalizedEntries = async () => { historyReads++; return persistence.recentPersonalized; };
+    const queue = new FakeQueue();
+    queue.reserve = async (_u, _v, requestId, _l, token) => ({ requestId, token, items: [] });
+    const service = new FeedV2Service(persistence, queue,
+      async () => ({ status: 'generated', feedVersion: 3n, count: 0 }), fallbackEnabled);
+    const request = { feed_request_id: '00000000-0000-4000-8000-000000000071',
+      session_id: '00000000-0000-4000-8000-000000000020', limit: 10, cursor: null };
+    const result = await service.getFeed('00000000-0000-4000-8000-000000000030', request);
+    assert.deepEqual(result.items, []);
+    assert.equal(result.next_cursor, null);
+    assert.equal(historyReads, 0);
+    assert.equal(persistence.fallbackCalls, 0);
+    assert.deepEqual(await service.getFeed('00000000-0000-4000-8000-000000000030', request), result);
+  });
+}

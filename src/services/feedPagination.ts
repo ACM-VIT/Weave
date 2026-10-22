@@ -105,9 +105,12 @@ export class FeedPaginationController {
     const committedSeen = committed && !replacement ? this.committedHistory(committed) : undefined;
     const seen = staged?.seen ?? (committed ? new Set<unknown>() : this.seen);
     const hasHistory = () => seen.size > 0 || Boolean(committedSeen?.size);
+    // Catalogue offsets are independent of personalized feed versions.
+    const catalogueRequest = cursor?.startsWith('discovery:') === true;
+    const recoverStale = this.stale && !catalogueRequest;
     let request = this.pending;
-    if (!request || (this.stale && !request.recovery) || request.initialCursor !== cursor) {
-      request = { cursor: this.stale ? null : cursor, id: createUuid(), recovery: this.stale && hasHistory(), initialCursor: cursor };
+    if (!request || (recoverStale && !request.recovery) || request.initialCursor !== cursor) {
+      request = { cursor: recoverStale ? null : cursor, id: createUuid(), recovery: recoverStale && hasHistory(), initialCursor: cursor };
     }
     let restarted = request.recovery;
     let duplicatePages = 0;
@@ -119,7 +122,7 @@ export class FeedPaginationController {
       try {
         const page = await this.fetchPage(request.cursor, signal, request.id, this.sessionId);
         check();
-        if (revision !== this.unversionedRevision || (page.mode !== 'discovery' && isNewer(this.minimumVersion, page.feedVersion))) {
+        if (page.mode !== 'discovery' && (revision !== this.unversionedRevision || isNewer(this.minimumVersion, page.feedVersion))) {
           throw Object.assign(new Error('Recommendations changed. Try loading more again.'), { status: 400, code: 'FEED_CURSOR_STALE' });
         }
         const items = page.items.filter((item) => {
@@ -145,7 +148,7 @@ export class FeedPaginationController {
         return { ...page, items };
       } catch (error) {
         check();
-        if (!isStaleCursor(error)) throw error;
+        if (catalogueRequest || !isStaleCursor(error)) throw error;
         this.stale = true;
         this.pending = null;
         if (restarted) throw error;

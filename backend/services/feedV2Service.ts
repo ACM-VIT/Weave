@@ -152,7 +152,7 @@ export class FeedV2Service {
     let entries = reservation.items;
     incrementMetric(entries.length > 0 ? 'feed_v2_cache_hits_total' : 'feed_v2_cache_misses_total');
     let source: FeedSource = 'personalized';
-    if (entries.length === 0 && request.cursor === null
+    if (!generationCompleted && entries.length === 0 && request.cursor === null
       && this.persistence.getRecentPersonalizedEntries) {
       entries = await this.persistence.getRecentPersonalizedEntries(
         userId,
@@ -166,7 +166,7 @@ export class FeedV2Service {
       if (queueAvailable) {
         await this.queue.release(userId, version, request.feed_request_id, token);
       }
-      if (this.fallbackEnabled) {
+      if (this.fallbackEnabled && !generationCompleted) {
         const fallback = await this.persistence.getTrendingFallback(request.limit,
           await this.persistence.listExcludedRepositoryIds(userId, request.session_id, 500), userId);
         entries = fallback.map(repo => ({repo_id: repo.repo_id, score: 0, source: 'fallback', model_version: 'backend-fallback', summary_id: repo.summary_id}));

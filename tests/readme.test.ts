@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { readFileSync } from 'node:fs';
 
 import {
   normalizeOptionalRepositoryText,
@@ -320,4 +321,19 @@ test('summary preview adapts to measured available height and larger text while 
   assert.equal(readmePreviewLineCount(210, 21, 2), 3);
   assert.equal(readmePreviewLineCount(0, 17, 1), 1);
   assert.equal(readmePreviewLineCount(34, 17, 1), 1);
+});
+
+
+test('card summaries and highlights preserve shared Unicode codepoint limits', () => {
+  const fixtures = JSON.parse(readFileSync(new URL('../backend/tests/fixtures/summary_compatibility.json', import.meta.url), 'utf8'));
+  const valid = fixtures.find((row: { name: string }) => row.name === '360 codepoints');
+  const invalid = fixtures.find((row: { name: string }) => row.name === '361 codepoints');
+  assert.equal(Array.from(valid.summary).length, 360);
+  assert.equal(normalizeRepositoryCardSummary(valid.summary), valid.summary);
+  assert.equal(normalizeRepositoryCardSummary(invalid.summary), null);
+  const highlight = '🚀' + 'a'.repeat(95);
+  const document = prepareReadmeSummaryDocument({ readmeSummary: valid.summary,
+    description: 'One-line subtitle.', summaryHighlights: [highlight, highlight + 'a'] });
+  assert.ok(document?.includes(`- ${highlight}`));
+  assert.ok(!document?.includes(`- ${highlight}a`));
 });

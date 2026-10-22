@@ -132,7 +132,7 @@ export function normalizeRepositoryCardSummary(
   const normalizedFullReadme = normalizedContent(fullReadme);
   if (
     !normalizedSummary
-    || normalizedSummary.length > README_CARD_SUMMARY_MAX_CHARACTERS
+    || Array.from(normalizedSummary).length > README_CARD_SUMMARY_MAX_CHARACTERS
     || summaryLooksLikeReadme(normalizedSummary)
     || summaryCopiesReadme(normalizedSummary, normalizedFullReadme)
   ) {
@@ -237,7 +237,7 @@ export function prepareReadmeSummaryDocument(repository: {
   if (preview.source !== 'summary') return null;
   const highlights = (repository.summaryHighlights ?? [])
     .map(normalizeOptionalRepositoryText)
-    .filter((item): item is string => item !== null && item.length <= 96)
+    .filter((item): item is string => item !== null && Array.from(item).length <= 96)
     .slice(0, 3);
   return [preview.markdown, highlights.map((item) => `- ${item}`).join('\n')]
     .filter(Boolean).join('\n\n');

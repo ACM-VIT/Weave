@@ -343,3 +343,34 @@ test('replacement pagination does not copy its growing staged ID history', async
     assert.ok(copiedIds <= count, `60 replacement pages recopied ${copiedIds} prior IDs`);
   } finally { Object.defineProperty(Set.prototype, Symbol.iterator, descriptor); }
 });
+
+for (const duringRequest of [false, true]) {
+  test(`catalogue continuation keeps its cursor after interaction invalidation (${duringRequest ? 'in flight' : 'before request'})`, async () => {
+    const loaded = Array.from({ length: 6 }, (_, index) => ({
+      ...page(Array.from({ length: 10 }, (_, n) => `catalogue-${index * 10 + n}`), '0', `discovery:${(index + 1) * 10}`),
+      mode: 'discovery' as const,
+    }));
+    const calls: (string | null)[] = [];
+    const controller = new FeedPaginationController(async cursor => {
+      calls.push(cursor);
+      if (duringRequest) { controller.markStale(); controller.markStale('8'); }
+      if (cursor === null) return { ...page(['personalized-card'], '8'), mode: 'personalized' };
+      return { ...page(['catalogue-60'], '0', 'discovery:70'), mode: 'discovery' };
+    }, loaded);
+    if (!duringRequest) { controller.markStale(); controller.markStale('8'); }
+    const next = await controller.load('discovery:60');
+    assert.deepEqual(calls, ['discovery:60']);
+    assert.equal(next.mode, 'discovery');
+    assert.deepEqual(next.items.map(item => item.repo_id), ['catalogue-60']);
+    assert.equal(next.nextCursor, 'discovery:70');
+  });
+}
+
+test('catalogue errors never enter personalized stale-cursor recovery', async () => {
+  const calls: (string | null)[] = [];
+  const controller = new FeedPaginationController(async cursor => {
+    calls.push(cursor); throw stale();
+  }, [{ ...page(['catalogue-0'], '0', 'discovery:10'), mode: 'discovery' }]);
+  await assert.rejects(controller.load('discovery:10'));
+  assert.deepEqual(calls, ['discovery:10']);
+});
