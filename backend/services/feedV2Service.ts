@@ -84,11 +84,16 @@ export class FeedV2Service {
       const reservation = await this.queue.refill(userId, version, requestId, limit, token);
       if (reservation.items.length > 0) return reservation;
       await this.generationWaits.wait(this.generationKey(userId, version), async () => {
-        const [currentVersion, depth] = await Promise.all([
-          this.persistence.getFeedVersion(userId), this.queue.depth(userId, version),
+        // A fast failure must not release the shared key while its sibling
+        // operation is still running. Wrap synchronous port throws as well.
+        const [currentVersion, depth] = await Promise.allSettled([
+          Promise.resolve().then(() => this.persistence.getFeedVersion(userId)),
+          Promise.resolve().then(() => this.queue.depth(userId, version)),
         ]);
-        if (currentVersion !== version) throw new FeedRequestInProgressError();
-        return depth > 0 ? true : undefined;
+        if (currentVersion.status === 'rejected') throw currentVersion.reason;
+        if (depth.status === 'rejected') throw depth.reason;
+        if (currentVersion.value !== version) throw new FeedRequestInProgressError();
+        return depth.value > 0 ? true : undefined;
       }, deadline - Date.now(), signal);
       // Each owner refills its own reservation. A concurrent consumer may win
       // the available items, so rejoin the shared probe with the same deadline.
@@ -149,7 +154,8 @@ export class FeedV2Service {
         const outcome = await this.generateOnMiss(userId, request.limit, [], request.session_id);
         if (outcome.status !== 'coalesced') this.generationWaits.notify(this.generationKey(userId, version));
         signal?.throwIfAborted();
-        if (outcome.status === 'stale' || outcome.feedVersion !== version) throw new FeedRequestInProgressError();
+        if (outcome.status === 'stale' || outcome.status === 'capacity'
+          || outcome.feedVersion !== version) throw new FeedRequestInProgressError();
         reservation = outcome.status === 'coalesced'
           ? await this.waitForGeneratedReservation(
             userId, version, request.feed_request_id, request.limit, token, signal,

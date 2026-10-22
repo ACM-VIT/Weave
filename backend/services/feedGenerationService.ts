@@ -16,7 +16,7 @@ export interface FeedRefillRequest {
 
 export type FeedGenerationOutcome =
   | { status: 'generated'; feedVersion: bigint; count: number }
-  | { status: 'coalesced' | 'stale'; feedVersion: bigint };
+  | { status: 'coalesced' | 'stale' | 'capacity'; feedVersion: bigint };
 
 export class FeedGenerationService {
   constructor(
@@ -75,7 +75,17 @@ export class FeedGenerationService {
         ? Math.max(0, Math.min(limit, this.indexedRefill.maxQueueDepth - state!.remainingDepth,
           500 - state!.occupiedCount))
         : limit;
-      if (generationLimit === 0 || (refill && state!.remainingDepth >= refill.lowWatermark)) {
+      if (generationLimit === 0) {
+        // A full queue or outstanding reservations can exhaust the budget
+        // temporarily. This is not evidence of an empty ML result/end of feed.
+        await this.persistence.recordGenerationAttempt?.({
+          generation_id: generationId, user_id: userId, feed_version: feedVersion, mode,
+          status: 'coalesced', latency_ms: Date.now() - started, result_count: 0,
+          error_code: 'FEED_RESERVATION_CAPACITY',
+        });
+        return { status: 'capacity', feedVersion };
+      }
+      if (refill && state!.remainingDepth >= refill.lowWatermark) {
         await this.persistence.recordGenerationAttempt?.({
           generation_id: generationId, user_id: userId, feed_version: feedVersion, mode,
           status: 'completed', latency_ms: Date.now() - started, result_count: 0,
