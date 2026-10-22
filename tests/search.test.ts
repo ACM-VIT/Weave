@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { InfiniteQueryObserver, QueryClient } from '@tanstack/react-query';
-import { isSearchExpired, runSearchRequest, searchQueryOptions, SearchSessions } from '../src/api/search-query';
-import { mapTrendingRepository } from '../src/api/explore-data';
+import { isSearchExpired, runSearchRequest, searchQueryOptions, SearchSessions, SearchRequestTiming } from '../src/api/search-query';
+import { mapExploreRepository, mapTrendingRepository } from '../src/api/explore-data';
 import { mapRepositoryDetail } from '../src/utils/repository-mapper';
 import { searchResultHref, SEARCH_GROUPS, type SearchPage } from '../src/models/search';
 
@@ -154,4 +154,34 @@ test('expired pagination retains results and a fresh session restarts from page 
   assert.deepEqual(observer.getCurrentResult().data?.pageParams, [null]);
   assert.equal(observer.getCurrentResult().error, null);
   unsubscribe(); client.clear();
+});
+
+test('typing waits only for its remaining deadline while filter, restart and retry are immediate', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 1000 });
+  const timing = new SearchRequestTiming();
+  const controller = new AbortController();
+  let sends = 0;
+  const send = async () => { sends += 1; return page(); };
+  const input = { viewer: 'viewer', query: 'vision', group: 'all' as const,
+    searchId: 'session', composing: false, offline: false, timing, send };
+  const request = () => searchQueryOptions(input).queryFn!({
+    signal: controller.signal, pageParam: null, queryKey: searchQueryOptions(input).queryKey,
+    client: new QueryClient(), direction: 'forward', meta: undefined,
+  });
+  timing.typed();
+  const typing = request();
+  assert.equal(sends, 0);
+  t.mock.timers.tick(299);
+  await Promise.resolve();
+  assert.equal(sends, 0);
+  t.mock.timers.tick(1);
+  await typing;
+  assert.equal(sends, 1);
+  for (const _intent of ['filter', 'restart', 'retry']) {
+    timing.typed();
+    timing.explicit();
+    const explicit = request();
+    assert.equal(sends, ['filter', 'restart', 'retry'].indexOf(_intent) + 2);
+    await explicit;
+  }
 });

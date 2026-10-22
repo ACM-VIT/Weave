@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import { performance } from 'node:perf_hooks';
 import type { RecommendationPort } from '../ports/recommendationPort.js';
 import type { OutboxTransportPort } from '../ports/outboxTransportPort.js';
 import type {
@@ -14,6 +15,26 @@ import type {
 import { ML_DESCRIPTION_FALLBACK_MODEL_VERSION } from '../contracts/ml.v2.js';
 import { getMlRuntimeConfig, type MlRuntimeConfig } from '../config/ml.js';
 import { isValidUuid } from '../utils/validators.js';
+import { incrementMetric, observeMetric } from '../observability/metrics.js';
+
+type RecommendationFailureKind = 'dependency' | 'contract';
+type RecommendationCircuitState = 'closed' | 'open' | 'half-open';
+
+interface RecommendationCircuitOptions {
+  /** Monotonic milliseconds; injectable for deterministic recovery checks. */
+  now?: () => number;
+  failureThreshold?: number;
+  openMs?: number;
+}
+
+function positiveInt(value: unknown, fallback: number): number {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function isDependencyStatus(status: number): boolean {
+  return status === 408 || status === 425 || status === 429 || status >= 500;
+}
 
 export type MlRecommendationFailureKind =
   | 'persona_unavailable'
@@ -32,6 +53,7 @@ export class MlRecommendationError extends Error {
     super(message);
     this.name = 'MlRecommendationError';
   }
+  get statusCode(): number { return this.status; }
 }
 
 export class MlRepositoryIndexContractError extends Error {
@@ -79,15 +101,19 @@ function boundedVersion(value: unknown, maximum = 200): value is string {
     && value.length >= 1 && value.length <= maximum;
 }
 
-function hasTwoOrThreeCompleteSentences(value: string): boolean {
-  // These inline abbreviations introduce examples/explanations, not sentences.
-  const prose = value.replace(/\b(?:e\.g|i\.e)\./giu, (match) => match.replaceAll('.', ''))
-    .replace(/\b(?:Mr|Mrs|Ms|Dr|Prof|Jr|Sr|vs)\.(?=\s+\p{L})/gu, (match) => match.slice(0, -1))
+function maskSummaryAbbreviations(value: string): string {
+  // Explicit ASCII token boundaries match Python, including adjacent non-Latin text.
+  return value.replace(/(?<![A-Za-z0-9_])(?:e\.g|i\.e)\./giu, (match) => match.replaceAll('.', '·'))
+    .replace(/(?<![A-Za-z0-9_])(?:Mr|Mrs|Ms|Dr|Prof|Jr|Sr|vs)\.(?=\s+\p{L})/gu, (match) => match.replaceAll('.', '·'))
     // Ambiguous abbreviations retain their ending before a new capitalized sentence.
-    .replace(/\b(?:etc\.|(?:[A-Z]\.){2,})(?=\s+\p{Ll})/gu, (match) => match.replaceAll('.', ''));
-  const endings = prose.match(/[.!?](?:["')\]]+)?(?=\s|$)/gu) ?? [];
+    .replace(/(?<![A-Za-z0-9_])(?:etc\.|(?:[A-Z]\.){2,})(?=\s+\p{Ll})/gu, (match) => match.replaceAll('.', '·'));
+}
+
+function hasTwoOrThreeCompleteSentences(value: string): boolean {
+  const prose = maskSummaryAbbreviations(value);
+  const endings = prose.match(/[.!?](?:["'”’)\]]+)?(?=\s|$)/gu) ?? [];
   return (endings.length === 2 || endings.length === 3)
-    && /[.!?](?:["')\]]+)?(?=\s|$)/u.test(value.slice(-4));
+    && /[.!?](?:["'”’)\]]+)?$/u.test(prose);
 }
 
 function normalizedProse(value: string): string {
@@ -112,12 +138,13 @@ function containsCopiedPassage(
 }
 
 function hasForbiddenCardContent(value: string): boolean {
+  const prose = maskSummaryAbbreviations(value);
   return /(?:^|\n)\s*#{1,6}\s|```|~~~|`/.test(value)
     || /(?:^|\n)\s*(?:[-+*]|\d+[.)])\s+/u.test(value)
     || /!?\[[^\]\n]*\]\([^)\n]+\)/u.test(value)
-    || /(?:^|[.!?]\s+|\n)[ \t]*(?:installation(?: instructions?)?|license(?: text)?|contribut(?:ing|ors?)(?: section)?|changelog|table of contents|API (?:reference|documentation))\s*[:\-]/i.test(value)
+    || /(?:^|[.!?]\s+|\n)[ \t]*(?:installation(?: instructions?)?|license(?: text)?|contribut(?:ing|ors?)(?: section)?|changelog|table of contents|API (?:reference|documentation))\s*[:\-]/i.test(prose)
     || /\b(?:licensed under|MIT License|Apache License|GNU (?:General Public )?License)\b/i.test(value)
-    || /(?:^|[.!?]\s+|\n)[ \t]*GPL(?:[ \t-]*v?\d+(?:\.\d+)*(?:\+|[ \t]+or[ \t]+later)?|[ \t]*\+|[ \t]+or[ \t]+later)?[ \t]*(?:[.!?:]|$)/i.test(value)
+    || /(?:^|[.!?]\s+|\n)[ \t]*GPL(?:[ \t-]*v?\d+(?:\.\d+)*(?:\+|[ \t]+or[ \t]+later)?|[ \t]*\+|[ \t]+or[ \t]+later)?[ \t]*(?:[.!?:]|$)/i.test(prose)
     || /\b(?:npm|pnpm|yarn|pip|pipx|uv|cargo|go|brew)\s+(?:install|add|run|get)\b/i.test(value);
 }
 
@@ -195,11 +222,30 @@ export function isMissingPersonaRecommendationError(error: unknown): boolean {
 
 export class MlV2Client implements RecommendationPort, OutboxTransportPort {
   private consecutiveGenerateFailures = 0;
+  private circuitState: RecommendationCircuitState = 'closed';
+  private circuitEpoch = 0;
   private circuitOpenedAt = 0;
-  private readonly circuitFailureThreshold = Number(process.env.ML_CIRCUIT_FAILURE_THRESHOLD ?? 5);
-  private readonly circuitOpenMs = Number(process.env.ML_CIRCUIT_OPEN_MS ?? 30_000);
+  private probeInFlight = false;
+  private readonly circuitFailureThreshold: number;
+  private readonly circuitOpenMs: number;
+  private readonly now: () => number;
 
-  constructor(private readonly config: MlRuntimeConfig = getMlRuntimeConfig()) {}
+  constructor(
+    private readonly config: MlRuntimeConfig = getMlRuntimeConfig(),
+    circuit: RecommendationCircuitOptions = {},
+  ) {
+    this.circuitFailureThreshold = positiveInt(circuit.failureThreshold ?? process.env.ML_CIRCUIT_FAILURE_THRESHOLD, 5);
+    this.circuitOpenMs = positiveInt(circuit.openMs ?? process.env.ML_CIRCUIT_OPEN_MS, 30_000);
+    this.now = circuit.now ?? (() => performance.now());
+  }
+
+  private transitionCircuit(state: RecommendationCircuitState, reason: string): void {
+    const previous = this.circuitState;
+    this.circuitState = state;
+    this.circuitEpoch++;
+    if (state === 'open') this.circuitOpenedAt = this.now();
+    incrementMetric('ml_recommendation_circuit_transition_total', { from: previous, to: state, reason });
+  }
 
   private async request(
     path: string,
@@ -234,6 +280,7 @@ export class MlV2Client implements RecommendationPort, OutboxTransportPort {
         try { body = JSON.parse(text); }
         catch {
           if (responseFormat === 'required-json' && response.ok) {
+            if (path === '/api/v2/recommendations/generate') throw new MlRecommendationError('ML returned invalid JSON.', response.status, 'contract');
             repositoryIndexContractError('ML returned invalid JSON.');
           }
           body = text;
@@ -253,9 +300,19 @@ export class MlV2Client implements RecommendationPort, OutboxTransportPort {
   }
 
   async generate(input: MlRecommendationRequest): Promise<MlRecommendationResponse> {
-    if (this.circuitOpenedAt && Date.now() - this.circuitOpenedAt < this.circuitOpenMs) {
+    if (this.circuitState === 'open' && this.now() - this.circuitOpenedAt >= this.circuitOpenMs) {
+      this.transitionCircuit('half-open', 'cooldown');
+    }
+    // Admission is synchronous, before the first await. Recovery has exactly one slot.
+    if (this.circuitState === 'open' || (this.circuitState === 'half-open' && this.probeInFlight)) {
+      incrementMetric('ml_recommendation_generate_total', { outcome: this.circuitState });
       throw new Error('ML recommendation circuit is open.');
     }
+    const probe = this.circuitState === 'half-open';
+    if (probe) this.probeInFlight = true;
+    const epoch = this.circuitEpoch;
+    const started = this.now();
+    let outcome = 'success';
     try {
       const { status, body, retryAfterMs } = await this.request(
         '/api/v2/recommendations/generate',
@@ -279,30 +336,39 @@ export class MlV2Client implements RecommendationPort, OutboxTransportPort {
         || value.user_id !== input.user_id || value.feed_version !== input.feed_version
         || typeof value.model_version !== 'string' || typeof value.embedding_version !== 'string'
         || !Array.isArray(value.items)) {
-        throw new Error('ML recommendation response violated the v2 envelope.');
-      }
-      if (value.items.length === 0) {
-        throw new Error('ML recommendation response contained no items.');
+        throw new MlRecommendationError('ML recommendation response violated the v2 envelope.', 200, 'contract');
       }
       const ids = new Set<string>();
       for (const item of value.items) {
-        if (!isValidUuid(item.repo_id) || ids.has(item.repo_id) || !Number.isFinite(item.score)
+        if (!item || !isValidUuid(item.repo_id) || ids.has(item.repo_id) || !Number.isFinite(item.score)
           || typeof item.source !== 'string' || item.source.length === 0) {
-          throw new Error('ML recommendation response contains an invalid or duplicate item.');
+          throw new MlRecommendationError('ML recommendation response contains an invalid or duplicate item.', 200, 'contract');
         }
         ids.add(item.repo_id);
       }
-      this.consecutiveGenerateFailures = 0;
-      this.circuitOpenedAt = 0;
+      // A call admitted before a newer opening must not reset that circuit.
+      if (epoch === this.circuitEpoch) {
+        this.consecutiveGenerateFailures = 0;
+        if (probe) this.transitionCircuit('closed', 'success');
+      }
       return value;
     } catch (error) {
-      const tripsCircuit = !(error instanceof MlRecommendationError)
-        || error.kind === 'service_unavailable';
-      if (tripsCircuit) {
-        this.consecutiveGenerateFailures++;
-        if (this.consecutiveGenerateFailures >= this.circuitFailureThreshold) this.circuitOpenedAt = Date.now();
+      outcome = error instanceof MlRecommendationError ? (error.kind === 'service_unavailable' ? 'dependency' : 'contract') : 'dependency';
+      if (epoch === this.circuitEpoch) {
+        if (outcome === 'dependency') this.consecutiveGenerateFailures++;
+        if (probe || this.consecutiveGenerateFailures >= this.circuitFailureThreshold) {
+          this.transitionCircuit('open', outcome);
+        }
       }
       throw error;
+    } finally {
+      // Includes fetch/body aborts and validation failures; no failed probe can retain the slot.
+      if (probe) {
+        this.probeInFlight = false;
+        incrementMetric('ml_recommendation_probe_total', { outcome });
+      }
+      incrementMetric('ml_recommendation_generate_total', { outcome });
+      observeMetric('ml_recommendation_generate_duration_ms', Math.max(0, this.now() - started), { outcome });
     }
   }
 

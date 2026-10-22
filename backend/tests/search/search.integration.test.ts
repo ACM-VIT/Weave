@@ -217,11 +217,24 @@ integration('isolated PostgreSQL search: hydration, people deduplication, List p
     assert.equal((refreshed.readme_digest as {overview:string}).overview,refreshedDigest.overview,'Cached Redis rankings rehydrate current README artifacts');
 
     const paged = request({group:'lists',limit:1});
-    const page1 = await service.search(viewer,paged);
+    const listRefs = (await persistence.lists(viewer, paged)).sort((a, b) => a.id.localeCompare(b.id));
+    const prefetched: SearchRef[][] = [];
+    const pagingService = new SearchService({
+      lexical: req => persistence.lexical(req), people: req => persistence.people(req), lists: async () => listRefs,
+      hydrate: async (account, refs, req) => {
+        prefetched.push(refs);
+        return persistence.hydrate(account, refs, req);
+      },
+    }, async () => { throw new Error('List pages must not call ML'); }, Date.now, new RedisSearchSnapshotStore(redisClient));
+    const page1 = await pagingService.search(viewer,paged);
+    assert.deepEqual(page1.items.map(item => item.id), [`collection:${ownCollection}`]);
+    assert.ok(prefetched[0].some(ref => ref.id === `legacy-board:${publicBoard}`), 'the changed List was already hydrated as surplus');
+    assert.ok(page1.next_cursor, 'surplus must remain reachable on the next instance');
     await sqlClient`UPDATE app.boards SET visibility='private' WHERE board_id=${publicBoard}::uuid`;
     const otherInstance = new SearchService(persistence, async () => { throw new Error('Cursor must reuse the shared ranking'); }, Date.now, new RedisSearchSnapshotStore(redisClient));
     const page2 = await otherInstance.search(viewer,{...paged,cursor:page1.next_cursor});
     assert.ok(!page2.items.some(v=>v.id===`legacy-board:${publicBoard}`),'changed visibility is rechecked on pagination');
+    assert.equal(page2.next_cursor, null, 'the rejected final surplus exhausts the snapshot');
 
     const runtimeUrl = new URL(process.env.DATABASE_URL!);
     runtimeUrl.searchParams.set('options', '-c role=ghsocial_backend');

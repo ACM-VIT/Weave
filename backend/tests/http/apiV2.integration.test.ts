@@ -6,6 +6,7 @@ import jwt from 'jsonwebtoken';
 
 import { sqlClient } from '../../db/index.js';
 import { PostgresFeedPersistence } from '../../adapters/postgresFeedPersistence.js';
+import { FeedCursorCodec } from '../../services/feedCursor.js';
 
 const integration = process.env.RUN_HTTP_INTEGRATION === '1' ? test : test.skip;
 const userId = '00000000-0000-4000-8000-000000000201';
@@ -34,11 +35,11 @@ async function seed(): Promise<void> {
   `;
   await sqlClient`
     INSERT INTO app.users (
-      user_id,username,github_id,github_handle,github_identity_verified_at,status
+      user_id,username,full_name,date_of_birth,github_id,github_handle,github_identity_verified_at,status
     ) VALUES
-      (${userId}::uuid,'http_test',NULL,'http-viewer',NULL,'active'),
-      (${spoofOwnerUserId}::uuid,'http_spoof',NULL,'owner',NULL,'active'),
-      (${ownerUserId}::uuid,'http_owner','9001','owner',now(),'active')
+      (${userId}::uuid,'http_test','Synthetic HTTP Viewer','1990-01-01',NULL,'http-viewer',NULL,'active'),
+      (${spoofOwnerUserId}::uuid,'http_spoof',NULL,NULL,NULL,'owner',NULL,'active'),
+      (${ownerUserId}::uuid,'http_owner',NULL,NULL,'9001','owner',now(),'active')
   `;
   await sqlClient`INSERT INTO app.user_stats (user_id) VALUES (${userId}::uuid),(${ownerUserId}::uuid)`;
   await sqlClient`INSERT INTO app.user_feed_state (user_id) VALUES (${userId}::uuid)`;
@@ -142,6 +143,17 @@ integration('registered v2 HTTP paths complete controlled integration flows', as
     [{repo_id:repoId,score:1,source:'semantic',model_version:'http-test-model',summary_id:null}],600,
   );
   try {
+    const codec = new FeedCursorCodec(process.env.JWT_SECRET);
+    for (const [cursor, expectedCode] of [
+      [codec.encode({ user_id: userId, session_id: sessionId, feed_version: '0', offset: 0 }), 'FEED_CURSOR_STALE'],
+      [codec.encode({ user_id: ownerUserId, session_id: sessionId, feed_version: '0', offset: 0 }), undefined],
+      ['malformed', undefined],
+    ] as const) {
+      const rejected = await fetch(`${base}/api/v2/feed`, { method: 'POST', headers: authHeaders,
+        body: JSON.stringify({ feed_request_id: crypto.randomUUID(), session_id: sessionId, limit: 10, cursor }) });
+      assert.equal(rejected.status, 400);
+      assert.equal(((await rejected.json()) as { code?: string }).code, expectedCode);
+    }
     const publicShare = await fetch(`${base}/api/v2/repositories/${repoId}/share`);
     assert.equal(publicShare.status, 200);
     const publicShareData = (await publicShare.json()) as { data: { full_name: string; url: string } };
@@ -428,6 +440,8 @@ integration('registered v2 HTTP paths complete controlled integration flows', as
         };
       }>;
     };
+    // This fixture explicitly publishes a queue entry; generation exclusions are
+    // exercised by the generation/database suites, not bypassed here via fallback.
     assert.equal(followedItems.items[0].repository.owner_user_id, ownerUserId);
     assert.equal(followedItems.items[0].repository.viewer_follows_owner, true);
     assert.deepEqual(await feedPersistence.listFollowedRepositoryIds(userId, 10), [repoId]);

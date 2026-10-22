@@ -36,7 +36,7 @@ import { SavePopup } from '@/components/home/save-popup';
 import { ShareRepositorySheet } from '@/components/home/share-repository-sheet';
 import { REFERENCE_THEME } from '@/constants/theme';
 import type { RepositoryDetail } from '@/models/repository';
-import { getActivityOutbox } from '@/services/activityOutboxClient';
+import { queueActivityForViewer } from '@/services/activityOutboxClient';
 import { useAuth } from '@/store/AuthContext';
 import { formatCompactCount } from '@/utils/format-count';
 import { prepareReadmePreview, prepareReadmeSummaryDocument } from '@/utils/readme';
@@ -142,10 +142,7 @@ export function RepositoryDetailScreen({ repositoryId }: { repositoryId: string 
 
   const queueActivity = useCallback(async (action: 'share' | 'github_open') => {
     if (!viewerUserId || !repository) return;
-    const outbox = getActivityOutbox(viewerUserId);
-    await outbox.enqueue({ repo_id: repository.id, action });
-    const token = await getStorageItem('access_token');
-    if (token) await outbox.flush(token);
+    await queueActivityForViewer(viewerUserId, { repo_id: repository.id, action });
   }, [repository, viewerUserId]);
 
   const handleListMembershipsChanged = useCallback((listIds: string[], saved: boolean) => {

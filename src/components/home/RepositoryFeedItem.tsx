@@ -59,6 +59,7 @@ export function RepositoryFeedItem({
   pageWidth,
   pageHeight,
   isViewable = false,
+  boundary,
   onOwnerPress,
   onRepositoryPress,
   onQueueActivity,
@@ -68,6 +69,7 @@ export function RepositoryFeedItem({
   pageWidth: number;
   pageHeight: number;
   isViewable?: boolean;
+  boundary?: React.ReactNode;
   onOwnerPress?: () => void;
   onRepositoryPress?: () => void;
   onSavedChange?: (saved: boolean, saveStateChanged: boolean) => void;
@@ -83,7 +85,7 @@ export function RepositoryFeedItem({
   ) => void;
 }) {
   const [isSaveVisible, setIsSaveVisible] = useState(false);
-  const [saveMutations, setSaveMutations] = useState<SavePopupMutationState>({ save: false, create: false });
+  const [saveMutations, setSaveMutations] = useState<SavePopupMutationState>({ save: false, create: false, error: null });
   const [isShareVisible, setIsShareVisible] = useState(false);
   const [isReadmeVisible, setIsReadmeVisible] = useState(false);
   const [expandedSummary, setExpandedSummary] = useState<string | null>(null);
@@ -317,7 +319,7 @@ export function RepositoryFeedItem({
               }}
               onSavePress={openSavePopup}
               onSharePress={() => setIsShareVisible(true)}
-              pageHeight={pageHeight}
+              pageHeight={Math.max(1, pageHeight - (boundary ? 56 : 0))}
               pageWidth={pageWidth}
               repository={repository}
             />
@@ -335,6 +337,7 @@ export function RepositoryFeedItem({
         />
       ) : null}
 
+      {boundary}
       {isSaveVisible ? <SavePopup
         mutations={{ state: saveMutations, onChange: setSaveMutations }}
         isVisible={isSaveVisible}

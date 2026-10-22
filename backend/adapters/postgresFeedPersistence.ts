@@ -5,7 +5,11 @@ import type {
   StoredServe,
   StoredServeItem,
 } from '../contracts/feed.v2.js';
-import type { FeedPersistencePort, RepositoryIdentityProjection } from '../ports/feedPersistencePort.js';
+import { MAX_FEED_SERVE_LOOKUP_BATCH } from '../ports/feedPersistencePort.js';
+import type {
+  FeedPersistencePort, FeedReconciliationPersistencePort, FeedServeRequest, RepositoryIdentityProjection,
+} from '../ports/feedPersistencePort.js';
+import { isValidUuid } from '../utils/validators.js';
 import { sqlClient } from '../db/index.js';
 import { buildMlOnboardingJob, hasMlEmbeddingContext } from '../services/mlOnboardingService.js';
 
@@ -50,9 +54,7 @@ function projection(row: Record<string, unknown>): RepositoryProjection {
   };
 }
 
-// Optional summary/README metadata is read through JSON until migration 0024 is deployed.
-// Missing provenance excludes legacy text so it can never appear as a concise Summary.
-export class PostgresFeedPersistence implements FeedPersistencePort {
+export class PostgresFeedPersistence implements FeedPersistencePort, FeedReconciliationPersistencePort {
   async recordGenerationAttempt(input: Parameters<NonNullable<FeedPersistencePort['recordGenerationAttempt']>>[0]): Promise<void> {
     await sqlClient`
       INSERT INTO telemetry.generation_attempts (
@@ -65,12 +67,35 @@ export class PostgresFeedPersistence implements FeedPersistencePort {
   }
 
   async getFeedVersion(userId: string): Promise<bigint> {
-    const rows = await sqlClient`
+    const rows = await sqlClient`SELECT feed_version FROM app.user_feed_state WHERE user_id=${userId}::uuid`;
+    if (rows.length) return BigInt(rows[0].feed_version);
+    const inserted = await sqlClient`
       INSERT INTO app.user_feed_state (user_id) VALUES (${userId}::uuid)
-      ON CONFLICT (user_id) DO UPDATE SET user_id = EXCLUDED.user_id
-      RETURNING feed_version
+      ON CONFLICT (user_id) DO NOTHING RETURNING feed_version
     `;
-    return BigInt(rows[0].feed_version);
+    if (inserted.length) return BigInt(inserted[0].feed_version);
+    const current = await sqlClient`SELECT feed_version FROM app.user_feed_state WHERE user_id=${userId}::uuid`;
+    if (!current.length) throw new Error('User feed state is unavailable.');
+    return BigInt(current[0].feed_version);
+  }
+
+  async listExcludedRepositoryIds(userId: string, sessionId: string | undefined, limit: number): Promise<string[]> {
+    const boundedLimit = Number.isFinite(limit) ? Math.max(0, Math.min(Math.trunc(limit), 500)) : 0;
+    if (!boundedLimit) return [];
+    const rows = await sqlClient`
+      WITH exposures AS (
+        SELECT item.repo_id,serve.created_at AS observed_at,0 AS priority
+        FROM telemetry.feed_serves serve
+        JOIN telemetry.feed_serve_items item ON item.serve_id=serve.serve_id
+        WHERE serve.user_id=${userId}::uuid AND serve.session_id=${sessionId ?? null}::uuid
+        UNION ALL
+        SELECT repo_id,last_event_at AS observed_at,1 AS priority
+        FROM telemetry.user_repo_engagement WHERE user_id=${userId}::uuid
+      )
+      SELECT repo_id FROM exposures GROUP BY repo_id
+      ORDER BY min(priority),max(observed_at) DESC,repo_id LIMIT ${boundedLimit}
+    `;
+    return rows.map(row => String(row.repo_id));
   }
 
   async getMlOnboardingJob(userId: string) {
@@ -298,31 +323,45 @@ export class PostgresFeedPersistence implements FeedPersistencePort {
   }
 
   async createServe(input: CreateServeInput): Promise<StoredServe> {
-    await sqlClient.begin(async (tx) => {
-      const existing = await tx`
-        SELECT serve_id FROM telemetry.feed_serves
-        WHERE user_id=${input.user_id}::uuid AND feed_request_id=${input.feed_request_id}::uuid
-      `;
-      if (existing.length > 0) return;
-      const serves = await tx`
+    if (input.items.length > 100) throw new Error('A feed serve cannot contain more than 100 items.');
+    const created = await sqlClient.begin(async (tx) => {
+      const headers = await tx`
         INSERT INTO telemetry.feed_serves (
           feed_request_id,user_id,session_id,feed_version,generation_id,source,model_version,next_cursor
         ) VALUES (
           ${input.feed_request_id}::uuid,${input.user_id}::uuid,${input.session_id}::uuid,
           ${input.feed_version.toString()}::bigint,${input.generation_id}::uuid,${input.source},${input.model_version},${input.next_cursor}
-        ) RETURNING serve_id
+        ) ON CONFLICT (feed_request_id) DO NOTHING RETURNING serve_id,created_at
       `;
-      const serveId = String(serves[0].serve_id);
-      for (const item of input.items) {
+      if (!headers.length) return null;
+      const header = headers[0];
+      if (input.items.length) {
+        const items = input.items.map(item => ({ position: item.position,repo_id: item.repo_id,score: item.score,
+          source: item.source,model_version: item.model_version,summary_id: item.summary_id }));
         await tx`
           INSERT INTO telemetry.feed_serve_items (serve_id,position,repo_id,score,source,model_version,summary_id)
-          VALUES (${serveId}::uuid,${item.position},${item.repo_id}::uuid,${item.score},${item.source},${item.model_version},${item.summary_id}::uuid)
+          SELECT ${String(header.serve_id)}::uuid,position,repo_id,score,source,model_version,summary_id
+          FROM jsonb_to_recordset(${JSON.stringify(items)}::jsonb) AS item(
+            position integer,repo_id uuid,score double precision,source text,model_version text,summary_id uuid
+          )
         `;
       }
+      return header;
     });
-    const stored = await this.getServeByRequest(input.user_id, input.feed_request_id);
-    if (!stored) throw new Error('Serve was not persisted.');
-    return stored;
+    if (!created || input.items.some(item => item.summary_id !== item.repository.summary_id)) {
+      const replay = await this.getServeByRequest(input.user_id, input.feed_request_id);
+      if (!replay) throw new Error('Serve was not persisted.');
+      return replay;
+    }
+    // Creation uses the canonical projections already hydrated for this serve.
+    // Replays/conflicts read current mutable product fields from storage.
+    return {
+      ...input,serve_id: String(created.serve_id),created_at: new Date(created.created_at as string).toISOString(),
+      items: [...input.items].sort((a,b) => a.position-b.position).map(item => ({
+        position: item.position,repo_id: item.repo_id,score: item.score,source: item.source,
+        model_version: item.model_version,summary_id: item.summary_id,repository: item.repository,
+      })),
+    };
   }
 
   async listActiveRepositoryIdentities(repoIds: string[]): Promise<RepositoryIdentityProjection[]> {
@@ -333,7 +372,7 @@ export class PostgresFeedPersistence implements FeedPersistencePort {
       LEFT JOIN app.repo_content content ON content.repo_id=repo.repo_id
       LEFT JOIN app.repo_card_summaries summary ON summary.repo_id=repo.repo_id AND summary.active
         AND summary.content_version=content.content_version
-        AND to_jsonb(summary)->>'source' IN ('generated','description_fallback')
+        AND to_jsonb(summary.*)->>'source' IN ('generated','description_fallback')
       WHERE repo.repo_id = ANY(${repoIds}::uuid[]) AND repo.status='active'
     `;
     return rows.map((row) => ({
@@ -352,10 +391,10 @@ export class PostgresFeedPersistence implements FeedPersistencePort {
              COALESCE(topic_values.topics, '[]'::jsonb) AS topics,
              COALESCE(stats.star_count, 0) AS star_count, COALESCE(stats.fork_count, 0) AS fork_count, COALESCE(stats.open_issues_count, 0) AS open_issues_count,
              COALESCE(engagement.likes_count, 0) AS likes_count, COALESCE(engagement.comments_count, 0) AS comments_count, COALESCE(engagement.views_count, 0) AS views_count,
-             summary.summary_id,summary.summary,to_jsonb(summary)->'highlights' AS summary_highlights,
-             to_jsonb(summary)->>'prompt_version' AS summary_prompt_version,
+             summary.summary_id,summary.summary,to_jsonb(summary.*)->'highlights' AS summary_highlights,
+             to_jsonb(summary.*)->>'prompt_version' AS summary_prompt_version,
              summary.model_version AS summary_model_version,
-             to_jsonb(summary)->>'format_version' AS summary_format_version,to_jsonb(summary)->>'source' AS summary_source,
+             to_jsonb(summary.*)->>'format_version' AS summary_format_version,to_jsonb(summary.*)->>'source' AS summary_source,
              reaction.reaction AS viewer_reaction,
              (saved.repo_id IS NOT NULL) AS viewer_saved,
              social_profile.claimed_by_user_id AS owner_user_id,
@@ -404,7 +443,7 @@ export class PostgresFeedPersistence implements FeedPersistencePort {
       LEFT JOIN app.repo_engagement engagement ON engagement.repo_id = repo.repo_id
       LEFT JOIN app.repo_card_summaries summary ON summary.repo_id=repo.repo_id AND summary.active
         AND summary.content_version=content.content_version
-        AND to_jsonb(summary)->>'source' IN ('generated','description_fallback')
+        AND to_jsonb(summary.*)->>'source' IN ('generated','description_fallback')
       LEFT JOIN app.reactions reaction ON reaction.repo_id=repo.repo_id AND reaction.user_id=${viewerUserId ?? null}::uuid
       LEFT JOIN app.saves saved ON saved.repo_id=repo.repo_id AND saved.user_id=${viewerUserId ?? null}::uuid
       WHERE repo.repo_id = ANY(${repoIds}::uuid[]) AND repo.status='active'
@@ -432,6 +471,32 @@ export class PostgresFeedPersistence implements FeedPersistencePort {
   }
 
   async hasServe(userId: string, feedRequestId: string): Promise<boolean> {
-    return (await this.getServeByRequest(userId, feedRequestId)) !== null;
+    if (!isValidUuid(userId) || !isValidUuid(feedRequestId)) return false;
+    const rows = await sqlClient`
+      SELECT EXISTS (
+        SELECT 1 FROM telemetry.feed_serves
+        WHERE user_id=${userId}::uuid AND feed_request_id=${feedRequestId}::uuid
+      ) AS present
+    `;
+    return rows[0].present === true;
+  }
+
+  async listServedRequests(requests: FeedServeRequest[]): Promise<FeedServeRequest[]> {
+    const unique = new Map<string, { user_id: string; feed_request_id: string }>();
+    for (const request of requests) {
+      if (!isValidUuid(request.userId) || !isValidUuid(request.requestId)) continue;
+      const user_id = request.userId.toLowerCase(), feed_request_id = request.requestId.toLowerCase();
+      unique.set(`${user_id}:${feed_request_id}`, { user_id, feed_request_id });
+    }
+    if (unique.size === 0) return [];
+    if (unique.size > MAX_FEED_SERVE_LOOKUP_BATCH) throw new Error('Feed serve lookup batch exceeds its limit.');
+    const rows = await sqlClient`
+      SELECT serve.user_id,serve.feed_request_id
+      FROM telemetry.feed_serves serve
+      JOIN jsonb_to_recordset(${JSON.stringify([...unique.values()])}::jsonb)
+        AS requested(user_id uuid,feed_request_id uuid)
+        ON serve.user_id=requested.user_id AND serve.feed_request_id=requested.feed_request_id
+    `;
+    return rows.map(row => ({ userId: String(row.user_id), requestId: String(row.feed_request_id) }));
   }
 }

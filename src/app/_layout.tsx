@@ -37,6 +37,10 @@ function RootLayoutNav({ fontsReady }: { fontsReady: boolean }) {
   const previousViewerRef = useRef<string | null | undefined>(undefined);
   const segments = useSegments();
   const router = useRouter();
+  const inAuthGroup = segments[0] === '(auth)';
+  const rootSegment = segments[0] as string | undefined;
+  const inPublicRoute = inAuthGroup || rootSegment === 'terms' || rootSegment === 'privacy';
+  const publicRouteReady = fontsReady && inPublicRoute;
   const isReady = fontsReady && !isLoading && !startupError;
   const [startupComplete, setStartupComplete] = useState(false);
   if (isReady && !startupComplete) setStartupComplete(true);
@@ -56,10 +60,7 @@ function RootLayoutNav({ fontsReady }: { fontsReady: boolean }) {
   useEffect(() => {
     if (!isReady) return;
 
-    const inAuthGroup = segments[0] === '(auth)';
     const inOnboardingGroup = segments[0] === 'onboarding';
-    const rootSegment = segments[0] as string | undefined;
-    const inPublicRoute = rootSegment === 'terms' || rootSegment === 'privacy';
     const routeRequiresAuthentication = !inAuthGroup && !inPublicRoute;
 
     if (routeRequiresAuthentication
@@ -79,19 +80,20 @@ function RootLayoutNav({ fontsReady }: { fontsReady: boolean }) {
         router.replace(destination as Href);
       }
     }
-  }, [user, isReady, pathname, segments, router]);
+  }, [user, isReady, pathname, segments, router, inAuthGroup, inPublicRoute]);
 
   useEffect(() => {
-    if (!splashHidden.current && fontsReady && (startupComplete || startupError)) {
+    if (!splashHidden.current && fontsReady && (startupComplete || startupError || publicRouteReady)) {
       splashHidden.current = true;
       SplashScreen.hideAsync();
     }
-  }, [fontsReady, startupComplete, startupError]);
+  }, [fontsReady, startupComplete, startupError, publicRouteReady]);
 
-  // Restore authentication in parallel with fonts, but never mount a route
-  // (including a protected deep link) until both startup tasks have settled.
+  // Public auth routes must mount to exchange OAuth codes or recover an account
+  // even if restoring an unrelated old session stalls or fails. Protected deep
+  // links still wait behind the startup gate, including after a public route.
   // Later sign-in/profile transitions must not reset the mounted navigator.
-  if (fontsReady && startupError && !startupComplete) {
+  if (fontsReady && startupError && !startupComplete && !inPublicRoute) {
     return (
       <View style={{ flex: 1, justifyContent: 'center', padding: 24, gap: 16, backgroundColor: REFERENCE_THEME.background }}>
         <Text accessibilityRole="alert" style={{ color: REFERENCE_THEME.text }}>
@@ -112,7 +114,7 @@ function RootLayoutNav({ fontsReady }: { fontsReady: boolean }) {
       </View>
     );
   }
-  if (!isReady && !startupComplete) return null;
+  if (!isReady && !startupComplete && !publicRouteReady) return null;
 
   return <Stack screenOptions={{ headerShown: false }} />;
 }

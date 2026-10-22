@@ -98,7 +98,7 @@ function feed(ids: string[], reducedMotion = false) {
       saveRepositoryToCollections: () => saveRepository(),
     },
     '../../api/comments': {
-      getCommentsByRepo: async (id: string) => { requests.push(`comments:${id}`); return []; },
+      getCommentsByRepo: async (id: string) => { requests.push(`comments:${id}`); return { items: [], nextOffset: undefined }; },
       getCommentAuthor: async () => { requests.push('author'); return {}; },
       createComment: () => postComment(),
     },
@@ -144,6 +144,7 @@ function feed(ids: string[], reducedMotion = false) {
     get pendingCloseAnimations() { return closeAnimations.length; },
     button(label: string) { return root.root.findAllByType('Modal').find(node => node.props.visible)!.findAllByType('Pressable').find(node => node.props.accessibilityLabel === label)!; },
     async press(label: string) { await act(async () => { this.button(label).props.onPress(); await new Promise(resolve => setTimeout(resolve, 0)); }); },
+    get messages() { return root.root.findAllByType('Text').flatMap(node => typeof node.props.children === 'string' ? [node.props.children] : []); },
     get mountedOverlays() { return overlayTypes.reduce((count, type) => count + root.root.findAllByType(type).length, 0); },
     get observers() { return client.getQueryCache().getAll().reduce((count, query) => count + query.getObserversCount(), 0); },
     get input() { return root.root.findAllByType('Modal').find(node => node.props.visible)!.findAllByType('TextInput').find(node => node.props.accessibilityLabel === 'Add a comment')!; },
@@ -314,6 +315,7 @@ test('a failed save after close/reopen releases busy state so the user can retry
     assert.equal(app.button('Save repository to selected Lists').props.disabled, true);
     await act(async () => { reject(new Error('offline')); await new Promise(resolve => setTimeout(resolve, 0)); });
     assert.equal(app.button('Save repository to selected Lists').props.disabled, false);
+    assert.ok(app.messages.includes('offline'), 'the reopened popup must display the original failure');
     await app.press('Save repository to selected Lists');
     assert.equal(saves, 2);
   } finally { await app.unmount(); }
@@ -355,3 +357,22 @@ for (const changed of [true, false]) {
     } finally {unsubscribe(); await app.unmount();}
   });
 }
+
+
+test('collection creation failure remains visible after closing and reopening its popup', async () => {
+  const app = feed(['00000000-0000-4000-8000-000000000001', '00000000-0000-4000-8000-000000000002']);
+  let reject!: (error: Error) => void;
+  app.setCreate(() => new Promise((_yes, no) => { reject = no; }));
+  await app.mount();
+  try {
+    await app.open(0, 'onSavePress'); await app.createCollection('New collection');
+    await app.requestClose(); await app.finishClose(); await app.open(0, 'onSavePress');
+    await act(async () => { reject(new Error('Collection could not be created')); await new Promise(resolve => setTimeout(resolve, 0)); });
+    assert.equal(app.button('Create new List').props.disabled, false);
+    assert.ok(app.messages.includes('Collection could not be created'));
+    await app.requestClose(); await app.finishClose(); await app.open(1, 'onSavePress');
+    assert.ok(!app.messages.includes('Collection could not be created'), 'errors must stay repository-local');
+    await app.requestClose(); await app.finishClose(); await app.open(0, 'onSavePress');
+    assert.ok(app.messages.includes('Collection could not be created'), 'dismissal must not erase an unacknowledged failure');
+  } finally { await app.unmount(); }
+});

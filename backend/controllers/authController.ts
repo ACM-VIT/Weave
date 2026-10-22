@@ -16,6 +16,7 @@ import {
   githubIdentityFromAuthUser,
 } from "../services/identityService.js";
 import { syncGitHubPersona } from "../services/githubPersonaService.js";
+import { RefreshUserLookupTimeoutError, withRefreshUserLookupDeadline } from '../services/refreshUserLookup.js';
 import { updatePasswordFromRecoverySession } from "../services/passwordRecoveryService.js";
 import {
   OAuthPkceCoordinator,
@@ -361,7 +362,7 @@ export async function refreshToken(req: Request, res: Response): Promise<void> {
     // 2. Fetch user metadata from Supabase Auth via Admin Client
     // IMPORTANT: We do this BEFORE the transaction so we don't hold database connections open across network calls!
     const { data: authData, error: userError } =
-      await supabaseAdmin.auth.admin.getUserById(tokenData.user_id);
+      await withRefreshUserLookupDeadline(() => supabaseAdmin.auth.admin.getUserById(tokenData.user_id));
 
     if (userError || !authData?.user) {
       throw new Error("UserNotFound");
@@ -400,6 +401,10 @@ export async function refreshToken(req: Request, res: Response): Promise<void> {
       user: authData.user,
     });
   } catch (error: any) {
+    if (error instanceof RefreshUserLookupTimeoutError) {
+      // No token mutation has started, so preserve the caller's refresh cookie.
+      return sendError(res, 503, 'Session refresh is temporarily unavailable. Please try again.');
+    }
     if (error.message === "InvalidToken" || error.message === "ExpiredToken") {
       res.clearCookie("refresh_token", clearRefreshCookieOptions());
       return sendError(

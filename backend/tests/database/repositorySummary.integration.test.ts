@@ -213,4 +213,27 @@ integration('summary completion is atomic, idempotent, and fenced by current con
   `)[0];
   assert.equal(String(activeUpgrade.model_version), 'recovered-provider-model');
   assert.equal(String(activeUpgrade.source), 'generated');
+  // Deploying compatible validators must not silently revive terminal jobs.
+  // An explicit replay retains the original content identity and is fenced by
+  // a fresh claim before the corrected ML artifact can commit atomically.
+  const terminalRecoveryRow = await claimedRow(crypto.randomUUID(), crypto.randomUUID(), 2);
+  await service.markFailed(terminalRecoveryRow, 'Pre-fix summary contract rejection', false);
+  assert.equal(String((await sqlClient`
+    SELECT status FROM telemetry.ml_outbox WHERE outbox_id=${terminalRecoveryRow.outbox_id}::uuid
+  `)[0].status), 'dead');
+  assert.equal(await service.replay(terminalRecoveryRow.outbox_id), true);
+  const recovered = (await service.claim(50)).find(row => row.outbox_id === terminalRecoveryRow.outbox_id)!;
+  assert.ok(recovered);
+  assert.equal(recovered.idempotency_key, terminalRecoveryRow.idempotency_key);
+  assert.deepEqual(recovered.payload, terminalRecoveryRow.payload);
+  assert.notEqual(recovered.claim_token, terminalRecoveryRow.claim_token);
+  assert.equal(recovered.attempts, 1);
+  const recoveredResponse = response(String(recovered.payload.job_id), 2);
+  recoveredResponse.card_summary.model_version = 'terminal-recovery-model';
+  assert.equal(await service.completeRepositoryIndex(recovered, recoveredResponse), true);
+  assert.equal(String((await sqlClient`
+    SELECT status FROM telemetry.ml_outbox WHERE outbox_id=${recovered.outbox_id}::uuid
+  `)[0].status), 'delivered');
+  assert.equal(await service.replay(recovered.outbox_id), false, 'Delivered jobs must not be reset.');
+
 });

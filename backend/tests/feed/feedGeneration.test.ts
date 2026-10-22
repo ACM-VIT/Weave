@@ -21,10 +21,11 @@ class GenerationPersistence implements FeedPersistencePort {
   ];
   validatedRepoIds: string[] = [];
   async getFeedVersion() { return 1n; }
+  async listExcludedRepositoryIds(_user: string, _session: string | undefined, _limit: number): Promise<string[]> { return []; }
   async listFollowedRepositoryIds() { return [socialRepoId]; }
   async listActiveRepositoryIdentities(repoIds: string[]) {
     this.validatedRepoIds = repoIds;
-    return this.identities.filter(row => !this.inactive.has(row.repo_id));
+    return this.identities.filter(row => repoIds.includes(row.repo_id) && !this.inactive.has(row.repo_id));
   }
   async listActiveRepositories(): Promise<RepositoryProjection[]> {
     throw new Error('Generation must not hydrate repository cards.');
@@ -88,7 +89,7 @@ test('feed generation sends followed-owner repositories as bounded ML context', 
     recommendations,
   ).generate(userId, 45);
 
-  assert.equal(result, 'generated');
+  assert.deepEqual(result, { status: 'generated', feedVersion: 1n, count: 2 });
   assert.deepEqual(recommendations.request?.social_repo_ids, [socialRepoId]);
   assert.equal(queue.replaced, true);
   assert.deepEqual(persistence.validatedRepoIds, [socialRepoId, otherRepoId]);
@@ -158,7 +159,7 @@ test('feed generation repairs a missing ML persona and retries exactly once', as
     { repair: async () => { repairs++; } },
   ).generate(userId, 45);
 
-  assert.equal(result, 'generated');
+  assert.equal(result.status, 'generated');
   assert.equal(calls, 2);
   assert.equal(repairs, 1);
   assert.equal(records[0].generation_id, recommendations.request?.generation_id);
@@ -176,7 +177,7 @@ test('feed generation drops stale ML repository IDs while preserving valid perso
     new CapturingRecommendations(),
   ).generate(userId, 45);
 
-  assert.equal(result, 'generated');
+  assert.equal(result.status, 'generated');
   assert.deepEqual(queue.entries.map((entry) => entry.repo_id), [otherRepoId]);
 });
 
@@ -185,7 +186,7 @@ test('an expired generation cannot overwrite recommendations published by a newe
   const original=recommendations.generate.bind(recommendations);
   recommendations.generate=async input=>{queue.owned=false;queue.entries=[{...queue.entries[0],repo_id:'newer-owner-result'} as RecommendationEntry];return original(input);};
   const result=await new FeedGenerationService(new GenerationPersistence(),queue,recommendations).generate(userId);
-  assert.equal(result,'stale');assert.equal(queue.replaced,false);
+  assert.equal(result.status,'stale');assert.equal(queue.replaced,false);
   assert.equal(queue.entries[0].repo_id,'newer-owner-result');
 });
 
@@ -200,8 +201,38 @@ test('long persona repair renews its lease before publishing',async()=>{
   try {
     const result=await new FeedGenerationService(new GenerationPersistence(),queue,recommendations,600,9,
       {repair:async()=>{await renewal;}}).generate(userId);
-    assert.equal(result,'generated');assert.ok(renewals>=1);assert.equal(queue.replaced,true);
+    assert.equal(result.status,'generated');assert.ok(renewals>=1);assert.equal(queue.replaced,true);
     const atCompletion=renewals;await new Promise(resolve=>setTimeout(resolve,15));
     assert.equal(renewals,atCompletion,'Heartbeat stops when generation finishes');
   }finally{clearTimeout(alive);}
+});
+
+test('generation excludes actual exposure and current-session deliveries before enqueueing recommendations', async () => {
+  const persistence = new GenerationPersistence();
+  let historyArgs: unknown[] = [];
+  Object.assign(persistence, {listExcludedRepositoryIds:async (...args:unknown[])=>{historyArgs=args;return [socialRepoId];}});
+  const queue = new GenerationQueue(); let queued: string[] = [];
+  let completedCount: number | undefined;
+  Object.assign(persistence, { recordGenerationAttempt: async (attempt: {status: string; result_count: number}) => {
+    if (attempt.status === 'completed') completedCount = attempt.result_count;
+  } });
+  queue.replace = async (...args: unknown[])=>{queued=(args[2] as {repo_id:string}[]).map(item=>item.repo_id);};
+  const recommendations = new CapturingRecommendations();
+  await new FeedGenerationService(persistence,queue,recommendations).generate(userId,45,[],'live','browsing-session');
+  assert.deepEqual(historyArgs,[userId,'browsing-session',500]);
+  assert.deepEqual(recommendations.request?.exclude_repo_ids,[socialRepoId]);
+  assert.deepEqual(persistence.validatedRepoIds,[otherRepoId], 'validate only unexcluded identities without card hydration');
+  assert.deepEqual(queued,[otherRepoId]);
+  assert.equal(completedCount, 1, 'record the canonical items actually enqueued');
+});
+
+test('generation combines unique exclusions within the existing 500-ID ML contract',async()=>{
+  const persistence = new GenerationPersistence();
+  const history=Array.from({length:500},(_,i)=>`00000000-0000-4000-8000-${String(i+10).padStart(12,'0')}`);
+  Object.assign(persistence,{listExcludedRepositoryIds:async()=>history});
+  const recommendations = new CapturingRecommendations();
+  await new FeedGenerationService(persistence,new GenerationQueue(),recommendations).generate(userId,45,[socialRepoId,socialRepoId]);
+  assert.equal(recommendations.request?.exclude_repo_ids.length,500);
+  assert.equal(new Set(recommendations.request?.exclude_repo_ids).size,500);
+  assert.equal(recommendations.request?.exclude_repo_ids[0],socialRepoId);
 });

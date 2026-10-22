@@ -67,8 +67,9 @@ export class ApplicationRuntime {
     this.persistence,
     this.queue,
     this.generation
-      ? (userId, limit, excluded) => this.generation!.generate(userId, Math.max(45, limit), excluded)
+      ? (userId, limit, excluded, sessionId) => this.generation!.generate(userId, Math.max(45, limit), excluded, 'live', sessionId)
       : undefined,
+    false,
     1_500,
     25,
     process.env.JWT_SECRET,

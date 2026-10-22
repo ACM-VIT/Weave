@@ -1,0 +1,345 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import { InfiniteQueryObserver, QueryClient, type InfiniteData } from '@tanstack/react-query';
+import { FeedPaginationController, type FeedPage } from '../src/services/feedPagination';
+import { requestFeedWithRetry, waitForFeedRetry } from '../src/services/feedTransport';
+
+const page = (ids: string[], version = '1', cursor: string | null = 'next'): FeedPage => ({
+  items: ids.map((id, position) => ({ repo_id: id, serve_id: `serve-${version}`, position })),
+  nextCursor: cursor, feedVersion: version, sessionId: 'cached-session',
+});
+const stale = () => Object.assign(new Error('stale'), { status: 400, code: 'FEED_CURSOR_STALE' });
+const request = { feed_request_id: 'request', session_id: 'session', limit: 10, cursor: 'cursor' };
+
+test('feed retries preserve request identity, respect Retry-After and stop after three attempts', async () => {
+  const bodies: unknown[] = [];
+  const waits: number[] = [];
+  await assert.rejects(requestFeedWithRetry(request, async (body) => {
+    bodies.push(body);
+    throw Object.assign(new Error('preparing'), { status: 409, retryAfter: '2' });
+  }, undefined, async (ms) => { waits.push(ms); }), /preparing/);
+  assert.deepEqual(bodies, [request, request, request]);
+  assert.deepEqual(waits, [2000, 2000]);
+});
+
+test('transient network and server failures recover, validation and expired sessions do not retry', async () => {
+  let calls = 0;
+  const result = await requestFeedWithRetry(request, async () => {
+    calls++;
+    if (calls === 1) throw new TypeError('Network request failed');
+    if (calls === 2) throw Object.assign(new Error('unavailable'), { status: 503 });
+    return 'ready';
+  }, undefined, async () => {});
+  assert.equal(result, 'ready');
+  for (const failure of [stale(), Object.assign(new Error('unauthorized'), { status: 401 }),
+    Object.assign(new Error('account changed'), { code: 'SESSION_CHANGED' })]) {
+    let attempts = 0;
+    await assert.rejects(requestFeedWithRetry(request, async () => { attempts++; throw failure; }));
+    assert.equal(attempts, 1);
+  }
+});
+
+test('cancellation interrupts a Retry-After wait and prevents late responses', async () => {
+  const abort = new AbortController();
+  const waiting = waitForFeedRetry(60_000, abort.signal);
+  abort.abort();
+  await assert.rejects(waiting, { name: 'AbortError' });
+  const late = new AbortController();
+  await assert.rejects(requestFeedWithRetry(request, async () => {
+    late.abort(); return 'too late';
+  }, late.signal), { name: 'AbortError' });
+});
+
+test('concurrent end triggers share one pagination operation without waiting for telemetry', async () => {
+  let release!: (value: FeedPage) => void;
+  let requests = 0;
+  const coordinator = new FeedPaginationController(async () => {
+    requests++;
+    return new Promise<FeedPage>((resolve) => { release = resolve; });
+  });
+  const first = coordinator.load('next');
+  const second = coordinator.load('next');
+  assert.equal(requests, 1);
+  release(page(['a']));
+  assert.strictEqual(await first, await second);
+});
+
+test('acknowledged invalidation retains loaded serves and restarts once with unseen recovery rows', async () => {
+  const calls: { cursor: string | null; id: string }[] = [];
+  const coordinator = new FeedPaginationController(async (cursor, _signal, id) => {
+    calls.push({ cursor, id });
+    return page(['a', 'b'], '2', 'after-recovery');
+  }, [page(['a'])]);
+  coordinator.markStale('2');
+  const recovered = await coordinator.load('old-cursor');
+  assert.deepEqual(calls.map((call) => call.cursor), [null]);
+  assert.deepEqual(recovered.items.map((item) => item.repo_id), ['b']);
+  assert.equal(recovered.nextCursor, 'after-recovery');
+});
+
+test('a version race restarts once and automatically crosses duplicate-only recovery pages', async () => {
+  const calls: { cursor: string | null; id: string }[] = [];
+  const coordinator = new FeedPaginationController(async (cursor, _signal, id) => {
+    calls.push({ cursor, id });
+    if (calls.length === 1) { coordinator.markStale('2'); return page(['b']); }
+    return calls.length === 2 ? page(['a'], '2', 'continue') : page(['c'], '2', 'after-duplicates');
+  }, [page(['a'])]);
+  const recovered = await coordinator.load('old-cursor');
+  assert.deepEqual(calls.map((call) => call.cursor), ['old-cursor', null, 'continue']);
+  assert.notEqual(calls[0].id, calls[1].id);
+  assert.deepEqual(recovered.items.map(item => item.repo_id), ['c']);
+  assert.equal(recovered.nextCursor, 'after-duplicates');
+  assert.equal(calls.length, 3);
+});
+
+test('typed stale cursor restarts once; malformed cursor is never silently restarted', async () => {
+  for (const typed of [true, false]) {
+    let calls = 0;
+    const coordinator = new FeedPaginationController(async () => {
+      calls++; throw typed ? stale() : Object.assign(new Error('invalid cursor'), { status: 400 });
+    }, [page(['a'])]);
+    await assert.rejects(coordinator.load('old-cursor'));
+    assert.equal(calls, typed ? 2 : 1);
+  }
+});
+
+test('ambiguous failures retain request identity and repeated repositories are removed from ordinary pages', async () => {
+  const ids: string[] = [];
+  const coordinator = new FeedPaginationController(async (_cursor, _signal, id) => {
+    ids.push(id);
+    if (ids.length === 1) throw new TypeError('offline');
+    return page(['a', 'b']);
+  }, [page(['a'])]);
+  await assert.rejects(coordinator.load('next'));
+  assert.deepEqual((await coordinator.load('next')).items.map((item) => item.repo_id), ['b']);
+  assert.equal(ids[0], ids[1]);
+});
+
+test('reset isolates a new browsing session from a cancelled late page', async () => {
+  let release!: (value: FeedPage) => void;
+  const coordinator = new FeedPaginationController(async () => new Promise<FeedPage>((resolve) => { release = resolve; }));
+  const pending = coordinator.load('old-cursor');
+  coordinator.reset();
+  release(page(['old-account']));
+  await assert.rejects(pending, { name: 'AbortError' });
+});
+
+
+test('a remounted Home reuses the session bound to cached cursors; refresh creates a new session', async () => {
+  const sessions: string[] = [];
+  const coordinator = new FeedPaginationController(async (cursor, _signal, _id, session) => {
+    sessions.push(session);
+    if (cursor && session !== 'cached-session') throw Object.assign(new Error('wrong session'), { status: 400 });
+    return { ...page(['b']), sessionId: session };
+  }, [page(['a'])]);
+  await coordinator.load('cached-cursor');
+  assert.equal(sessions[0], 'cached-session');
+  coordinator.reset();
+  await coordinator.load(null);
+  assert.notEqual(sessions[1], 'cached-session');
+});
+
+
+test('ordinary duplicate-only pages continue automatically until new repos arrive', async () => {
+  const cursors: (string | null)[] = [];
+  const coordinator = new FeedPaginationController(async cursor => {
+    cursors.push(cursor);
+    return cursors.length === 1 ? page(['a'], '1', 'continue') : page(['a','b'], '1', null);
+  }, [page(['a'])]);
+  const result = await coordinator.load('next');
+  assert.deepEqual(cursors, ['next','continue']);
+  assert.deepEqual(result.items.map(item => item.repo_id), ['b']);
+  assert.equal(result.nextCursor, null);
+});
+
+test('a failed duplicate scan resumes its current request without dropping newly returned repos', async () => {
+  const calls: {cursor: string | null; id: string}[] = [];
+  const coordinator = new FeedPaginationController(async (cursor,_signal,id) => {
+    calls.push({cursor,id});
+    if (calls.length === 1) return page(['a'],'1','unseen-page');
+    if (calls.length === 2) throw new TypeError('offline');
+    return page(['b'],'1',null);
+  }, [page(['a'])]);
+  await assert.rejects(coordinator.load('next'), /offline/);
+  const result = await coordinator.load('next');
+  assert.equal(calls[1].cursor, 'unseen-page');
+  assert.deepEqual(calls[2], calls[1]);
+  assert.deepEqual(result.items.map(item => item.repo_id), ['b']);
+});
+
+test('duplicate-only loops fail visibly within a finite scan budget instead of spinning forever', async () => {
+  let requests = 0;
+  const coordinator = new FeedPaginationController(async () => {
+    requests++;
+    if (requests > 5) throw new Error('unbounded duplicate fetch');
+    return page(['a'],'1',`cursor-${requests}`);
+  }, [page(['a'])]);
+  await assert.rejects(coordinator.load('next'), /No new repositories/);
+  assert.ok(requests > 0 && requests <= 5);
+});
+
+test('a cancellation during duplicate scanning stops further page fetches', async () => {
+  const abort = new AbortController(); let calls = 0;
+  const coordinator = new FeedPaginationController(async () => {
+    calls++; abort.abort(); return page(['a'],'1','continue');
+  }, [page(['a'])]);
+  await assert.rejects(coordinator.load('next',abort.signal), {name:'AbortError'});
+  assert.equal(calls,1);
+});
+
+test('an acknowledgement does not discard a page already generated at the acknowledged version', async () => {
+  let calls = 0;
+  const coordinator = new FeedPaginationController(async () => {
+    calls++; coordinator.markStale('2'); return page(['b'],'2','after');
+  }, [page(['a'])]);
+  assert.deepEqual((await coordinator.load('next')).items.map(item => item.repo_id), ['b']);
+  assert.equal(calls,1);
+});
+
+const feedKey = ['feed', 'synthetic-user'] as const;
+const cachedPages = () => ({ pages: [page(['a'], '1', 'page-2'), page(['b'], '1', 'page-3')], pageParams: [null, 'page-2'] });
+const committedIds = (client: QueryClient) => client.getQueryData<InfiniteData<FeedPage>>(feedKey)!.pages
+  .flatMap(result => result.items.map(item => item.repo_id));
+
+function observeFeed(client: QueryClient, controller: FeedPaginationController) {
+  return new InfiniteQueryObserver(client, {
+    queryKey: feedKey,
+    queryFn: ({ pageParam, signal }) => controller.load(pageParam, signal),
+    initialPageParam: null as string | null,
+    getNextPageParam: (lastPage: FeedPage) => lastPage.nextCursor ?? undefined,
+    retry: false, staleTime: Infinity, refetchOnMount: false,
+  });
+}
+
+test('failed multi-page query refetch does not hide a repository that never committed', async () => {
+  const client = new QueryClient();
+  client.setQueryData(feedKey, cachedPages());
+  const calls: (string | null)[] = [];
+  const controller = new FeedPaginationController(async cursor => {
+    calls.push(cursor);
+    if (cursor === null) return page(['c'], '1', 'replacement-2');
+    if (cursor === 'replacement-2') throw new TypeError('offline on page 2');
+    return page(['c'], '1', null);
+  }, cachedPages().pages, () => client.getQueryData<InfiniteData<FeedPage>>(feedKey)?.pages ?? []);
+  const observer = observeFeed(client, controller);
+  const unsubscribe = observer.subscribe(() => {});
+  try {
+    assert.equal((await observer.refetch()).isRefetchError, true);
+    assert.deepEqual(committedIds(client), ['a', 'b']);
+    await observer.fetchNextPage({ cancelRefetch: false });
+    assert.deepEqual(committedIds(client), ['a', 'b', 'c']);
+    assert.deepEqual(calls, [null, 'replacement-2', 'page-3']);
+  } finally { unsubscribe(); client.clear(); }
+});
+
+test('successful invalidation preserves replacement cards and deduplicates within the new pages', async () => {
+  const client = new QueryClient();
+  client.setQueryData(feedKey, cachedPages());
+  const controller = new FeedPaginationController(async cursor => cursor === null
+    ? page(['a'], '1', 'page-2') : page(['a', 'b'], '1', null),
+  cachedPages().pages, () => client.getQueryData<InfiniteData<FeedPage>>(feedKey)?.pages ?? []);
+  const observer = observeFeed(client, controller);
+  const unsubscribe = observer.subscribe(() => {});
+  try {
+    await client.invalidateQueries({ queryKey: feedKey });
+    assert.deepEqual(committedIds(client), ['a', 'b']);
+  } finally { unsubscribe(); client.clear(); }
+});
+
+test('cancelled replacement pages do not become committed deduplication history', async () => {
+  const client = new QueryClient();
+  client.setQueryData(feedKey, cachedPages());
+  let pageTwoStarted!: () => void;
+  const started = new Promise<void>(resolve => { pageTwoStarted = resolve; });
+  const controller = new FeedPaginationController(async (cursor, signal) => {
+    if (cursor === null) return page(['c'], '1', 'replacement-2');
+    if (cursor === 'replacement-2') {
+      pageTwoStarted();
+      return new Promise<FeedPage>((_resolve, reject) => signal!.addEventListener('abort',
+        () => reject(Object.assign(new Error('cancelled'), { name: 'AbortError' })), { once: true }));
+    }
+    return page(['c'], '1', null);
+  }, cachedPages().pages, () => client.getQueryData<InfiniteData<FeedPage>>(feedKey)?.pages ?? []);
+  const observer = observeFeed(client, controller);
+  const unsubscribe = observer.subscribe(() => {});
+  try {
+    const refetch = observer.refetch();
+    await started;
+    await client.cancelQueries({ queryKey: feedKey });
+    await refetch;
+    assert.deepEqual(committedIds(client), ['a', 'b']);
+    await observer.fetchNextPage();
+    assert.deepEqual(committedIds(client), ['a', 'b', 'c']);
+  } finally { unsubscribe(); client.clear(); }
+});
+
+test('query-cache replacement and reset discard removed committed history before appending', async () => {
+  const client = new QueryClient();
+  client.setQueryData(feedKey, cachedPages());
+  let reset = false;
+  const controller = new FeedPaginationController(async cursor => reset && cursor === null
+    ? page(['b'], '1', 'reset-next') : page(['b', 'a'], '1', null),
+  client.getQueryData<InfiniteData<FeedPage>>(feedKey)!.pages,
+  () => client.getQueryData<InfiniteData<FeedPage>>(feedKey)?.pages ?? []);
+  const observer = observeFeed(client, controller);
+  const unsubscribe = observer.subscribe(() => {});
+  try {
+    client.setQueryData(feedKey, { pages: [page(['b'], '1', 'replacement-next')], pageParams: [null] });
+    await observer.fetchNextPage();
+    assert.deepEqual(committedIds(client), ['b', 'a']);
+    reset = true;
+    await client.resetQueries({ queryKey: feedKey, exact: true });
+    assert.deepEqual(committedIds(client), ['b']);
+    await observer.fetchNextPage();
+    assert.deepEqual(committedIds(client), ['b', 'a']);
+  } finally { unsubscribe(); client.clear(); }
+});
+
+test('append history reads each newly committed card once instead of rescanning old pages', async () => {
+  let reads = 0;
+  const measuredPage = (id: string, cursor: string | null) => ({
+    ...page([], '1', cursor), items: [{ get repo_id() { reads++; return id; } }],
+  });
+  let committed = [measuredPage('initial', 'next')];
+  let count = 0;
+  const controller = new FeedPaginationController(async () => measuredPage(`new-${++count}`, 'next'),
+    committed, () => committed);
+  reads = 0;
+  for (let index = 0; index < 100; index++) {
+    const result = await controller.load('next', new AbortController().signal);
+    assert.equal(result.items[0].repo_id, `new-${index + 1}`);
+    committed = [...committed, result];
+  }
+  console.log(`APPEND_HISTORY_MEASURE ${JSON.stringify({ pages: count, idReads: reads })}`);
+  assert.ok(reads <= count * 5, `100 appends reread history ${reads} times`);
+});
+
+test('replacement pagination does not copy its growing staged ID history', async () => {
+  const descriptor = Object.getOwnPropertyDescriptor(Set.prototype, Symbol.iterator)!;
+  const iterate = Set.prototype[Symbol.iterator];
+  let copiedIds = 0;
+  // Count actual historical IDs traversed by Set copies, not elapsed time or
+  // private controller state. Restore the native iterator before leaving.
+  Object.defineProperty(Set.prototype, Symbol.iterator, { ...descriptor, value: function* (this: Set<unknown>) {
+    for (const value of iterate.call(this)) {
+      if (typeof value === 'string' && value.startsWith('replacement-')) copiedIds++;
+      yield value;
+    }
+  } });
+  try {
+    let count = 0;
+    const controller = new FeedPaginationController(async () => {
+      count++;
+      return page([`replacement-${count}`], '1', count < 60 ? `cursor-${count}` : null);
+    }, [], () => []);
+    const signal = new AbortController().signal;
+    let cursor: string | null = null;
+    for (let index = 0; index < 60; index++) {
+      const result = await controller.load(cursor, signal);
+      assert.equal(result.items.length, 1);
+      cursor = result.nextCursor;
+    }
+    console.log(`REPLACEMENT_HISTORY_MEASURE ${JSON.stringify({ pages: count, copiedIds })}`);
+    assert.ok(copiedIds <= count, `60 replacement pages recopied ${copiedIds} prior IDs`);
+  } finally { Object.defineProperty(Set.prototype, Symbol.iterator, descriptor); }
+});

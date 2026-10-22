@@ -8,9 +8,24 @@ import type { MlOnboardingJob } from '../contracts/ml.v2.js';
 
 export type RepositoryIdentityProjection = Pick<RepositoryProjection, 'repo_id' | 'summary_id'>;
 
+export const MAX_FEED_SERVE_LOOKUP_BATCH = 100;
+
+export interface FeedServeRequest {
+  userId: string;
+  requestId: string;
+}
+
+/** Reconciliation needs durable identities, never hydrated cards. */
+export interface FeedReconciliationPersistencePort {
+  getFeedVersion(userId: string): Promise<bigint>;
+  hasServe(userId: string, feedRequestId: string): Promise<boolean>;
+  listServedRequests(requests: FeedServeRequest[]): Promise<FeedServeRequest[]>;
+}
+
 export interface FeedPersistencePort {
   getFeedVersion(userId: string): Promise<bigint>;
   getMlOnboardingJob?(userId: string): Promise<MlOnboardingJob | null>;
+  listExcludedRepositoryIds(userId: string, sessionId: string | undefined, limit: number): Promise<string[]>;
   listFollowedRepositoryIds(userId: string, limit: number): Promise<string[]>;
   getServeByRequest(userId: string, feedRequestId: string): Promise<StoredServe | null>;
   createServe(input: CreateServeInput): Promise<StoredServe>;

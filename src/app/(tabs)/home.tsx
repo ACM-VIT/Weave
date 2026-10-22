@@ -24,9 +24,8 @@ import {
   type InfiniteData,
 } from '@tanstack/react-query';
 import * as SecureStore from '../../utils/storage';
-import { type FeedPage } from '@/api/feed';
 import { fetchHomeFeed } from '@/api/home-feed';
-import { canContinueHomeFeed, subscribeToHomeFeedInvalidations } from '@/utils/home-feed';
+import { subscribeToHomeFeedInvalidations } from '@/utils/home-feed';
 import { type ActivityInput } from '@/api/activity';
 import { useAuth } from '@/store/AuthContext';
 import { getActivityOutbox } from '@/services/activityOutboxClient';
@@ -37,6 +36,8 @@ import {
   patchFeedSaved,
 } from '@/utils/feed-repository';
 import { repositoryHref } from '@/utils/repository-links';
+import { FeedPaginationController, type FeedPage } from '@/services/feedPagination';
+import { authSessionLifecycle } from '@/api/session-lifecycle';
 import { createFeedItemMapper } from '@/utils/feed-items';
 
 const WEB_FEED_LIST_STYLE =
@@ -47,18 +48,20 @@ const VIEWABILITY_CONFIG = { itemVisiblePercentThreshold: 50 } as const;
 const ACTIVITY_FLUSH_INTERVAL_MS = 8_000;
 
 export default function HomeScreen() {
-  const { user, isLoading: isAuthLoading } = useAuth();
+  const { user, checkOnboardingStatus } = useAuth();
   const queryClient = useQueryClient();
   const feedQueryKey = useMemo(() => getFeedQueryKey(user?.user_id), [user?.user_id]);
-  const feedInvalidationGenerationRef = useRef(0);
-  const [refreshViewer, setRefreshViewer] = useState<string>();
-  const feedNeedsRefresh = Boolean(user?.user_id && refreshViewer === user.user_id);
-  const markFeedInvalidated = useCallback(() => {
-    feedInvalidationGenerationRef.current += 1;
-    setRefreshViewer(user?.user_id);
-  }, [user?.user_id]);
-  useEffect(() => subscribeToHomeFeedInvalidations(queryClient, feedQueryKey, markFeedInvalidated),
-    [queryClient, feedQueryKey, markFeedInvalidated]);
+  const listRef = useRef<FlatList<{ feedId: string; repository: RepositoryData }> | null>(null);
+  const pagination = useMemo(() => {
+    const controller = new FeedPaginationController(async (cursor, signal, requestId, sessionId) => {
+      const token = await SecureStore.getItemAsync('access_token');
+      if (!token) throw new Error('No token');
+      return fetchHomeFeed(token, cursor, { signal, requestId, sessionId });
+    }, queryClient.getQueryData<InfiniteData<FeedPage>>(feedQueryKey)?.pages,
+    () => queryClient.getQueryData<InfiniteData<FeedPage>>(feedQueryKey)?.pages ?? []);
+    return { controller, reset: () => controller.reset() };
+  }, [feedQueryKey, queryClient]);
+  useEffect(() => subscribeToHomeFeedInvalidations(queryClient, feedQueryKey, () => pagination.controller.markStale()), [queryClient, feedQueryKey, pagination]);
   const activityOutbox = user?.user_id
     ? getActivityOutbox(user.user_id)
     : null;
@@ -71,29 +74,24 @@ export default function HomeScreen() {
   const pageWidth = viewport.width;
   const pageHeight = viewport.height;
 
-  useEffect(() => {
-    feedInvalidationGenerationRef.current = 0;
-  }, [user?.user_id]);
   
   const flushActivityBatch = useCallback(async () => {
     if (!activityOutbox) return { delivered: 0, invalidatedFeed: false, deferred: false };
+    const generation = authSessionLifecycle.currentGeneration();
     const token = await SecureStore.getItemAsync('access_token');
+    authSessionLifecycle.assertCurrent(generation);
     if (!token) return { delivered: 0, invalidatedFeed: false, deferred: true };
-    return activityOutbox.flush(token);
+    return activityOutbox.flush(token, generation);
   }, [activityOutbox]);
 
-  const fetchFeedPage = async ({ pageParam }: { pageParam: string | null }) => {
-    const token = await SecureStore.getItemAsync('access_token');
-    if (!token) throw new Error('No token');
-    
-    return fetchHomeFeed(token, pageParam);
-  };
 
   const {
     data,
     fetchNextPage,
     hasNextPage,
     isFetchingNextPage,
+    isFetchNextPageError,
+    isFetching,
     isLoading,
     isError,
     error,
@@ -101,13 +99,13 @@ export default function HomeScreen() {
     isRefetching,
   } = useInfiniteQuery({
     queryKey: feedQueryKey,
-    queryFn: fetchFeedPage,
-    enabled: Boolean(user?.user_id),
+    queryFn: ({ pageParam, signal }) => pagination.controller.load(pageParam, signal),
+    retry: false,
     staleTime: Infinity,
-    retry: 1,
     refetchOnMount: false,
-    refetchOnReconnect: false,
     refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
+    enabled: Boolean(user?.user_id),
     getNextPageParam: (lastPage) => lastPage.nextCursor ?? undefined,
     initialPageParam: null as string | null,
   });
@@ -131,7 +129,9 @@ export default function HomeScreen() {
     );
     if (!activityOutbox) return;
 
+    const generation = authSessionLifecycle.currentGeneration();
     void activityOutbox.enqueue(event).then(async () => {
+      if (!authSessionLifecycle.isCurrent(generation)) return;
       if (flushNow || await activityOutbox.pendingCount() >= 10) {
         await flushActivityBatch();
       }
@@ -143,7 +143,7 @@ export default function HomeScreen() {
     saved: boolean,
     saveStateChanged: boolean,
   ) => {
-    if (saveStateChanged) markFeedInvalidated();
+    if (saveStateChanged) pagination.controller.markStale();
     queryClient.setQueryData<InfiniteData<FeedPage, string | null>>(
       feedQueryKey,
       (cachedFeed) => patchFeedSaved(cachedFeed, {
@@ -152,7 +152,7 @@ export default function HomeScreen() {
         position: repository.feedPosition,
       }, saved),
     );
-  }, [feedQueryKey, queryClient, markFeedInvalidated]);
+  }, [feedQueryKey, queryClient, pagination]);
 
   const openOwnerProfile = useCallback((repository: RepositoryData) => {
     const normalizedOwner = repository.owner.trim().toLocaleLowerCase();
@@ -183,8 +183,11 @@ export default function HomeScreen() {
 
   useEffect(() => {
     if (!activityOutbox) return;
-    const unsubscribe = activityOutbox.subscribe(({ invalidatedFeed }) => {
-      if (invalidatedFeed) markFeedInvalidated();
+    const generation = authSessionLifecycle.currentGeneration();
+    const unsubscribe = activityOutbox.subscribe(({ invalidatedFeed, feedVersion }) => {
+      if (!invalidatedFeed || !authSessionLifecycle.isCurrent(generation)) return;
+      pagination.controller.markStale(feedVersion);
+      void checkOnboardingStatus().catch(() => undefined);
     });
     void flushActivityBatch().catch(() => undefined);
 
@@ -200,18 +203,7 @@ export default function HomeScreen() {
       subscription.remove();
       unsubscribe();
     };
-  }, [activityOutbox, flushActivityBatch, markFeedInvalidated]);
-
-  const handleDeliberateRefresh = useCallback(async () => {
-    await flushActivityBatch().catch(() => undefined);
-    const generationAtStart = feedInvalidationGenerationRef.current;
-    const result = await refetch();
-    if (!result.isError
-      && feedInvalidationGenerationRef.current === generationAtStart) {
-      feedInvalidationGenerationRef.current = 0;
-      setRefreshViewer(undefined);
-    }
-  }, [flushActivityBatch, refetch]);
+  }, [activityOutbox, checkOnboardingStatus, flushActivityBatch, pagination]);
 
   const [viewableItems, setViewableItems] = useState<string[]>([]);
   const onViewableItemsChanged = useCallback(({ viewableItems }: any) => {
@@ -231,7 +223,29 @@ export default function HomeScreen() {
     );
   }, [responsiveWidth]);
 
-  if ((isAuthLoading || isLoading) && feedItems.length === 0) {
+  const refreshFeed = async () => {
+    await queryClient.cancelQueries({ queryKey: feedQueryKey, exact: true });
+    pagination.reset();
+    listRef.current?.scrollToOffset({ offset: 0, animated: false });
+    await queryClient.resetQueries({ queryKey: feedQueryKey, exact: true });
+  };
+  const loadMore = useCallback(() => {
+    if (hasNextPage && !isFetching) void fetchNextPage({ cancelRefetch: false });
+  }, [fetchNextPage, hasNextPage, isFetching]);
+  useEffect(() => {
+    if (!isFetchNextPageError && feedItems.slice(-3).some(item => viewableItems.includes(item.feedId))) loadMore();
+  }, [feedItems, isFetchNextPageError, loadMore, viewableItems]);
+  const boundary = (
+    <View style={styles.boundary} accessibilityLiveRegion="polite">
+      {isFetchNextPageError ? <Pressable accessibilityRole="button" onPress={loadMore} style={styles.boundaryButton}>
+          <Text style={styles.retryText}>Couldn&apos;t load more · Retry</Text>
+        </Pressable>
+          : hasNextPage ? <ActivityIndicator color={REFERENCE_THEME.accent} accessibilityLabel="Loading more repositories" />
+            : <Text style={styles.messageBody}>You&apos;ve reached the end · Refresh for more</Text>}
+    </View>
+  );
+
+  if (isLoading && feedItems.length === 0) {
     return (
       <View style={[styles.outer, styles.centered]} onLayout={handleLayout}>
         <ActivityIndicator size="large" color={REFERENCE_THEME.accent} />
@@ -274,12 +288,14 @@ export default function HomeScreen() {
     <View style={styles.outer} onLayout={handleLayout}>
       <View style={[styles.feedShell, { width: pageWidth, height: pageHeight }]}>
         <FlatList
+          ref={listRef}
           key={`${pageWidth}-${pageHeight}`}
           data={feedItems}
           keyExtractor={(item) => item.feedId}
-          renderItem={({ item }) => (
+          renderItem={({ item, index }) => (
             <RepositoryFeedItem
               repository={item.repository}
+              boundary={index === feedItems.length - 1 ? boundary : undefined}
               pageWidth={pageWidth}
               pageHeight={pageHeight}
               onQueueActivity={handleQueueActivity}
@@ -292,7 +308,7 @@ export default function HomeScreen() {
           style={[styles.feedList, { height: pageHeight }, WEB_FEED_LIST_STYLE]}
           contentContainerStyle={styles.feedListContent}
           showsVerticalScrollIndicator={false}
-          onRefresh={handleDeliberateRefresh}
+          onRefresh={refreshFeed}
           refreshing={isRefetching && !isFetchingNextPage}
           snapToInterval={pageHeight}
           snapToAlignment="start"
@@ -306,41 +322,16 @@ export default function HomeScreen() {
             index,
           })}
           onEndReached={() => {
-            if (hasNextPage
-              && !isFetchingNextPage
-              && !isRefetching
-              && canContinueHomeFeed(data?.pages[0]?.mode, feedInvalidationGenerationRef.current)) {
-              void flushActivityBatch()
-                .then(() => {
-                  if (canContinueHomeFeed(data?.pages[0]?.mode, feedInvalidationGenerationRef.current)) return fetchNextPage();
-                })
-                .catch(() => undefined);
-            }
+            if (!isFetchNextPageError) loadMore();
           }}
-          ListFooterComponent={feedNeedsRefresh && data?.pages[0]?.mode !== 'discovery' ? (
-            <View style={[styles.message, { paddingVertical: 24 }]}>
-              <Text accessibilityLiveRegion="polite" style={styles.messageBody}>Your preferences changed. Refresh to load more repositories.</Text>
-              <Pressable accessibilityRole="button" accessibilityLabel="Refresh recommendations" disabled={isRefetching}
-                style={styles.retryButton} onPress={handleDeliberateRefresh}>
-                <Text style={styles.retryText}>{isRefetching ? 'Refreshing…' : 'Refresh recommendations'}</Text>
-              </Pressable>
-            </View>
-          ) : isError ? (
-            <View style={[styles.message, { paddingVertical: 24 }]}>
-              <Text accessibilityLiveRegion="polite" style={styles.messageBody}>Could not load more repositories. Your loaded cards are still available.</Text>
-              <Pressable accessibilityRole="button" style={styles.retryButton} onPress={handleDeliberateRefresh}>
-                <Text style={styles.retryText}>Refresh Home</Text>
-              </Pressable>
-            </View>
-          ) : null}
-          onEndReachedThreshold={0.75}
+          onEndReachedThreshold={3}
           initialNumToRender={4}
           maxToRenderPerBatch={4}
           removeClippedSubviews={false}
           onViewableItemsChanged={onViewableItemsChanged}
           viewabilityConfig={VIEWABILITY_CONFIG}
         />
-        <FeedHeader pageWidth={pageWidth} discovery={data?.pages[0]?.mode === 'discovery'} />
+        <FeedHeader pageWidth={pageWidth} discovery={data?.pages[0]?.mode === 'discovery'} onRefresh={refreshFeed} refreshing={isFetching && !isFetchingNextPage} />
       </View>
     </View>
   );
@@ -383,6 +374,13 @@ const styles = StyleSheet.create({
     color: REFERENCE_THEME.text,
     fontFamily: 'NataSans-SemiBold',
     fontSize: 14,
+  },
+  boundary: {
+    height: 56, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 12,
+  },
+  boundaryButton: {
+    minHeight: 44, justifyContent: 'center', paddingHorizontal: 16, borderRadius: 10,
+    backgroundColor: REFERENCE_THEME.accent,
   },
   feedShell: {
     backgroundColor: REFERENCE_THEME.background,

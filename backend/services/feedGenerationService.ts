@@ -8,6 +8,10 @@ import { canonicalEntries } from './feedV2Service.js';
 import { isMissingPersonaRecommendationError } from './mlService.js';
 import type { PersonaRepairService } from './personaRepairService.js';
 
+export type FeedGenerationOutcome =
+  | { status: 'generated'; feedVersion: bigint; count: number }
+  | { status: 'coalesced' | 'stale'; feedVersion: bigint };
+
 export class FeedGenerationService {
   constructor(
     private readonly persistence: FeedPersistencePort,
@@ -23,7 +27,8 @@ export class FeedGenerationService {
     limit = 45,
     excludeRepoIds: string[] = [],
     mode: 'live' | 'prewarm' = 'live',
-  ): Promise<'generated' | 'coalesced' | 'stale'> {
+    sessionId?: string,
+  ): Promise<FeedGenerationOutcome> {
     const feedVersion = await this.persistence.getFeedVersion(userId);
     const token = crypto.randomUUID();
     let generationId = crypto.randomUUID();
@@ -33,7 +38,7 @@ export class FeedGenerationService {
         generation_id: generationId, user_id: userId, feed_version: feedVersion, mode,
         status: 'coalesced', latency_ms: Date.now() - started, result_count: 0,
       });
-      return 'coalesced';
+      return { status: 'coalesced', feedVersion };
     }
     let leaseLost = false;
     let renewal: Promise<void> | undefined;
@@ -46,6 +51,9 @@ export class FeedGenerationService {
     }, Math.max(1, Math.floor(this.lockTtlMs / 3)));
     heartbeat.unref();
     try {
+      const history = await this.persistence.listExcludedRepositoryIds(userId, sessionId, 500);
+      const excluded = [...new Set([...excludeRepoIds, ...history])].slice(0, 500);
+      const excludedIds = new Set(excluded);
       let socialRepoIds: string[] = [];
       try {
         socialRepoIds = await this.persistence.listFollowedRepositoryIds(userId, 500);
@@ -58,7 +66,7 @@ export class FeedGenerationService {
         user_id: userId,
         feed_version: Number(feedVersion),
         limit,
-        exclude_repo_ids: excludeRepoIds,
+        exclude_repo_ids: excluded,
         social_repo_ids: socialRepoIds,
         context: { cold_start: false },
       } as const;
@@ -80,17 +88,22 @@ export class FeedGenerationService {
           generation_id: generationId, user_id: userId, feed_version: feedVersion, mode,
           status: 'stale', latency_ms: Date.now() - started, result_count: response.items.length,
         });
-        return 'stale';
+        return { status: 'stale', feedVersion };
       }
-      const projections = await this.persistence.listActiveRepositoryIdentities(response.items.map((item) => item.repo_id));
+      const seen = new Set<string>();
+      const items = response.items.filter(item => {
+        if (excludedIds.has(item.repo_id) || seen.has(item.repo_id)) return false;
+        seen.add(item.repo_id); return true;
+      });
+      const projections = await this.persistence.listActiveRepositoryIdentities(items.map((item) => item.repo_id));
       const summaries = new Map(projections.map((repo) => [repo.repo_id, repo.summary_id]));
       const activeRepoIds = new Set(projections.map((repo) => repo.repo_id));
-      const usableItems = response.items.filter((item) => activeRepoIds.has(item.repo_id));
-      const invalidCount = response.items.length - usableItems.length;
+      const usableItems = items.filter((item) => activeRepoIds.has(item.repo_id));
+      const invalidCount = items.length - usableItems.length;
       for (let index = 0; index < invalidCount; index++) {
         incrementMetric('feed_v2_invalid_repository_recommendations_total');
       }
-      if (usableItems.length === 0) throw new Error('ML returned no active canonical repositories.');
+      if (items.length > 0 && usableItems.length === 0) throw new Error('ML returned no active canonical repositories.');
       const published = await this.queue.publishGeneration(
         userId,
         feedVersion,
@@ -102,7 +115,7 @@ export class FeedGenerationService {
         generation_id: generationId, user_id: userId, feed_version: feedVersion, mode,
         status: published ? 'completed' : 'stale', latency_ms: Date.now() - started, result_count: usableItems.length,
       });
-      return published ? 'generated' : 'stale';
+      return published ? { status: 'generated', feedVersion, count: usableItems.length } : { status: 'stale', feedVersion };
     } catch (error) {
       await this.persistence.recordGenerationAttempt?.({
         generation_id: generationId, user_id: userId, feed_version: feedVersion, mode,

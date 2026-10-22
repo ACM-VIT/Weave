@@ -29,7 +29,7 @@ export async function loadHomeFeedPage(cursor: string | null, readers: HomeFeedR
   // Catalogue entries have no recommendation serve/position attribution.
   const canonicalItems = items.map(({ serve_id: _serve, position: _position, feed_version: _version, ...item }) => item);
   return {
-    mode: 'discovery', items: canonicalItems,
+    mode: 'discovery', feedVersion: '0', items: canonicalItems,
     nextCursor: items.length === DISCOVERY_PAGE_SIZE ? `discovery:${offset + DISCOVERY_PAGE_SIZE}` : null,
   };
 }
