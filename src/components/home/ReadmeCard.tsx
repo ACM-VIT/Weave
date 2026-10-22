@@ -85,6 +85,7 @@ export default function ReadmeCard({
     : summaryQuery.data?.status==='pending' || summaryQuery.data?.status==='processing' ? 'Preparing README summary…'
       : summaryQuery.isLoading ? 'Loading README summary…' : preview.markdown;
   const typedSummary = useTypewriterText(preview.source==='summary' ? preview.markdown : statusText, {
+    completionKey: `readme:${repository.id}:${preview.source}`,
     delay: 140,
     duration: 900,
     enabled: isActive,
