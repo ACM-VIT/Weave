@@ -13,7 +13,7 @@ Drizzle now declares both README tables with their generation keys, constraints,
 ## Verification
 
 - Lint/typecheck and 258 frontend tests passed.
-- Backend build/test typecheck and 259 tests passed; 52 opt-in tests skipped.
+- Backend build/test typecheck and 260 tests passed; 52 opt-in tests skipped.
 - Separately enabled PostgreSQL removal/schema checks: 8 passed; Trending checks: 2 passed.
 - Authenticated HTTP flow passed, including distinct summary/README data, viewer-specific state and conditional-response isolation.
 - Expo dependency check and all-platform export passed. Doctor reports the existing unmaintained `react-native-render-html` dependency (20/21).
@@ -21,3 +21,5 @@ Drizzle now declares both README tables with their generation keys, constraints,
 - Chrome browser checks: 320x300 and 320x568, reduced motion, local intercepted API fixtures, no live writes. Both confirm the GitHub action is reachable. Screenshots and measured scroll/bounds are in `artifacts/pr-143-review/`.
 
 Native iOS/Android share-sheet and keyboard checks were not rerun in this review pass. The existing manual QA matrix still applies. No production migration, merge or deployment was performed. A fresh independent review is required on the pushed head.
+
+The final dev integration retains #161’s per-request fallback hydration reuse alongside successful-empty-generation and personalized-recovery guards. A regression verifies the fallback projects cards once for the requesting viewer.

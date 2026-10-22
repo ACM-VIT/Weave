@@ -520,3 +520,22 @@ for (const fallbackEnabled of [false, true]) {
     assert.deepEqual(await service.getFeed('00000000-0000-4000-8000-000000000030', request), result);
   });
 }
+
+test('fallback serves reuse only the freshly hydrated cards for the requesting viewer',async()=>{
+  const persistence=new FakePersistence();
+  const queue=new FakeQueue();
+  queue.reserve=async(_u,_v,requestId,_l,token)=>({requestId,token,items:[]});
+  let extraHydrations=0;
+  persistence.listActiveRepositories=async()=>{extraHydrations++;throw new Error('Duplicate fallback hydration');};
+  const service=new FeedV2Service(persistence,queue,undefined,true);
+  const viewer='00000000-0000-4000-8000-000000000030';
+  const result=await service.getFeed(viewer,{
+    feed_request_id:'00000000-0000-4000-8000-000000000090',
+    session_id:'00000000-0000-4000-8000-000000000020',limit:10,cursor:null,
+  });
+  assert.equal(result.source,'fallback');
+  assert.equal(persistence.fallbackViewerId,viewer);
+  assert.equal(persistence.fallbackCalls,1);
+  assert.equal(extraHydrations,0);
+  assert.equal(result.items[0].repo_id,repo.repo_id);
+});
