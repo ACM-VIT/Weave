@@ -17,9 +17,14 @@ export async function getFeedV2(req: AuthRequest, res: Response): Promise<void> 
   if (!Number.isInteger(limit) || limit < 1 || limit > 25 || (cursor !== null && typeof cursor !== 'string')) {
     res.status(400).json({ error: 'limit must be 1-25 and cursor must be null or a string.' }); return;
   }
+  const controller = new AbortController();
+  const cancel = () => { if (!res.writableEnded) controller.abort(); };
+  res.once('close', cancel);
   try {
-    res.status(200).json(await runtime.feed.getFeed(userId, { feed_request_id, session_id, limit, cursor }));
+    const response = await runtime.feed.getFeed(userId, { feed_request_id, session_id, limit, cursor }, controller.signal);
+    if (!controller.signal.aborted) res.status(200).json(response);
   } catch (error) {
+    if (controller.signal.aborted) return;
     if (error instanceof InvalidFeedCursorError) {
       res.status(400).json({ error: error.message,
         ...(error instanceof StaleFeedCursorError ? { code: error.code } : {}),
@@ -33,5 +38,7 @@ export async function getFeedV2(req: AuthRequest, res: Response): Promise<void> 
     }
     console.error('[FeedV2Controller] Failed:', error);
     res.status(503).json({ error: 'Feed is temporarily unavailable.' });
+  } finally {
+    res.removeListener('close', cancel);
   }
 }

@@ -7,6 +7,7 @@ import { ReservationOwnedError } from '../redis/feedQueue.js';
 import { incrementMetric } from '../observability/metrics.js';
 import { FeedCursorCodec } from './feedCursor.js';
 import type { FeedGenerationOutcome } from './feedGenerationService.js';
+import { FeedWaitCoordinator } from './feedWaitCoordinator.js';
 
 export class FeedRequestInProgressError extends Error {
   constructor() {
@@ -39,9 +40,21 @@ export class FeedV2Service {
     private readonly generationWaitMs = 5_000,
   ) {
     this.cursorCodec = new FeedCursorCodec(cursorSecret);
+    this.serveWaits = new FeedWaitCoordinator(reservationPollMs, () => new FeedRequestInProgressError());
+    this.generationWaits = new FeedWaitCoordinator(reservationPollMs, () => new FeedRequestInProgressError());
   }
 
   private readonly cursorCodec: FeedCursorCodec;
+  private readonly serveWaits: FeedWaitCoordinator<FeedResponseV2>;
+  private readonly generationWaits: FeedWaitCoordinator<true>;
+
+  private requestKey(userId: string, requestId: string): string {
+    return JSON.stringify([userId, requestId]);
+  }
+
+  private generationKey(userId: string, version: bigint): string {
+    return JSON.stringify([userId, version.toString()]);
+  }
 
   private async waitForGeneratedReservation(
     userId: string,
@@ -49,32 +62,37 @@ export class FeedV2Service {
     requestId: string,
     limit: number,
     token: string,
+    signal?: AbortSignal,
   ) {
     const deadline = Date.now() + this.generationWaitMs;
-    let reservation = { requestId, token, items: [] as RecommendationEntry[] };
     do {
-      reservation = await this.queue.refill(userId, version, requestId, limit, token);
+      signal?.throwIfAborted();
+      const reservation = await this.queue.refill(userId, version, requestId, limit, token);
       if (reservation.items.length > 0) return reservation;
-      if (Date.now() >= deadline) throw new FeedRequestInProgressError();
-      await new Promise((resolve) => setTimeout(resolve, Math.max(1, this.reservationPollMs)));
-    } while (true);
-  }
-
-  private async waitForServe(userId: string, requestId: string): Promise<FeedResponseV2> {
-    const deadline = Date.now() + this.reservationWaitMs;
-    do {
-      const replay = await this.persistence.getServeByRequest(userId, requestId);
-      if (replay) {
-        incrementMetric('feed_v2_duplicate_requests_total');
-        return responseFromServe(replay);
-      }
-      if (Date.now() >= deadline) break;
-      await new Promise((resolve) => setTimeout(resolve, this.reservationPollMs));
-    } while (true);
+      await this.generationWaits.wait(this.generationKey(userId, version), async () => {
+        const [currentVersion, depth] = await Promise.all([
+          this.persistence.getFeedVersion(userId), this.queue.depth(userId, version),
+        ]);
+        if (currentVersion !== version) throw new FeedRequestInProgressError();
+        return depth > 0 ? true : undefined;
+      }, deadline - Date.now(), signal);
+      // Each owner refills its own reservation. A concurrent consumer may win
+      // the available items, so rejoin the shared probe with the same deadline.
+    } while (Date.now() < deadline);
     throw new FeedRequestInProgressError();
   }
 
-  async getFeed(userId: string, request: FeedRequestV2): Promise<FeedResponseV2> {
+  private async waitForServe(userId: string, requestId: string, signal?: AbortSignal): Promise<FeedResponseV2> {
+    const response = await this.serveWaits.wait(this.requestKey(userId, requestId), async () => {
+      const replay = await this.persistence.getServeByRequest(userId, requestId);
+      return replay ? responseFromServe(replay) : undefined;
+    }, this.reservationWaitMs, signal);
+    incrementMetric('feed_v2_duplicate_requests_total');
+    return response;
+  }
+
+  async getFeed(userId: string, request: FeedRequestV2, signal?: AbortSignal): Promise<FeedResponseV2> {
+    signal?.throwIfAborted();
     const replay = await this.persistence.getServeByRequest(userId, request.feed_request_id);
     if (replay) {
       incrementMetric('feed_v2_duplicate_requests_total');
@@ -101,7 +119,7 @@ export class FeedV2Service {
       );
     } catch (error) {
       if (error instanceof ReservationOwnedError) {
-        return this.waitForServe(userId, request.feed_request_id);
+        return this.waitForServe(userId, request.feed_request_id, signal);
       }
       // A timed-out reserve may have succeeded remotely; only our token can release it.
       await releaseReservation();
@@ -115,10 +133,12 @@ export class FeedV2Service {
     if (queueAvailable && reservation.items.length === 0 && this.generateOnMiss) {
       try {
         const outcome = await this.generateOnMiss(userId, request.limit, [], request.session_id);
+        if (outcome.status !== 'coalesced') this.generationWaits.notify(this.generationKey(userId, version));
+        signal?.throwIfAborted();
         if (outcome.status === 'stale' || outcome.feedVersion !== version) throw new FeedRequestInProgressError();
         reservation = outcome.status === 'coalesced'
           ? await this.waitForGeneratedReservation(
-            userId, version, request.feed_request_id, request.limit, token,
+            userId, version, request.feed_request_id, request.limit, token, signal,
           )
           : await this.queue.refill(
             userId, version, request.feed_request_id, request.limit, token,
@@ -129,10 +149,12 @@ export class FeedV2Service {
         )) throw new FeedRequestInProgressError();
         generationCompleted = true;
       } catch (error) {
+        this.generationWaits.notify(this.generationKey(userId, version));
         if (error instanceof ReservationOwnedError) {
-          return this.waitForServe(userId, request.feed_request_id);
+          return this.waitForServe(userId, request.feed_request_id, signal);
         }
         await releaseReservation();
+        signal?.throwIfAborted();
         if (request.cursor !== null || !this.fallbackEnabled || error instanceof FeedRequestInProgressError) throw error;
         queueAvailable = false;
         console.error('[FeedV2Service] Generation failed; evaluating fallback:', error);
@@ -222,11 +244,13 @@ export class FeedV2Service {
           };
         }),
       });
+      this.serveWaits.notify(this.requestKey(userId, request.feed_request_id));
       if (queueAvailable) await this.queue.commit(userId, version, request.feed_request_id, token);
       return responseFromServe(stored);
     } catch (error) {
       const replayAfterFailure = await this.persistence.getServeByRequest(userId, request.feed_request_id);
       if (replayAfterFailure) {
+        this.serveWaits.notify(this.requestKey(userId, request.feed_request_id));
         if (queueAvailable) await this.queue.commit(userId, version, request.feed_request_id, token);
         return responseFromServe(replayAfterFailure);
       }
