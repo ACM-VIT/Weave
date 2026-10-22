@@ -767,7 +767,14 @@ test('a timed-out recovery probe releases its slot before the next cooldown', as
   const client = new MlV2Client({ ...recommendationConfig, timeoutMs: 5 }, { now: () => now, failureThreshold: 1, openMs: 100 });
   await assert.rejects(client.generate(recommendationInput));
   now = 100;
-  await assert.rejects(client.generate(recommendationInput), /abort/i);
+  await assert.rejects(client.generate(recommendationInput), (error: unknown) => {
+    assert.ok(error instanceof Error);
+    assert.equal(error.constructor.name, 'MlTransportTimeoutError');
+    assert.equal(error.message, 'ML transport deadline exceeded.');
+    assert.ok(error.cause instanceof DOMException);
+    assert.equal(error.cause.name, 'AbortError');
+    return true;
+  });
   await assert.rejects(client.generate(recommendationInput), /circuit is open/);
   now = 200;
   await client.generate(recommendationInput);
