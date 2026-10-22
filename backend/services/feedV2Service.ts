@@ -1,6 +1,6 @@
 import crypto from 'node:crypto';
 
-import type { FeedRequestV2, FeedResponseV2, FeedSource, RecommendationEntry } from '../contracts/feed.v2.js';
+import type { FeedRequestV2, FeedResponseV2, FeedSource, RecommendationEntry, RepositoryProjection } from '../contracts/feed.v2.js';
 import type { FeedPersistencePort } from '../ports/feedPersistencePort.js';
 import type { FeedQueuePort } from '../redis/feedQueue.js';
 import { ReservationOwnedError } from '../redis/feedQueue.js';
@@ -141,6 +141,8 @@ export class FeedV2Service {
     }
 
     let entries = reservation.items;
+    // Only this request's fresh, same-viewer fallback projections are reusable.
+    const byId = new Map<string, RepositoryProjection>();
     incrementMetric(entries.length > 0 ? 'feed_v2_cache_hits_total' : 'feed_v2_cache_misses_total');
     let source: FeedSource = 'personalized';
     if (entries.length === 0) {
@@ -158,17 +160,27 @@ export class FeedV2Service {
           entries = fallback.map((repo) => ({
             repo_id: repo.repo_id, score: 0, source: 'fallback', model_version: 'backend-fallback', summary_id: repo.summary_id,
           }));
+          for (const repository of fallback) {
+            if (repository.status === 'active') byId.set(repository.repo_id, repository);
+          }
           source = 'fallback';
           incrementMetric('feed_v2_fallback_total');
         }
       }
     }
 
-    const projections = await this.persistence.listActiveRepositories(
-      entries.map((entry) => entry.repo_id),
-      userId,
-    );
-    const byId = new Map(projections.map((repo) => [repo.repo_id, repo]));
+    const missingRepoIds = [...new Set(entries.filter((entry) => {
+      const repository = byId.get(entry.repo_id);
+      return !repository || repository.summary_id !== entry.summary_id;
+    }).map((entry) => entry.repo_id))];
+    if (missingRepoIds.length > 0) {
+      // A refresh that omits an ID must not retain its invalidated projection.
+      for (const repoId of missingRepoIds) byId.delete(repoId);
+      const projections = await this.persistence.listActiveRepositories(missingRepoIds, userId);
+      for (const repository of projections) {
+        if (repository.status === 'active') byId.set(repository.repo_id, repository);
+      }
+    }
     const usable = entries.filter((entry) => byId.has(entry.repo_id));
     if (usable.length === 0 && entries.length > 0) {
       if (queueAvailable) await this.queue.commit(userId, version, request.feed_request_id, token);
