@@ -601,6 +601,7 @@ test('ML transport turns timeout/network failures into retryable delivery result
     assert.equal(result.accepted, false);
     assert.equal(result.retryable, true);
     assert.equal(result.status_code, 0);
+    assert.equal(result.failure_kind, 'timeout');
   });
 });
 
@@ -771,4 +772,54 @@ test('a timed-out recovery probe releases its slot before the next cooldown', as
   now = 200;
   await client.generate(recommendationInput);
   assert.equal(calls, 3);
+});
+
+test('ML attempts keep parent trace but have distinct span/request IDs and stable idempotency', async () => {
+  const { startSpan } = await import('../../observability/tracing.js');
+  const parent = startSpan('http', 'http_completion', true);
+  const headers: Array<{ trace: string; request: string; idempotency: string }> = [];
+  await withServer((request, response) => {
+    headers.push({ trace: String(request.headers.traceparent), request: String(request.headers['x-request-id']),
+      idempotency: String(request.headers['idempotency-key']) });
+    response.writeHead(202); response.end('{}');
+  }, async url => {
+    const client = new MlV2Client({ baseUrl: url, internalSecret: 'test', timeoutMs: 500, maxResponseBytes: 10_000 });
+    await parent.run(async () => {
+      await client.deliverFeedback(feedback);
+      await client.deliverFeedback(feedback);
+    });
+  });
+  const [, traceId, parentSpan, flags] = parent.traceparent.split('-');
+  for (const attempt of headers) {
+    assert.match(attempt.trace, /^00-[0-9a-f]{32}-[0-9a-f]{16}-0[01]$/);
+    const [, childTrace, childSpan, childFlags] = attempt.trace.split('-');
+    assert.equal(childTrace, traceId);
+    assert.notEqual(childSpan, parentSpan);
+    assert.equal(childFlags, flags);
+    assert.notEqual(attempt.request, feedback.events[0].event_id);
+    assert.equal(attempt.idempotency, feedback.events[0].event_id);
+  }
+  assert.equal(headers.length, 2);
+  assert.notEqual(headers[0].request, headers[1].request);
+  assert.notEqual(headers[0].trace, headers[1].trace);
+  parent.finish('success');
+});
+
+test('stage histograms retain cumulative buckets and distinguish outcome families', async () => {
+  const { observeStage, snapshotHistograms } = await import('../../observability/metrics.js');
+  const key = JSON.stringify({ operation: 'health', stage: 'outbox_age', outcome: 'success' });
+  const rejectedKey = JSON.stringify({ operation: 'health', stage: 'outbox_age', outcome: 'rejected' });
+  const before = snapshotHistograms()[key];
+  const beforeRejected = snapshotHistograms()[rejectedKey];
+  observeStage('health', 'outbox_age', 'success', 10);
+  observeStage('health', 'outbox_age', 'success', 300000);
+  observeStage('health', 'outbox_age', 'rejected', 1);
+  observeStage('health', 'outbox_age', 'success', Number.NaN);
+  const after = snapshotHistograms();
+  assert.equal(after[key].count - (before?.count ?? 0), 2);
+  assert.equal(after[key].sum - (before?.sum ?? 0), 300010);
+  assert.equal(after[key].buckets['10'] - (before?.buckets['10'] ?? 0), 1);
+  assert.equal(after[key].buckets['240000'] - (before?.buckets['240000'] ?? 0), 1);
+  assert.equal(after[key].buckets['+Inf'], after[key].count);
+  assert.equal(after[rejectedKey].count - (beforeRejected?.count ?? 0), 1);
 });
