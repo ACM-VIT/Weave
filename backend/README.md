@@ -346,15 +346,18 @@ Required production environment variables: `DATABASE_URL`, `SUPABASE_URL`, `SUPA
 
 The outbox launch script sets `--role=outbox` portably and fails startup when `ML_FEEDBACK_OUTBOX` is disabled. A hardened systemd template and install/acceptance procedure are in [the outbox worker runbook](../docs/runbooks/outbox-worker.md).
 
-Apply migrations through `0030_prewarm_publication_safety` before starting the updated workers.
+Apply migrations through `0031_profile_generation_epoch` before starting the updated workers.
 Migration `0028_counter_reconciliation_progress` is already in the journal.
 Apply migrations in journal order: `0028`, the unchanged published `0029`, then
-the additive `0030` safety upgrade. Existing installations of original `0029`
-apply only `0030`; fresh installations apply the full sequence. This integrated
+the additive `0030` safety upgrade and `0031` profile-epoch boundary. Existing
+installations apply only unapplied migrations; fresh installations apply the full sequence. This integrated
 history also retains `0026_readme_summary_pipeline`; do not combine the alternate
-JSON-outbox prewarm migration with this dedicated-table migration. Stop old
-outbox/feed generation workers before enabling the updated workers: old workers
-can still run the synchronous prewarm hook and do not write publication witnesses.
+JSON-outbox prewarm migration with this dedicated-table migration. Before applying
+`0031` or enabling the new code, drain and replace ALL old API, outbox and
+feed-generation processes, not only dedicated workers. API processes can also
+generate feeds and write profiles; old instances can publish into the new namespace
+or change profiles without advancing it. Old outbox workers can still run the
+synchronous prewarm hook and do not write publication witnesses.
 
 Outbox inserts and pending transitions emit payload-free PostgreSQL notifications
 only after commit. Notifications wake idle workers; they never acknowledge jobs.
@@ -377,8 +380,17 @@ one generation at a time per process, with one durable slot per user. Repeated
 deliveries of the same profile/feed version coalesce. New profile versions
 supersede old claims; older deliveries cannot replace newer profile targets.
 Claims adopt the current feed version and require exact equality with the current
-ML profile version. Changed bio/onboarding context and material GitHub persona
-changes advance the feed namespace in their source transaction. Failed/stale/coalesced generations retry durably, with generation failures
+ML profile version. Every profile-version increment (including non-material edits)
+advances the feed namespace in its source transaction. Before requesting ML,
+generation requires exact-profile successful delivery evidence in the durable
+prewarm slot, then rechecks both captured versions before publication. Missing
+legacy evidence uses synchronous persona repair under the generation lock and
+heartbeat. Repair acknowledges only a still-active, unchanged profile in a short
+user-before-feed transaction after network I/O; repeated identical proof preserves
+the existing retry horizon. Migration `0031` invalidates every existing feed
+namespace once and removes only ephemeral slots lacking retained exact-profile
+delivered-outbox proof. Lost legacy proof forces repair, never assumed success;
+serve history and business data remain intact. Failed/stale/coalesced generations retry durably, with generation failures
 backing off up to 60 seconds; crashed claims expire after `ML_TIMEOUT_MS + 60000`
 milliseconds (65 seconds by default). Disabled users are skipped and deleted
 users cascade out of the queue. An immutable scheduling time bounds retries to
@@ -398,8 +410,10 @@ version without resetting the remaining queue, even for empty/consumed feeds.
 The Redis publication script atomically checks generation-lock ownership and
 writes an eight-day success witness with the queue; prewarm cannot replace an
 existing witness. PostgreSQL stores a monotonic `last_published_feed_version`
-after publication. Retained completed generation attempts and prior serves are
-also conservative success evidence when a Redis witness is missing. These
+after publication. Retained completed generation attempts are
+also success evidence when a Redis witness is missing. A prior serve alone may
+be fallback or an ambiguous lost publication, so prewarm fails closed without
+marking it successful and eventually expires visibly. These
 checks preserve process-crash/retry recovery, including a crash after Redis
 publication but before SQL completion. They are not an exactly-once guarantee
 under simultaneous Redis data loss and process failure before a durable witness;

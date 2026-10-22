@@ -49,9 +49,9 @@ function statusError(statusCode: number, message: string): Error & { statusCode:
 }
 
 async function lockUserMembershipState(tx: TransactionSql, userId: string): Promise<void> {
-  // Every interaction already serializes through this row. Membership writes
-  // use the same first lock so saved-state changes and feed invalidation share
-  // one deterministic order.
+  // Match profile and interaction writers: user before feed, including the
+  // implicit user FK locks acquired by membership/save/stat inserts below.
+  await tx`SELECT user_id FROM app.users WHERE user_id=${userId}::uuid FOR KEY SHARE`;
   await tx`
     INSERT INTO app.user_feed_state (user_id) VALUES (${userId}::uuid)
     ON CONFLICT (user_id) DO NOTHING

@@ -35,13 +35,20 @@ export class FeedGenerationService {
     sessionId?: string,
     fence?: FeedGenerationFence,
   ): Promise<FeedGenerationOutcome> {
-    const feedVersion = await this.persistence.getFeedVersion(userId);
+    const context = await this.persistence.getGenerationContext?.(userId);
+    const feedVersion = context?.feedVersion ?? await this.persistence.getFeedVersion(userId);
+    if (this.persistence.getGenerationContext && !context) return { status: 'stale', feedVersion };
     const token = crypto.randomUUID();
     let generationId = crypto.randomUUID();
     const started = Date.now();
-    const current = async () => await this.persistence.getFeedVersion(userId) === feedVersion
-      && (!fence || (fence.feedVersion === feedVersion && await fence.isCurrent()));
-    if (fence && !await current()) return { status: 'stale', feedVersion };
+    const current = async () => {
+      const latest = await this.persistence.getGenerationContext?.(userId);
+      const unchanged = context
+        ? latest?.feedVersion === feedVersion && latest.profileVersion === context.profileVersion && latest.delivered
+        : await this.persistence.getFeedVersion(userId) === feedVersion;
+      return unchanged && (!fence || (fence.feedVersion === feedVersion && await fence.isCurrent()));
+    };
+    if (fence && (fence.feedVersion !== feedVersion || !await fence.isCurrent())) return { status: 'stale', feedVersion };
     if (!await this.queue.acquireGenerationLock(userId, feedVersion, token, this.lockTtlMs)) {
       await this.persistence.recordGenerationAttempt?.({
         generation_id: generationId, user_id: userId, feed_version: feedVersion, mode,
@@ -60,6 +67,14 @@ export class FeedGenerationService {
     }, Math.max(1, Math.floor(this.lockTtlMs / 3)));
     heartbeat.unref();
     try {
+      // Repair runs under the existing per-user/version generation lock and
+      // heartbeat, so legacy first requests coalesce rather than fan out.
+      if (context && !context.delivered) {
+        if (!this.personaRepair) return { status: 'stale', feedVersion };
+        const delivered = await this.personaRepair.repair(userId);
+        if (delivered !== context.profileVersion) return { status: 'stale', feedVersion };
+      }
+      if (!await current()) return { status: 'stale', feedVersion };
       if (mode === 'prewarm') {
         // A lock collision is not success. Once we own the lock, either a
         // durable witness or the atomic Redis witness proves publication.
@@ -70,6 +85,9 @@ export class FeedGenerationService {
           await this.persistence.markGenerationPublished?.(userId, feedVersion);
           return { status: 'satisfied', feedVersion };
         }
+        // A serve alone may be fallback or an ambiguous lost publication, not
+        // proof of current-profile ML success. Preserve it without completing.
+        if (await this.persistence.hasServedFeed?.(userId, feedVersion)) return { status: 'stale', feedVersion };
       }
       const history = await this.persistence.listExcludedRepositoryIds(userId, sessionId, 500);
       const excluded = [...new Set([...excludeRepoIds, ...history])].slice(0, 500);
@@ -96,7 +114,8 @@ export class FeedGenerationService {
       } catch (error) {
         if (!this.personaRepair || !isMissingPersonaRecommendationError(error)) throw error;
         incrementMetric('feed_v2_persona_repairs_total');
-        await this.personaRepair.repair(userId);
+        const repaired = await this.personaRepair.repair(userId);
+        if ((context && repaired !== context.profileVersion) || !await current()) return { status: 'stale', feedVersion };
         generationId = crypto.randomUUID();
         response = await this.recommendations.generate({
           ...request,
@@ -133,6 +152,7 @@ export class FeedGenerationService {
         await this.persistence.markGenerationPublished?.(userId, feedVersion);
         return { status: 'satisfied', feedVersion };
       }
+      if (mode === 'prewarm' && await this.persistence.hasServedFeed?.(userId, feedVersion)) return { status: 'stale', feedVersion };
       const published = await this.queue.publishGeneration(
         userId,
         feedVersion,

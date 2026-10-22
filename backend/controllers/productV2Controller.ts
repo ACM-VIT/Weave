@@ -129,8 +129,7 @@ export async function updateMe(req: AuthRequest, res: Response): Promise<void> {
   }
   try {
     const updated = await sqlClient.begin(async (tx) => {
-      const previous = await tx`SELECT bio FROM app.users WHERE user_id=${id}::uuid FOR UPDATE`;
-      const contextChanged = req.body.bio !== undefined && (previous[0]?.bio ?? null) !== bio;
+      await tx`SELECT user_id FROM app.users WHERE user_id=${id}::uuid FOR UPDATE`;
       const rows = await tx`
         UPDATE app.users SET username=COALESCE(${usernameValue ?? null},username),
           full_name=CASE WHEN ${req.body.full_name !== undefined} THEN ${fullName ?? null} ELSE full_name END,
@@ -142,7 +141,7 @@ export async function updateMe(req: AuthRequest, res: Response): Promise<void> {
         RETURNING user_id,username,full_name,date_of_birth,bio,github_handle,avatar_url,interests,skills,tech_stack,
           profile_version,updated_at`;
       if (!rows[0]) throw Object.assign(new Error('User profile not found.'), { statusCode: 404 });
-      if (contextChanged) await tx`
+      await tx`
         INSERT INTO app.user_feed_state(user_id,feed_version) VALUES(${id}::uuid,2)
         ON CONFLICT(user_id) DO UPDATE SET feed_version=app.user_feed_state.feed_version+1,updated_at=now()
       `;
@@ -220,12 +219,7 @@ export async function completeOnboarding(req: AuthRequest, res: Response): Promi
         profile_version=profile_version+1,updated_at=now()
         WHERE user_id=${id}::uuid RETURNING profile_version,username,full_name,bio,github_handle,avatar_url`;
       if (!updated[0]) throw Object.assign(new Error('User profile not found.'), { statusCode: 404 });
-      const contextChanged = profiles[0].onboarding_completed !== true
-        || (bio != null && bio !== profiles[0].bio)
-        || JSON.stringify(profiles[0].interests) !== JSON.stringify(interests)
-        || JSON.stringify(profiles[0].skills) !== JSON.stringify(skills)
-        || JSON.stringify(profiles[0].tech_stack) !== JSON.stringify(techStack);
-      if (contextChanged) await tx`
+      await tx`
         INSERT INTO app.user_feed_state(user_id,feed_version) VALUES(${id}::uuid,2)
         ON CONFLICT(user_id) DO UPDATE SET feed_version=app.user_feed_state.feed_version+1,updated_at=now()
       `;

@@ -238,6 +238,13 @@
       "when": 1792886400000,
       "tag": "0030_prewarm_publication_safety",
       "breakpoints": true
+    },
+    {
+      "idx": 34,
+      "version": "7",
+      "when": 1792972800000,
+      "tag": "0031_profile_generation_epoch",
+      "breakpoints": true
     }
   ]
 }

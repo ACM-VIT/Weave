@@ -10,11 +10,11 @@ export class PersonaRepairError extends Error {
 
 export class PersonaRepairService {
   constructor(
-    private readonly persistence: Pick<FeedPersistencePort, 'getMlOnboardingJob'>,
+    private readonly persistence: Pick<FeedPersistencePort, 'getMlOnboardingJob' | 'recordMlProfileDelivered'>,
     private readonly transport: Pick<OutboxTransportPort, 'deliverOnboarding'>,
   ) {}
 
-  async repair(userId: string): Promise<void> {
+  async repair(userId: string): Promise<bigint> {
     if (!this.persistence.getMlOnboardingJob) {
       throw new PersonaRepairError('Persona repair persistence is unavailable.');
     }
@@ -30,5 +30,11 @@ export class PersonaRepairService {
           : `ML persona repair failed with status ${result.status_code}.`,
       );
     }
+    const profileVersion = BigInt(job.profile_version);
+    if (!this.persistence.recordMlProfileDelivered
+      || !await this.persistence.recordMlProfileDelivered(userId, profileVersion)) {
+      throw new PersonaRepairError('Delivered persona was superseded before durable acknowledgement.');
+    }
+    return profileVersion;
   }
 }

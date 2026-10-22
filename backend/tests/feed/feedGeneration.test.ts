@@ -14,6 +14,13 @@ const socialRepoId = '00000000-0000-4000-8000-000000000002';
 const otherRepoId = '00000000-0000-4000-8000-000000000003';
 
 class GenerationPersistence implements FeedPersistencePort {
+  profileVersion = 1n;
+  delivered = true;
+  served = false;
+  async getGenerationContext() {
+    return { feedVersion: await this.getFeedVersion(), profileVersion: this.profileVersion, delivered: this.delivered };
+  }
+  async hasServedFeed() { return this.served; }
   inactive = new Set<string>();
   published = false;
   failPublicationRecord = false;
@@ -166,7 +173,7 @@ test('feed generation repairs a missing ML persona and retries exactly once', as
     recommendations,
     600,
     15_000,
-    { repair: async () => { repairs++; } },
+    { repair: async () => { repairs++; return 1n; } },
   ).generate(userId, 45);
 
   assert.equal(result.status, 'generated');
@@ -210,7 +217,7 @@ test('long persona repair renews its lease before publishing',async()=>{
   const alive=setTimeout(()=>{},1000);
   try {
     const result=await new FeedGenerationService(new GenerationPersistence(),queue,recommendations,600,9,
-      {repair:async()=>{await renewal;}}).generate(userId);
+      {repair:async()=>{await renewal;return 1n;}}).generate(userId);
     assert.equal(result.status,'generated');assert.ok(renewals>=1);assert.equal(queue.replaced,true);
     const atCompletion=renewals;await new Promise(resolve=>setTimeout(resolve,15));
     assert.equal(renewals,atCompletion,'Heartbeat stops when generation finishes');
@@ -300,4 +307,44 @@ test('prewarm retries an unsuccessful lock holder but fences an obsolete claim b
   assert.equal(queue.published, false);
   persistence.listActiveRepositoryIdentities = read;
   assert.equal((await service.generate(userId,45,[],'prewarm')).status, 'generated');
+});
+
+
+test('undelivered current profile cannot issue ML generation or publish', async () => {
+  const persistence = new GenerationPersistence(); persistence.delivered = false;
+  const queue = new GenerationQueue(); const recommendations = new CapturingRecommendations();
+  const outcome = await new FeedGenerationService(persistence, queue, recommendations).generate(userId);
+  assert.equal(outcome.status, 'stale');
+  assert.equal(recommendations.request, null);
+  assert.equal(queue.replaced, false);
+});
+
+test('legacy repair proves the exact profile before requesting recommendations', async () => {
+  const persistence = new GenerationPersistence(); persistence.delivered = false;
+  const queue = new GenerationQueue(); const recommendations = new CapturingRecommendations();
+  const generation = new FeedGenerationService(persistence, queue, recommendations, 600, 15_000, {
+    repair: async () => { persistence.delivered = true; return persistence.profileVersion; },
+  });
+  assert.equal((await generation.generate(userId)).status, 'generated');
+  assert.notEqual(recommendations.request, null);
+});
+
+test('profile change during ML blocks publication even when a broken writer kept the feed version', async () => {
+  const persistence = new GenerationPersistence(); const queue = new GenerationQueue();
+  const recommendations = new CapturingRecommendations();
+  const generate = recommendations.generate.bind(recommendations);
+  recommendations.generate = async input => {
+    const response = await generate(input); persistence.profileVersion = 2n; return response;
+  };
+  assert.equal((await new FeedGenerationService(persistence, queue, recommendations).generate(userId)).status, 'stale');
+  assert.equal(queue.replaced, false);
+});
+
+test('serve-only ambiguity does not falsely complete prewarm as ML success', async () => {
+  const persistence = new GenerationPersistence(); persistence.served = true;
+  const queue = new GenerationQueue(); const recommendations = new CapturingRecommendations();
+  const outcome = await new FeedGenerationService(persistence, queue, recommendations).generate(userId, 45, [], 'prewarm');
+  assert.equal(outcome.status, 'stale');
+  assert.equal(persistence.published, false);
+  assert.equal(recommendations.request, null);
 });

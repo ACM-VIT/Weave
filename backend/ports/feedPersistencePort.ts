@@ -22,7 +22,12 @@ export interface FeedReconciliationPersistencePort {
   listServedRequests(requests: FeedServeRequest[]): Promise<FeedServeRequest[]>;
 }
 
+export interface FeedGenerationContext { feedVersion: bigint; profileVersion: bigint; delivered: boolean }
+
 export interface FeedPersistencePort {
+  getGenerationContext?(userId: string): Promise<FeedGenerationContext | null>;
+  recordMlProfileDelivered?(userId: string, profileVersion: bigint): Promise<boolean>;
+  hasServedFeed?(userId: string, feedVersion: bigint): Promise<boolean>;
   getFeedVersion(userId: string): Promise<bigint>;
   hasPublishedGeneration?(userId: string, feedVersion: bigint): Promise<boolean>;
   markGenerationPublished?(userId: string, feedVersion: bigint): Promise<void>;

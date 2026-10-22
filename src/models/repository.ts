@@ -1,3 +1,4 @@
+import type { RecommendationSource } from './recommendation';
 import type { ReadmeDigest } from './readme-digest';
 export type RepositoryReaction = 'like' | 'dislike' | null;
 export type RepositoryStatus = 'active' | 'archived' | 'deleted' | 'blocked' | null;
@@ -65,6 +66,7 @@ export type RepositoryDetail = {
   ownerProfileKind: string | null;
   ownerProfileClaimedUserId: string | null;
   viewerFollowsOwner: boolean | null;
+  recommendationSource?: RecommendationSource;
   serveId: string | null;
   feedPosition: number | null;
 };

@@ -69,7 +69,7 @@ export class ApplicationRuntime {
     : null;
   readonly shadow = this.ml ? new FeedShadowService(this.persistence, this.ml) : null;
   readonly outbox = new OutboxService();
-  readonly prewarm = new FeedPrewarmService(sqlClient, getMlRuntimeConfig().timeoutMs + 60_000);
+  readonly prewarm = new FeedPrewarmService(sqlClient, this.ml ? getMlRuntimeConfig().timeoutMs + 60_000 : 60_000);
   readonly feed = new FeedV2Service(
     this.persistence,
     this.queue,
