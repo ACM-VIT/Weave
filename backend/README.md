@@ -138,6 +138,57 @@ After foreground operations settle, shutdown also drains retained shared probes.
 Each coordinator separately caps ownership at 256 groups, including probes whose
 last observer already cancelled or expired; observer deadlines remain unchanged.
 
+#### Indexed low-watermark refill rollout
+
+`FEED_REFILL_INDEX_READY` defaults to `false`. Leave it false while any legacy
+reservation or generation writer is running. First upgrade **all** API, feed,
+outbox and maintenance processes that use the feed queue, then drain legacy
+reservations or wait at least the largest reservation lease configured on any
+old writer after the last old writer stops. Only then may an authorized operator
+set the gate to `true` in compatible processes. An empty index is not evidence
+that this prerequisite is satisfied. Enabling the gate is a separate deployment
+decision; these source changes do not perform that rollout.
+
+With the gate enabled, successful personalized serves schedule best-effort
+refill below `FEED_REFILL_LOW_WATERMARK` (default 15), up to
+`FEED_REFILL_TARGET_DEPTH` (default 45, maximum 100). The watermark must be lower
+than the target. The per-process scheduler holds at most 128 pending/active
+user-version jobs and two actual generations, retaining ownership until each
+operation settles. Dropped/failed precomputation is reconstructed by a later
+serve; normal on-demand generation remains available.
+
+Shutdown also stops refill admission, discards pending precomputation and
+drains the at-most-two actual generations, including their lock release, before
+Redis/SQL close. A timeout or cancelled observer never substitutes for actual
+generation settlement in that drain.
+
+Background refill uses live generation, not the once-per-version prewarm path.
+It retains the exact-profile delivery prerequisite, feed/profile version checks,
+and generation-lock heartbeat. The atomic append result distinguishes an
+accepted publication from capacity/deduplication rejection: a nonempty ML batch
+that appends zero items is retryable, never durable evidence of end-of-feed.
+Only an accepted append sets the eight-day Redis publication witness, including
+an actually empty ML source; durable publication is recorded only after that
+success (or an existing accepted-publication witness).
+
+Reservation/refill Lua returns remaining depth atomically, so production cursor
+and scheduling decisions do not need an extra depth read. Indexed generation
+snapshots and atomically deduplicates against queued and live reserved items,
+never replaces outstanding reservations, checks the generation lock token at
+append, and rejects invalidated versions. Lua snapshots fail closed above 128
+active reservation keys or 500 queued/reserved entries; append never grows the
+queue past its configured target or total tracked occupancy past 500.
+Reservations use the per-user/version sorted-set key
+`feed:v2:reservation-index:<user_id>:<version>`; members are reservation meta
+keys and scores are Redis-clock lease deadlines in milliseconds. Reserve/refill
+maintains the lease and commit/release removes membership. Reconciliation must
+reuse this index contract rather than introduce competing reservation tracking.
+
+To roll back to legacy binaries, disable the gate on **all** compatible writers
+and let active indexed generations settle before starting old writers. Queue
+precomputation is expendable, but do not delete active reservation data. Feed
+cursor format, durable request replay and version namespace stay unchanged.
+
 ### Interactions
 
 `POST /api/v2/interactions/batch` accepts 1-50 events:
