@@ -27,7 +27,9 @@ export class OutboxWorker {
     }
     if (row.job_type === 'onboard') return this.transport.deliverOnboarding(row.payload as unknown as MlOnboardingJob);
     if (row.job_type === 'repo_index') return this.transport.deliverRepositoryIndex(row.payload as unknown as MlRepositoryIndexJob);
-    return this.transport.deliverRepositoryRefresh(row.payload as unknown as MlRepositoryRefreshJob);
+    // Internal outbox dependency metadata is not part of the strict ML DTO.
+    const { job_id, repo_id, feature_version, features } = row.payload as unknown as MlRepositoryRefreshJob;
+    return this.transport.deliverRepositoryRefresh({ job_id, repo_id, feature_version, features });
   }
 
   async runOnce(limit = 1): Promise<number> {

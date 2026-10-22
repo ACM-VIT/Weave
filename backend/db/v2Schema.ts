@@ -530,7 +530,11 @@ export const mlOutbox = telemetrySchema.table('ml_outbox', {
   deliveredAt: timestamp('delivered_at', { withTimezone: true }),
   lastError: text('last_error'),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
-}, (table) => [index('ml_outbox_ready_idx').on(table.status, table.availableAt)]);
+}, (table) => [
+  index('ml_outbox_ready_idx').on(table.status, table.availableAt),
+  index('ml_outbox_repository_index_lookup_idx').on(table.aggregateId, table.status, table.createdAt)
+    .where(sql`${table.jobType}='repo_index'`),
+]);
 
 export const generationAttempts = telemetrySchema.table('generation_attempts', {
   generationId: uuid('generation_id').primaryKey(),
