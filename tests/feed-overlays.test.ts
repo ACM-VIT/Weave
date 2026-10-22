@@ -78,7 +78,7 @@ function feed(ids: string[], reducedMotion = false) {
       saveRepositoryToCollections: () => saveRepository(),
     },
     '../../api/comments': {
-      getCommentsByRepo: async (id: string) => { requests.push(`comments:${id}`); return []; },
+      getCommentsByRepo: async (id: string) => { requests.push(`comments:${id}`); return { items: [], nextOffset: undefined }; },
       getCommentAuthor: async () => { requests.push('author'); return {}; },
       createComment: () => postComment(),
     },

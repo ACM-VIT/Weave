@@ -17,6 +17,15 @@ export async function runSearchRequest<T>(signal: AbortSignal, delay: number, se
 export const MIN_SEARCH_LENGTH = 2;
 export const SEARCH_DEBOUNCE_MS = 300;
 
+/** A typing deadline is shared across renders, but explicit actions never wait. */
+export class SearchRequestTiming {
+  private notBefore = 0;
+  constructor(private readonly now: () => number = Date.now) {}
+  typed(): void { this.notBefore = this.now() + SEARCH_DEBOUNCE_MS; }
+  explicit(): void { this.notBefore = 0; }
+  delay(): number { return Math.max(0, this.notBefore - this.now()); }
+}
+
 /** Reuse cached searches across group/query changes; only an explicit restart rotates an ID. */
 export class SearchSessions {
   private readonly ids = new Map<string, string>();
@@ -34,13 +43,13 @@ export function isSearchExpired(error: unknown): boolean {
 
 export function searchQueryOptions(input: {
   viewer: string | undefined; query: string; group: SearchGroup; searchId: string;
-  composing: boolean; offline: boolean;
+  composing: boolean; offline: boolean; timing?: SearchRequestTiming;
   send: (cursor: string | null, signal: AbortSignal) => Promise<SearchPage>;
 }) {
   return infiniteQueryOptions({
     queryKey: ['explore-search', input.viewer, input.query, input.group, input.composing, input.searchId],
     enabled: input.query.length >= MIN_SEARCH_LENGTH && !input.composing && !input.offline && Boolean(input.viewer),
-    queryFn: ({ pageParam, signal }) => runSearchRequest(signal, pageParam ? 0 : SEARCH_DEBOUNCE_MS,
+    queryFn: ({ pageParam, signal }) => runSearchRequest(signal, pageParam ? 0 : (input.timing?.delay() ?? 0),
       activeSignal => input.send(pageParam, activeSignal)),
     initialPageParam: null as string | null,
     getNextPageParam: (page: SearchPage) => page.next_cursor ?? undefined,
