@@ -156,5 +156,70 @@
     "name": "ASCII embedded abbreviation is not masked",
     "summary": "It supports somee.g. formats. Teams review changes. Users share updates.",
     "valid": false
+  },
+  {
+    "name": "GPL label after sentence closer \"",
+    "summary": "Maintainers describe it as \"a shared workspace for inspecting ownership decisions and coordinating repository changes.\" GPL. Teams can review package choices and keep their collaborative tooling aligned with project goals.",
+    "valid": false
+  },
+  {
+    "name": "GPL label after sentence closer '",
+    "summary": "Maintainers describe it as \"a shared workspace for inspecting ownership decisions and coordinating repository changes.' GPL. Teams can review package choices and keep their collaborative tooling aligned with project goals.",
+    "valid": false
+  },
+  {
+    "name": "GPL label after sentence closer ”",
+    "summary": "Maintainers describe it as \"a shared workspace for inspecting ownership decisions and coordinating repository changes.” GPL. Teams can review package choices and keep their collaborative tooling aligned with project goals.",
+    "valid": false
+  },
+  {
+    "name": "GPL label after sentence closer ’",
+    "summary": "Maintainers describe it as \"a shared workspace for inspecting ownership decisions and coordinating repository changes.’ GPL. Teams can review package choices and keep their collaborative tooling aligned with project goals.",
+    "valid": false
+  },
+  {
+    "name": "GPL label after sentence closer )",
+    "summary": "Maintainers describe it as \"a shared workspace for inspecting ownership decisions and coordinating repository changes.) GPL. Teams can review package choices and keep their collaborative tooling aligned with project goals.",
+    "valid": false
+  },
+  {
+    "name": "GPL label after sentence closer ]",
+    "summary": "Maintainers describe it as \"a shared workspace for inspecting ownership decisions and coordinating repository changes.] GPL. Teams can review package choices and keep their collaborative tooling aligned with project goals.",
+    "valid": false
+  },
+  {
+    "name": "GPL label after sentence closer ”)]",
+    "summary": "Maintainers describe it as \"a shared workspace for inspecting ownership decisions and coordinating repository changes.”)] GPL. Teams can review package choices and keep their collaborative tooling aligned with project goals.",
+    "valid": false
+  },
+  {
+    "name": "ASCII abbreviation boundary Ke.g.",
+    "summary": "Teams inspect Ke.g. JSON records across shared workspaces while comparing project ownership and coordinating changes. Developers compare Ke.g. YAML records while choosing compatible tools for their collaborative workflows.",
+    "valid": true
+  },
+  {
+    "name": "ASCII abbreviation boundary ſi.e.",
+    "summary": "Teams inspect ſi.e. JSON records across shared workspaces while comparing project ownership and coordinating changes. Developers compare ſi.e. YAML records while choosing compatible tools for their collaborative workflows.",
+    "valid": true
+  },
+  {
+    "name": "ASCII abbreviation boundary KE.G.",
+    "summary": "Teams inspect KE.G. JSON records across shared workspaces while comparing project ownership and coordinating changes. Developers compare KE.G. YAML records while choosing compatible tools for their collaborative workflows.",
+    "valid": true
+  },
+  {
+    "name": "ASCII abbreviation boundary ſI.E.",
+    "summary": "Teams inspect ſI.E. JSON records across shared workspaces while comparing project ownership and coordinating changes. Developers compare ſI.E. YAML records while choosing compatible tools for their collaborative workflows.",
+    "valid": true
+  },
+  {
+    "name": "ASCII abbreviation boundary Ke.g.",
+    "summary": "Teams inspect Ke.g. JSON records across shared workspaces while comparing project ownership and coordinating changes. Developers compare Ke.g. YAML records while choosing compatible tools for their collaborative workflows.",
+    "valid": false
+  },
+  {
+    "name": "ASCII abbreviation boundary si.e.",
+    "summary": "Teams inspect si.e. JSON records across shared workspaces while comparing project ownership and coordinating changes. Developers compare si.e. YAML records while choosing compatible tools for their collaborative workflows.",
+    "valid": false
   }
 ]
