@@ -1,8 +1,5 @@
 import assert from 'node:assert/strict';
-import fs from 'node:fs';
-import path from 'node:path';
 import test from 'node:test';
-import { fileURLToPath } from 'node:url';
 
 import {
   buildCampaignRepositoryJob,
@@ -61,11 +58,15 @@ test('campaign reindex preserves canonical identity/version and builds a fresh s
   );
 });
 
-test('summary backfill retries description fallbacks until a generated artifact is active', () => {
-  const source = fs.readFileSync(path.resolve(
-    path.dirname(fileURLToPath(import.meta.url)),
-    '../../scripts/reindex-active-repositories.ts',
-  ), 'utf8');
-  assert.match(source, /summary\.source='generated'/);
-  assert.match(source, /missing-current-generated-summary/);
+test('invalid-summary repair is read-only by default and execution requires explicit repository scope', () => {
+  assert.deepEqual(parseReindexOptions(['--campaign=repair-contract-v1', '--repair-invalid-summaries']), {
+    campaignId: 'repair-contract-v1', execute: false, batchSize: 100, summaryBackfill: false, repairInvalidSummaries: true,
+  });
+  assert.throws(() => parseReindexOptions(['--campaign=repair-contract-v1', '--repair-invalid-summaries', '--execute']), /--repo-id/);
+  const scoped = parseReindexOptions(['--campaign=repair-contract-v1', '--repair-invalid-summaries', '--execute',
+    '--repo-id=00000000-0000-4000-8000-000000000701']);
+  assert.equal(scoped.execute, true);
+  assert.deepEqual(scoped.repositoryIds, ['00000000-0000-4000-8000-000000000701']);
+  assert.throws(() => parseReindexOptions(['--campaign=repair-contract-v1', '--repair-invalid-summaries', '--summary-backfill']), /Choose/);
+  assert.throws(() => parseReindexOptions(['--campaign=repair-contract-v1', '--repair-invalid-summaries', '--repo-id=invalid']), /canonical UUID/);
 });

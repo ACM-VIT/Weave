@@ -156,7 +156,7 @@ try {
         legacy.readme_summary,'[]'::jsonb,'legacy',false
       FROM public.repo legacy JOIN app.repos repo ON repo.repo_id=legacy.repo_id
       WHERE legacy.readme_summary IS NOT NULL AND length(trim(legacy.readme_summary))>0
-      ON CONFLICT (repo_id,content_version,prompt_version,model_version,format_version) DO NOTHING
+      ON CONFLICT (repo_id,content_version,prompt_version,model_version,format_version,artifact_revision) DO NOTHING
     `;
   });
 

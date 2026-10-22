@@ -64,6 +64,8 @@ try {
     'app.repo_card_summaries.format_version',
     'app.repo_card_summaries.highlights',
     'app.repo_card_summaries.source',
+    'app.repo_card_summaries.artifact_revision',
+    'app.repo_card_summaries.supersedes_summary_id',
     'telemetry.ml_outbox.response_payload',
   ]) {
     if (!columns.has(requiredColumn)) missing.push(`column:${requiredColumn}`);
@@ -97,6 +99,7 @@ try {
   for (const name of [
     'repo_content.repo_content_readme_metadata_check',
     'repo_card_summaries.repo_card_summaries_versions_check',
+    'repo_card_summaries.repo_card_summaries_revision_check',
     'repo_card_summaries.repo_card_summaries_highlights_check',
     'repo_card_summaries.repo_card_summaries_source_check',
     'repo_card_summaries.repo_card_summaries_active_length_check',

@@ -1,4 +1,6 @@
 import crypto from 'node:crypto';
+import { validateRepositoryCardSummary } from './mlService.js';
+import { isAcceptedStoredSummary } from './storedRepositorySummary.js';
 
 import { sqlClient } from '../db/index.js';
 import type { MlRepositoryIndexResponse } from '../contracts/ml.v2.js';
@@ -201,6 +203,14 @@ export class OutboxService {
         );
       }
 
+      // Ingestion locks the repository before its content. Use the same order
+      // so the summary insert's repository FK cannot deadlock with ingestion.
+      const repositories = await tx`
+        SELECT repo_id FROM app.repos WHERE repo_id=${response.repo_id}::uuid FOR UPDATE
+      `;
+      if (!repositories[0]) {
+        throw new RepositoryIndexCompletionConflictError('Repository no longer exists.');
+      }
       const contentRows = await tx`
         SELECT content_version,content_hash
         FROM app.repo_content
@@ -224,47 +234,67 @@ export class OutboxService {
       }
 
       const artifact = response.card_summary;
-      await tx`
-        INSERT INTO app.repo_card_summaries (
-          repo_id,content_version,prompt_version,model_version,format_version,
-          summary,highlights,source,active
-        ) VALUES (
-          ${response.repo_id}::uuid,${response.content_version},${artifact.prompt_version},
-          ${artifact.model_version},${artifact.format_version},${artifact.summary},
-          ${JSON.stringify(artifact.highlights)}::jsonb,${artifact.source},false
-        )
-        ON CONFLICT (
-          repo_id,content_version,prompt_version,model_version,format_version
-        ) DO NOTHING
-      `;
+      const source = repositoryPayload as { readme?: string | null; description?: string | null };
+      validateRepositoryCardSummary(artifact, source);
       const summaries = await tx`
-        SELECT summary_id,summary,highlights,source
-        FROM app.repo_card_summaries
+        SELECT * FROM app.repo_card_summaries
         WHERE repo_id=${response.repo_id}::uuid
           AND content_version=${response.content_version}
           AND prompt_version=${artifact.prompt_version}
           AND model_version=${artifact.model_version}
           AND format_version=${artifact.format_version}
-        LIMIT 1
+        ORDER BY artifact_revision DESC
+        FOR UPDATE
       `;
-      if (!summaries[0]) throw new Error('Versioned repository summary was not persisted.');
-      const persistedHighlights = Array.isArray(summaries[0].highlights)
-        ? summaries[0].highlights.map(String)
-        : [];
-      const artifactDiverged = String(summaries[0].summary) !== artifact.summary
-        || String(summaries[0].source) !== artifact.source
-        || JSON.stringify(persistedHighlights) !== JSON.stringify(artifact.highlights);
+      // A valid first writer is immutable. Invalid historical rows remain
+      // addressable by summary_id; only a new revision may supersede them.
+      let persisted = summaries.find(candidate => isAcceptedStoredSummary(candidate, source));
+      const predecessor = summaries[0];
+      const repaired = !persisted && Boolean(predecessor);
+      if (!persisted) {
+        const inserted = await tx`
+          INSERT INTO app.repo_card_summaries (
+            repo_id,content_version,prompt_version,model_version,format_version,
+            summary,highlights,source,active,artifact_revision,supersedes_summary_id
+          ) VALUES (
+            ${response.repo_id}::uuid,${response.content_version},${artifact.prompt_version},
+            ${artifact.model_version},${artifact.format_version},${artifact.summary},
+            ${JSON.stringify(artifact.highlights)}::jsonb,${artifact.source},false,
+            ${predecessor ? Number(predecessor.artifact_revision) + 1 : 0},
+            ${predecessor ? String(predecessor.summary_id) : null}::uuid
+          ) RETURNING *
+        `;
+        persisted = inserted[0];
+      }
+      if (!persisted || !isAcceptedStoredSummary(persisted, source)) {
+        throw new Error('A valid versioned repository summary was not persisted.');
+      }
+      const artifactDiverged = String(persisted.summary) !== artifact.summary
+        || String(persisted.source) !== artifact.source
+        || JSON.stringify(persisted.highlights) !== JSON.stringify(artifact.highlights);
 
+      const generated = artifact.source === 'description_fallback'
+        && currentContentVersion === response.content_version
+        ? await tx`
+          SELECT * FROM app.repo_card_summaries
+          WHERE repo_id=${response.repo_id}::uuid
+            AND content_version=${response.content_version}
+            AND source='generated' AND active
+          FOR UPDATE
+        ` : [];
+      // Preserve only generated content that still passes today's validator.
+      const preserved = generated.find(candidate => isAcceptedStoredSummary(candidate, source));
+      const activated = preserved ?? persisted;
       if (currentContentVersion === response.content_version) {
         await tx`
           UPDATE app.repo_card_summaries
           SET active=false
           WHERE repo_id=${response.repo_id}::uuid AND active
-            AND summary_id<>${String(summaries[0].summary_id)}::uuid
+            AND summary_id<>${String(activated.summary_id)}::uuid
         `;
         await tx`
           UPDATE app.repo_card_summaries SET active=true
-          WHERE summary_id=${String(summaries[0].summary_id)}::uuid
+          WHERE summary_id=${String(activated.summary_id)}::uuid
         `;
       }
 
@@ -274,8 +304,12 @@ export class OutboxService {
             last_error=NULL,response_payload=${JSON.stringify({
               ...response,
               backend_persistence: {
-                artifact_status: artifactDiverged ? 'first_writer_retained' : 'applied',
-                summary_id: String(summaries[0].summary_id),
+                artifact_status: preserved ? 'generated_preserved' : repaired ? 'invalid_artifact_replaced'
+                  : artifactDiverged ? 'first_writer_retained' : 'applied',
+                summary_id: String(activated.summary_id),
+                persisted_summary_id: String(persisted.summary_id),
+                artifact_revision: Number(persisted.artifact_revision),
+                supersedes_summary_id: persisted.supersedes_summary_id ?? null,
               },
             })}::jsonb
         WHERE outbox_id=${row.outbox_id}::uuid
