@@ -1,3 +1,4 @@
+import { mapCollectionList, mapLegacyBoardList, type ListDto } from '../models/list';
 import { apiV2 } from './client';
 import type {
   CollectionListRecord,
@@ -10,6 +11,16 @@ import {
 
 export type { ProfileContent } from './profile-data';
 export { settleProfileContent } from './profile-data';
+
+export async function getProfileBoards(token: string, signal?: AbortSignal): Promise<ListDto[]> {
+  const { items } = await apiV2<{ items: LegacyBoardListRecord[] }>('/boards', { signal }, token);
+  return items.map(mapLegacyBoardList);
+}
+
+export async function getProfileCollections(token: string, signal?: AbortSignal): Promise<ListDto[]> {
+  const { items } = await apiV2<{ items: CollectionListRecord[] }>('/collections', { signal }, token);
+  return items.map(mapCollectionList);
+}
 
 export type PublicUserProfile = {
   user_id: string;

@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { QueryClient, QueryObserver } from '@tanstack/react-query';
+import { profileSectionQueries } from '../src/api/profile-section-queries';
+import { mapLegacyBoardList } from '../src/models/list';
 
 import {
   EXPLORE_PAGE_SIZE,
@@ -67,4 +70,48 @@ test('Profile exposes Boards and Collections through one product List DTO', asyn
       { id: 'list', source: 'collection', repositoryCount: 2 },
     ],
   );
+});
+
+test('profile sections become ready independently and retain viewer-scoped normalized List caches', async t => {
+  const started = performance.now();
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: Infinity } } });
+  let failCollections!: (error: Error) => void;
+  const heldCollections = new Promise<[]>( (_resolve, reject) => { failCollections = reject; });
+  const loaders = {
+    boards: async () => [mapLegacyBoardList({ board_id: 'board', name: 'Ready now', repo_count: 2 })],
+    collections: () => heldCollections,
+  };
+  let legacyReady = false;
+  const legacy = settleProfileContent({
+    boards: Promise.resolve({ items: [{ board_id: 'board', name: 'Ready now', repo_count: 2 }] }),
+    collections: heldCollections.then(items => ({ items })),
+  }).then(() => { legacyReady = true; });
+  const options = profileSectionQueries('alice', loaders);
+  const boards = new QueryObserver(client, options.boards);
+  const collections = new QueryObserver(client, options.collections);
+  const unsubscribe = [boards.subscribe(() => {}), collections.subscribe(() => {})];
+  try {
+    await boards.refetch();
+    assert.equal(boards.getCurrentResult().data?.[0].name, 'Ready now');
+    assert.equal(collections.getCurrentResult().isPending, true, 'a slow collection cannot block boards');
+    assert.equal(legacyReady, false, 'the previous aggregate still waits for the delayed section');
+    t.diagnostic(`First section ready in ${(performance.now()-started).toFixed(1)} ms while the collection response was still held; local query-observer fixture.`);
+    assert.equal(boards.getCurrentResult().data?.[0].source, 'legacy-board');
+    assert.equal(boards.getCurrentResult().data?.[0].repositoryCount, 2);
+    const collectionResult = collections.refetch();
+    failCollections(new Error('collections unavailable'));
+    await collectionResult;
+    await legacy;
+    assert.equal(collections.getCurrentResult().isError, true);
+    assert.equal(boards.getCurrentResult().isSuccess, true);
+
+    const bob = profileSectionQueries('bob', loaders);
+    assert.equal(client.getQueryData(bob.boards.queryKey), undefined);
+    const signedOut = profileSectionQueries(undefined, loaders);
+    assert.equal(signedOut.boards.enabled, false);
+    assert.equal(signedOut.collections.enabled, false);
+    await client.invalidateQueries({ queryKey: ['profile-content', 'alice'], refetchType: 'none' });
+    assert.equal(client.getQueryState(options.boards.queryKey)?.isInvalidated, true);
+    assert.equal(client.getQueryState(options.collections.queryKey)?.isInvalidated, true);
+  } finally { unsubscribe.forEach(stop => stop()); client.clear(); }
 });
