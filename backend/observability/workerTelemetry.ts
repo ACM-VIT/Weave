@@ -146,7 +146,7 @@ export class WorkerTelemetryPublisher {
     // leave cleanup to TTL instead of queuing another command during shutdown.
     if (this.pending) {
       await deadline(this.pending);
-      if (this.pending) return;
+      if (this.pending !== undefined) return;
     }
     await deadline(Promise.resolve().then(() => this.redis.eval(RELEASE, KEYS.length, ...KEYS, this.owner)));
   }
