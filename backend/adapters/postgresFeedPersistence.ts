@@ -4,7 +4,11 @@ import type {
   StoredServe,
   StoredServeItem,
 } from '../contracts/feed.v2.js';
-import type { FeedPersistencePort, RepositoryIdentityProjection } from '../ports/feedPersistencePort.js';
+import { MAX_FEED_SERVE_LOOKUP_BATCH } from '../ports/feedPersistencePort.js';
+import type {
+  FeedPersistencePort, FeedReconciliationPersistencePort, FeedServeRequest, RepositoryIdentityProjection,
+} from '../ports/feedPersistencePort.js';
+import { isValidUuid } from '../utils/validators.js';
 import { sqlClient } from '../db/index.js';
 
 function projection(row: Record<string, unknown>): RepositoryProjection {
@@ -38,7 +42,7 @@ function projection(row: Record<string, unknown>): RepositoryProjection {
   };
 }
 
-export class PostgresFeedPersistence implements FeedPersistencePort {
+export class PostgresFeedPersistence implements FeedPersistencePort, FeedReconciliationPersistencePort {
   async recordGenerationAttempt(input: Parameters<NonNullable<FeedPersistencePort['recordGenerationAttempt']>>[0]): Promise<void> {
     await sqlClient`
       INSERT INTO telemetry.generation_attempts (
@@ -350,6 +354,32 @@ export class PostgresFeedPersistence implements FeedPersistencePort {
   }
 
   async hasServe(userId: string, feedRequestId: string): Promise<boolean> {
-    return (await this.getServeByRequest(userId, feedRequestId)) !== null;
+    if (!isValidUuid(userId) || !isValidUuid(feedRequestId)) return false;
+    const rows = await sqlClient`
+      SELECT EXISTS (
+        SELECT 1 FROM telemetry.feed_serves
+        WHERE user_id=${userId}::uuid AND feed_request_id=${feedRequestId}::uuid
+      ) AS present
+    `;
+    return rows[0].present === true;
+  }
+
+  async listServedRequests(requests: FeedServeRequest[]): Promise<FeedServeRequest[]> {
+    const unique = new Map<string, { user_id: string; feed_request_id: string }>();
+    for (const request of requests) {
+      if (!isValidUuid(request.userId) || !isValidUuid(request.requestId)) continue;
+      const user_id = request.userId.toLowerCase(), feed_request_id = request.requestId.toLowerCase();
+      unique.set(`${user_id}:${feed_request_id}`, { user_id, feed_request_id });
+    }
+    if (unique.size === 0) return [];
+    if (unique.size > MAX_FEED_SERVE_LOOKUP_BATCH) throw new Error('Feed serve lookup batch exceeds its limit.');
+    const rows = await sqlClient`
+      SELECT serve.user_id,serve.feed_request_id
+      FROM telemetry.feed_serves serve
+      JOIN jsonb_to_recordset(${JSON.stringify([...unique.values()])}::jsonb)
+        AS requested(user_id uuid,feed_request_id uuid)
+        ON serve.user_id=requested.user_id AND serve.feed_request_id=requested.feed_request_id
+    `;
+    return rows.map(row => ({ userId: String(row.user_id), requestId: String(row.feed_request_id) }));
   }
 }
