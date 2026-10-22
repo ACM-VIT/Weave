@@ -8,7 +8,7 @@ import {
   mergeExplorePages,
 } from '../src/api/explore-data';
 import { mergeProfileRepositoryPages, nextProfileRepositoryOffset, PROFILE_REPOSITORY_PAGE_SIZE, settleProfileContent } from '../src/api/profile-data';
-import { profileRepositoryQuery, profileSectionQueries } from '../src/api/profile-section-queries';
+import { profileContentInvalidationFilters, profileRepositoryQuery, profileSectionQueries } from '../src/api/profile-section-queries';
 import { mapLegacyBoardList } from '../src/models/list';
 import type { RepositoryDetail } from '../src/models/repository';
 import { mapRepositoryDetail } from '../src/utils/repository-mapper';
@@ -149,4 +149,37 @@ test('profile repository pages pass 100 items, preserve rows on page failure, re
     assert.equal(mergeProfileRepositoryPages([...pages, pages[0]]).length, 137, 'overlapping offset pages cannot duplicate rows');
     assert.equal(nextProfileRepositoryOffset(10_000, PROFILE_REPOSITORY_PAGE_SIZE), undefined, 'respect the current server paging boundary');
   } finally { unsubscribe(); client.clear(); }
+});
+
+
+test('save-popup invalidation refreshes both active List sections and preserves other viewers', async () => {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: Infinity } } });
+  let saved = false;
+  let boardReads = 0;
+  let collectionReads = 0;
+  const options = profileSectionQueries('alice', {
+    boards: async () => { boardReads++; return [mapLegacyBoardList({ board_id: 'board', name: 'Board', repo_count: saved ? 1 : 0 })]; },
+    collections: async () => { collectionReads++; return saved ? [mapLegacyBoardList({ board_id: 'new-list', name: 'Created while saving', repo_count: 1 })] : []; },
+  });
+  const boards = new QueryObserver(client, options.boards);
+  const collections = new QueryObserver(client, options.collections);
+  const stops = [boards.subscribe(() => {}), collections.subscribe(() => {})];
+  client.setQueryData(['profile-content', 'bob', 'boards'], ['unchanged']);
+  try {
+    await Promise.all([boards.refetch(), collections.refetch()]);
+    assert.equal(boards.getCurrentResult().data?.[0].repositoryCount, 0);
+    assert.deepEqual(collections.getCurrentResult().data, []);
+    saved = true;
+    // This is the exact filter passed by SavePopup after syncRepositoryLists.
+    await client.invalidateQueries(profileContentInvalidationFilters('alice'));
+    assert.equal(boardReads, 2);
+    assert.equal(collectionReads, 2);
+    assert.equal(boards.getCurrentResult().data?.[0].repositoryCount, 1);
+    assert.equal(collections.getCurrentResult().data?.[0].id, 'new-list');
+    assert.equal(client.getQueryState(['profile-content', 'bob', 'boards'])?.isInvalidated, false);
+    saved = false;
+    await client.invalidateQueries(profileContentInvalidationFilters('alice'));
+    assert.equal(boards.getCurrentResult().data?.[0].repositoryCount, 0, 'removing a save refreshes counts too');
+    assert.deepEqual(collections.getCurrentResult().data, []);
+  } finally { stops.forEach(stop => stop()); client.clear(); }
 });

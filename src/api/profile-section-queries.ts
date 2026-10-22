@@ -6,6 +6,11 @@ type SectionLoaders = {
   collections: (signal: AbortSignal) => Promise<ListDto[]>;
 };
 
+/** Saves affect both independently cached List sources for the current viewer. */
+export function profileContentInvalidationFilters(viewer: string | undefined) {
+  return { queryKey: ['profile-content', viewer] as const, exact: false };
+}
+
 /** Retain the mutation invalidation prefix and partition every section by viewer. */
 export function profileSectionQueries(viewer: string | undefined, loaders: SectionLoaders) {
   const key = (section: string) => ['profile-content', viewer, section] as const;
