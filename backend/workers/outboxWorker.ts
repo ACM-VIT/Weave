@@ -1,3 +1,5 @@
+import { startSpan, httpOutcome } from '../observability/tracing.js';
+import { observeStage, type StageOutcome } from '../observability/metrics.js';
 import type {
   MlFeedbackBatch,
   MlOnboardingJob,
@@ -37,7 +39,18 @@ export class OutboxWorker {
       // sequential request while their database lease is already ticking.
       const [row] = await this.outbox.claim(1);
       if (!row) break;
-      const result = await this.deliver(row);
+      // A retry gets a fresh root: no durable enqueue trace is stored today.
+      const span = startSpan(row.job_type, 'outbox_delivery', true);
+      observeStage(row.job_type, 'outbox_age', 'success', Date.now() - Date.parse(row.created_at));
+      let outcome: StageOutcome = 'failure';
+      const result = await span.run(async () => {
+        try {
+          const delivery = await this.deliver(row);
+          outcome = delivery.accepted ? 'success' : delivery.failure_kind === 'timeout' ? 'timeout'
+            : delivery.status_code >= 400 ? httpOutcome(delivery.status_code) : 'failure';
+          return delivery;
+        } finally { span.finish(outcome); }
+      });
       if (result.accepted) {
         if (row.job_type === 'repo_index') {
           if (!result.response_body) {

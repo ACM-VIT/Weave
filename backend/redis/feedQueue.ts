@@ -242,10 +242,15 @@ export class RedisFeedQueue implements FeedQueuePort {
   private async readReservations(): Promise<ReservationCandidate[]> {
     // Exactly two SCAN calls, at most 16 indexed scopes * 8 members plus
     // 128 legacy keys. No per-reservation or per-user keyspace scan.
-    const [scopes, legacy] = await Promise.all([
+    // Keep the shared scan/cursor owner until both actual SCAN calls settle.
+    const [scopeScan, legacyScan] = await Promise.allSettled([
       this.scanBatch(this.reservationCursor, 'feed:v2:reservation-index:*', 16),
       this.scanBatch(this.legacyCursor, 'feed:v2:*', 128),
     ]);
+    if (scopeScan.status === 'rejected') throw scopeScan.reason;
+    if (legacyScan.status === 'rejected') throw legacyScan.reason;
+    const scopes = scopeScan.value;
+    const legacy = legacyScan.value;
     const indexes = scopes.filter(key => {
       const match = /^feed:v2:reservation-index:([^:]+):(0|[1-9]\d*)$/.exec(key);
       return match !== null && isValidUuid(match[1]);

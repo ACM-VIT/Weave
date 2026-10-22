@@ -20,6 +20,8 @@ import { isValidUuid } from '../utils/validators.js';
 import { sendControllerError, sendError, sendSuccess } from '../utils/response.js';
 import { readProductPage, productPageResult, type ProductPage, type ProductPageScope } from '../utils/productKeyset.js';
 
+// Bind cursor timestamps as text before SQL casts: the driver's timestamptz
+// serializer passes strings through Date and would discard PostgreSQL microseconds.
 function productPaging(req: AuthRequest, res: Response, scope: ProductPageScope): ProductPage | null | undefined {
   try { return readProductPage(req.query, scope); }
   catch (error) { sendControllerError(res, error); return undefined; }
@@ -315,9 +317,9 @@ export async function getSocialProfile(req: AuthRequest, res: Response): Promise
             (candidate.owner_github_id IS NOT NULL AND profile.provider_subject=candidate.owner_github_id::text)
             OR (candidate.owner_github_id IS NULL AND lower(candidate.owner)=lower(profile.handle))
           )
-          AND (${page?.after?.timestamp ?? null}::timestamptz IS NULL
+          AND (${page?.after?.timestamp ?? null}::text::timestamptz IS NULL
             OR (candidate.updated_at,candidate.repo_id) <
-              (${page?.after?.timestamp ?? null}::timestamptz,${page?.after?.id ?? null}::uuid))
+              (${page?.after?.timestamp ?? null}::text::timestamptz,${page?.after?.id ?? null}::uuid))
           ORDER BY candidate.updated_at DESC,candidate.repo_id DESC
           LIMIT ${page ? page.limit + 1 : null}
         ) repo
@@ -683,9 +685,9 @@ async function listOwned(req: AuthRequest, res: Response, resource: Resource): P
           EXISTS(SELECT 1 FROM app.collection_repos cr WHERE cr.collection_id=c.collection_id AND cr.repo_id=${selection}::uuid) AS selected,
           (SELECT max(cr.added_at) FROM app.collection_repos cr WHERE cr.collection_id=c.collection_id) AS last_updated_at
         FROM app.board_collections c WHERE c.user_id=${id}::uuid
-          AND (${page?.after?.timestamp ?? null}::timestamptz IS NULL
-            OR (c.updated_at,c.created_at,c.collection_id) < (${page?.after?.timestamp ?? null}::timestamptz,
-              ${page?.after?.secondary ?? null}::timestamptz,${page?.after?.id ?? null}::uuid))
+          AND (${page?.after?.timestamp ?? null}::text::timestamptz IS NULL
+            OR (c.updated_at,c.created_at,c.collection_id) < (${page?.after?.timestamp ?? null}::text::timestamptz,
+              ${page?.after?.secondary ?? null}::text::timestamptz,${page?.after?.id ?? null}::uuid))
         ORDER BY c.updated_at DESC,c.created_at DESC,c.collection_id DESC
         LIMIT ${page ? page.limit + 1 : null}
       `
@@ -696,8 +698,8 @@ async function listOwned(req: AuthRequest, res: Response, resource: Resource): P
           (SELECT count(*)::int FROM app.board_repos br WHERE br.board_id=b.board_id) AS repo_count,
           EXISTS(SELECT 1 FROM app.board_repos br WHERE br.board_id=b.board_id AND br.repo_id=${selection}::uuid) AS selected
         FROM app.boards b WHERE b.user_id=${id}::uuid
-          AND (${page?.after?.timestamp ?? null}::timestamptz IS NULL
-            OR (b.created_at,b.board_id) < (${page?.after?.timestamp ?? null}::timestamptz,${page?.after?.id ?? null}::uuid))
+          AND (${page?.after?.timestamp ?? null}::text::timestamptz IS NULL
+            OR (b.created_at,b.board_id) < (${page?.after?.timestamp ?? null}::text::timestamptz,${page?.after?.id ?? null}::uuid))
         ORDER BY b.created_at DESC,b.board_id DESC
         LIMIT ${page ? page.limit + 1 : null}
       `;
@@ -830,8 +832,8 @@ export async function listCollectionRepos(req: AuthRequest, res: Response): Prom
       ON viewer_save.repo_id=r.repo_id AND viewer_save.user_id=${id}::uuid
     WHERE cr.collection_id=${collection}::uuid AND r.status='active'
       AND EXISTS(SELECT 1 FROM app.board_collections visible WHERE visible.collection_id=cr.collection_id AND visible.user_id=${id}::uuid)
-      AND (${page?.after?.timestamp ?? null}::timestamptz IS NULL
-        OR (cr.added_at,cr.repo_id) < (${page?.after?.timestamp ?? null}::timestamptz,${page?.after?.id ?? null}::uuid))
+      AND (${page?.after?.timestamp ?? null}::text::timestamptz IS NULL
+        OR (cr.added_at,cr.repo_id) < (${page?.after?.timestamp ?? null}::text::timestamptz,${page?.after?.id ?? null}::uuid))
     ORDER BY cr.added_at DESC,cr.repo_id DESC
     LIMIT ${page ? page.limit + 1 : null}
   `;
@@ -921,8 +923,8 @@ export async function listBoardRepos(req: AuthRequest, res: Response): Promise<v
       ON viewer_save.repo_id=r.repo_id AND viewer_save.user_id=${id}::uuid
     WHERE br.board_id=${board}::uuid AND r.status='active'
       AND EXISTS(SELECT 1 FROM app.boards visible WHERE visible.board_id=br.board_id AND (visible.user_id=${id}::uuid OR visible.visibility IN ('public','unlisted')))
-      AND (${page?.after?.timestamp ?? null}::timestamptz IS NULL
-        OR (br.added_at,br.repo_id) < (${page?.after?.timestamp ?? null}::timestamptz,${page?.after?.id ?? null}::uuid))
+      AND (${page?.after?.timestamp ?? null}::text::timestamptz IS NULL
+        OR (br.added_at,br.repo_id) < (${page?.after?.timestamp ?? null}::text::timestamptz,${page?.after?.id ?? null}::uuid))
     ORDER BY br.added_at DESC,br.repo_id DESC
     LIMIT ${page ? page.limit + 1 : null}
   `;
