@@ -18,6 +18,12 @@ import { isValidDateOfBirth } from '../utils/dateOfBirth.js';
 import { normalizeUsername } from '../utils/username.js';
 import { isValidUuid } from '../utils/validators.js';
 import { sendControllerError, sendError, sendSuccess } from '../utils/response.js';
+import { readProductPage, productPageResult, type ProductPage, type ProductPageScope } from '../utils/productKeyset.js';
+
+function productPaging(req: AuthRequest, res: Response, scope: ProductPageScope): ProductPage | null | undefined {
+  try { return readProductPage(req.query, scope); }
+  catch (error) { sendControllerError(res, error); return undefined; }
+}
 
 const MAX_LIMIT = 100;
 const MAX_OFFSET = 10_000;
@@ -252,6 +258,9 @@ export async function setFollow(req: AuthRequest, res: Response): Promise<void> 
 export async function getSocialProfile(req: AuthRequest, res: Response): Promise<void> {
   const viewer = userId(req, res); if (!viewer) return;
   const profileId = idParam(req, res, 'profileId'); if (!profileId) return;
+  const page = productPaging(req, res, { endpoint: 'profile-repositories', viewer, resource: profileId,
+    selection: null, sort: 'updated_at:desc,repo_id:desc' });
+  if (page === undefined) return;
   const rows = await sqlClient`
     SELECT profile.profile_id,profile.provider,profile.provider_subject,profile.handle,
       COALESCE(claimed_user.full_name,profile.display_name) AS display_name,
@@ -287,28 +296,28 @@ export async function getSocialProfile(req: AuthRequest, res: Response): Promise
           'url',repo.url,
           'description',content.description,
           'star_count',COALESCE(stats.star_count,0),
-          'fork_count',COALESCE(stats.fork_count,0)
-        ) ORDER BY repo.updated_at DESC)
-        FROM app.repos repo
+          'fork_count',COALESCE(stats.fork_count,0),
+          '__page_timestamp',to_char(repo.updated_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"'),
+          '__page_secondary',to_char(repo.updated_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"')
+        ) ORDER BY repo.updated_at DESC,repo.repo_id DESC)
+        FROM (
+          SELECT candidate.* FROM app.repos candidate
+          WHERE candidate.status='active' AND (
+            (candidate.owner_github_id IS NOT NULL AND profile.provider_subject=candidate.owner_github_id::text)
+            OR (candidate.owner_github_id IS NULL AND lower(candidate.owner)=lower(profile.handle))
+          )
+          AND (${page?.after?.timestamp ?? null}::timestamptz IS NULL
+            OR (candidate.updated_at,candidate.repo_id) <
+              (${page?.after?.timestamp ?? null}::timestamptz,${page?.after?.id ?? null}::uuid))
+          ORDER BY candidate.updated_at DESC,candidate.repo_id DESC
+          LIMIT ${page ? page.limit + 1 : null}
+        ) repo
         LEFT JOIN app.repo_content content ON content.repo_id=repo.repo_id
         LEFT JOIN LATERAL (
           SELECT snapshot.star_count,snapshot.fork_count
-          FROM app.repo_stat_snapshots snapshot
-          WHERE snapshot.repo_id=repo.repo_id
-          ORDER BY snapshot.observed_at DESC
-          LIMIT 1
+          FROM app.repo_stat_snapshots snapshot WHERE snapshot.repo_id=repo.repo_id
+          ORDER BY snapshot.observed_at DESC LIMIT 1
         ) stats ON true
-        WHERE repo.status='active'
-          AND (
-            (
-              repo.owner_github_id IS NOT NULL
-              AND profile.provider_subject=repo.owner_github_id::text
-            )
-            OR (
-              repo.owner_github_id IS NULL
-              AND lower(repo.owner)=lower(profile.handle)
-            )
-          )
       ),'[]'::json) AS repositories
     FROM app.social_profiles profile
     LEFT JOIN app.users claimed_user ON claimed_user.user_id=profile.claimed_by_user_id
@@ -316,7 +325,8 @@ export async function getSocialProfile(req: AuthRequest, res: Response): Promise
     WHERE profile.profile_id=${profileId}::uuid AND profile.status='active'
   `;
   if (!rows[0]) return sendError(res, 404, 'Profile not found.');
-  sendSuccess(res, 200, rows[0]);
+  const { items, ...metadata } = productPageResult(rows[0].repositories, page, 'repo_id');
+  sendSuccess(res, 200, { ...rows[0], repositories: items, ...metadata });
 }
 
 export async function setSocialProfileFollow(req: AuthRequest, res: Response): Promise<void> {
@@ -647,46 +657,42 @@ export async function deleteComment(req: AuthRequest, res: Response): Promise<vo
 type Resource = 'collection' | 'board';
 async function listOwned(req: AuthRequest, res: Response, resource: Resource): Promise<void> {
   const id = userId(req, res); if (!id) return;
-  const requestedRepo = typeof req.query.repository_id === 'string' ? req.query.repository_id : null;
-  if (requestedRepo && !isValidUuid(requestedRepo)) return sendError(res, 400, 'repository_id must be a UUID.');
+  const requestedRepo = req.query.repository_id === undefined ? null : req.query.repository_id;
+  if (requestedRepo !== null && (typeof requestedRepo !== 'string' || !isValidUuid(requestedRepo))) return sendError(res, 400, 'repository_id must be a UUID.');
+  const selection = requestedRepo as string | null;
+  const page = productPaging(req, res, { endpoint: resource === 'collection' ? 'collections' : 'boards',
+    viewer: id, resource: id, selection,
+    sort: resource === 'collection' ? 'updated_at:desc,created_at:desc,collection_id:desc' : 'created_at:desc,board_id:desc' });
+  if (page === undefined) return;
   const rows = resource === 'collection'
-    ? requestedRepo
-      ? await sqlClient`
-          SELECT c.*,
-            (SELECT count(*)::int FROM app.boards b WHERE b.collection_id=c.collection_id) AS board_count,
-            (SELECT count(*)::int FROM app.collection_repos cr WHERE cr.collection_id=c.collection_id) AS repo_count,
-            EXISTS(SELECT 1 FROM app.collection_repos cr WHERE cr.collection_id=c.collection_id AND cr.repo_id=${requestedRepo}::uuid) AS selected,
-            (SELECT max(cr.added_at) FROM app.collection_repos cr WHERE cr.collection_id=c.collection_id) AS last_updated_at
-          FROM app.board_collections c WHERE c.user_id=${id}::uuid
-          ORDER BY c.updated_at DESC,c.created_at DESC
-        `
-      : await sqlClient`
-          SELECT c.*,
-            (SELECT count(*)::int FROM app.boards b WHERE b.collection_id=c.collection_id) AS board_count,
-            (SELECT count(*)::int FROM app.collection_repos cr WHERE cr.collection_id=c.collection_id) AS repo_count,
-            false AS selected,
-            (SELECT max(cr.added_at) FROM app.collection_repos cr WHERE cr.collection_id=c.collection_id) AS last_updated_at
-          FROM app.board_collections c WHERE c.user_id=${id}::uuid
-          ORDER BY c.updated_at DESC,c.created_at DESC
-        `
-    : requestedRepo
-      ? await sqlClient`
-          SELECT b.*,count(br.repo_id)::int AS repo_count,
-            EXISTS(
-              SELECT 1 FROM app.board_repos selected
-              WHERE selected.board_id=b.board_id AND selected.repo_id=${requestedRepo}::uuid
-            ) AS selected
-          FROM app.boards b LEFT JOIN app.board_repos br USING(board_id)
-          WHERE b.user_id=${id}::uuid
-          GROUP BY b.board_id ORDER BY b.created_at DESC
-        `
-      : await sqlClient`
-          SELECT b.*,count(br.repo_id)::int AS repo_count,false AS selected
-          FROM app.boards b LEFT JOIN app.board_repos br USING(board_id)
-          WHERE b.user_id=${id}::uuid
-          GROUP BY b.board_id ORDER BY b.created_at DESC
-        `;
-  sendSuccess(res, 200, { items: rows });
+    ? await sqlClient`
+        SELECT c.*,
+          to_char(c.updated_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS __page_timestamp,
+          to_char(c.created_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS __page_secondary,
+          (SELECT count(*)::int FROM app.boards b WHERE b.collection_id=c.collection_id) AS board_count,
+          (SELECT count(*)::int FROM app.collection_repos cr WHERE cr.collection_id=c.collection_id) AS repo_count,
+          EXISTS(SELECT 1 FROM app.collection_repos cr WHERE cr.collection_id=c.collection_id AND cr.repo_id=${selection}::uuid) AS selected,
+          (SELECT max(cr.added_at) FROM app.collection_repos cr WHERE cr.collection_id=c.collection_id) AS last_updated_at
+        FROM app.board_collections c WHERE c.user_id=${id}::uuid
+          AND (${page?.after?.timestamp ?? null}::timestamptz IS NULL
+            OR (c.updated_at,c.created_at,c.collection_id) < (${page?.after?.timestamp ?? null}::timestamptz,
+              ${page?.after?.secondary ?? null}::timestamptz,${page?.after?.id ?? null}::uuid))
+        ORDER BY c.updated_at DESC,c.created_at DESC,c.collection_id DESC
+        LIMIT ${page ? page.limit + 1 : null}
+      `
+    : await sqlClient`
+        SELECT b.*,
+          to_char(b.created_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS __page_timestamp,
+          to_char(b.created_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS __page_secondary,
+          (SELECT count(*)::int FROM app.board_repos br WHERE br.board_id=b.board_id) AS repo_count,
+          EXISTS(SELECT 1 FROM app.board_repos br WHERE br.board_id=b.board_id AND br.repo_id=${selection}::uuid) AS selected
+        FROM app.boards b WHERE b.user_id=${id}::uuid
+          AND (${page?.after?.timestamp ?? null}::timestamptz IS NULL
+            OR (b.created_at,b.board_id) < (${page?.after?.timestamp ?? null}::timestamptz,${page?.after?.id ?? null}::uuid))
+        ORDER BY b.created_at DESC,b.board_id DESC
+        LIMIT ${page ? page.limit + 1 : null}
+      `;
+  sendSuccess(res, 200, productPageResult(rows, page, resource === 'collection' ? 'collection_id' : 'board_id'));
 }
 export const listCollections = (req: AuthRequest, res: Response) => listOwned(req, res, 'collection');
 export const listBoards = (req: AuthRequest, res: Response) => listOwned(req, res, 'board');
@@ -759,13 +765,19 @@ export async function deleteCollection(req: AuthRequest, res: Response): Promise
 
 export async function listCollectionRepos(req: AuthRequest, res: Response): Promise<void> {
   const id = userId(req, res); const collection = idParam(req, res, 'collectionId'); if (!id || !collection) return;
+  const page = productPaging(req, res, { endpoint: 'collection-repositories', viewer: id, resource: collection,
+    selection: null, sort: 'added_at:desc,repo_id:desc' });
+  if (page === undefined) return;
   const owned = await sqlClient`
     SELECT 1 FROM app.board_collections
     WHERE collection_id=${collection}::uuid AND user_id=${id}::uuid
   `;
   if (!owned.length) return sendError(res, 404, 'Collection not found.');
   const rows = await sqlClient`
-    SELECT cr.added_at,r.repo_id,r.github_id,r.owner_github_id,r.full_name,r.owner,r.name,r.url,
+    SELECT
+      to_char(cr.added_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS __page_timestamp,
+      to_char(cr.added_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS __page_secondary,
+      cr.added_at,r.repo_id,r.github_id,r.owner_github_id,r.full_name,r.owner,r.name,r.url,
       r.status,r.created_at,r.updated_at,c.description,c.primary_language,c.languages,
       ${sqlClient.unsafe(readmeSummaryProjection('r','c'))},to_jsonb(c)->>'readme_source_path' AS readme_source_path,to_jsonb(c)->>'readme_default_branch' AS readme_default_branch,to_jsonb(c)->>'readme_base_url' AS readme_base_url,
       c.content_version,c.updated_at AS content_updated_at,c.source_updated_at,
@@ -808,9 +820,13 @@ export async function listCollectionRepos(req: AuthRequest, res: Response): Prom
     LEFT JOIN app.saves viewer_save
       ON viewer_save.repo_id=r.repo_id AND viewer_save.user_id=${id}::uuid
     WHERE cr.collection_id=${collection}::uuid AND r.status='active'
-    ORDER BY cr.added_at DESC
+      AND EXISTS(SELECT 1 FROM app.board_collections visible WHERE visible.collection_id=cr.collection_id AND visible.user_id=${id}::uuid)
+      AND (${page?.after?.timestamp ?? null}::timestamptz IS NULL
+        OR (cr.added_at,cr.repo_id) < (${page?.after?.timestamp ?? null}::timestamptz,${page?.after?.id ?? null}::uuid))
+    ORDER BY cr.added_at DESC,cr.repo_id DESC
+    LIMIT ${page ? page.limit + 1 : null}
   `;
-  sendSuccess(res, 200, { items: rows });
+  sendSuccess(res, 200, productPageResult(rows, page, 'repo_id'));
 }
 
 export async function createBoard(req: AuthRequest, res: Response): Promise<void> {
@@ -843,10 +859,16 @@ export async function deleteBoard(req: AuthRequest, res: Response): Promise<void
 
 export async function listBoardRepos(req: AuthRequest, res: Response): Promise<void> {
   const id = userId(req, res); const board = idParam(req, res, 'boardId'); if (!id || !board) return;
+  const page = productPaging(req, res, { endpoint: 'board-repositories', viewer: id, resource: board,
+    selection: null, sort: 'added_at:desc,repo_id:desc' });
+  if (page === undefined) return;
   const allowed = await sqlClient`SELECT 1 FROM app.boards WHERE board_id=${board}::uuid AND (user_id=${id}::uuid OR visibility IN ('public','unlisted'))`;
   if (!allowed.length) return sendError(res, 404, 'Board not found.');
   const rows = await sqlClient`
-    SELECT br.added_at,r.repo_id,r.github_id,r.owner_github_id,r.full_name,r.owner,r.name,r.url,
+    SELECT
+      to_char(br.added_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS __page_timestamp,
+      to_char(br.added_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS __page_secondary,
+      br.added_at,r.repo_id,r.github_id,r.owner_github_id,r.full_name,r.owner,r.name,r.url,
       r.status,r.created_at,r.updated_at,c.description,c.primary_language,c.languages,
       ${sqlClient.unsafe(readmeSummaryProjection('r','c'))},to_jsonb(c)->>'readme_source_path' AS readme_source_path,to_jsonb(c)->>'readme_default_branch' AS readme_default_branch,to_jsonb(c)->>'readme_base_url' AS readme_base_url,
       c.content_version,c.updated_at AS content_updated_at,c.source_updated_at,
@@ -889,9 +911,13 @@ export async function listBoardRepos(req: AuthRequest, res: Response): Promise<v
     LEFT JOIN app.saves viewer_save
       ON viewer_save.repo_id=r.repo_id AND viewer_save.user_id=${id}::uuid
     WHERE br.board_id=${board}::uuid AND r.status='active'
-    ORDER BY br.added_at DESC
+      AND EXISTS(SELECT 1 FROM app.boards visible WHERE visible.board_id=br.board_id AND (visible.user_id=${id}::uuid OR visible.visibility IN ('public','unlisted')))
+      AND (${page?.after?.timestamp ?? null}::timestamptz IS NULL
+        OR (br.added_at,br.repo_id) < (${page?.after?.timestamp ?? null}::timestamptz,${page?.after?.id ?? null}::uuid))
+    ORDER BY br.added_at DESC,br.repo_id DESC
+    LIMIT ${page ? page.limit + 1 : null}
   `;
-  sendSuccess(res, 200, { items: rows });
+  sendSuccess(res, 200, productPageResult(rows, page, 'repo_id'));
 }
 
 export async function addBoardRepo(req: AuthRequest, res: Response): Promise<void> {

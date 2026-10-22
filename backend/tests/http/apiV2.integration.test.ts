@@ -722,6 +722,60 @@ integration('registered v2 HTTP paths complete controlled integration flows', as
     assert.equal(multiListData.data.saved, true);
     assert.equal(multiListData.data.save_state_changed, false);
 
+    // Keyset pages must not truncate legacy complete-selection reads or lose timestamp ties.
+    type CollectionPage = {
+      items: Array<{ collection_id: string; selected: boolean; repo_count: number }>;
+      next_cursor: string | null; has_more: boolean;
+    };
+    const collectionPageUrl = `${base}/api/v2/collections?pagination=keyset&limit=1&repository_id=${repoId}`;
+    let firstCollectionCursor = '';
+    for (const distinctMicroseconds of [false, true]) {
+      await sqlClient`
+        UPDATE app.board_collections SET created_at='2026-01-01T00:00:00.123456Z'::timestamptz,
+          updated_at=CASE WHEN collection_id=${collectionId}::uuid AND ${distinctMicroseconds}
+            THEN '2026-01-01T00:00:00.123457Z'::timestamptz
+            ELSE '2026-01-01T00:00:00.123456Z'::timestamptz END
+        WHERE collection_id IN (${collectionId}::uuid,${secondCollectionId}::uuid)
+      `;
+      const first = await fetch(collectionPageUrl, { headers: authHeaders });
+      assert.equal(first.status, 200);
+      const firstPage = ((await first.json()) as { data: CollectionPage }).data;
+      assert.equal(firstPage.items.length, 1);
+      assert.equal(firstPage.has_more, true);
+      assert.ok(firstPage.next_cursor);
+      firstCollectionCursor = firstPage.next_cursor;
+      const second = await fetch(`${collectionPageUrl}&cursor=${encodeURIComponent(firstCollectionCursor)}`, { headers: authHeaders });
+      assert.equal(second.status, 200);
+      const secondPage = ((await second.json()) as { data: CollectionPage }).data;
+      assert.equal(secondPage.has_more, false);
+      assert.equal(secondPage.next_cursor, null);
+      assert.deepEqual([...firstPage.items, ...secondPage.items].map(item => item.collection_id).sort(),
+        [collectionId, secondCollectionId].sort());
+      for (const item of [...firstPage.items, ...secondPage.items]) {
+        assert.equal(item.selected, true);
+        assert.equal(item.repo_count, 1);
+        assert.equal('__page_timestamp' in item, false);
+      }
+    }
+    const completeLists = await fetch(`${base}/api/v2/collections?repository_id=${repoId}`, { headers: authHeaders });
+    const completeData = ((await completeLists.json()) as { data: CollectionPage }).data;
+    assert.equal(completeData.items.length, 2);
+    assert.equal('next_cursor' in completeData, false);
+    const encodedCursor = encodeURIComponent(firstCollectionCursor);
+    for (const invalidUrl of [
+      `${collectionPageUrl}&cursor=${encodeURIComponent(`x${firstCollectionCursor.slice(1)}`)}`,
+      `${base}/api/v2/collections?pagination=keyset&cursor=${encodedCursor}`,
+      `${base}/api/v2/boards?pagination=keyset&repository_id=${repoId}&cursor=${encodedCursor}`,
+      `${collectionPageUrl}&offset=0`, `${collectionPageUrl}&cursor=${'x'.repeat(2049)}`,
+      `${base}/api/v2/collections?cursor=${encodedCursor}`,
+    ]) {
+      assert.equal((await fetch(invalidUrl, { headers: authHeaders })).status, 400);
+    }
+    const otherViewerHeaders = { authorization: `Bearer ${jwt.sign({ userId: ownerUserId, email: 'owner@example.com' }, process.env.JWT_SECRET!)}` };
+    assert.equal((await fetch(`${collectionPageUrl}&cursor=${encodedCursor}`, { headers: otherViewerHeaders })).status, 400);
+    assert.equal((await fetch(`${base}/api/v2/collections/${collectionId}/repositories?pagination=keyset`,
+      { headers: otherViewerHeaders })).status, 404);
+
     const selectedDetail = await fetch(`${base}/api/v2/repositories/${repoId}`, { headers: authHeaders });
     assert.equal(selectedDetail.status, 200);
     const selectedDetailData = ((await selectedDetail.json()) as {
