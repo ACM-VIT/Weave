@@ -17,7 +17,6 @@ function controllerFunction(name: string): string {
 
 const repositoryListHandlers = [
   'listRepositories',
-  'listTrending',
   'listSaved',
   'listLikesGiven',
   'listCollectionRepos',
@@ -56,4 +55,15 @@ test('legacy endpoint aliases remain alongside the canonical repository fields',
   assert.match(controllerFunction('listSaved'), /s\.created_at/);
   assert.match(controllerFunction('listCollectionRepos'), /cr\.added_at/);
   assert.match(controllerFunction('listBoardRepos'), /br\.added_at/);
+});
+
+test('Trending retains public repository content while viewer state stays outside the shared cache', () => {
+  const source=readFileSync(new URL('../../controllers/trendingController.ts', import.meta.url),'utf8');
+  assert.match(controllerSource,/export \{ listTrending \} from '.\/trendingController.js'/);
+  const publicSource=source.slice(source.indexOf('export function createTrendingSnapshotSource'),source.indexOf('export const trendingSnapshotSource'));
+  for(const field of ['readme_md','summary_prompt_version','summary_source','languages','topics']) assert.match(publicSource,new RegExp(field));
+  assert.match(publicSource,/x.content_version=c.content_version/);
+  assert.doesNotMatch(publicSource,/viewer_reaction|viewer_saved|selected_list_ids/);
+  const privateSource=source.slice(source.indexOf('export const loadTrendingViewerState'),source.indexOf('export function createTrendingHandler'));
+  for(const field of ['viewer_reaction','viewer_saved','selected_list_ids',"'collection:'","'legacy-board:'"]) assert.ok(privateSource.includes(field));
 });

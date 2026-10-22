@@ -547,75 +547,7 @@ export async function getRepositoryShare(req: AuthRequest, res: Response): Promi
   } catch (error) { sendControllerError(res, error); }
 }
 
-export async function listTrending(req: AuthRequest, res: Response): Promise<void> {
-  const viewer = userId(req, res); if (!viewer) return;
-  if (req.query.period !== undefined
-    && (typeof req.query.period !== 'string' || !['daily','weekly','monthly'].includes(req.query.period))) {
-    return sendError(res, 400, 'Invalid trending period.');
-  }
-  const available = await sqlClient`
-    SELECT DISTINCT ON (s.period) s.period,s.snapshot_id,s.computed_at AS captured_at
-    FROM app.trending_snapshots s
-    WHERE s.active AND s.complete AND s.period IN ('daily','weekly','monthly')
-      AND EXISTS (
-        SELECT 1 FROM app.trending_snapshot_items i JOIN app.repos r USING(repo_id)
-        JOIN app.repo_content c USING(repo_id) JOIN app.repo_engagement e USING(repo_id)
-        WHERE i.snapshot_id=s.snapshot_id AND r.status='active'
-      )
-    ORDER BY s.period,s.computed_at DESC,s.snapshot_id
-  `;
-  const period = typeof req.query.period === 'string' && available.some(row => row.period === req.query.period)
-    ? req.query.period
-    : String(available.find(row => row.period === 'daily')?.period ?? available[0]?.period ?? 'daily');
-  const snapshot = available.find(row => row.period === period);
-  const rows = await sqlClient`SELECT i.position,i.score,i.features,r.repo_id,r.github_id,r.owner_github_id,
-    r.full_name,r.owner,r.name,r.url,r.status,r.created_at,r.updated_at,
-    c.description,c.primary_language,c.languages,${sqlClient.unsafe(readmeSummaryProjection('r','c'))},c.readme AS readme_md,to_jsonb(c)->>'readme_source_path' AS readme_source_path,
-    to_jsonb(c)->>'readme_default_branch' AS readme_default_branch,to_jsonb(c)->>'readme_base_url' AS readme_base_url,c.content_version,
-    c.updated_at AS content_updated_at,c.source_updated_at,
-    e.likes_count,e.dislikes_count,e.saves_count,e.comments_count,e.views_count,
-    COALESCE(stat.star_count,0) AS star_count,COALESCE(stat.fork_count,0) AS fork_count,
-    COALESCE(stat.open_issues_count,0) AS open_issues_count,stat.observed_at AS stats_observed_at,
-    summary.summary_id,summary.summary,summary.highlights AS summary_highlights,
-    summary.prompt_version AS summary_prompt_version,summary.model_version AS summary_model_version,
-    summary.format_version AS summary_format_version,summary.source AS summary_source,
-    COALESCE((SELECT json_agg(topic.slug ORDER BY topic.slug)
-      FROM app.repo_topics repository_topic JOIN app.topics topic USING(topic_id)
-      WHERE repository_topic.repo_id=r.repo_id),'[]'::json) AS topics,
-    viewer_reaction.reaction AS viewer_reaction,
-    (viewer_save.repo_id IS NOT NULL) AS viewer_saved,
-    COALESCE((SELECT json_agg(selection.list_id ORDER BY selection.list_id) FROM (
-      SELECT 'collection:' || collection.collection_id::text AS list_id
-      FROM app.collection_repos membership JOIN app.board_collections collection USING(collection_id)
-      WHERE membership.repo_id=r.repo_id AND collection.user_id=${viewer}::uuid
-      UNION ALL
-      SELECT 'legacy-board:' || board.board_id::text AS list_id
-      FROM app.board_repos membership JOIN app.boards board USING(board_id)
-      WHERE membership.repo_id=r.repo_id AND board.user_id=${viewer}::uuid
-    ) selection),'[]'::json) AS selected_list_ids
-    FROM app.trending_snapshots s JOIN app.trending_snapshot_items i USING(snapshot_id)
-    JOIN app.repos r USING(repo_id) JOIN app.repo_content c USING(repo_id) JOIN app.repo_engagement e USING(repo_id)
-    LEFT JOIN LATERAL (SELECT star_count,fork_count,open_issues_count,observed_at FROM app.repo_stat_snapshots x
-      WHERE x.repo_id=r.repo_id ORDER BY observed_at DESC LIMIT 1) stat ON true
-    LEFT JOIN LATERAL (SELECT x.summary_id,x.summary,to_jsonb(x)->'highlights' AS highlights,
-      to_jsonb(x)->>'prompt_version' AS prompt_version,x.model_version,
-      to_jsonb(x)->>'format_version' AS format_version,to_jsonb(x)->>'source' AS source
-      FROM app.repo_card_summaries x WHERE x.repo_id=r.repo_id AND active
-        AND x.content_version=c.content_version
-        AND to_jsonb(x)->>'source' IN ('generated','description_fallback') ORDER BY created_at DESC LIMIT 1) summary ON true
-    LEFT JOIN app.reactions viewer_reaction
-      ON viewer_reaction.repo_id=r.repo_id AND viewer_reaction.user_id=${viewer}::uuid
-    LEFT JOIN app.saves viewer_save
-      ON viewer_save.repo_id=r.repo_id AND viewer_save.user_id=${viewer}::uuid
-    WHERE s.snapshot_id=${snapshot?.snapshot_id ?? null}::uuid AND r.status='active'
-    ORDER BY i.position LIMIT 100`;
-  sendSuccess(res, 200, {
-    period,
-    available_periods: available.map(row => row.period),
-    captured_at: snapshot ? new Date(snapshot.captured_at).toISOString() : null,
-    items: rows,
-  });
-}
+export { listTrending } from './trendingController.js';
 
 export async function listSaved(req: AuthRequest, res: Response): Promise<void> {
   const id = userId(req, res); const page = paging(req); if (!id) return;

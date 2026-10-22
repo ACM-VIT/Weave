@@ -342,6 +342,18 @@ integration('registered v2 HTTP paths complete controlled integration flows', as
     assert.equal(trendingItem.viewer_reaction, 'like');
     assert.equal(trendingItem.viewer_saved, false);
     assert.deepEqual(trendingItem.selected_list_ids, []);
+    const trendingEtag=trendingRepositories.headers.get('etag')!;
+    const unchangedTrending=await fetch(`${base}/api/v2/repositories/trending?period=daily`,{
+      headers:{...authHeaders,'if-none-match':trendingEtag},
+    });
+    assert.equal(unchangedTrending.status,304);
+    const anotherTrendingViewer=await fetch(`${base}/api/v2/repositories/trending?period=daily`,{
+      headers:{authorization:`Bearer ${jwt.sign({userId:ownerUserId},process.env.JWT_SECRET!)}`,'if-none-match':trendingEtag},
+    });
+    assert.equal(anotherTrendingViewer.status,200,'Viewer state must participate in conditional response validation');
+    const anotherTrendingItem=((await anotherTrendingViewer.json()) as {data:{items:ViewerAwareRepositoryListItem[]}}).data.items[0];
+    assert.equal(anotherTrendingItem.viewer_reaction,null,'The shared public cache must never leak another viewer reaction');
+    assert.equal(anotherTrendingItem.readme_md,trendingItem.readme_md);
 
     const feedVersionBeforeFollow = BigInt((await sqlClient`
       SELECT feed_version FROM app.user_feed_state WHERE user_id=${userId}::uuid
