@@ -6,6 +6,7 @@ import { mapRepositoryDetail } from '@/utils/repository-mapper';
 export { repositoryDetailQueryKey } from '@/models/repository';
 
 export type RepositoryApiPayload = {
+  recommendation_source?: unknown;
   repo_id?: unknown;
   id?: unknown;
   github_id?: unknown;
