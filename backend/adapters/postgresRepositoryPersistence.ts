@@ -11,28 +11,16 @@ import type { RepositoryPersistencePort } from '../ports/repositoryPersistencePo
 import {
   buildMlRepositoryFeaturePatch,
   buildMlRepositorySource,
+  normalizeCanonicalRepositoryReadme,
+  repositoryContentHash,
 } from '../services/mlRepositoryPayloadService.js';
 import { reconcileGithubProfileForIngestion } from '../services/socialProfileService.js';
-
-function contentHash(repo: RepositoryUpsert): string {
-  const hashable = { ...buildMlRepositorySource(repo, 'pending') } as Record<string, unknown>;
-  for (const key of [
-    'content_hash', 'star_count', 'fork_count', 'open_issues_count', 'pushed_days_ago',
-    'delta_3d', 'delta_7d', 'delta_30d', 'mentionable_users_count', 'updated_at',
-    'pushed_at', 'discovery_category', 'discovery_band',
-  ]) delete hashable[key];
-  if (Array.isArray(hashable.languages)) hashable.languages = [...hashable.languages].sort();
-  if (Array.isArray(hashable.topics)) {
-    hashable.topics = hashable.topics.map((topic) => String(topic).toLowerCase()).sort();
-  }
-  return crypto.createHash('sha256').update(JSON.stringify(hashable)).digest('hex');
-}
 
 export class PostgresRepositoryPersistence implements RepositoryPersistencePort {
   async bulkUpsert(input: RepositoryUpsert[]): Promise<RepositoryUpsertResult[]> {
     return sqlClient.begin(async (tx) => {
       const results: RepositoryUpsertResult[] = [];
-      const repositories = [...input].sort(
+      const repositories = input.map(normalizeCanonicalRepositoryReadme).sort(
         (a, b) => BigInt(a.github_id) < BigInt(b.github_id) ? -1 : 1,
       );
       const ownerIds = [...new Set(repositories.map((repo) => repo.owner_github_id))]
@@ -51,7 +39,7 @@ export class PostgresRepositoryPersistence implements RepositoryPersistencePort 
         // Inputs are sorted above so multi-repository batches acquire locks in a
         // consistent order.
         await tx`SELECT pg_advisory_xact_lock(${repo.github_id}::bigint)`;
-        const hash = contentHash(repo);
+        const hash = repositoryContentHash(repo);
         const previous = await tx`
           SELECT repo.repo_id,content.content_hash,content.content_version,
                  stats.star_count,stats.fork_count,stats.open_issues_count
@@ -80,14 +68,26 @@ export class PostgresRepositoryPersistence implements RepositoryPersistencePort 
         const version = changed ? Number(previous[0]?.content_version ?? 0) + 1 : Number(previous[0].content_version);
         await tx`
           INSERT INTO app.repo_content (
-            repo_id,description,readme,primary_language,languages,content_hash,content_version,source_updated_at
+            repo_id,description,readme,readme_source_path,readme_default_branch,readme_base_url,
+            primary_language,languages,content_hash,content_version,source_updated_at
           ) VALUES (
-            ${repoId}::uuid,${repo.description ?? null},${repo.readme ?? null},${repo.primary_language ?? null},
+            ${repoId}::uuid,${repo.description ?? null},${repo.readme ?? null},
+            ${repo.readme_source_path ?? null},${repo.readme_default_branch ?? null},${repo.readme_base_url ?? null},
+            ${repo.primary_language ?? null},
             ${JSON.stringify(repo.languages ?? [])}::jsonb,${hash},${version},${repo.pushed_at ?? null}::timestamptz
           ) ON CONFLICT (repo_id) DO UPDATE SET description=EXCLUDED.description,readme=EXCLUDED.readme,
+            readme_source_path=EXCLUDED.readme_source_path,
+            readme_default_branch=EXCLUDED.readme_default_branch,
+            readme_base_url=EXCLUDED.readme_base_url,
             primary_language=EXCLUDED.primary_language,languages=EXCLUDED.languages,content_hash=EXCLUDED.content_hash,
             content_version=EXCLUDED.content_version,source_updated_at=EXCLUDED.source_updated_at,updated_at=now()
         `;
+        if (changed) {
+          await tx`
+            UPDATE app.repo_card_summaries SET active=false
+            WHERE repo_id=${repoId}::uuid AND active
+          `;
+        }
         await tx`INSERT INTO app.repo_engagement (repo_id) VALUES (${repoId}::uuid) ON CONFLICT DO NOTHING`;
         await tx`
           INSERT INTO app.repo_stat_snapshots (repo_id,star_count,fork_count,open_issues_count,observed_at)

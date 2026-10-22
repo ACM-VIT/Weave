@@ -5,6 +5,7 @@ import type { RepositoryUpsert } from '../../contracts/ingestion.v2.js';
 import {
   buildMlRepositoryFeaturePatch,
   buildMlRepositorySource,
+  repositoryContentHash,
 } from '../../services/mlRepositoryPayloadService.js';
 
 const ingestionRecord: RepositoryUpsert = {
@@ -16,7 +17,10 @@ const ingestionRecord: RepositoryUpsert = {
   name: 'repository',
   url: 'https://github.com/weave/repository',
   description: null,
-  readme: null,
+  readme: '# Weave\n\n![Preview](./assets/preview.png)\n',
+  readme_source_path: 'docs/README.md',
+  readme_default_branch: 'main',
+  readme_base_url: 'https://raw.githubusercontent.com/weave/repository/refs/heads/main/docs/',
   readme_length: 250,
   primary_language: null,
   languages: ['TypeScript'],
@@ -61,7 +65,10 @@ test('repository-index projection emits only the strict ML v2 source keys', () =
     'pushed_at',
     'pushed_days_ago',
     'readme',
+    'readme_base_url',
+    'readme_default_branch',
     'readme_length',
+    'readme_source_path',
     'readme_to_codebase_ratio',
     'recent_commits',
     'star_count',
@@ -77,6 +84,10 @@ test('repository-index projection emits only the strict ML v2 source keys', () =
   assert.deepEqual(projected.recent_commits, ['2026-07-20T08:00:00.000Z']);
   assert.equal(projected.discovery_category, 'trending');
   assert.equal(projected.discovery_band, 'daily');
+  assert.equal(projected.readme, ingestionRecord.readme);
+  assert.equal(projected.readme_source_path, 'docs/README.md');
+  assert.equal(projected.readme_default_branch, 'main');
+  assert.equal(projected.readme_base_url, 'https://raw.githubusercontent.com/weave/repository/refs/heads/main/docs/');
   assert.equal(Object.hasOwn(projected, 'github_node_id'), false);
   assert.equal(Object.hasOwn(projected, 'owner_github_id'), false);
   assert.equal(Object.hasOwn(projected, 'owner'), false);
@@ -109,4 +120,47 @@ test('repository-refresh projection uses observed ML fields and never fabricates
   });
   assert.equal(Object.hasOwn(projected, 'trending_rank'), false);
   assert.equal(Object.hasOwn(projected, 'trending_score'), false);
+});
+
+test('empty and null README publishers share one canonical content identity', () => {
+  const absent = {
+    ...ingestionRecord,
+    readme: null,
+    readme_source_path: null,
+    readme_default_branch: null,
+    readme_base_url: null,
+    readme_length: 0,
+    readme_to_codebase_ratio: 0,
+    recent_commits: [],
+  };
+  const emptyPublisher = {
+    ...ingestionRecord,
+    readme: '',
+    readme_source_path: 'README.md',
+    readme_default_branch: 'main',
+    readme_base_url: 'https://raw.githubusercontent.com/weave/repository/refs/heads/main/',
+    readme_length: 0,
+    readme_to_codebase_ratio: 0,
+    recent_commits: [],
+  };
+  const projected = buildMlRepositorySource(emptyPublisher, 'content-sha256');
+  assert.equal(projected.readme, null);
+  assert.equal(projected.readme_source_path, null);
+  assert.equal(projected.readme_default_branch, null);
+  assert.equal(projected.readme_base_url, null);
+  assert.equal(projected.readme_length, 0);
+  assert.equal(repositoryContentHash(emptyPublisher), repositoryContentHash(absent));
+});
+
+test('index-only activity fields trigger delivery even when repository prose is unchanged', () => {
+  for (const update of [
+    { recent_commits: ['2026-10-20T00:00:00Z'] },
+    { readme_to_codebase_ratio: 0.5 },
+  ]) {
+    const updated = { ...ingestionRecord, ...update };
+    assert.notEqual(repositoryContentHash(updated), repositoryContentHash(ingestionRecord));
+    const indexed = buildMlRepositorySource(updated, repositoryContentHash(updated));
+    assert.equal(indexed.readme_to_codebase_ratio, updated.readme_to_codebase_ratio);
+    assert.deepEqual(indexed.recent_commits, updated.recent_commits?.map((value) => new Date(value).toISOString()));
+  }
 });

@@ -11,13 +11,15 @@ StartLimitBurst=5
 Type=simple
 ExecStartPre=-/usr/bin/docker rm -f gh-social-outbox
 ExecStart=/usr/bin/docker run --rm --name gh-social-outbox --network host --env-file /etc/gh-social/backend.env gh-social-backend:current node dist/worker.js --role=outbox
-ExecStop=/usr/bin/docker stop --time 30 gh-social-outbox
+ExecStop=/usr/bin/docker stop --time 300 gh-social-outbox
 Restart=on-failure
 RestartSec=5
 KillSignal=SIGTERM
 # Rows are claimed immediately before delivery; one call is bounded by
-# ML_DELIVERY_TIMEOUT_MS and shutdown waits for the active run to finish.
-TimeoutStopSec=300
+# ML_REPOSITORY_INDEX_TIMEOUT_MS (240 seconds by default). Allow another
+# 60 seconds for completion and connection cleanup before Docker kills it.
+# Increase both stop limits when configuring a longer repository-index timeout.
+TimeoutStopSec=330
 UMask=0077
 
 [Install]

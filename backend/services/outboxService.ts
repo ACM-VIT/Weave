@@ -1,6 +1,9 @@
 import crypto from 'node:crypto';
+import { validateRepositoryCardSummary } from './mlService.js';
+import { isAcceptedStoredSummary } from './storedRepositorySummary.js';
 
 import { sqlClient } from '../db/index.js';
+import type { MlRepositoryIndexResponse } from '../contracts/ml.v2.js';
 import { isObsoleteIdentityOnboardingJob } from './mlOnboardingService.js';
 
 export interface OutboxRow {
@@ -14,10 +17,47 @@ export interface OutboxRow {
   claim_token: string;
 }
 
+export class RepositoryIndexCompletionConflictError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'RepositoryIndexCompletionConflictError';
+  }
+}
+
 export function retryDelayMs(attempt: number, random = Math.random): number {
   const cap = 15 * 60_000;
   const maximum = Math.min(cap, 1_000 * 2 ** Math.max(0, attempt));
   return Math.floor(random() * maximum);
+}
+
+type LeaseEnvironment = Partial<Record<
+  'ML_REPOSITORY_INDEX_TIMEOUT_MS' | 'OUTBOX_LEASE_MS',
+  string | undefined
+>>;
+
+function positiveMilliseconds(name: string, value: string | undefined, fallback: number): number {
+  if (value === undefined || value.trim() === '') return fallback;
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    throw new Error(`${name} must be a positive integer number of milliseconds.`);
+  }
+  return parsed;
+}
+
+export function resolveOutboxLeaseMs(
+  environment: LeaseEnvironment = process.env as LeaseEnvironment,
+): number {
+  const repositoryTimeout = positiveMilliseconds(
+    'ML_REPOSITORY_INDEX_TIMEOUT_MS',
+    environment.ML_REPOSITORY_INDEX_TIMEOUT_MS,
+    240_000,
+  );
+  const minimumLease = repositoryTimeout + 60_000;
+  const lease = positiveMilliseconds('OUTBOX_LEASE_MS', environment.OUTBOX_LEASE_MS, minimumLease);
+  if (lease < minimumLease) {
+    throw new Error('OUTBOX_LEASE_MS must be at least 60 seconds longer than ML_REPOSITORY_INDEX_TIMEOUT_MS.');
+  }
+  return lease;
 }
 
 export class OutboxService {
@@ -46,7 +86,7 @@ export class OutboxService {
     };
   }
 
-  async claim(limit = 50, leaseMs = 60_000): Promise<OutboxRow[]> {
+  async claim(limit = 50, leaseMs = resolveOutboxLeaseMs()): Promise<OutboxRow[]> {
     const token = crypto.randomUUID();
     const rows = await sqlClient.begin(async (tx) => tx`
       WITH ready AS (
@@ -99,6 +139,162 @@ export class OutboxService {
       UPDATE telemetry.ml_outbox SET status='delivered',delivered_at=now(),claim_token=NULL,claimed_at=NULL,last_error=NULL
       WHERE outbox_id=${row.outbox_id}::uuid AND claim_token=${row.claim_token}::uuid
     `;
+  }
+
+  /**
+   * Commits the versioned summary and repository-index response before the
+   * claimed outbox row becomes delivered. The claim token fences expired
+   * workers; locking repo_content prevents an older content response from
+   * replacing the summary for a newer canonical README.
+   */
+  async completeRepositoryIndex(
+    row: OutboxRow,
+    response: MlRepositoryIndexResponse,
+  ): Promise<boolean> {
+    return sqlClient.begin(async (tx) => {
+      const claimed = await tx`
+        SELECT aggregate_id,payload
+        FROM telemetry.ml_outbox
+        WHERE outbox_id=${row.outbox_id}::uuid
+          AND claim_token=${row.claim_token}::uuid
+          AND status='claimed'
+        FOR UPDATE
+      `;
+      if (!claimed[0]) return false;
+
+      const payload = claimed[0].payload as Record<string, unknown>;
+      const repositoryPayload = payload.repository;
+      const claimedContentHash = repositoryPayload && typeof repositoryPayload === 'object'
+        && !Array.isArray(repositoryPayload)
+        ? (repositoryPayload as Record<string, unknown>).content_hash
+        : null;
+      if (String(claimed[0].aggregate_id) !== response.repo_id
+        || payload.job_id !== response.job_id
+        || payload.repo_id !== response.repo_id
+        || payload.content_version !== response.content_version
+        || typeof claimedContentHash !== 'string' || !claimedContentHash.trim()) {
+        throw new RepositoryIndexCompletionConflictError(
+          'Repository-index response does not match the claimed outbox payload.',
+        );
+      }
+
+      // Ingestion locks the repository before its content. Use the same order
+      // so the summary insert's repository FK cannot deadlock with ingestion.
+      const repositories = await tx`
+        SELECT repo_id FROM app.repos WHERE repo_id=${response.repo_id}::uuid FOR UPDATE
+      `;
+      if (!repositories[0]) {
+        throw new RepositoryIndexCompletionConflictError('Repository no longer exists.');
+      }
+      const contentRows = await tx`
+        SELECT content_version,content_hash
+        FROM app.repo_content
+        WHERE repo_id=${response.repo_id}::uuid
+        FOR UPDATE
+      `;
+      if (!contentRows[0]) {
+        throw new RepositoryIndexCompletionConflictError('Repository content no longer exists.');
+      }
+      const currentContentVersion = Number(contentRows[0].content_version);
+      if (currentContentVersion < response.content_version) {
+        throw new RepositoryIndexCompletionConflictError(
+          'Repository-index response is newer than canonical repository content.',
+        );
+      }
+      if (currentContentVersion === response.content_version
+        && String(contentRows[0].content_hash) !== claimedContentHash) {
+        throw new RepositoryIndexCompletionConflictError(
+          'Repository-index payload hash does not match canonical repository content.',
+        );
+      }
+
+      const artifact = response.card_summary;
+      const source = repositoryPayload as { readme?: string | null; description?: string | null };
+      validateRepositoryCardSummary(artifact, source);
+      const summaries = await tx`
+        SELECT * FROM app.repo_card_summaries
+        WHERE repo_id=${response.repo_id}::uuid
+          AND content_version=${response.content_version}
+          AND prompt_version=${artifact.prompt_version}
+          AND model_version=${artifact.model_version}
+          AND format_version=${artifact.format_version}
+        ORDER BY artifact_revision DESC
+        FOR UPDATE
+      `;
+      // A valid first writer is immutable. Invalid historical rows remain
+      // addressable by summary_id; only a new revision may supersede them.
+      let persisted = summaries.find(candidate => isAcceptedStoredSummary(candidate, source));
+      const predecessor = summaries[0];
+      const repaired = !persisted && Boolean(predecessor);
+      if (!persisted) {
+        const inserted = await tx`
+          INSERT INTO app.repo_card_summaries (
+            repo_id,content_version,prompt_version,model_version,format_version,
+            summary,highlights,source,active,artifact_revision,supersedes_summary_id
+          ) VALUES (
+            ${response.repo_id}::uuid,${response.content_version},${artifact.prompt_version},
+            ${artifact.model_version},${artifact.format_version},${artifact.summary},
+            ${JSON.stringify(artifact.highlights)}::jsonb,${artifact.source},false,
+            ${predecessor ? Number(predecessor.artifact_revision) + 1 : 0},
+            ${predecessor ? String(predecessor.summary_id) : null}::uuid
+          ) RETURNING *
+        `;
+        persisted = inserted[0];
+      }
+      if (!persisted || !isAcceptedStoredSummary(persisted, source)) {
+        throw new Error('A valid versioned repository summary was not persisted.');
+      }
+      const artifactDiverged = String(persisted.summary) !== artifact.summary
+        || String(persisted.source) !== artifact.source
+        || JSON.stringify(persisted.highlights) !== JSON.stringify(artifact.highlights);
+
+      const generated = artifact.source === 'description_fallback'
+        && currentContentVersion === response.content_version
+        ? await tx`
+          SELECT * FROM app.repo_card_summaries
+          WHERE repo_id=${response.repo_id}::uuid
+            AND content_version=${response.content_version}
+            AND source='generated' AND active
+          FOR UPDATE
+        ` : [];
+      // Preserve only generated content that still passes today's validator.
+      const preserved = generated.find(candidate => isAcceptedStoredSummary(candidate, source));
+      const activated = preserved ?? persisted;
+      if (currentContentVersion === response.content_version) {
+        await tx`
+          UPDATE app.repo_card_summaries
+          SET active=false
+          WHERE repo_id=${response.repo_id}::uuid AND active
+            AND summary_id<>${String(activated.summary_id)}::uuid
+        `;
+        await tx`
+          UPDATE app.repo_card_summaries SET active=true
+          WHERE summary_id=${String(activated.summary_id)}::uuid
+        `;
+      }
+
+      const delivered = await tx`
+        UPDATE telemetry.ml_outbox
+        SET status='delivered',delivered_at=now(),claim_token=NULL,claimed_at=NULL,
+            last_error=NULL,response_payload=${JSON.stringify({
+              ...response,
+              backend_persistence: {
+                artifact_status: preserved ? 'generated_preserved' : repaired ? 'invalid_artifact_replaced'
+                  : artifactDiverged ? 'first_writer_retained' : 'applied',
+                summary_id: String(activated.summary_id),
+                persisted_summary_id: String(persisted.summary_id),
+                artifact_revision: Number(persisted.artifact_revision),
+                supersedes_summary_id: persisted.supersedes_summary_id ?? null,
+              },
+            })}::jsonb
+        WHERE outbox_id=${row.outbox_id}::uuid
+          AND claim_token=${row.claim_token}::uuid
+          AND status='claimed'
+        RETURNING outbox_id
+      `;
+      if (delivered.length !== 1) throw new Error('Repository-index claim was lost before completion.');
+      return true;
+    });
   }
 
   async markFailed(row: OutboxRow, error: string, retryable: boolean, retryAfterMs?: number): Promise<void> {

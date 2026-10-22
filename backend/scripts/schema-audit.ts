@@ -44,7 +44,8 @@ try {
   const columnRows = await client`
     SELECT table_schema,table_name,column_name
     FROM information_schema.columns
-    WHERE (table_schema='app' AND table_name IN ('users','oauth_codes'))
+    WHERE (table_schema='app' AND table_name IN ('users','oauth_codes','repo_content','repo_card_summaries'))
+       OR (table_schema='telemetry' AND table_name='ml_outbox')
   `;
   const columns = new Set(columnRows.map(
     (row) => `${row.table_schema}.${row.table_name}.${row.column_name}`,
@@ -56,6 +57,16 @@ try {
     'app.users.date_of_birth',
     'app.users.onboarding_completed',
     'app.oauth_codes.client_code_challenge',
+    'app.repo_content.readme_source_path',
+    'app.repo_content.readme_default_branch',
+    'app.repo_content.readme_base_url',
+    'app.repo_card_summaries.prompt_version',
+    'app.repo_card_summaries.format_version',
+    'app.repo_card_summaries.highlights',
+    'app.repo_card_summaries.source',
+    'app.repo_card_summaries.artifact_revision',
+    'app.repo_card_summaries.supersedes_summary_id',
+    'telemetry.ml_outbox.response_payload',
   ]) {
     if (!columns.has(requiredColumn)) missing.push(`column:${requiredColumn}`);
   }
@@ -71,6 +82,37 @@ try {
   const outboxStatusDefinition = String(outboxConstraintRows[0]?.definition ?? '');
   if (!outboxStatusDefinition.includes('superseded')) {
     missing.push('constraint:telemetry.ml_outbox.status:superseded');
+  }
+
+  const summaryConstraintRows = await client`
+    SELECT relation.relname AS table_name,constraint_row.conname,
+      pg_get_constraintdef(constraint_row.oid) AS definition
+    FROM pg_constraint constraint_row
+    JOIN pg_class relation ON relation.oid=constraint_row.conrelid
+    JOIN pg_namespace namespace ON namespace.oid=relation.relnamespace
+    WHERE namespace.nspname='app'
+      AND relation.relname IN ('repo_content','repo_card_summaries')
+  `;
+  const summaryConstraints = new Map(summaryConstraintRows.map(
+    (row) => [`${row.table_name}.${row.conname}`, String(row.definition)],
+  ));
+  for (const name of [
+    'repo_content.repo_content_readme_metadata_check',
+    'repo_card_summaries.repo_card_summaries_versions_check',
+    'repo_card_summaries.repo_card_summaries_revision_check',
+    'repo_card_summaries.repo_card_summaries_highlights_check',
+    'repo_card_summaries.repo_card_summaries_source_check',
+    'repo_card_summaries.repo_card_summaries_active_length_check',
+  ]) {
+    if (!summaryConstraints.has(name)) missing.push(`constraint:app.${name}`);
+  }
+  const readmeMetadataDefinition = summaryConstraints.get(
+    'repo_content.repo_content_readme_metadata_check',
+  ) ?? '';
+  if (!readmeMetadataDefinition.includes('raw')
+    || !readmeMetadataDefinition.includes('githubusercontent')
+    || !readmeMetadataDefinition.includes('refs/heads')) {
+    missing.push('constraint:app.repo_content.repo_content_readme_metadata_check:canonical-host');
   }
 
   const legacyAuthTriggerRows = await client`
@@ -119,13 +161,22 @@ try {
       'telemetry.user_repo_engagement',
       'feedback_score',
       'UPDATE'
-    ) AS can_update_engagement
+    ) AS can_update_engagement,
+    has_column_privilege(
+      'ghsocial_backend',
+      'telemetry.ml_outbox',
+      'response_payload',
+      'UPDATE'
+    ) AS can_store_ml_response
   `;
   if (runtimeGrantRows[0]?.can_assign_feedback_version !== true) {
     missing.push('required-grant:ghsocial_backend:telemetry.interaction_events.feedback_version:UPDATE');
   }
   if (runtimeGrantRows[0]?.can_update_engagement !== true) {
     missing.push('required-grant:ghsocial_backend:telemetry.user_repo_engagement:UPDATE');
+  }
+  if (runtimeGrantRows[0]?.can_store_ml_response !== true) {
+    missing.push('required-grant:ghsocial_backend:telemetry.ml_outbox.response_payload:UPDATE');
   }
 
   const migrationRows = await client`
