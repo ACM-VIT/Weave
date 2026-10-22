@@ -5,6 +5,7 @@ import {
   check,
   date,
   doublePrecision,
+  foreignKey,
   index,
   integer,
   jsonb,
@@ -234,16 +235,23 @@ export const repoCardSummaries = appSchema.table('repo_card_summaries', {
   highlights: jsonb('highlights').$type<string[]>().notNull().default([]),
   summarySource: text('source').notNull(),
   active: boolean('active').notNull().default(false),
+  artifactRevision: integer('artifact_revision').notNull().default(0),
+  supersedesSummaryId: uuid('supersedes_summary_id'),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 }, (table) => [
   index('repo_card_summaries_repo_active_idx').on(table.repoId, table.active),
-  uniqueIndex('repo_card_summaries_versioned_uidx').on(
+  uniqueIndex('repo_card_summaries_one_active_uidx').on(table.repoId).where(sql`${table.active}`),
+  uniqueIndex('repo_card_summaries_revisioned_uidx').on(
     table.repoId,
     table.contentVersion,
     table.promptVersion,
     table.modelVersion,
     table.formatVersion,
+    table.artifactRevision,
   ),
+  check('repo_card_summaries_revision_check', sql`${table.artifactRevision} >= 0`),
+  foreignKey({ name: 'repo_card_summaries_supersedes_summary_id_fkey',
+    columns: [table.supersedesSummaryId], foreignColumns: [table.summaryId] }),
   check('repo_card_summaries_active_length_check', sql`
     (${table.summarySource} = 'legacy' AND NOT ${table.active})
     OR (

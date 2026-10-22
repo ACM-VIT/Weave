@@ -3,6 +3,9 @@ import crypto from 'node:crypto';
 import test from 'node:test';
 import postgres from 'postgres';
 import { drizzle } from 'drizzle-orm/postgres-js';
+import { setTimeout as delay } from 'node:timers/promises';
+import { OutboxService, type OutboxRow } from '../../services/outboxService.js';
+import { sqlClient } from '../../db/index.js';
 import { PostgresRepositoryPersistence } from '../../adapters/postgresRepositoryPersistence.js';
 import type { ReadmeSummaryContent } from '../../contracts/readmeSummary.v2.js';
 import { ReadmeSummaryService, enqueueReadmeSummary, readmeSummaryProjection, getReadmeSummaryStatus } from '../../services/readmeSummaryService.js';
@@ -84,4 +87,69 @@ integration('V2 jobs are idempotent, fenced, regenerable, and retried without to
     const legacy=await db`SELECT count(*) AS n FROM public.repo WHERE repo_id=${repoId}::uuid`;
     assert.equal(Number(legacy[0].n),0);
   } finally {await db`DELETE FROM telemetry.ml_outbox WHERE aggregate_id=${repoId}::uuid`;await db`DELETE FROM app.repos WHERE repo_id=${repoId}::uuid`;await db.end({timeout:1});}
+});
+
+
+test.after(async () => { if (process.env.RUN_README_SUMMARY_INTEGRATION === '1') await sqlClient.end({ timeout: 1 }); });
+
+integration('README and card-summary completions serialize on repository before content', async () => {
+  const url = new URL(process.env.README_SUMMARY_TEST_DATABASE_URL ?? '');
+  assert.ok(['127.0.0.1','localhost','[::1]'].includes(url.hostname));
+  assert.equal(new URL(process.env.DATABASE_URL!).toString(), url.toString());
+  const db = postgres(url.toString(), { max: 4, prepare: false });
+  const repoId = crypto.randomUUID(), jobId = crypto.randomUUID(), token = crypto.randomUUID();
+  let contentLocked!: () => void, releaseContent!: () => void;
+  const locked = new Promise<void>(resolve => { contentLocked = resolve; });
+  const proceed = new Promise<void>(resolve => { releaseContent = resolve; });
+  // Pause the real README transaction after its content lock. The card worker
+  // must wait on repos, never hold repos while waiting on this content row.
+  const controlled = new Proxy(db, { get(target, key) {
+    if (key !== 'begin') return Reflect.get(target, key);
+    return (callback: (tx: postgres.TransactionSql) => Promise<unknown>) => target.begin(tx => callback(new Proxy(tx, {
+      apply(query, receiver, args) {
+        const pending = Reflect.apply(query, receiver, args);
+        const sql = Array.isArray(args[0]) ? args[0].join(' ') : '';
+        if (!sql.includes('FROM app.repo_content') || !sql.includes('FOR UPDATE')) return pending;
+        return (async () => { const result = await pending; contentLocked(); await proceed; return result; })();
+      },
+    })));
+  } });
+  let readmeCompletion: Promise<boolean> | undefined, cardCompletion: Promise<boolean> | undefined;
+  try {
+    await db`INSERT INTO app.repos(repo_id,github_id,full_name,owner,name,url)
+      VALUES(${repoId}::uuid,${String(Date.now())}::bigint,'test/worker-locks','test','worker-locks','https://github.com/test/worker-locks')`;
+    await db`INSERT INTO app.repo_content(repo_id,content_hash,content_version,readme)
+      VALUES(${repoId}::uuid,'worker-lock-hash',1,${'Canonical source document. '.repeat(30)})`;
+    const readme = new ReadmeSummaryService({ modelVersion: 'lock-test', async generate() { return content; } }, controlled);
+    await readme.enqueueMissing([repoId]);
+    const readmeJob = await readme.claim([repoId]); assert.ok(readmeJob);
+    const payload = { job_id: jobId, repo_id: repoId, content_version: 1, repository: { content_hash: 'worker-lock-hash' } };
+    const cardJob = (await db`INSERT INTO telemetry.ml_outbox(job_type,aggregate_id,idempotency_key,payload,status,claim_token,claimed_at)
+      VALUES('repo_index',${repoId}::uuid,${'lock-test-' + jobId},${JSON.stringify(payload)}::text::jsonb,'claimed',${token}::uuid,now()) RETURNING *`)[0];
+    readmeCompletion = readme.complete(readmeJob, content);
+    await locked;
+    cardCompletion = new OutboxService().completeRepositoryIndex(cardJob as unknown as OutboxRow, {
+      schema_version: 2, accepted: true, status: 'applied', job_id: jobId, repo_id: repoId, content_version: 1, embedding_version: 'test',
+      card_summary: { summary: 'Teams inspect repositories and coordinate shared changes. Developers evaluate useful tooling with concise project context.',
+        highlights: [], source: 'generated', prompt_version: 'repo-card-summary-v1', model_version: 'lock-test', format_version: 'repo-card-summary-json-v1' },
+    });
+    let waiting: string | undefined;
+    for (let attempt = 0; attempt < 100; attempt++) {
+      const rows = await db`SELECT query FROM pg_stat_activity WHERE datname=current_database() AND pid<>pg_backend_pid() AND wait_event_type='Lock'`;
+      waiting = rows[0]?.query;
+      if (waiting) break;
+      await delay(10);
+    }
+    assert.match(waiting ?? '', /FROM app[.]repos/, 'the card worker must block on the README worker’s repository lock');
+    releaseContent();
+    assert.deepEqual(await Promise.all([readmeCompletion, cardCompletion]), [true, true]);
+    assert.equal(Number((await db`SELECT count(*) AS n FROM app.repo_readme_summaries WHERE repo_id=${repoId}::uuid AND active`)[0].n), 1);
+    assert.equal(Number((await db`SELECT count(*) AS n FROM app.repo_card_summaries WHERE repo_id=${repoId}::uuid AND active`)[0].n), 1);
+  } finally {
+    releaseContent();
+    await Promise.allSettled([readmeCompletion, cardCompletion]);
+    await db`DELETE FROM telemetry.ml_outbox WHERE aggregate_id=${repoId}::uuid`;
+    await db`DELETE FROM app.repos WHERE repo_id=${repoId}::uuid`;
+    await db.end({ timeout: 1 });
+  }
 });

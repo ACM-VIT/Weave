@@ -69,7 +69,10 @@ export class ReadmeSummaryService {
   async complete(job: ReadmeSummaryJob, content: ReadmeSummaryContent): Promise<boolean> {
     validateReadmeSummary(content);
     return this.db.begin(async (tx) => {
-      // Match ingestion's lock order: canonical content before the job row.
+      // All summary writers match ingestion: repository, content, then README job.
+      // Digest insertion also acquires a repository FK lock; taking it here
+      // prevents a cycle with the card-summary worker's repository-first lock.
+      await tx`SELECT repo_id FROM app.repos WHERE repo_id=${job.repo_id}::uuid FOR UPDATE`;
       const current = await tx`SELECT content_version,content_hash FROM app.repo_content
         WHERE repo_id=${job.repo_id}::uuid FOR UPDATE`;
       const claimed = await tx`SELECT job_id FROM telemetry.readme_summary_jobs
