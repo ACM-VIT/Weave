@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
 import { isValidUuid } from '../utils/validators.js';
+import { checkSearchWork, createSearchWork, settleSearchWork, type SearchWork } from './searchWork.js';
 
 export type SearchGroup = 'all' | 'repositories' | 'people' | 'lists';
 export type SearchFilters = { languages: string[]; topics: string[] };
@@ -10,10 +11,10 @@ export type SearchRequest = {
 export type SearchRef = { type: 'repository' | 'person' | 'list'; id: string };
 export type SearchResult = SearchRef & { data: Record<string, unknown> };
 export interface SearchPersistence {
-  lexical(request: SearchRequest): Promise<{ id: string; exact: boolean }[]>;
-  people(request: SearchRequest): Promise<SearchRef[]>;
-  lists(viewer: string, request: SearchRequest): Promise<SearchRef[]>;
-  hydrate(viewer: string, refs: SearchRef[], request: SearchRequest): Promise<SearchResult[]>;
+  lexical(request: SearchRequest, work?: SearchWork): Promise<{ id: string; exact: boolean }[]>;
+  people(request: SearchRequest, work?: SearchWork): Promise<SearchRef[]>;
+  lists(viewer: string, request: SearchRequest, work?: SearchWork): Promise<SearchRef[]>;
+  hydrate(viewer: string, refs: SearchRef[], request: SearchRequest, work?: SearchWork): Promise<SearchResult[]>;
 }
 export class SearchInputError extends Error { readonly statusCode = 400; }
 export class SearchExpiredError extends Error { readonly statusCode = 410; }
@@ -22,7 +23,7 @@ export type SearchSnapshot = { binding: string; refs: SearchRef[]; mode: 'hybrid
 export interface SearchSnapshotStore {
   get(key: string): Promise<SearchSnapshot | undefined>;
   set(key: string, snapshot: SearchSnapshot): Promise<void>;
-  getOrCreate?(binding: string, viewer: string, build: () => Promise<SearchSnapshot>, signal?: AbortSignal): Promise<{ key: string; snapshot: SearchSnapshot }>;
+  getOrCreate?(binding: string, viewer: string, build: (signal?: AbortSignal) => Promise<SearchSnapshot>, signal?: AbortSignal): Promise<{ key: string; snapshot: SearchSnapshot }>;
 }
 export class SearchRateLimitError extends Error { readonly statusCode = 429; }
 
@@ -106,6 +107,8 @@ export class SearchService {
     private readonly snapshots: SearchSnapshotStore = new MemorySearchSnapshotStore()) {}
 
   async search(viewer: string, request: SearchRequest, signal?: AbortSignal) {
+    const work = createSearchWork(signal);
+    checkSearchWork(work);
     const binding = JSON.stringify([viewer, request.query, request.group,
       [...request.filters.languages].sort(), [...request.filters.topics].sort(), [...request.exclude_repo_ids].sort()]);
     let key: string; let offset = 0;
@@ -115,15 +118,18 @@ export class SearchService {
       snapshot = await this.snapshots.get(key);
       if (parts.length !== 2 || !Number.isInteger(offset) || offset < 0 || !snapshot || snapshot.expires <= this.now() || snapshot.binding !== binding || offset > snapshot.refs.length) throw new SearchExpiredError('Search expired. Search again.');
     } else {
-      const build = async (): Promise<SearchSnapshot> => {
+      const build = async (sharedSignal?: AbortSignal): Promise<SearchSnapshot> => {
+        // A Redis build belongs to all its waiters, not the leader's HTTP request.
+        const retrieval = sharedSignal ? createSearchWork(sharedSignal, work.deadline) : work;
+        checkSearchWork(retrieval);
         const repositories = request.group === 'all' || request.group === 'repositories';
-        const [lexical, people, lists, semantic] = await Promise.all([
-          repositories ? this.persistence.lexical(request) : [],
-          ['all','people'].includes(request.group) ? this.persistence.people(request) : [],
-          ['all','lists'].includes(request.group) ? this.persistence.lists(viewer, request) : [],
-          repositories ? this.semantic(request, signal).then(body => ({ items: parseSemanticResponse(body, request.search_id), ok: true })).catch(() => ({ items: [], ok: false })) : { items: [], ok: true },
-        ]);
-        signal?.throwIfAborted();
+        const [lexical, people, lists, semantic] = await settleSearchWork([
+          repositories ? this.persistence.lexical(request, retrieval) : [],
+          ['all','people'].includes(request.group) ? this.persistence.people(request, retrieval) : [],
+          ['all','lists'].includes(request.group) ? this.persistence.lists(viewer, request, retrieval) : [],
+          repositories ? this.semantic(request, retrieval.signal).then(body => ({ items: parseSemanticResponse(body, request.search_id), ok: true })).catch(() => ({ items: [], ok: false })) : { items: [], ok: true },
+        ] as const);
+        checkSearchWork(retrieval);
         const excluded = new Set(request.exclude_repo_ids);
         const repos: SearchRef[] = hybridRank(lexical, semantic.items).filter(id => !excluded.has(id)).map(id => ({ type: 'repository', id }));
         const refs: SearchRef[] = [];
@@ -142,23 +148,26 @@ export class SearchService {
         return { binding, refs, mode: semantic.ok ? 'hybrid' as const : 'lexical' as const, expires: this.now()+120_000 };
       };
       if (this.snapshots.getOrCreate) {
-        ({ key, snapshot } = await this.snapshots.getOrCreate(binding, viewer, build, signal));
+        ({ key, snapshot } = await this.snapshots.getOrCreate(binding, viewer, build, work.signal));
       } else {
         snapshot = await build();
         key = crypto.randomUUID();
         await this.snapshots.set(key, snapshot);
       }
     }
+    checkSearchWork(work);
     const items: SearchResult[] = [];
     let examined = 0;
     // Revalidate every page against PostgreSQL; deleted/private results are skipped and topped up.
     while (items.length < request.limit && offset < snapshot.refs.length && examined < HYDRATION_PAGE_BUDGET) {
-      signal?.throwIfAborted();
+      checkSearchWork(work);
       const missing = request.limit - items.length;
       const window = Math.min(HYDRATION_MAX_WINDOW, Math.max(HYDRATION_MIN_WINDOW, missing * 3), HYDRATION_PAGE_BUDGET - examined);
       const refs = snapshot.refs.slice(offset, offset + window);
       examined += refs.length;
-      const accepted = preserveHydrationOrder(refs, await this.persistence.hydrate(viewer, refs, request)).slice(0, missing);
+      const hydrated = await this.persistence.hydrate(viewer, refs, request, work);
+      checkSearchWork(work);
+      const accepted = preserveHydrationOrder(refs, hydrated).slice(0, missing);
       items.push(...accepted);
       // Hydrated surplus is not consumed or cached: leave it behind the cursor
       // so the next page rechecks its permissions, active state and filters.
@@ -167,6 +176,7 @@ export class SearchService {
         ? refs.findIndex(ref => ref.type === last!.type && ref.id === last!.id) + 1
         : refs.length;
     }
+    checkSearchWork(work);
     return { schema_version: 2, search_id: request.search_id, mode: snapshot.mode, items,
       next_cursor: offset < snapshot.refs.length ? `${key!}:${offset}` : null };
   }

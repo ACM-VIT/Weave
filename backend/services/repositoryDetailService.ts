@@ -1,3 +1,4 @@
+import type { TransactionSql } from 'postgres';
 import { readmeSummaryProjection } from './readmeSummaryService.js';
 import type { RepositoryDetailV2, RepositoryStatus } from '../contracts/repository.v2.js';
 import { sqlClient } from '../db/index.js';
@@ -101,13 +102,14 @@ export async function getRepositoryDetails(
   repositoryIds: string[],
   includeReadme = true,
   filters: { languages: string[]; topics: string[] } = { languages: [], topics: [] },
+  sql: typeof sqlClient | TransactionSql = sqlClient,
 ): Promise<RepositoryDetailV2[]> {
   if (!repositoryIds.length) return [];
-  const rows = await sqlClient`
+  const rows = await sql`
     SELECT
       repo.repo_id,repo.github_id,repo.full_name,repo.owner,repo.owner_github_id,
       repo.name,repo.url,repo.status,repo.created_at,repo.updated_at,
-      ${sqlClient.unsafe(readmeSummaryProjection('repo','content'))},
+      ${sql.unsafe(readmeSummaryProjection('repo','content'))},
       content.description,CASE WHEN ${includeReadme} THEN content.readme ELSE NULL END AS readme_md,to_jsonb(content)->>'readme_source_path' AS readme_source_path,
       to_jsonb(content)->>'readme_default_branch' AS readme_default_branch,to_jsonb(content)->>'readme_base_url' AS readme_base_url,content.primary_language,
       COALESCE(content.languages,'[]'::jsonb) AS languages,
