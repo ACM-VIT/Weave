@@ -15,11 +15,12 @@ integration('retention preserves the last delivered repository index so future r
   const aggregate=crypto.randomUUID();const [older,checkpoint,feedback,refresh]=Array.from({length:4},()=>crypto.randomUUID());
   try{
     for(const [id,kind,days] of [[older,'repo_index',50],[checkpoint,'repo_index',40],[feedback,'feedback',40]] as const){
+      const payload=kind==='repo_index'?{content_version:id===checkpoint?2:1}:{};
       await sqlClient`INSERT INTO telemetry.ml_outbox(outbox_id,job_type,aggregate_id,idempotency_key,payload,status,created_at,delivered_at)
-        VALUES(${id}::uuid,${kind},${aggregate}::uuid,${id},'{}','delivered',now()-${days}*interval '1 day',now()-${days}*interval '1 day')`;
+        VALUES(${id}::uuid,${kind},${aggregate}::uuid,${id},${JSON.stringify(payload)}::text::jsonb,'delivered',now()-${days}*interval '1 day',now()-${days}*interval '1 day')`;
     }
     await sqlClient`INSERT INTO telemetry.ml_outbox(outbox_id,job_type,aggregate_id,idempotency_key,payload)
-      VALUES(${refresh}::uuid,'repo_refresh',${aggregate}::uuid,${refresh},'{}')`;
+      VALUES(${refresh}::uuid,'repo_refresh',${aggregate}::uuid,${refresh},'{"required_content_version":2}'::jsonb)`;
     // The highest content version must survive an adverse UUID order at one
     // transaction timestamp, even when a later malformed/legacy row exists.
     const numericAggregate=crypto.randomUUID();
@@ -66,7 +67,8 @@ integration('a scoped fresh index campaign restores a purged retention checkpoin
       WHERE aggregate_id=${repoId}::uuid AND job_type='repo_index'`;
     // Reproduce an older retention version that already purged the checkpoint.
     await sqlClient`DELETE FROM telemetry.ml_outbox WHERE aggregate_id=${repoId}::uuid AND job_type='repo_index'`;
-    await persistence.bulkUpsert([{...record,star_count:2,observed_at:new Date(Date.now()+1000).toISOString()}]);
+    const secondObservation={...record,star_count:2,observed_at:new Date(Date.parse(record.observed_at)+1000).toISOString()};
+    await persistence.bulkUpsert([secondObservation]);
     const outbox=new OutboxService();
     assert.deepEqual(await outbox.claim(10),[],'A refresh cannot run without a delivered index checkpoint');
     const options={campaignId:`checkpoint-${suffix}`,execute:false,batchSize:10,summaryBackfill:false,repositoryIds:[repoId]};
@@ -86,7 +88,12 @@ integration('a scoped fresh index campaign restores a purged retention checkpoin
     const replay=await runReindex({...options,execute:true},process.env.DATABASE_URL!);
     assert.equal(replay.already_queued,1,'The recovery campaign must be idempotent');
     const next=await outbox.claim(10);
-    assert.equal(next.length,1);assert.equal(next[0].job_type,'repo_refresh');
+    assert.equal(next.length,2,'Recovery must preserve both independent feature observations');
+    assert.ok(next.every(row=>row.job_type==='repo_refresh'&&row.aggregate_id===repoId));
+    assert.deepEqual(next.map(row=>Number(row.payload.required_content_version)),[mapped.content_version,mapped.content_version]);
+    assert.deepEqual(next.map(row=>Number(row.payload.feature_version)).sort((a,b)=>a-b),
+      [Date.parse(record.observed_at),Date.parse(secondObservation.observed_at)]);
+    assert.ok(next.every(row=>Number(row.payload.required_content_version)===payload.content_version));
     assert.equal(Number((await sqlClient`SELECT count(*)::int AS n FROM telemetry.ml_outbox WHERE aggregate_id=${repoId}::uuid AND job_type='repo_index' AND status='delivered'`)[0].n),1);
   }finally{
     if(repoId){await sqlClient`DELETE FROM telemetry.ml_outbox WHERE aggregate_id=${repoId}::uuid`;await sqlClient`DELETE FROM app.repos WHERE repo_id=${repoId}::uuid`;}
