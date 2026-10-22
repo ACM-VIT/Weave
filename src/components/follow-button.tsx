@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Pressable,
@@ -8,12 +8,15 @@ import {
   type TextStyle,
   type ViewStyle,
 } from 'react-native';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useIsMutating, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
 import { setUserFollowing } from '@/api/connections';
 import { setSocialProfileFollowing } from '@/api/social-profiles';
 import { REFERENCE_THEME } from '@/constants/theme';
 import { followStateQueryKey, getProfileFollowIdentity } from '@/utils/follow-state';
+import { useAuth } from '@/store/AuthContext';
+import { authSessionLifecycle } from '@/api/session-lifecycle';
+import { settleFollowCache } from '@/services/followMutationCache';
 import { getStorageItem } from '@/utils/storage';
 
 export type FollowButtonProps = {
@@ -50,13 +53,18 @@ export function FollowButton({
   identityKey,
 }: FollowButtonProps) {
   const queryClient = useQueryClient();
+  const { user, checkOnboardingStatus } = useAuth();
+  const mounted = useRef(false);
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
+  const viewer = user?.user_id;
+  const renderGeneration = authSessionLifecycle.currentGeneration();
   const targetId = targetProfileId ?? targetUserId;
   const followIdentity = getProfileFollowIdentity(
     targetProfileId,
     targetUserId,
     identityKey,
   );
-  const queryKey = followStateQueryKey(followIdentity);
+  const queryKey = followStateQueryKey(followIdentity, viewer);
   const followStateQuery = useQuery<boolean>({
     queryKey,
     queryFn: async () => isFollowing,
@@ -70,28 +78,56 @@ export function FollowButton({
     failed: false,
   });
   const displayedFollowing = followStateQuery.data;
-  const failed = failureState.identity === followIdentity && failureState.failed;
+  const controlIdentity = JSON.stringify(queryKey);
+  const failed = failureState.identity === controlIdentity && failureState.failed;
 
-  const mutation = useMutation<void, Error, boolean>({
-    mutationFn: async (following) => {
-      if (!targetId) throw new Error('This profile is unavailable.');
+  const mutationKey = ['follow', viewer, followIdentity] as const;
+  const pending = useIsMutating({ mutationKey, exact: true });
+  type Change = { following: boolean; previous: boolean; generation: number; viewer: string;
+    identity: string; userId?: string | null; profileId?: string | null;
+    changed?: (following: boolean) => void; failed?: (error: Error) => void };
+  const mutation = useMutation<void, Error, Change>({
+    mutationKey,
+    mutationFn: async ({ following, generation, userId, profileId }) => {
+      authSessionLifecycle.assertCurrent(generation);
+      if (!profileId && !userId) throw new Error('This profile is unavailable.');
       const token = await getStorageItem('access_token');
+      authSessionLifecycle.assertCurrent(generation);
       if (!token) throw new Error('Your session has expired. Please sign in again.');
-      if (targetProfileId) {
-        await setSocialProfileFollowing(targetProfileId, following, token);
-      } else {
-        await setUserFollowing(targetId, following, token);
+      if (profileId) await setSocialProfileFollowing(profileId, following, token);
+      else await setUserFollowing(userId!, following, token);
+    },
+    onError: (error, change) => {
+      if (!authSessionLifecycle.isCurrent(change.generation)) return;
+      const key = followStateQueryKey(change.identity, change.viewer);
+      if (queryClient.getQueryData(key) === change.following) queryClient.setQueryData(key, change.previous);
+      if (mounted.current) {
+        setFailureState({ identity: JSON.stringify(key), failed: true });
+        change.failed?.(error);
       }
     },
+    onSuccess: async (_result, change) => {
+      if (!authSessionLifecycle.isCurrent(change.generation)) return;
+      await settleFollowCache(queryClient, change.viewer, { userId: change.userId, profileId: change.profileId }, change.following, change.generation);
+      if (!authSessionLifecycle.isCurrent(change.generation)) return;
+      if (mounted.current) change.changed?.(change.following);
+      void checkOnboardingStatus?.().catch(() => undefined);
+    },
   });
+  const serverState = useRef({ identity: JSON.stringify(queryKey), value: isFollowing });
   useEffect(() => {
-    if (!mutation.isPending) {
+    const identity = JSON.stringify(queryKey);
+    const previous = serverState.current;
+    serverState.current = { identity, value: isFollowing };
+    // A second mounted button's stale initial prop must not undo another
+    // button's optimistic update or successful response.
+    if (previous.identity === identity && previous.value !== isFollowing) {
       queryClient.setQueryData(queryKey, isFollowing);
     }
-  }, [isFollowing, mutation.isPending, queryClient, queryKey]);
+  }, [isFollowing, queryClient, queryKey]);
 
   const targetAvailable = Boolean(targetId) && stateKnown;
-  const buttonDisabled = disabled || !targetAvailable || mutation.isPending;
+  const buttonDisabled = disabled || !viewer || !targetAvailable || pending > 0;
   const accessibilityHint = !targetId
     ? 'This profile is unavailable.'
     : !stateKnown
@@ -101,22 +137,16 @@ export function FollowButton({
         : undefined;
 
   const toggleFollowing = () => {
-    if (buttonDisabled) return;
+    if (buttonDisabled || !viewer || queryClient.isMutating({ mutationKey, exact: true }) > 0) return;
+    const generation = renderGeneration;
+    if (!authSessionLifecycle.isCurrent(generation)) return;
     const previous = displayedFollowing;
     const next = !previous;
     queryClient.setQueryData(queryKey, next);
-    setFailureState({ identity: followIdentity, failed: false });
+    setFailureState({ identity: controlIdentity, failed: false });
 
-    mutation.mutate(next, {
-      onError: (error) => {
-        queryClient.setQueryData(queryKey, previous);
-        setFailureState({ identity: followIdentity, failed: true });
-        onError?.(error);
-      },
-      onSuccess: () => {
-        onFollowingChange?.(next);
-      },
-    });
+    mutation.mutate({ following: next, previous, generation, viewer, identity: followIdentity,
+      userId: targetUserId, profileId: targetProfileId, changed: onFollowingChange, failed: onError });
   };
 
   return (
@@ -131,7 +161,7 @@ export function FollowButton({
       }
       accessibilityRole="button"
       accessibilityState={{
-        busy: mutation.isPending,
+        busy: pending > 0,
         disabled: buttonDisabled,
         selected: displayedFollowing,
       }}
@@ -152,7 +182,7 @@ export function FollowButton({
         style,
       ]}
     >
-      {mutation.isPending ? (
+      {pending > 0 ? (
         <ActivityIndicator
           color={displayedFollowing || neutral ? REFERENCE_THEME.text : '#071009'}
           size="small"

@@ -1,3 +1,4 @@
+import { authSessionLifecycle } from '@/api/session-lifecycle';
 import { useReducedMotion } from 'react-native-reanimated';
 import { KeyboardSurface } from '@/components/keyboard/keyboard-layout';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -130,6 +131,7 @@ export function SavePopup({
   const insets = useSafeAreaInsets();
   const { checkOnboardingStatus, user } = useAuth();
   const viewerUserId = user?.user_id;
+  const renderGeneration = authSessionLifecycle.currentGeneration();
   const selectionScope = `${viewerUserId ?? 'anonymous'}:${repoId ?? 'missing'}`;
   const queryClient = useQueryClient();
   const [modalHeight] = useState(height);
@@ -265,18 +267,22 @@ export function SavePopup({
   }, [isCreating]);
 
   const createMutation = useMutation({
-    onMutate: () => {
+    onMutate: (generation: number) => {
+      authSessionLifecycle.assertCurrent(generation);
       setMessage(null);
       setPending(current => ({ ...current, create: true }));
     },
-    mutationFn: async () => {
+    mutationFn: async (generation: number) => {
+      authSessionLifecycle.assertCurrent(generation);
       const name = newListName.trim();
       if (!name) throw new Error('List name is required.');
       const token = await SecureStore.getItemAsync('access_token');
+      authSessionLifecycle.assertCurrent(generation);
       if (!token) throw new Error('Sign in to create a List.');
       return createRepositoryList({ name }, token);
     },
-    onSuccess: async (list) => {
+    onSuccess: async (list, generation) => {
+      if (!authSessionLifecycle.isCurrent(generation)) return;
       setLocalSelection({
         scope: selectionScope,
         selectedIds: new Set([...selectedIds, listMembershipKey(list)]),
@@ -286,41 +292,53 @@ export function SavePopup({
       setNewListName('');
       setMessage({ type: 'success', text: `${list.name} created and selected.` });
       await haptic('success');
+      if (!authSessionLifecycle.isCurrent(generation)) return;
       await queryClient.invalidateQueries({
         queryKey: repositoryListsQueryKey(repoId, viewerUserId),
       });
     },
-    onError: (error) => setMessage({ type: 'error', text: error instanceof Error ? error.message : 'Could not create List.' }),
-    onSettled: () => setPending(current => ({ ...current, create: false })),
+    onError: (error, generation) => {
+      if (authSessionLifecycle.isCurrent(generation)) setMessage({ type: 'error', text: error instanceof Error ? error.message : 'Could not create List.' });
+    },
+    onSettled: (_result, _error, generation) => {
+      if (authSessionLifecycle.isCurrent(generation)) setPending(current => ({ ...current, create: false }));
+    },
   });
 
   const saveMutation = useMutation({
     mutationFn: async ({
       listIds,
       event,
+      generation,
     }: {
+      generation: number;
       listIds: string[];
       event: ReturnType<typeof toInteractionEventV2>;
     }) => {
+      authSessionLifecycle.assertCurrent(generation);
       if (!repoId) throw new Error('Repository information is missing.');
       const token = await SecureStore.getItemAsync('access_token');
+      authSessionLifecycle.assertCurrent(generation);
       if (!token) throw new Error('Sign in to save repositories.');
       return syncRepositoryLists(repoId, listIds, token, event);
     },
-    onMutate: async ({ listIds }) => {
+    onMutate: async ({ listIds, generation }) => {
+      authSessionLifecycle.assertCurrent(generation);
       setMessage(null);
       setPending(current => ({ ...current, save: true }));
       const key = repositoryListsQueryKey(repoId, viewerUserId);
-      await queryClient.cancelQueries({ queryKey: key });
+      await queryClient.cancelQueries({ queryKey: key, exact: true });
+      authSessionLifecycle.assertCurrent(generation);
       const previous = queryClient.getQueryData<ListDto[]>(key);
-      queryClient.setQueryData<ListDto[]>(key, (current = []) => current.map((list) => ({
+      const optimistic = queryClient.setQueryData<ListDto[]>(key, (current = []) => current.map((list) => ({
         ...list,
         selected: listIds.includes(listMembershipKey(list)),
       })));
-      return { previous };
+      return { previous, optimistic, generation };
     },
-    onError: (error, _input, context) => {
-      if (context?.previous) {
+    onError: (error, input, context) => {
+      if (!authSessionLifecycle.isCurrent(input.generation)) return;
+      if (context?.previous && queryClient.getQueryData(repositoryListsQueryKey(repoId, viewerUserId)) === context.optimistic) {
         queryClient.setQueryData(
           repositoryListsQueryKey(repoId, viewerUserId),
           context.previous,
@@ -328,13 +346,21 @@ export function SavePopup({
       }
       setMessage({ type: 'error', text: error instanceof Error ? error.message : 'Could not save repository.' });
     },
-    onSuccess: async (result, _input, context) => {
+    onSuccess: async (result, input, context) => {
+      if (!authSessionLifecycle.isCurrent(input.generation)) return;
       const previouslySelectedLists = context?.previous
         ?.filter((list) => list.selected)
         ?? [];
       const selectedLists = lists.filter((list) => result.selectedListIds.includes(listMembershipKey(list)));
+      const previousIds = new Set(previouslySelectedLists.map(listMembershipKey));
+      const selectedIds = new Set(result.selectedListIds);
+      // If the server reports a save transition inconsistent with our old
+      // snapshot, conservatively reconcile those known Lists as well.
+      const staleMembership = !context?.previous
+        || (result.saveStateChanged && Boolean(previouslySelectedLists.length) === result.saved);
       const changedLists = [...new Map(
         [...previouslySelectedLists, ...selectedLists]
+          .filter(list => staleMembership || previousIds.has(listMembershipKey(list)) !== selectedIds.has(listMembershipKey(list)))
           .map((list) => [listMembershipKey(list), list]),
       ).values()];
       setMessage({
@@ -366,9 +392,11 @@ export function SavePopup({
           refetchType: 'none',
         });
       }
+      if (!authSessionLifecycle.isCurrent(input.generation)) return;
       onSaved?.(result.saved, result.saveStateChanged);
       onListMembershipsChanged?.(result.selectedListIds, result.saved);
       await haptic('success');
+      if (!authSessionLifecycle.isCurrent(input.generation)) return;
       await Promise.all([
         queryClient.invalidateQueries({
           queryKey: repositoryListsQueryKey(repoId, viewerUserId),
@@ -397,6 +425,7 @@ export function SavePopup({
           ),
         })),
       ]);
+      if (!authSessionLifecycle.isCurrent(input.generation)) return;
       void checkOnboardingStatus().catch(() => undefined);
       setLocalSelection({
         scope: selectionScope,
@@ -405,7 +434,9 @@ export function SavePopup({
       });
       if (mountedRef.current) closeTimer.current = setTimeout(closeAnimated, 900);
     },
-    onSettled: () => setPending(current => ({ ...current, save: false })),
+    onSettled: (_result, _error, input) => {
+      if (authSessionLifecycle.isCurrent(input.generation)) setPending(current => ({ ...current, save: false }));
+    },
   });
 
   const isSaving = saveMutation.isPending || pending.save;
@@ -655,7 +686,7 @@ export function SavePopup({
                         serve_id: serveId ?? null,
                         position: position ?? null,
                       }));
-                      saveMutation.mutate({ listIds: [...selectedIds], event });
+                      saveMutation.mutate({ listIds: [...selectedIds], event, generation: renderGeneration });
                     }}
                     style={StyleSheet.absoluteFill}
                   />
@@ -697,7 +728,7 @@ export function SavePopup({
                     ref={createInputRef}
                     maxLength={100}
                     onChangeText={(value) => { setNewListName(value); if (message) setMessage(null); }}
-                    onSubmitEditing={() => { if (newListName.trim() && !mutationBusy) createMutation.mutate(); }}
+                    onSubmitEditing={() => { if (newListName.trim() && !mutationBusy) createMutation.mutate(renderGeneration); }}
                     placeholder="List name"
                     placeholderTextColor={palette.secondary}
                     returnKeyType="done"
@@ -711,7 +742,7 @@ export function SavePopup({
                     accessibilityRole="button"
                     accessibilityState={{ disabled: !newListName.trim() || mutationBusy }}
                     disabled={!newListName.trim() || mutationBusy}
-                    onPress={() => { if (newListName.trim() && !mutationBusy) createMutation.mutate(); }}
+                    onPress={() => { if (newListName.trim() && !mutationBusy) createMutation.mutate(renderGeneration); }}
                     style={({ pressed }) => [
                       styles.createSubmit,
                       { backgroundColor: palette.saveAccent },

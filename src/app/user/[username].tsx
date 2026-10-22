@@ -55,7 +55,7 @@ function booleanParam(value: string | string[] | undefined) {
 
 export default function OtherUserProfileRoute() {
   const params = useLocalSearchParams<OtherUserRouteParams>();
-  const { user, checkOnboardingStatus } = useAuth();
+  const { user } = useAuth();
   const queryClient = useQueryClient();
   const routeUsername = firstParam(params.username).replace(/^@/, '') || 'developer';
   const userId = firstParam(params.userId) || undefined;
@@ -151,13 +151,13 @@ export default function OtherUserProfileRoute() {
   const handleFollowingChange = (following: boolean) => {
     if (profileId) {
       queryClient.setQueryData(
-        followStateQueryKey(getProfileFollowIdentity(profileId)),
+        followStateQueryKey(getProfileFollowIdentity(profileId), user?.user_id),
         following,
       );
     }
     if (profile.userId) {
       queryClient.setQueryData(
-        followStateQueryKey(getProfileFollowIdentity(null, profile.userId)),
+        followStateQueryKey(getProfileFollowIdentity(null, profile.userId), user?.user_id),
         following,
       );
     }
@@ -199,9 +199,6 @@ export default function OtherUserProfileRoute() {
         };
       },
     );
-    void queryClient.invalidateQueries({ queryKey: ['connections'] });
-    void queryClient.invalidateQueries({ queryKey: ['feed'], refetchType: 'none' });
-    void checkOnboardingStatus().catch(() => undefined);
   };
 
   const goBack = () => {
@@ -230,8 +227,7 @@ export default function OtherUserProfileRoute() {
       <ConnectionSheet
         onClose={() => setConnectionType(null)}
         onFollowingCountChange={() => {
-          void checkOnboardingStatus().catch(() => undefined);
-        }}
+              }}
         type={connectionType ?? 'followers'}
         userId={profile.userId}
         username={profile.username}

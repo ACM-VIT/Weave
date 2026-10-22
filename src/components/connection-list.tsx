@@ -338,17 +338,7 @@ export function ConnectionList({
           } : current
         ));
       }
-      void queryClient.invalidateQueries({ queryKey: followingKey });
-      if (person.user_id) {
-        void queryClient.invalidateQueries({
-          queryKey: ['public-user-profile', 'user', person.user_id],
-        });
-      }
-      if (person.profile_id) {
-        void queryClient.invalidateQueries({
-          queryKey: ['public-user-profile', 'profile', person.profile_id],
-        });
-      }
+
     }
 
     onFollowingCountChange?.(following ? 1 : -1);

@@ -8,8 +8,8 @@ export function getFollowIdentity(
   return fallbackIdentity?.trim().toLowerCase() || 'unavailable';
 }
 
-export function followStateQueryKey(identity: string) {
-  return ['user-follow-state', identity] as const;
+export function followStateQueryKey(identity: string, viewer?: string | null) {
+  return ['user-follow-state', viewer ?? null, identity] as const;
 }
 
 export function getProfileFollowIdentity(
