@@ -71,3 +71,61 @@ Node-side HTTP response server is a local fixture; encoder, provider and Redis
 lock boundaries are doubles. ML tests also cover stored exclusions and near-copy
 checks independently. No paid provider or
 production service is required.
+
+## Recovery of artifacts accepted before validation tightened
+
+This differs from rejected-before-persistence `dead` jobs. An already-delivered
+job cannot be revived by the dead-job replay endpoint, and deployment does not
+repair its PostgreSQL artifact automatically. No affected production rows are
+asserted here; inspect the actual database read-only first.
+
+Migration `0027_summary_artifact_revisions` adds storage-only `artifact_revision`
+and `supersedes_summary_id`; it preserves existing IDs and bodies at revision 0.
+It replaces the five-column uniqueness index with uniqueness including revision.
+The network V2 artifact shape, prompt/model/format provenance and content identity
+stay unchanged. Pause old outbox workers and legacy-backfill commands, apply the
+normal migration chain, run schema audit, and deploy/start the compatible backend
+before resuming writes. Old writers using the former five-column conflict target
+must not run against the revised schema. Do not reapply pre-revision SQL manually
+or roll back to old writers after successors exist. No deployed migration is
+performed by these instructions.
+
+Completion validates incoming, retained and generated-preservation candidates
+with the same consumer validator, using the immutable job source. A valid first
+writer remains canonical even if a new response proposes different prose. If no
+valid row exists for that tuple, completion adds a successor revision, recording
+its predecessor, instead of rewriting/deleting historical text or summary IDs.
+Repository-first locking serializes this decision with ingestion and other
+completions; current-content fencing and claim-token fencing remain enforced.
+Only valid same-content generated content is protected against a fallback.
+Summary persistence, activation and delivery acknowledgement commit atomically.
+
+To recover already-accepted invalid **active** artifacts:
+
+1. Deploy compatible ML first. Under the write pause above, apply migration 0027,
+   audit the schema and deploy the compatible backend.
+2. Run the campaign in dry-run mode from `backend/`:
+   `npm run reindex:ml -- --campaign=summary-repair-contract-v1 --repair-invalid-summaries`.
+   Inspect `invalid_artifacts`, `eligible`, `invalid` and `would_queue`. Review
+   repository IDs, current canonical content/hash and the active summary read-only.
+   The campaign validates actual artifacts; a generated source label alone never
+   exempts a malformed row. It does not select missing artifacts or valid fallbacks.
+3. Repeat the dry run with one or more explicit `--repo-id=<canonical UUID>`
+   arguments for the reviewed scope. With execution authorization, repeat that
+   exact campaign/scope with `--execute`. Repair execution refuses an empty ID
+   scope. A fresh campaign creates fresh current-content jobs even if the original
+   jobs were delivered; repeating the same campaign is idempotent. Existing
+   delivered jobs and active rows remain unchanged until validated completion.
+4. Verify the new job's `backend_persistence.artifact_status`, `summary_id`,
+   `artifact_revision` and `supersedes_summary_id`; verify the corrected artifact
+   is active and the predecessor remains inactive/addressable. Historical serve
+   references retain their original IDs. Another dry run should select no repaired
+   rows. Inspect unsuccessful jobs explicitly instead of relabelling them success.
+
+`--summary-backfill` also treats invalid generated artifacts as eligible, alongside
+missing/current fallback artifacts. It preserves the existing broader campaign
+semantics; use the narrowly scoped repair flag for already-accepted invalid rows.
+Inactive historical artifacts remain preserved and are not swept by the campaign.
+The tests exercise these paths on disposable loopback PostgreSQL only; they do
+not establish affected deployed data, authorize rollout, or replace independent
+review.

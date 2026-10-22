@@ -1,4 +1,6 @@
 import crypto from 'node:crypto';
+import { isValidUuid } from '../utils/validators.js';
+import { isAcceptedStoredSummary } from '../services/storedRepositorySummary.js';
 import { pathToFileURL } from 'node:url';
 
 import postgres from 'postgres';
@@ -13,10 +15,13 @@ export interface ReindexOptions {
   execute: boolean;
   batchSize: number;
   summaryBackfill: boolean;
+  repairInvalidSummaries?: boolean;
+  repositoryIds?: string[];
 }
 
 interface ReindexRow {
   repo_id: string;
+  active_summary?: Record<string, unknown> | null;
   github_id: string;
   owner_github_id: string | null;
   full_name: string;
@@ -45,9 +50,13 @@ export function parseReindexOptions(arguments_: string[]): ReindexOptions {
   let campaignId: string | undefined;
   let batchSize = 100;
   let summaryBackfill = false;
+  let repairInvalidSummaries = false;
+  const repositoryIds: string[] = [];
   for (const argument of arguments_) {
     if (argument === '--execute') execute = true;
     else if (argument === '--summary-backfill') summaryBackfill = true;
+    else if (argument === '--repair-invalid-summaries') repairInvalidSummaries = true;
+    else if (argument.startsWith('--repo-id=')) repositoryIds.push(argument.slice('--repo-id='.length));
     else if (argument.startsWith('--campaign=')) campaignId = argument.slice('--campaign='.length);
     else if (argument.startsWith('--batch-size=')) batchSize = Number(argument.slice('--batch-size='.length));
     else throw new Error(`Unknown argument: ${argument}`);
@@ -58,7 +67,11 @@ export function parseReindexOptions(arguments_: string[]): ReindexOptions {
   if (!Number.isInteger(batchSize) || batchSize < 1 || batchSize > 500) {
     throw new Error('--batch-size must be an integer from 1 to 500.');
   }
-  return { campaignId, execute, batchSize, summaryBackfill };
+  if (summaryBackfill && repairInvalidSummaries) throw new Error('Choose --summary-backfill or --repair-invalid-summaries.');
+  if (repositoryIds.some(id => !isValidUuid(id))) throw new Error('--repo-id must be a canonical UUID.');
+  if (repairInvalidSummaries && execute && repositoryIds.length === 0) throw new Error('Invalid-artifact recovery execution requires reviewed --repo-id values.');
+  return { campaignId, execute, batchSize, summaryBackfill, ...(repairInvalidSummaries ? { repairInvalidSummaries: true } : {}),
+    ...(repositoryIds.length ? { repositoryIds: [...new Set(repositoryIds.map(id => id.toLowerCase()))] } : {}) };
 }
 
 export function campaignIdempotencyKey(
@@ -109,16 +122,23 @@ export function buildCampaignRepositoryJob(
 }
 
 export async function runReindex(options: ReindexOptions, databaseUrl: string): Promise<Record<string, unknown>> {
+  const repositoryIds = options.repositoryIds ?? [];
+  if (repositoryIds.some(id => !isValidUuid(id))
+    || (options.repairInvalidSummaries && options.execute && !repositoryIds.length)) {
+    throw new Error('Invalid-artifact recovery requires reviewed canonical repository IDs.');
+  }
   const client = postgres(databaseUrl, { max: 1, prepare: false });
   const report = {
     mode: options.execute ? 'execute' : 'dry-run',
-    scope: options.summaryBackfill ? 'missing-current-generated-summary' : 'all-active-repositories',
+    scope: options.repairInvalidSummaries ? 'invalid-current-summary'
+      : options.summaryBackfill ? 'missing-or-invalid-current-generated-summary' : 'all-active-repositories',
     campaign_id: options.campaignId,
     batch_size: options.batchSize,
     active: 0,
     eligible: 0,
     missing_content: 0,
     already_generated: 0,
+    invalid_artifacts: 0,
     queued: 0,
     would_queue: 0,
     already_queued: 0,
@@ -128,21 +148,13 @@ export async function runReindex(options: ReindexOptions, databaseUrl: string): 
   try {
     const counts = await client`
       SELECT count(*) FILTER (WHERE repo.status='active')::int AS active,
-        count(content.repo_id) FILTER (WHERE repo.status='active')::int AS with_content,
-        count(content.repo_id) FILTER (WHERE repo.status='active' AND (
-          ${options.summaryBackfill}=false OR NOT EXISTS (
-            SELECT 1 FROM app.repo_card_summaries summary
-            WHERE summary.repo_id=repo.repo_id AND summary.active
-              AND summary.content_version=content.content_version AND summary.source='generated'
-          )
-        ))::int AS eligible
+        count(content.repo_id) FILTER (WHERE repo.status='active')::int AS with_content
       FROM app.repos repo LEFT JOIN app.repo_content content ON content.repo_id=repo.repo_id
+      WHERE (${repositoryIds.length === 0} OR repo.repo_id=ANY(${repositoryIds}::uuid[]))
     `;
     report.active = Number(counts[0].active);
-    report.eligible = Number(counts[0].eligible);
     report.missing_content = report.active - Number(counts[0].with_content);
-    report.already_generated = Number(counts[0].with_content) - report.eligible;
-    report.skipped = report.missing_content + report.already_generated;
+    report.skipped = report.missing_content;
 
     let cursor: string | null = null;
     do {
@@ -155,9 +167,13 @@ export async function runReindex(options: ReindexOptions, databaseUrl: string): 
             content.primary_language,content.languages,
             content.content_hash,content.content_version,content.source_updated_at,
             stat.star_count,stat.fork_count,stat.open_issues_count,
-            COALESCE(stat.observed_at,content.updated_at) AS observed_at,topic_list.topics
+            COALESCE(stat.observed_at,content.updated_at) AS observed_at,topic_list.topics,active_summary.artifact AS active_summary
           FROM app.repos repo
           JOIN app.repo_content content ON content.repo_id=repo.repo_id
+          LEFT JOIN LATERAL (
+            SELECT to_jsonb(summary.*) AS artifact FROM app.repo_card_summaries summary
+            WHERE summary.repo_id=repo.repo_id AND summary.active LIMIT 1
+          ) active_summary ON true
           LEFT JOIN LATERAL (
             SELECT snapshot.star_count,snapshot.fork_count,snapshot.open_issues_count,snapshot.observed_at
             FROM app.repo_stat_snapshots snapshot WHERE snapshot.repo_id=repo.repo_id
@@ -169,15 +185,7 @@ export async function runReindex(options: ReindexOptions, databaseUrl: string): 
             WHERE relation.repo_id=repo.repo_id
           ) topic_list ON true
           WHERE repo.status='active' AND (${cursor}::uuid IS NULL OR repo.repo_id>${cursor}::uuid)
-            AND (
-              ${options.summaryBackfill}=false
-              OR NOT EXISTS (
-                SELECT 1 FROM app.repo_card_summaries summary
-                WHERE summary.repo_id=repo.repo_id AND summary.active
-                  AND summary.content_version=content.content_version
-                  AND summary.source='generated'
-              )
-            )
+            AND (${repositoryIds.length === 0} OR repo.repo_id=ANY(${repositoryIds}::uuid[]))
           ORDER BY repo.repo_id LIMIT ${options.batchSize}
           FOR SHARE OF repo,content
         ` as unknown as ReindexRow[];
@@ -185,7 +193,23 @@ export async function runReindex(options: ReindexOptions, databaseUrl: string): 
         let wouldQueue = 0;
         let alreadyQueued = 0;
         let invalid = 0;
+        let eligible = 0;
+        let alreadyGenerated = 0;
+        let skippedByScope = 0;
+        let invalidArtifacts = 0;
         for (const row of rows) {
+          const active = row.active_summary;
+          const accepted = Boolean(active && Number(active.content_version) === row.content_version
+            && isAcceptedStoredSummary(active, row));
+          if (active && !accepted) invalidArtifacts++;
+          const validGenerated = accepted && active?.source === 'generated';
+          if ((options.summaryBackfill && validGenerated)
+            || (options.repairInvalidSummaries && (!active || accepted))) {
+            skippedByScope++;
+            if (validGenerated) alreadyGenerated++;
+            continue;
+          }
+          eligible++;
           const job = buildCampaignRepositoryJob(row);
           if (!job) { invalid++; continue; }
           const key = campaignIdempotencyKey(options.campaignId, row.repo_id, row.content_version);
@@ -206,6 +230,7 @@ export async function runReindex(options: ReindexOptions, databaseUrl: string): 
         }
         return {
           rows: rows.length,
+          eligible, alreadyGenerated, skippedByScope, invalidArtifacts,
           cursor: rows.length > 0 ? rows.at(-1)!.repo_id : null,
           queued,
           wouldQueue,
@@ -213,6 +238,10 @@ export async function runReindex(options: ReindexOptions, databaseUrl: string): 
           invalid,
         };
       });
+      report.eligible += batch.eligible;
+      report.already_generated += batch.alreadyGenerated;
+      report.skipped += batch.skippedByScope;
+      report.invalid_artifacts += batch.invalidArtifacts;
       report.queued += batch.queued;
       report.would_queue += batch.wouldQueue;
       report.already_queued += batch.alreadyQueued;

@@ -168,6 +168,29 @@ async function applyRetroactiveV2Migrations(): Promise<void> {
   }
 }
 
+/** Fill only timestamp-skipped journal holes before newer dependent DDL runs.
+ * Every recorded timestamp stays <= the existing watermark, so this cannot
+ * cause Drizzle to skip other pending migrations by advancing its watermark.
+ */
+async function applySkippedJournalMigrations(): Promise<void> {
+  if (!await relationExists('drizzle', '__drizzle_migrations')) return;
+  const latest = await client`SELECT max(created_at) AS latest FROM drizzle.__drizzle_migrations`;
+  const watermark = Number(latest[0]?.latest ?? 0);
+  if (!watermark) return;
+  const hashes = await recordedMigrationHashes();
+  for (const entry of migrationEntries(journal.entries.map(entry => entry.tag))) {
+    if (entry.when > watermark || hashes.has(entry.hash)) continue;
+    await client.begin(async tx => {
+      for (const statement of entry.sql.split('--> statement-breakpoint')) {
+        if (statement.trim()) await tx.unsafe(statement).simple();
+      }
+      await tx`INSERT INTO drizzle.__drizzle_migrations(hash,created_at) VALUES(${entry.hash},${entry.when})`;
+    });
+    hashes.add(entry.hash);
+    console.log(`Reconciled timestamp-skipped migration ${entry.tag}.`);
+  }
+}
+
 async function adoptStructurallyVerifiedV2History(): Promise<void> {
   if (!await relationExists('app', 'users')) return;
 
@@ -236,12 +259,13 @@ try {
   await adoptLegacyHistory();
   await applyRetroactiveLegacyMigrations();
   await adoptStructurallyVerifiedV2History();
-  await applyRetroactiveV2Migrations();
+  await applySkippedJournalMigrations();
   await migrate(drizzle(client), {
     migrationsFolder,
     migrationsSchema: 'drizzle',
     migrationsTable: '__drizzle_migrations',
   });
+  await applyRetroactiveV2Migrations();
   console.log('Drizzle migrations are current.');
 } finally {
   await client.end();

@@ -398,3 +398,88 @@ integration('legacy backfill remains idempotent after versioned summary migratio
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+integration('delivered malformed artifacts recover through immutable successors and scoped campaigns', async () => {
+  const service = new OutboxService();
+  const model = 'accepted-malformed-model';
+  const originalJob = await claimedRow(crypto.randomUUID(), crypto.randomUUID(), 2);
+  const originalResponse = response(String(originalJob.payload.job_id), 2);
+  originalResponse.card_summary.model_version = model;
+  await service.completeRepositoryIndex(originalJob, originalResponse);
+  const original = (await sqlClient`SELECT * FROM app.repo_card_summaries WHERE repo_id=${repoId}::uuid AND active`)[0];
+  const malformed = 'It supports shared workflows. Teams review changes. Users share updates. Formats include, e.g.';
+  // Reproduce an artifact already accepted/delivered before validation tightened.
+  await sqlClient`UPDATE app.repo_card_summaries SET summary=${malformed} WHERE summary_id=${original.summary_id}::uuid`;
+  await sqlClient`UPDATE app.repos SET owner_github_id=7700 WHERE repo_id=${repoId}::uuid`;
+  const viewer = crypto.randomUUID(), serve = crypto.randomUUID();
+  await sqlClient`INSERT INTO auth.users(id) VALUES(${viewer}::uuid)`;
+  await sqlClient`INSERT INTO app.users(user_id,username) VALUES(${viewer}::uuid,${'repair_' + viewer})`;
+  await sqlClient`INSERT INTO telemetry.feed_serves(serve_id,feed_request_id,user_id,session_id,feed_version,source)
+    VALUES(${serve}::uuid,${crypto.randomUUID()}::uuid,${viewer}::uuid,${crypto.randomUUID()}::uuid,1,'personalized')`;
+  await sqlClient`INSERT INTO telemetry.feed_serve_items(serve_id,position,repo_id,source,summary_id)
+    VALUES(${serve}::uuid,0,${repoId}::uuid,'semantic',${original.summary_id}::uuid)`;
+  assert.equal(await service.replay(originalJob.outbox_id), false, 'dead-job replay cannot reset delivered jobs');
+  const options = { campaignId: 'invalid-summary-regression', execute: false, batchSize: 1,
+    summaryBackfill: false, repairInvalidSummaries: true, repositoryIds: [repoId] };
+  const dry = await runReindex(options, process.env.DATABASE_URL!);
+  assert.equal(dry.eligible, 1);
+  assert.equal(dry.invalid_artifacts, 1);
+  assert.equal(dry.would_queue, 1);
+  const generalBackfill = await runReindex({ ...options, repairInvalidSummaries: false, summaryBackfill: true }, process.env.DATABASE_URL!);
+  assert.ok(Number(generalBackfill.eligible) >= 1, 'invalid generated content is not protected by backfill eligibility');
+  assert.equal((await runReindex({ ...options, execute: true }, process.env.DATABASE_URL!)).queued, 1);
+  assert.equal((await runReindex({ ...options, execute: true }, process.env.DATABASE_URL!)).already_queued, 1);
+  assert.equal((await sqlClient`SELECT summary FROM app.repo_card_summaries WHERE summary_id=${original.summary_id}::uuid`)[0].summary, malformed);
+  const queued = (await sqlClient`UPDATE telemetry.ml_outbox SET status='claimed',claim_token=${claimToken}::uuid,claimed_at=now()
+    WHERE idempotency_key=${`repo_index:${repoId}:2:campaign:${options.campaignId}`} RETURNING *`)[0];
+  const fixed = response(String(queued.payload.job_id), 2);
+  fixed.card_summary.model_version = model;
+  fixed.card_summary.summary = 'Teams can inspect project ownership and coordinate changes. Developers can evaluate shared tooling with concise repository context.';
+  assert.equal(await service.completeRepositoryIndex(queued as OutboxRow, fixed), true);
+  const revisions = await sqlClient`SELECT * FROM app.repo_card_summaries WHERE repo_id=${repoId}::uuid AND model_version=${model} ORDER BY artifact_revision`;
+  assert.equal(revisions.length, 2);
+  assert.equal(revisions[0].summary_id, original.summary_id);
+  assert.equal(revisions[0].summary, malformed);
+  assert.equal(revisions[0].active, false);
+  assert.equal(revisions[1].artifact_revision, 1);
+  assert.equal(revisions[1].supersedes_summary_id, original.summary_id);
+  assert.equal(revisions[1].active, true);
+  assert.equal(revisions[1].summary, fixed.card_summary.summary);
+  assert.equal((await sqlClient`SELECT summary_id FROM telemetry.feed_serve_items WHERE serve_id=${serve}::uuid`)[0].summary_id, original.summary_id);
+  const persisted = (await sqlClient`SELECT response_payload FROM telemetry.ml_outbox WHERE outbox_id=${queued.outbox_id}::uuid`)[0].response_payload.backend_persistence;
+  assert.equal(persisted.artifact_status, 'invalid_artifact_replaced');
+  assert.equal(persisted.summary_id, revisions[1].summary_id);
+  const repeat = await claimedRow(crypto.randomUUID(), crypto.randomUUID(), 2);
+  const different = { ...fixed, job_id: String(repeat.payload.job_id), card_summary: { ...fixed.card_summary,
+    summary: 'A rebuilt provider proposes different safe wording. The valid first writer must still remain canonical.' } };
+  await service.completeRepositoryIndex(repeat, different);
+  assert.equal((await sqlClient`SELECT summary_id FROM app.repo_card_summaries WHERE repo_id=${repoId}::uuid AND active`)[0].summary_id, revisions[1].summary_id);
+  assert.equal((await runReindex(options, process.env.DATABASE_URL!)).eligible, 0);
+
+  // Concurrent repaired responses produce one successor; the next valid writer is retained.
+  await sqlClient`UPDATE app.repo_card_summaries SET summary=${malformed} WHERE summary_id=${revisions[1].summary_id}::uuid`;
+  const concurrent = await Promise.all([claimedRow(crypto.randomUUID(), crypto.randomUUID(), 2), claimedRow(crypto.randomUUID(), crypto.randomUUID(), 2)]);
+  await Promise.all(concurrent.map(row => service.completeRepositoryIndex(row, { ...fixed, job_id: String(row.payload.job_id) })));
+  const after = await sqlClient`SELECT artifact_revision,active FROM app.repo_card_summaries WHERE repo_id=${repoId}::uuid AND model_version=${model} ORDER BY artifact_revision`;
+  assert.deepEqual(after.map(row => [row.artifact_revision,row.active]), [[0,false],[1,false],[2,true]]);
+});
+
+integration('fallback preservation rejects malformed generated rows and migration reapply preserves revisions', async () => {
+  const service = new OutboxService();
+  const old = (await sqlClient`SELECT summary_id FROM app.repo_card_summaries WHERE repo_id=${repoId}::uuid AND active`)[0];
+  await sqlClient`UPDATE app.repo_card_summaries SET summary='GPL. Teams can redistribute the software.' WHERE summary_id=${old.summary_id}::uuid`;
+  const job = await claimedRow(crypto.randomUUID(), crypto.randomUUID(), 2);
+  const fallback = response(String(job.payload.job_id), 2);
+  fallback.card_summary.source = 'description_fallback';
+  fallback.card_summary.model_version = 'repository-description-fallback-v1';
+  await service.completeRepositoryIndex(job, fallback);
+  assert.equal((await sqlClient`SELECT source FROM app.repo_card_summaries WHERE repo_id=${repoId}::uuid AND active`)[0].source, 'description_fallback');
+  assert.equal((await sqlClient`SELECT active FROM app.repo_card_summaries WHERE summary_id=${old.summary_id}::uuid`)[0].active, false);
+  const { readFileSync } = await import('node:fs');
+  const migration = readFileSync(new URL('../../../database/migrations/0027_summary_artifact_revisions.sql', import.meta.url), 'utf8');
+  await sqlClient.unsafe(migration).simple();
+  await sqlClient.unsafe(migration).simple();
+  const names = await sqlClient`SELECT indexname FROM pg_indexes WHERE schemaname='app' AND indexname IN ('repo_card_summaries_versioned_uidx','repo_card_summaries_revisioned_uidx')`;
+  assert.deepEqual(names.map(row => row.indexname), ['repo_card_summaries_revisioned_uidx']);
+  assert.equal(Number((await sqlClient`SELECT count(*) AS n FROM app.repo_card_summaries WHERE repo_id=${repoId}::uuid AND model_version='accepted-malformed-model'`)[0].n), 3);
+});

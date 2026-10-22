@@ -56,3 +56,15 @@ test('campaign reindex preserves canonical identity/version and builds a fresh s
     'repo_index:00000000-0000-4000-8000-000000000001:7:campaign:v2-strict-20260721',
   );
 });
+test('invalid-summary repair is read-only by default and execution requires explicit repository scope', () => {
+  assert.deepEqual(parseReindexOptions(['--campaign=repair-contract-v1', '--repair-invalid-summaries']), {
+    campaignId: 'repair-contract-v1', execute: false, batchSize: 100, summaryBackfill: false, repairInvalidSummaries: true,
+  });
+  assert.throws(() => parseReindexOptions(['--campaign=repair-contract-v1', '--repair-invalid-summaries', '--execute']), /--repo-id/);
+  const scoped = parseReindexOptions(['--campaign=repair-contract-v1', '--repair-invalid-summaries', '--execute',
+    '--repo-id=00000000-0000-4000-8000-000000000701']);
+  assert.equal(scoped.execute, true);
+  assert.deepEqual(scoped.repositoryIds, ['00000000-0000-4000-8000-000000000701']);
+  assert.throws(() => parseReindexOptions(['--campaign=repair-contract-v1', '--repair-invalid-summaries', '--summary-backfill']), /Choose/);
+  assert.throws(() => parseReindexOptions(['--campaign=repair-contract-v1', '--repair-invalid-summaries', '--repo-id=invalid']), /canonical UUID/);
+});

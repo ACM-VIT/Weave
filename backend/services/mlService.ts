@@ -155,11 +155,20 @@ export function parseMlRepositoryIndexResponse(
     repositoryIndexContractError('ML repository-index response did not match the requested repository version.');
   }
 
-  if (!value.card_summary || typeof value.card_summary !== 'object'
-    || Array.isArray(value.card_summary)) {
+  validateRepositoryCardSummary(value.card_summary, job.repository);
+  return body as MlRepositoryIndexResponse;
+}
+
+/** The same acceptance policy applies to incoming and already persisted artifacts. */
+export function validateRepositoryCardSummary(
+  body: unknown,
+  repository: { readme?: string | null; description?: string | null },
+): void {
+  if (!body || typeof body !== 'object'
+    || Array.isArray(body)) {
     repositoryIndexContractError('ML repository-index response is missing card_summary.');
   }
-  const artifact = value.card_summary as Record<string, unknown>;
+  const artifact = body as Record<string, unknown>;
   if (!exactObjectKeys(artifact, [
     'format_version', 'highlights', 'model_version', 'prompt_version', 'source', 'summary',
   ])) repositoryIndexContractError('ML repository-index card_summary violated the versioned artifact contract.');
@@ -167,19 +176,19 @@ export function parseMlRepositoryIndexResponse(
   const summary = artifact.summary;
   const highlights = artifact.highlights;
   const allowedFallbackSource = artifact.source === 'description_fallback'
-    ? job.repository.description
+    ? repository.description
     : null;
   if (typeof summary !== 'string' || summary !== summary.trim()
     // Python len(str) and PostgreSQL char_length count Unicode codepoints.
     || [...summary].length < 1 || [...summary].length > 360
     || !hasTwoOrThreeCompleteSentences(summary)
     || hasForbiddenCardContent(summary)
-    || containsCopiedPassage(summary, job.repository.readme, allowedFallbackSource)
+    || containsCopiedPassage(summary, repository.readme, allowedFallbackSource)
     || !Array.isArray(highlights) || highlights.length > 3
     || !highlights.every((item) => typeof item === 'string'
       && item === item.trim() && [...item].length >= 1 && [...item].length <= 96
       && !hasForbiddenCardContent(item)
-      && !containsCopiedPassage(item, job.repository.readme, allowedFallbackSource))
+      && !containsCopiedPassage(item, repository.readme, allowedFallbackSource))
     || !boundedVersion(artifact.prompt_version)
     || !boundedVersion(artifact.model_version, 256)
     || !boundedVersion(artifact.format_version)
@@ -190,7 +199,6 @@ export function parseMlRepositoryIndexResponse(
       && artifact.model_version === ML_DESCRIPTION_FALLBACK_MODEL_VERSION)) {
     repositoryIndexContractError('ML repository-index card_summary contains invalid bounded content or provenance.');
   }
-  return body as MlRepositoryIndexResponse;
 }
 
 export class MlV2Client implements RecommendationPort, OutboxTransportPort {
