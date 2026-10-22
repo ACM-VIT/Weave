@@ -67,29 +67,51 @@ export class IncrementalActivityStorage {
     }
   }
 
+  private async preserveDamagedRecord(path: string): Promise<void> {
+    if (!this.fileSystem.exists(path)) return;
+    const timestamp = this.fileSystem.now?.() ?? Date.now();
+    let suffix = 0;
+    let backup = `${path}.corrupt-${timestamp}`;
+    while (this.fileSystem.exists(backup)) backup = `${path}.corrupt-${timestamp}-${++suffix}`;
+    // A failed preservation blocks repair; never overwrite the damaged bytes in that case.
+    await this.fileSystem.move(path, backup, false);
+  }
+
   private async initialize(): Promise<void> {
     if (this.initialized) return;
     // Build fresh state on every failed initialization retry; never expose a partial migration.
     const records = new Map<string, StoredEvent>();
+    const markerFileSystem = this.validatedFileSystem(events => events.length === 0);
+    const migrated = await this.validSnapshot(MIGRATION_MARKER, markerFileSystem);
+    let legacyEvents: QueuedActivity[] | undefined;
+    const legacy = async () => legacyEvents ??= await this.loadLegacy();
     const paths = new Map<string, string>();
     let nextSequence = 0;
     for (const name of await this.fileSystem.list()) {
-      const match = RECORD_NAME.exec(name);
+      // Before migration commits, backups also retain the original sequence/path if repair
+      // itself was interrupted after preservation. Do not resurrect acknowledged backups later.
+      const candidate = migrated ? name : name.replace(/\.corrupt-\d+(?:-\d+)?$/, '');
+      const match = RECORD_NAME.exec(candidate);
       if (!match) continue;
       const sequence = Number(match[1]);
       if (!Number.isSafeInteger(sequence)) throw new Error('Activity record sequence is invalid.');
       nextSequence = Math.max(nextSequence, sequence + 1);
-      paths.set(name.replace(/\.tmp$/, ''), match[2]);
+      paths.set(candidate.replace(/\.tmp$/, ''), match[2]);
     }
     for (const [path, eventId] of [...paths].sort(([left], [right]) => left.localeCompare(right))) {
       const fileSystem = this.recordFileSystem(eventId);
       const temporaryPath = `${path}.tmp`;
       const mainValid = await this.validSnapshot(path, fileSystem);
       const temporaryValid = await this.validSnapshot(temporaryPath, fileSystem);
-      if ((this.fileSystem.exists(path) && !mainValid && !temporaryValid)
-        || (!mainValid && this.fileSystem.exists(temporaryPath) && !temporaryValid)) {
-        // Leave unreadable records untouched and block, rather than silently dropping an unsent event.
-        throw new Error(`Activity outbox record could not be recovered: ${path}`);
+      if (!mainValid && !temporaryValid) {
+        const fallback = !migrated ? (await legacy()).find(event => event.event_id === eventId) : undefined;
+        if (!fallback) {
+          // Leave unreadable records untouched when no known-valid source can repair them.
+          throw new Error(`Activity outbox record could not be recovered: ${path}`);
+        }
+        await this.preserveDamagedRecord(path);
+        await this.preserveDamagedRecord(temporaryPath);
+        await writeNativeActivitySnapshot(fileSystem, path, temporaryPath, [fallback]);
       }
       const [event] = await loadNativeActivitySnapshot(fileSystem, path, temporaryPath);
       if (!event || !await this.validSnapshot(path, fileSystem)) {
@@ -100,11 +122,10 @@ export class IncrementalActivityStorage {
       else records.set(event.event_id, { event, paths: [path] });
     }
 
-    const markerFileSystem = this.validatedFileSystem(events => events.length === 0);
-    if (!await this.validSnapshot(MIGRATION_MARKER, markerFileSystem)) {
+    if (!migrated) {
       // A missing/partial marker means import may be incomplete. Legacy data is never deleted.
       // No enqueue or acknowledgement can interleave with import before this marker commits.
-      for (const event of await this.loadLegacy()) {
+      for (const event of await legacy()) {
         if (records.has(event.event_id)) continue;
         if (!Number.isSafeInteger(nextSequence)) throw new Error('Activity record sequence exhausted.');
         const path = this.recordPath(nextSequence++, event.event_id);

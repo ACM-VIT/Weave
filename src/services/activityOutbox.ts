@@ -35,7 +35,7 @@ type ActivityListener = (result: ActivityFlushResult) => void | Promise<void>;
 
 export class DurableActivityOutbox {
   private events: QueuedActivity[] = [];
-  private readonly ready: Promise<void>;
+  private ready: Promise<void> | undefined;
   private mutationTail: Promise<unknown> = Promise.resolve();
   private queuedIds = new Set<string>();
   private readonly undurable = new Map<string, QueuedActivity>();
@@ -48,12 +48,21 @@ export class DurableActivityOutbox {
   private lastFeedVersion: string | undefined;
 
   constructor(private readonly dependencies: ActivityOutboxDependencies) {
-    this.ready = dependencies.load().then((stored) => {
+    void this.restore().catch(() => undefined);
+  }
+
+  private restore(): Promise<void> {
+    if (this.ready) return this.ready;
+    const restoration = this.dependencies.load().then(stored => {
       this.events = [...new Map(stored.map(event => [event.event_id, event])).values()];
       this.queuedIds = new Set(this.events.map(event => event.event_id));
     });
-    // Restoration failures still reject enqueue/flush; observe early rejection until callers attach.
-    void this.ready.catch(() => undefined);
+    this.ready = restoration;
+    // A failed read/import blocks this operation, not every later attempt after storage recovers.
+    void restoration.catch(() => {
+      if (this.ready === restoration) this.ready = undefined;
+    });
+    return restoration;
   }
 
   subscribe(listener: ActivityListener): () => void {
@@ -106,7 +115,7 @@ export class DurableActivityOutbox {
 
   async enqueue(input: ActivityInput): Promise<QueuedActivity> {
     const event = this.dependencies.prepare(input);
-    await this.ready;
+    await this.restore();
     await this.mutate(async () => {
       if (!this.queuedIds.has(event.event_id)) {
         this.events.push(event);
@@ -120,7 +129,7 @@ export class DurableActivityOutbox {
   }
 
   async pendingCount(): Promise<number> {
-    await this.ready;
+    await this.restore();
     await this.mutationTail.catch(() => undefined);
     return this.events.length;
   }
@@ -136,7 +145,7 @@ export class DurableActivityOutbox {
   }
 
   private async flushInternal(token: string): Promise<ActivityFlushResult> {
-    await this.ready;
+    await this.restore();
     await this.mutationTail.catch(() => undefined);
     if (this.events.length === 0) {
       return { delivered: 0, invalidatedFeed: false, deferred: false };
@@ -160,6 +169,13 @@ export class DurableActivityOutbox {
         const result = await this.dependencies.send(batch, token);
         if (!result) throw new Error('The activity service did not acknowledge the batch.');
         this.lastFeedVersion = result.feed_version;
+        const confirmed = applyActivityAcknowledgement([], batch, result);
+        if (confirmed.acknowledgedIds.size === 0) {
+          throw new Error('The activity service did not acknowledge any queued events.');
+        }
+        // Server-confirmed feed changes must notify/retain their reset even if local cleanup fails.
+        delivered += confirmed.acknowledgedIds.size;
+        invalidatedFeed ||= confirmed.invalidatesFeed;
 
         const acknowledgement = await this.mutate(async () => {
           const acknowledgement = applyActivityAcknowledgement(this.events, batch, result);
@@ -181,8 +197,6 @@ export class DurableActivityOutbox {
           return acknowledgement;
         });
         snapshot = snapshot.filter((event) => !acknowledgement.acknowledgedIds.has(event.event_id));
-        delivered += acknowledgement.acknowledgedIds.size;
-        invalidatedFeed ||= acknowledgement.invalidatesFeed;
 
         if (acknowledgement.acknowledgedIds.size !== batch.length) {
           throw new Error('The activity service only acknowledged part of the batch.');

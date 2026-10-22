@@ -10,10 +10,14 @@ import { IncrementalActivityStorage, type ActivityRecordFileSystem } from './act
 
 const LEGACY_KEY_PREFIX = 'ghsocial.activity-outbox.v2';
 const RECORD_KEY_PREFIX = 'ghsocial.activity-outbox.v3';
+const ACCOUNT_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const userStores = new Map<string, Promise<IncrementalActivityStorage>>();
 
 function legacyUserId(userId: string): string {
-  return userId.replace(/[^a-zA-Z0-9-]/g, '_');
+  // v2 records have no embedded owner. Only canonical account IDs have an unambiguous old key;
+  // arbitrary strings could alias another user's lossy character-replacement namespace.
+  if (!ACCOUNT_UUID.test(userId)) throw new Error('A canonical account UUID is required for activity migration.');
+  return userId;
 }
 
 async function createStorage(userId: string): Promise<IncrementalActivityStorage> {
