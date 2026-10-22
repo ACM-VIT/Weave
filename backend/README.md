@@ -85,6 +85,21 @@ Topic slugs are lowercase letters/numbers/hyphens, 1-50 characters. Onboarding a
 | `GET /api/v2/repositories/trending` | `period` default `daily` | Active complete trending snapshot, ordered by position |
 | `GET /api/v2/repositories/saved` | `limit`, `offset` | Current user's saved repositories |
 
+Trending card responses are shared across viewers inside each API process, with
+at most three cached responses of 100 cards and a five-second freshness bound
+for counters, summaries, content and repository status. Every request rechecks
+eligible active snapshots; snapshot IDs, activation versions and available-period
+changes invalidate the response immediately, including ingestion from another
+process. `ETag` covers the exact JSON response. Conditional GET/HEAD requests
+return an empty `304` when unchanged; `Cache-Control: private, no-cache` requires
+clients to revalidate through authentication rather than serving stale responses.
+Hydration has a five-second caller deadline and a transaction-local four-second
+PostgreSQL statement timeout. Expired pending work accepts no new waiters or
+replacement query for that period until the underlying operation settles;
+over-budget/busy requests return `503` with `Retry-After: 1` rather than stale cards.
+Viewer reactions, saves and List selections must be loaded outside this shared
+public cache; any viewer overlay must have its final response ETag recomputed.
+
 The frontend cannot import or mutate repository metadata. It records likes, saves, views, and other behavior through the interaction endpoint below. Repository details come from PostgreSQL, not ML/Qdrant.
 
 ### Feed
@@ -305,6 +320,22 @@ after a newer canonical job for that repository has been delivered.
 Databases with the known parent-journal history are upgraded directly: the migrator executes and records the retroactive `0004_add_likes_given` and `0005_add_is_saved` SQL before `0008`. Do not set `ADOPT_LEGACY_SCHEMA` for that normal upgrade. The one-time `ADOPT_LEGACY_SCHEMA=1` escape hatch is only for an audited schema whose baseline Drizzle history is genuinely absent or incomplete. The migrator structurally verifies each legacy/v2 migration before recording its hash and refuses adoption when a required table, column, grant, view, or role is missing. Exercise it on a clone and run `schema:audit` before using it against the target.
 
 For verification use `npm run build`, `npm test`, database integration with `RUN_DATABASE_INTEGRATION=1`, parent-history migration integration with `RUN_MIGRATION_UPGRADE_INTEGRATION=1`, and HTTP integration with `RUN_HTTP_INTEGRATION=1`. The integration suite uses Redis database 14 by default and clears only that test database.
+
+Run the PostgreSQL Trending cache checks separately from other database suites:
+
+```sh
+# From backend/, after migrating an otherwise empty disposable weave_scroll database:
+DATABASE_URL=postgresql://postgres@127.0.0.1:55424/weave_scroll \
+  RUN_TRENDING_INTEGRATION=1 \
+  node --import tsx --test tests/trending/trending.integration.test.ts
+```
+
+Use your disposable PostgreSQL instance's port and credentials. This suite requires
+a migrated database named `weave_scroll` on a loopback host, outside production,
+with no URL query/hash and no pre-existing active, complete Trending snapshots.
+It creates and removes its own synthetic repositories and snapshots; do not run
+it alongside other suites that change those tables. Redis and ML are not needed.
+Without `RUN_TRENDING_INTEGRATION=1`, these PostgreSQL checks are skipped.
 
 For a strict ML collection rebuild, run `npm run reindex:ml -- --campaign=<id>`
 first as a dry run, then repeat with `--execute` only after reviewing the counts
