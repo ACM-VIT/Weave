@@ -15,7 +15,7 @@ export async function readiness(_req: Request, res: Response): Promise<void> {
 export async function operationsStatus(_req: Request, res: Response): Promise<void> {
   try {
     const runtime = getApplicationRuntime();
-    res.status(200).json({ ...(await runtime.health()), outbox: await outbox.status(), metrics: snapshotMetrics() });
+    res.status(200).json({ ...(await runtime.health()), outbox: await outbox.status(), prewarm: await runtime.prewarm.status(), metrics: snapshotMetrics() });
   } catch (error) {
     res.status(503).json({ healthy: false, error: error instanceof Error ? error.message : String(error) });
   }

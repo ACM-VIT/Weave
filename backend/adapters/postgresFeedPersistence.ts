@@ -66,17 +66,85 @@ export class PostgresFeedPersistence implements FeedPersistencePort, FeedReconci
     `;
   }
 
+  async getGenerationContext(userId: string) {
+    await this.getFeedVersion(userId);
+    const rows = await sqlClient`
+      SELECT state.feed_version,u.profile_version,
+        COALESCE(job.profile_version=u.profile_version,false) AS delivered
+      FROM app.users u JOIN app.user_feed_state state USING(user_id)
+      LEFT JOIN telemetry.feed_prewarm_jobs job USING(user_id)
+      WHERE u.user_id=${userId}::uuid AND u.status='active'
+    `;
+    return rows[0] ? { feedVersion: BigInt(rows[0].feed_version),
+      profileVersion: BigInt(rows[0].profile_version), delivered: rows[0].delivered === true } : null;
+  }
+
+  async recordMlProfileDelivered(userId: string, profileVersion: bigint): Promise<boolean> {
+    return sqlClient.begin(async tx => {
+      // The network call has already finished. Lock the user before feed/job
+      // access and reject an acknowledgement for a superseded profile.
+      const users = await tx`SELECT user_id FROM app.users
+        WHERE user_id=${userId}::uuid AND status='active'
+          AND profile_version=${profileVersion.toString()}::bigint FOR KEY SHARE`;
+      if (!users.length) return false;
+      await tx`INSERT INTO app.user_feed_state(user_id) VALUES(${userId}::uuid)
+        ON CONFLICT(user_id) DO NOTHING`;
+      await tx`
+        INSERT INTO telemetry.feed_prewarm_jobs(user_id,feed_version,profile_version)
+        SELECT user_id,feed_version,${profileVersion.toString()}::bigint
+        FROM app.user_feed_state WHERE user_id=${userId}::uuid
+        ON CONFLICT(user_id) DO UPDATE SET feed_version=EXCLUDED.feed_version,
+          profile_version=EXCLUDED.profile_version,status='pending',scheduled_at=now(),
+          available_at=now(),claimed_at=NULL,claim_token=NULL,attempts=0,last_error=NULL
+        WHERE telemetry.feed_prewarm_jobs.profile_version<>EXCLUDED.profile_version
+          OR telemetry.feed_prewarm_jobs.feed_version<>EXCLUDED.feed_version
+      `;
+      return true;
+    });
+  }
+
+  async hasServedFeed(userId: string, feedVersion: bigint): Promise<boolean> {
+    const rows = await sqlClient`SELECT 1 FROM telemetry.feed_serves
+      WHERE user_id=${userId}::uuid AND feed_version=${feedVersion.toString()}::bigint LIMIT 1`;
+    return rows.length > 0;
+  }
+
+  async hasPublishedGeneration(userId: string, feedVersion: bigint): Promise<boolean> {
+    const rows = await sqlClient`
+      SELECT state.last_published_feed_version >= ${feedVersion.toString()}::bigint
+        OR EXISTS (SELECT 1 FROM telemetry.generation_attempts attempt
+          WHERE attempt.user_id=state.user_id AND attempt.feed_version=${feedVersion.toString()}::bigint
+            AND attempt.status='completed' AND attempt.mode IN ('live','prewarm'))
+        AS published
+      FROM app.user_feed_state state WHERE state.user_id=${userId}::uuid
+    `;
+    return rows[0]?.published === true;
+  }
+
+  async markGenerationPublished(userId: string, feedVersion: bigint): Promise<void> {
+    await sqlClient`
+      UPDATE app.user_feed_state SET last_published_feed_version=
+        greatest(last_published_feed_version,${feedVersion.toString()}::bigint)
+      WHERE user_id=${userId}::uuid AND feed_version>=${feedVersion.toString()}::bigint
+    `;
+  }
+
   async getFeedVersion(userId: string): Promise<bigint> {
     const rows = await sqlClient`SELECT feed_version FROM app.user_feed_state WHERE user_id=${userId}::uuid`;
     if (rows.length) return BigInt(rows[0].feed_version);
-    const inserted = await sqlClient`
-      INSERT INTO app.user_feed_state (user_id) VALUES (${userId}::uuid)
-      ON CONFLICT (user_id) DO NOTHING RETURNING feed_version
-    `;
-    if (inserted.length) return BigInt(inserted[0].feed_version);
-    const current = await sqlClient`SELECT feed_version FROM app.user_feed_state WHERE user_id=${userId}::uuid`;
-    if (!current.length) throw new Error('User feed state is unavailable.');
-    return BigInt(current[0].feed_version);
+    return sqlClient.begin(async tx => {
+      // Missing-state initialization must use the same user-before-feed order
+      // as profile and interaction writers, including the INSERT's FK check.
+      await tx`SELECT user_id FROM app.users WHERE user_id=${userId}::uuid FOR KEY SHARE`;
+      const inserted = await tx`
+        INSERT INTO app.user_feed_state (user_id) VALUES (${userId}::uuid)
+        ON CONFLICT (user_id) DO NOTHING RETURNING feed_version
+      `;
+      if (inserted.length) return BigInt(inserted[0].feed_version);
+      const current = await tx`SELECT feed_version FROM app.user_feed_state WHERE user_id=${userId}::uuid`;
+      if (!current.length) throw new Error('User feed state is unavailable.');
+      return BigInt(current[0].feed_version);
+    });
   }
 
   async listExcludedRepositoryIds(userId: string, sessionId: string | undefined, limit: number): Promise<string[]> {

@@ -31,7 +31,8 @@ export interface FeedQueuePort {
   release(userId: string, version: bigint, requestId: string, token: string): Promise<boolean>;
   replace(userId: string, version: bigint, items: RecommendationEntry[], ttlSeconds: number): Promise<void>;
   renewGenerationLock(userId: string, version: bigint, token: string, ttlMs: number): Promise<boolean>;
-  publishGeneration(userId: string, version: bigint, token: string, items: RecommendationEntry[], ttlSeconds: number): Promise<boolean>;
+  hasPublishedGeneration(userId: string, version: bigint): Promise<boolean>;
+  publishGeneration(userId: string, version: bigint, token: string, items: RecommendationEntry[], ttlSeconds: number, onlyIfUnpublished?: boolean): Promise<boolean>;
   depth(userId: string, version: bigint): Promise<number>;
   acquireGenerationLock(userId: string, version: bigint, token: string, ttlMs: number): Promise<boolean>;
   releaseGenerationLock(userId: string, version: bigint, token: string): Promise<void>;
@@ -118,9 +119,18 @@ export class RedisFeedQueue implements FeedQueuePort {
       this.lockKey(userId, version), token, ttlMs)) === 1;
   }
 
-  async publishGeneration(userId: string, version: bigint, token: string, items: RecommendationEntry[], ttlSeconds: number): Promise<boolean> {
-    return Number(await this.redis.eval(PUBLISH_GENERATION_LUA, 2,
-      this.lockKey(userId, version), this.queueKey(userId, version), token, ttlSeconds,
+  private publicationKey(userId: string, version: bigint): string {
+    return `feed:v2:published:${userId}:${version}`;
+  }
+
+  async hasPublishedGeneration(userId: string, version: bigint): Promise<boolean> {
+    return await this.redis.exists(this.publicationKey(userId, version)) === 1;
+  }
+
+  async publishGeneration(userId: string, version: bigint, token: string, items: RecommendationEntry[], ttlSeconds: number, onlyIfUnpublished = false): Promise<boolean> {
+    return Number(await this.redis.eval(PUBLISH_GENERATION_LUA, 3,
+      this.lockKey(userId, version), this.queueKey(userId, version), this.publicationKey(userId, version),
+      token, ttlSeconds, onlyIfUnpublished ? '1' : '0',
       ...items.map(item => JSON.stringify(item)))) === 1;
   }
 

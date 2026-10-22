@@ -44,13 +44,14 @@ try {
   const columnRows = await client`
     SELECT table_schema,table_name,column_name
     FROM information_schema.columns
-    WHERE (table_schema='app' AND table_name IN ('users','oauth_codes','repo_content','repo_card_summaries'))
-       OR (table_schema='telemetry' AND table_name IN ('ml_outbox','counter_reconciliation_progress'))
+    WHERE (table_schema='app' AND table_name IN ('users','oauth_codes','repo_content','repo_card_summaries','user_feed_state'))
+       OR (table_schema='telemetry' AND table_name IN ('ml_outbox','counter_reconciliation_progress','feed_prewarm_jobs'))
   `;
   const columns = new Set(columnRows.map(
     (row) => `${row.table_schema}.${row.table_name}.${row.column_name}`,
   ));
   for (const requiredColumn of [
+    'app.user_feed_state.last_published_feed_version',
     'app.users.interests',
     'app.users.skills',
     'app.users.tech_stack',
@@ -72,6 +73,8 @@ try {
     'telemetry.counter_reconciliation_progress.upper_id',
     'telemetry.counter_reconciliation_progress.completed_sweeps',
     'telemetry.counter_reconciliation_progress.updated_at',
+    ...['user_id','feed_version','profile_version','status','scheduled_at','available_at','claimed_at','claim_token','attempts','last_error']
+      .map(name => `telemetry.feed_prewarm_jobs.${name}`),
   ]) {
     if (!columns.has(requiredColumn)) missing.push(`column:${requiredColumn}`);
   }
@@ -141,6 +144,25 @@ try {
   const functions = new Set(functionRows.map((row) => String(row.proname)));
   for (const name of manifest.functions) if (!functions.has(name)) missing.push(`function:app.${name}`);
 
+  const wakeTriggers = await client`
+    SELECT relation.relname AS table_name,trigger.tgname AS name,procedure.proname AS function_name
+    FROM pg_trigger trigger JOIN pg_class relation ON relation.oid=trigger.tgrelid
+    JOIN pg_namespace namespace ON namespace.oid=relation.relnamespace
+    JOIN pg_proc procedure ON procedure.oid=trigger.tgfoid
+    JOIN pg_namespace function_namespace ON function_namespace.oid=procedure.pronamespace
+      AND function_namespace.nspname='telemetry'
+    WHERE namespace.nspname='telemetry' AND NOT trigger.tgisinternal AND trigger.tgenabled IN ('O','A')
+  `;
+  for (const [table,name,fn] of [
+    ['ml_outbox','ml_outbox_wake','notify_worker_ready'],
+    ['feed_prewarm_jobs','feed_prewarm_wake','notify_worker_ready'],
+    ['ml_outbox','ml_outbox_onboarding_prewarm','schedule_onboarding_prewarm'],
+  ]) {
+    if (!wakeTriggers.some(row => row.table_name === table && row.name === name && row.function_name === fn)) {
+      missing.push(`trigger:telemetry.${table}.${name}`);
+    }
+  }
+
   const roleRows = await client`SELECT rolname FROM pg_roles`;
   const roles = new Set(roleRows.map((row) => String(row.rolname)));
   for (const name of manifest.roles) if (!roles.has(name)) missing.push(`role:${name}`);
@@ -179,7 +201,10 @@ try {
       'SELECT'
     ) AND has_table_privilege(
       'ghsocial_backend','telemetry.counter_reconciliation_progress','UPDATE'
-    ) AS can_reconcile_counters
+    ) AS can_reconcile_counters,
+    has_table_privilege('ghsocial_backend','telemetry.feed_prewarm_jobs','SELECT')
+      AND has_table_privilege('ghsocial_backend','telemetry.feed_prewarm_jobs','INSERT')
+      AND has_table_privilege('ghsocial_backend','telemetry.feed_prewarm_jobs','UPDATE') AS can_schedule_prewarm
   `;
   if (runtimeGrantRows[0]?.can_assign_feedback_version !== true) {
     missing.push('required-grant:ghsocial_backend:telemetry.interaction_events.feedback_version:UPDATE');
@@ -192,6 +217,9 @@ try {
   }
   if (runtimeGrantRows[0]?.can_reconcile_counters !== true) {
     missing.push('required-grant:ghsocial_backend:telemetry.counter_reconciliation_progress:SELECT,UPDATE');
+  }
+  if (runtimeGrantRows[0]?.can_schedule_prewarm !== true) {
+    missing.push('required-grant:ghsocial_backend:telemetry.feed_prewarm_jobs:SELECT,INSERT,UPDATE');
   }
 
   const migrationRows = await client`

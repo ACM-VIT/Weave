@@ -74,9 +74,30 @@ export const userStats = appSchema.table('user_stats', {
 export const userFeedState = appSchema.table('user_feed_state', {
   userId: uuid('user_id').primaryKey().references(() => appUsers.userId, { onDelete: 'cascade' }),
   feedVersion: bigint('feed_version', { mode: 'bigint' }).notNull().default(1n),
+  lastPublishedFeedVersion: bigint('last_published_feed_version', { mode: 'bigint' }).notNull().default(0n),
   feedbackVersion: bigint('feedback_version', { mode: 'bigint' }).notNull().default(0n),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 });
+
+export const feedPrewarmJobs = telemetrySchema.table('feed_prewarm_jobs', {
+  userId: uuid('user_id').primaryKey().references(() => appUsers.userId, { onDelete: 'cascade' }),
+  feedVersion: bigint('feed_version', { mode: 'bigint' }).notNull(),
+  profileVersion: bigint('profile_version', { mode: 'bigint' }).notNull(),
+  status: text('status').notNull().default('pending'),
+  scheduledAt: timestamp('scheduled_at', { withTimezone: true }).notNull().defaultNow(),
+  availableAt: timestamp('available_at', { withTimezone: true }).notNull().defaultNow(),
+  claimedAt: timestamp('claimed_at', { withTimezone: true }),
+  claimToken: uuid('claim_token'),
+  attempts: integer('attempts').notNull().default(0),
+  lastError: text('last_error'),
+}, table => [
+  index('feed_prewarm_ready_idx').on(table.availableAt, table.userId).where(sql`${table.status} IN ('pending','claimed')`),
+  index('feed_prewarm_expiry_idx').on(table.scheduledAt, table.userId).where(sql`${table.status} IN ('pending','claimed')`),
+  check('feed_prewarm_status_check', sql`${table.status} IN ('pending','claimed','completed','expired')`),
+  check('feed_prewarm_attempts_check', sql`${table.attempts} >= 0`),
+  check('feed_prewarm_claim_check', sql`(${table.status}='claimed' AND ${table.claimedAt} IS NOT NULL AND ${table.claimToken} IS NOT NULL)
+    OR (${table.status}<>'claimed' AND ${table.claimedAt} IS NULL AND ${table.claimToken} IS NULL)`),
+]);
 
 export const socialProfiles = appSchema.table('social_profiles', {
   profileId: uuid('profile_id').defaultRandom().primaryKey(),
@@ -521,4 +542,5 @@ export const generationAttempts = telemetrySchema.table('generation_attempts', {
   resultCount: integer('result_count'),
   errorCode: text('error_code'),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
-});
+}, table => [index('generation_attempts_published_idx').on(table.userId, table.feedVersion)
+  .where(sql`${table.status}='completed' AND ${table.mode} IN ('live','prewarm')`)]);
