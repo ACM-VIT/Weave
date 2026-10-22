@@ -13,6 +13,7 @@ import {
   buildMlRepositorySource,
   normalizeCanonicalRepositoryReadme,
   repositoryContentHash,
+  repositoryRefreshIdempotencyKey,
 } from '../services/mlRepositoryPayloadService.js';
 import { reconcileGithubProfileForIngestion } from '../services/socialProfileService.js';
 
@@ -57,35 +58,48 @@ export class PostgresRepositoryPersistence implements RepositoryPersistencePort 
           ON CONFLICT (github_id) DO UPDATE SET github_node_id=EXCLUDED.github_node_id,
             owner_github_id=EXCLUDED.owner_github_id,full_name=EXCLUDED.full_name,owner=EXCLUDED.owner,
             name=EXCLUDED.name,url=EXCLUDED.url,updated_at=now()
+          WHERE (app.repos.github_node_id,app.repos.owner_github_id,app.repos.full_name,
+                 app.repos.owner,app.repos.name,app.repos.url)
+            IS DISTINCT FROM (EXCLUDED.github_node_id,EXCLUDED.owner_github_id,EXCLUDED.full_name,
+                              EXCLUDED.owner,EXCLUDED.name,EXCLUDED.url)
           RETURNING repo_id
         `;
-        const repoId = String(rows[0].repo_id);
+        const repoId = String(rows[0]?.repo_id ?? previous[0].repo_id);
         await reconcileGithubProfileForIngestion(tx, {
           githubId: repo.owner_github_id,
           githubHandle: repo.owner,
         });
         const changed = previous.length === 0 || previous[0].content_hash !== hash;
         const version = changed ? Number(previous[0]?.content_version ?? 0) + 1 : Number(previous[0].content_version);
-        await tx`
-          INSERT INTO app.repo_content (
-            repo_id,description,readme,readme_source_path,readme_default_branch,readme_base_url,
-            primary_language,languages,content_hash,content_version,source_updated_at
-          ) VALUES (
-            ${repoId}::uuid,${repo.description ?? null},${repo.readme ?? null},
-            ${repo.readme_source_path ?? null},${repo.readme_default_branch ?? null},${repo.readme_base_url ?? null},
-            ${repo.primary_language ?? null},
-            ${JSON.stringify(repo.languages ?? [])}::jsonb,${hash},${version},${repo.pushed_at ?? null}::timestamptz
-          ) ON CONFLICT (repo_id) DO UPDATE SET description=EXCLUDED.description,readme=EXCLUDED.readme,
-            readme_source_path=EXCLUDED.readme_source_path,
-            readme_default_branch=EXCLUDED.readme_default_branch,
-            readme_base_url=EXCLUDED.readme_base_url,
-            primary_language=EXCLUDED.primary_language,languages=EXCLUDED.languages,content_hash=EXCLUDED.content_hash,
-            content_version=EXCLUDED.content_version,source_updated_at=EXCLUDED.source_updated_at,updated_at=now()
-        `;
         if (changed) {
+          await tx`
+            INSERT INTO app.repo_content (
+              repo_id,description,readme,readme_source_path,readme_default_branch,readme_base_url,
+              primary_language,languages,content_hash,content_version,source_updated_at
+            ) VALUES (
+              ${repoId}::uuid,${repo.description ?? null},${repo.readme ?? null},
+              ${repo.readme_source_path ?? null},${repo.readme_default_branch ?? null},${repo.readme_base_url ?? null},
+              ${repo.primary_language ?? null},
+              ${JSON.stringify(repo.languages ?? [])}::text::jsonb,${hash},${version},${repo.pushed_at ?? null}::timestamptz
+            ) ON CONFLICT (repo_id) DO UPDATE SET description=EXCLUDED.description,readme=EXCLUDED.readme,
+              readme_source_path=EXCLUDED.readme_source_path,
+              readme_default_branch=EXCLUDED.readme_default_branch,
+              readme_base_url=EXCLUDED.readme_base_url,
+              primary_language=EXCLUDED.primary_language,languages=EXCLUDED.languages,content_hash=EXCLUDED.content_hash,
+              content_version=EXCLUDED.content_version,source_updated_at=EXCLUDED.source_updated_at,updated_at=now()
+            WHERE app.repo_content.content_hash IS DISTINCT FROM EXCLUDED.content_hash
+          `;
           await tx`
             UPDATE app.repo_card_summaries SET active=false
             WHERE repo_id=${repoId}::uuid AND active
+          `;
+        } else {
+          // Source recency is not canonical prose identity. Preserve it without
+          // rewriting content, content_version or the canonical updated_at.
+          await tx`
+            UPDATE app.repo_content SET source_updated_at=${repo.pushed_at ?? null}::timestamptz
+            WHERE repo_id=${repoId}::uuid
+              AND source_updated_at IS DISTINCT FROM ${repo.pushed_at ?? null}::timestamptz
           `;
         }
         await tx`INSERT INTO app.repo_engagement (repo_id) VALUES (${repoId}::uuid) ON CONFLICT DO NOTHING`;
@@ -94,39 +108,43 @@ export class PostgresRepositoryPersistence implements RepositoryPersistencePort 
           VALUES (${repoId}::uuid,${repo.star_count ?? 0},${repo.fork_count ?? 0},${repo.open_issues_count ?? 0},${repo.observed_at}::timestamptz)
           ON CONFLICT (repo_id,observed_at) DO NOTHING
         `;
-        await tx`DELETE FROM app.repo_topics WHERE repo_id=${repoId}::uuid`;
-        for (const rawTopic of [...new Set(repo.topics ?? [])].sort()) {
-          const topic = rawTopic.trim().toLowerCase();
-          if (!topic) continue;
-          const topicRows = await tx`
-            INSERT INTO app.topics (slug,display_name) VALUES (${topic},${rawTopic.trim()})
-            ON CONFLICT (slug) DO UPDATE SET display_name=EXCLUDED.display_name RETURNING topic_id
-          `;
-          await tx`
-            INSERT INTO app.repo_topics (repo_id,topic_id) VALUES (${repoId}::uuid,${topicRows[0].topic_id}) ON CONFLICT DO NOTHING
-          `;
+        if (changed) {
+          await tx`DELETE FROM app.repo_topics WHERE repo_id=${repoId}::uuid`;
+          for (const rawTopic of [...new Set(repo.topics ?? [])].sort()) {
+            const topic = rawTopic.trim().toLowerCase();
+            if (!topic) continue;
+            const topicRows = await tx`
+              INSERT INTO app.topics (slug,display_name) VALUES (${topic},${rawTopic.trim()})
+              ON CONFLICT (slug) DO UPDATE SET display_name=EXCLUDED.display_name RETURNING topic_id
+            `;
+            await tx`
+              INSERT INTO app.repo_topics (repo_id,topic_id) VALUES (${repoId}::uuid,${topicRows[0].topic_id}) ON CONFLICT DO NOTHING
+            `;
+          }
         }
         if (changed) {
           const payload = { job_id: crypto.randomUUID(), repo_id: repoId, content_version: version,
             repository: buildMlRepositorySource(repo, hash) };
           await tx`
             INSERT INTO telemetry.ml_outbox (job_type,aggregate_id,idempotency_key,payload)
-            VALUES ('repo_index',${repoId}::uuid,${`repo_index:${repoId}:${version}`},${JSON.stringify(payload)}::jsonb)
-            ON CONFLICT (idempotency_key) DO NOTHING
-          `;
-        } else {
-          const featureVersion = Date.parse(repo.observed_at);
-          const payload = {
-            job_id: crypto.randomUUID(), repo_id: repoId, feature_version: featureVersion,
-            features: buildMlRepositoryFeaturePatch(repo),
-          };
-          await tx`
-            INSERT INTO telemetry.ml_outbox (job_type,aggregate_id,idempotency_key,payload)
-            VALUES ('repo_refresh',${repoId}::uuid,
-              ${`repo_refresh:ingestion:${repoId}:${featureVersion}`},${JSON.stringify(payload)}::jsonb)
+            VALUES ('repo_index',${repoId}::uuid,${`repo_index:${repoId}:${version}`},${JSON.stringify(payload)}::text::jsonb)
             ON CONFLICT (idempotency_key) DO NOTHING
           `;
         }
+        // An index carries source features, but does not establish their
+        // independent feature_version. The claim guard holds this observation
+        // until its index prerequisite has completed.
+        const featureVersion = Date.parse(repo.observed_at);
+        const features = buildMlRepositoryFeaturePatch(repo);
+        const refreshPayload = {
+          job_id: crypto.randomUUID(), repo_id: repoId, feature_version: featureVersion, features,
+        };
+        await tx`
+          INSERT INTO telemetry.ml_outbox (job_type,aggregate_id,idempotency_key,payload)
+          VALUES ('repo_refresh',${repoId}::uuid,
+            ${repositoryRefreshIdempotencyKey(repoId, featureVersion, features)},${JSON.stringify(refreshPayload)}::text::jsonb)
+          ON CONFLICT (idempotency_key) DO NOTHING
+        `;
         results.push({ github_id: repo.github_id, repo_id: repoId, content_version: version, changed });
       }
       return results;
@@ -151,11 +169,13 @@ export class PostgresRepositoryPersistence implements RepositoryPersistencePort 
           VALUES (${input.snapshot_id}::uuid,${repo.rank},${mapping.repo_id}::uuid,${repo.score ?? null},
             ${JSON.stringify({ star_count: repo.star_count ?? 0, fork_count: repo.fork_count ?? 0 })}::jsonb)
         `;
+        const featureVersion = Date.parse(input.computed_at);
+        const features = buildMlRepositoryFeaturePatch(repo);
         const payload = { job_id: crypto.randomUUID(), repo_id: mapping.repo_id,
-          feature_version: Date.parse(input.computed_at), features: buildMlRepositoryFeaturePatch(repo) };
+          feature_version: featureVersion, features };
         await tx`
           INSERT INTO telemetry.ml_outbox (job_type,aggregate_id,idempotency_key,payload)
-          VALUES ('repo_refresh',${mapping.repo_id}::uuid,${`repo_refresh:${input.snapshot_id}:${mapping.repo_id}`},${JSON.stringify(payload)}::jsonb)
+          VALUES ('repo_refresh',${mapping.repo_id}::uuid,${repositoryRefreshIdempotencyKey(mapping.repo_id, featureVersion, features)},${JSON.stringify(payload)}::text::jsonb)
           ON CONFLICT (idempotency_key) DO NOTHING
         `;
       }

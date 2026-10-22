@@ -15,6 +15,7 @@ import { sqlClient } from '../../db/index.js';
 import { OutboxService, type OutboxRow } from '../../services/outboxService.js';
 import { runReindex } from '../../scripts/reindex-active-repositories.js';
 import { PostgresRepositoryPersistence } from '../../adapters/postgresRepositoryPersistence.js';
+import { assertDisposableDatabase } from './disposableDatabase.js';
 
 const integration = process.env.RUN_DATABASE_INTEGRATION === '1' ? test : test.skip;
 const repoId = '00000000-0000-4000-8000-000000000701';
@@ -482,4 +483,112 @@ integration('fallback preservation rejects malformed generated rows and migratio
   const names = await sqlClient`SELECT indexname FROM pg_indexes WHERE schemaname='app' AND indexname IN ('repo_card_summaries_versioned_uidx','repo_card_summaries_revisioned_uidx')`;
   assert.deepEqual(names.map(row => row.indexname), ['repo_card_summaries_revisioned_uidx']);
   assert.equal(Number((await sqlClient`SELECT count(*) AS n FROM app.repo_card_summaries WHERE repo_id=${repoId}::uuid AND model_version='accepted-malformed-model'`)[0].n), 3);
+});
+
+integration('canonical ingestion skips unchanged tuples and deduplicates only equivalent observations', async () => {
+  assertDisposableDatabase();
+  const persistence = new PostgresRepositoryPersistence();
+  const record = {
+    github_id: '77101', owner_github_id: '77102', full_name: 'noop-fixture/repository',
+    owner: 'noop-fixture', name: 'repository', url: 'https://github.com/noop-fixture/repository',
+    description: 'Canonical prose.', readme: '# Canonical', topics: [' Systems ', 'SYSTEMS'],
+    observed_at: '2026-10-21T00:00:00Z', pushed_at: '2026-10-20T00:00:00Z', star_count: 1,
+  };
+  const [first] = await persistence.bulkUpsert([record]);
+  const tuples = async () => (await sqlClient`
+    SELECT repo.xmin::text AS repo_tuple,content.xmin::text AS content_tuple,content.updated_at,
+      content.content_hash,content.content_version,content.source_updated_at,
+      ARRAY(SELECT link.ctid::text FROM app.repo_topics link WHERE link.repo_id=repo.repo_id ORDER BY topic_id) AS topics
+    FROM app.repos repo JOIN app.repo_content content USING(repo_id)
+    WHERE repo.repo_id=${first.repo_id}::uuid
+  `)[0];
+  const before = await tuples();
+  const [replayed] = await persistence.bulkUpsert([{ ...record, topics: ['systems'] }]);
+  assert.equal(replayed.changed, false);
+  assert.deepEqual(await tuples(), before, 'same content and source recency must not rewrite identity/content/topic tuples');
+  const jobs = async () => await sqlClient`
+    SELECT job_type,payload FROM telemetry.ml_outbox WHERE aggregate_id=${first.repo_id}::uuid
+  `;
+  assert.equal((await jobs()).length, 2, 'one index plus one versioned observation, unchanged on replay');
+
+  const statsOnly = { ...record, topics: ['systems'], star_count: 2, observed_at: '2026-10-21T01:00:00Z' };
+  const [stats] = await persistence.bulkUpsert([statsOnly]);
+  assert.equal(stats.changed, false);
+  assert.equal(stats.content_version, first.content_version);
+  assert.deepEqual(await tuples(), before);
+  assert.equal(Number((await sqlClient`SELECT count(*) AS n FROM app.repo_stat_snapshots
+    WHERE repo_id=${first.repo_id}::uuid`)[0].n), 2);
+
+  const sourceOnly = { ...statsOnly, pushed_at: '2026-10-21T00:00:00Z', observed_at: '2026-10-21T02:00:00Z' };
+  const [source] = await persistence.bulkUpsert([sourceOnly]);
+  const sourceTuple = await tuples();
+  assert.equal(source.changed, false);
+  assert.equal(sourceTuple.content_hash, before.content_hash);
+  assert.deepEqual(sourceTuple.updated_at, before.updated_at, 'source recency does not impersonate canonical content change');
+  assert.deepEqual(sourceTuple.topics, before.topics);
+  assert.equal(new Date(sourceTuple.source_updated_at).toISOString(), '2026-10-21T00:00:00.000Z');
+
+  const snapshot = { snapshot_id: crypto.randomUUID(), period: 'noop-fixture', source: 'fixture',
+    computed_at: sourceOnly.observed_at, repositories: [{ ...sourceOnly, rank: 0 }] };
+  const beforeSnapshotJobs = (await jobs()).length;
+  await persistence.recordTrendingSnapshot(snapshot);
+  assert.equal((await jobs()).length, beforeSnapshotJobs, 'equal normalized patch and timestamp share one authoritative refresh');
+  await persistence.recordTrendingSnapshot({ ...snapshot, snapshot_id: crypto.randomUUID(),
+    computed_at: '2026-10-21T03:00:00Z' });
+  assert.equal((await jobs()).length, beforeSnapshotJobs + 1, 'a distinct computed-at observation must be retained');
+
+  const [topicChange] = await persistence.bulkUpsert([{ ...sourceOnly, topics: ['api'], observed_at: '2026-10-21T04:00:00Z' }]);
+  assert.equal(topicChange.changed, true);
+  assert.equal(topicChange.content_version, first.content_version + 1);
+  assert.deepEqual((await sqlClient`SELECT slug FROM app.topics topic JOIN app.repo_topics link USING(topic_id)
+    WHERE link.repo_id=${first.repo_id}::uuid`).map(row => String(row.slug)), ['api']);
+  const [contentChange] = await persistence.bulkUpsert([{ ...sourceOnly, topics: ['api'],
+    description: 'Changed prose.', observed_at: '2026-10-21T05:00:00Z' }]);
+  assert.equal(contentChange.content_version, topicChange.content_version + 1);
+});
+
+integration('refresh waits for preceding content versions even when index timestamps tie', async () => {
+  assertDisposableDatabase();
+  const aggregateId = crypto.randomUUID();
+  const olderIndexId = crypto.randomUUID(), newerIndexId = crypto.randomUUID(), refreshId = crypto.randomUUID();
+  const createdAt = '2026-10-21T00:00:00Z';
+  await sqlClient`INSERT INTO telemetry.ml_outbox(outbox_id,job_type,aggregate_id,idempotency_key,payload,status,created_at) VALUES
+    (${olderIndexId}::uuid,'repo_index',${aggregateId}::uuid,${olderIndexId},'{"content_version":1}'::jsonb,'delivered',${createdAt}::timestamptz),
+    (${newerIndexId}::uuid,'repo_index',${aggregateId}::uuid,${newerIndexId},'{"content_version":2}'::jsonb,'pending',${createdAt}::timestamptz),
+    (${refreshId}::uuid,'repo_refresh',${aggregateId}::uuid,${refreshId},'{"feature_version":1}'::jsonb,'pending',${createdAt}::timestamptz)`;
+  const outbox = new OutboxService();
+  const claimed = await outbox.claim(1000);
+  assert.equal(claimed.some(row => row.outbox_id === refreshId), false);
+  const newer = claimed.find(row => row.outbox_id === newerIndexId);
+  assert.ok(newer, 'the actual pending index must be claimed before its refresh');
+  await outbox.markDelivered(newer);
+  assert.equal((await outbox.claim(1000)).some(row => row.outbox_id === refreshId), true);
+});
+
+integration('refresh prerequisite comparisons fail closed outside positive int32 versions', async () => {
+  assertDisposableDatabase();
+  const outbox = new OutboxService();
+  const invalid = ['0', '-1', '01', '1.5', '2147483648', '9'.repeat(140_000), null, undefined];
+  const cases = [
+    ...invalid.map(version => ({ predecessor: version, successor: '2147483647', released: false })),
+    ...invalid.map(version => ({ predecessor: '1', successor: version, released: false })),
+    { predecessor: '1', successor: '2147483647', released: true },
+    { predecessor: '2147483647', successor: '2147483647', released: true },
+  ];
+  for (const { predecessor, successor, released } of cases) {
+    const aggregateId = crypto.randomUUID(), refreshId = crypto.randomUUID();
+    const predecessorId = crypto.randomUUID(), successorId = crypto.randomUUID();
+    try {
+      await sqlClient`INSERT INTO telemetry.ml_outbox(outbox_id,job_type,aggregate_id,idempotency_key,payload,status) VALUES
+        (${predecessorId}::uuid,'repo_index',${aggregateId}::uuid,${predecessorId},
+          ${JSON.stringify({ content_version: predecessor })}::text::jsonb,'dead'),
+        (${successorId}::uuid,'repo_index',${aggregateId}::uuid,${successorId},
+          ${JSON.stringify({ content_version: successor })}::text::jsonb,'delivered'),
+        (${refreshId}::uuid,'repo_refresh',${aggregateId}::uuid,${refreshId},'{"feature_version":1}'::jsonb,'pending')`;
+      assert.equal((await outbox.claim(1000)).some(row => row.outbox_id === refreshId), released,
+        'only bounded positive int32 successors can discharge bounded positive int32 prerequisites');
+    } finally {
+      await sqlClient`DELETE FROM telemetry.ml_outbox WHERE aggregate_id=${aggregateId}::uuid`;
+    }
+  }
 });

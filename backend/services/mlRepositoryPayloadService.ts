@@ -26,6 +26,7 @@ export function normalizeCanonicalRepositoryReadme(
     readme_default_branch: readme === null ? null : repository.readme_default_branch ?? null,
     readme_base_url: readme === null ? null : repository.readme_base_url ?? null,
     readme_length: readme?.length ?? 0,
+    topics: [...new Set((repository.topics ?? []).map((topic) => topic.trim().toLowerCase()).filter(Boolean))].sort(),
   };
 }
 
@@ -36,10 +37,10 @@ export function repositoryContentHash(repository: RepositoryUpsert): string {
   for (const key of [
     'content_hash', 'star_count', 'fork_count', 'open_issues_count', 'pushed_days_ago',
     'delta_3d', 'delta_7d', 'delta_30d', 'mentionable_users_count', 'readme_length',
-    'created_at', 'updated_at', 'pushed_at',
+    'updated_at', 'pushed_at',
     'discovery_category', 'discovery_band',
   ]) delete hashable[key];
-  // Commit history and README/code ratio are index-only ML fields. Keep them
+  // Creation time, commit history and README/code ratio are index-only ML fields. Keep them
   // in this hash until the strict refresh contract supports updating them.
   if (Array.isArray(hashable.languages)) hashable.languages = [...hashable.languages].sort();
   if (Array.isArray(hashable.topics)) {
@@ -114,4 +115,17 @@ export function buildMlRepositoryFeaturePatch(
     ...(repository.discovery_band !== undefined
       ? { discovery_band: optionalText(repository.discovery_band) } : {}),
   };
+}
+
+/** Equivalent refreshes share an identity, independent of their producer/job UUID. */
+export function repositoryRefreshIdempotencyKey(
+  repoId: string,
+  featureVersion: number,
+  features: MlRepositoryFeaturePatch,
+): string {
+  const canonicalFeatures = Object.fromEntries(
+    Object.entries(features).sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0),
+  );
+  const digest = crypto.createHash('sha256').update(JSON.stringify(canonicalFeatures)).digest('hex');
+  return `repo_refresh:observation:${repoId}:${featureVersion}:${digest}`;
 }

@@ -108,6 +108,42 @@ export class OutboxService {
                 < (candidate.payload->>'feedback_version')::numeric
           )
         )
+        AND (
+          candidate.job_type<>'repo_refresh'
+          OR (
+            EXISTS (
+              SELECT 1 FROM telemetry.ml_outbox delivered_index
+              WHERE delivered_index.aggregate_id=candidate.aggregate_id
+                AND delivered_index.job_type='repo_index'
+                AND delivered_index.status='delivered'
+            )
+            AND NOT EXISTS (
+              SELECT 1 FROM telemetry.ml_outbox predecessor_index
+              WHERE predecessor_index.aggregate_id=candidate.aggregate_id
+                AND predecessor_index.job_type='repo_index'
+                AND predecessor_index.created_at<=candidate.created_at
+                AND predecessor_index.status<>'delivered'
+                AND NOT EXISTS (
+                  SELECT 1 FROM telemetry.ml_outbox successor_index
+                  WHERE successor_index.aggregate_id=predecessor_index.aggregate_id
+                    AND successor_index.job_type='repo_index'
+                    AND successor_index.status='delivered'
+                    AND CASE
+                      WHEN predecessor_index.payload->>'content_version' ~ '^[1-9][0-9]{0,9}$'
+                        AND successor_index.payload->>'content_version' ~ '^[1-9][0-9]{0,9}$'
+                      THEN CASE
+                        WHEN (predecessor_index.payload->>'content_version')::bigint <= 2147483647
+                          AND (successor_index.payload->>'content_version')::bigint <= 2147483647
+                        THEN (successor_index.payload->>'content_version')::bigint
+                          >= (predecessor_index.payload->>'content_version')::bigint
+                        ELSE false
+                      END
+                      ELSE false
+                    END
+                )
+            )
+          )
+        )
         ORDER BY
           CASE candidate.job_type
             WHEN 'onboard' THEN 0
