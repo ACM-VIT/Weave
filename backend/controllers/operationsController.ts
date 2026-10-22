@@ -3,6 +3,9 @@ import type { Request, Response } from 'express';
 import { getApplicationRuntime } from '../runtime/applicationRuntime.js';
 import { OutboxService } from '../services/outboxService.js';
 import { isValidUuid } from '../utils/validators.js';
+import redisClient from '../config/redis.js';
+import { readWorkerTelemetry } from '../observability/workerTelemetry.js';
+import { snapshotSpans } from '../observability/tracing.js';
 import { snapshotMetrics } from '../observability/metrics.js';
 
 const outbox = new OutboxService();
@@ -15,7 +18,7 @@ export async function readiness(_req: Request, res: Response): Promise<void> {
 export async function operationsStatus(_req: Request, res: Response): Promise<void> {
   try {
     const runtime = getApplicationRuntime();
-    res.status(200).json({ ...(await runtime.health()), outbox: await outbox.status(), prewarm: await runtime.prewarm.status(), metrics: snapshotMetrics() });
+    res.status(200).json({ ...(await runtime.health()), outbox: await outbox.status(), prewarm: await runtime.prewarm.status(), metrics: snapshotMetrics(), trace_spans: snapshotSpans(), worker_telemetry: await readWorkerTelemetry(redisClient) });
   } catch (error) {
     res.status(503).json({ healthy: false, error: error instanceof Error ? error.message : String(error) });
   }
