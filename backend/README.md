@@ -85,6 +85,15 @@ Topic slugs are lowercase letters/numbers/hyphens, 1-50 characters. Onboarding a
 | `GET /api/v2/repositories/trending` | `period` default `daily` | Active complete trending snapshot, ordered by position |
 | `GET /api/v2/repositories/saved` | `limit`, `offset` | Current user's saved repositories |
 
+Trending card responses are shared across viewers inside each API process, with
+at most three cached responses of 100 cards and a five-second freshness bound
+for counters, summaries, content and repository status. Every request rechecks
+eligible active snapshots; snapshot IDs, activation versions and available-period
+changes invalidate the response immediately, including ingestion from another
+process. `ETag` covers the exact JSON response. Conditional GET/HEAD requests
+return an empty `304` when unchanged; `Cache-Control: private, no-cache` requires
+clients to revalidate through authentication rather than serving stale responses.
+
 The frontend cannot import or mutate repository metadata. It records likes, saves, views, and other behavior through the interaction endpoint below. Repository details come from PostgreSQL, not ML/Qdrant.
 
 ### Feed
