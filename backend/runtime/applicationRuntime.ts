@@ -46,6 +46,24 @@ function intervalFromEnvironment(
   return value;
 }
 
+function indexedFeedRefillConfiguration() {
+  // Default off: the operator must first upgrade EVERY reservation/generation
+  // writer and drain pre-index reservations (or wait their maximum lease).
+  // Mixed/legacy writers can omit the index, so never infer readiness from an
+  // empty index or a healthy Redis connection.
+  const ready = process.env.FEED_REFILL_INDEX_READY?.trim() ?? 'false';
+  if (ready !== 'true' && ready !== 'false') {
+    throw new Error('FEED_REFILL_INDEX_READY must be true or false.');
+  }
+  if (ready === 'false') return undefined;
+  const maxQueueDepth = intervalFromEnvironment('FEED_REFILL_TARGET_DEPTH', 45, 2, 100);
+  const lowWatermark = intervalFromEnvironment('FEED_REFILL_LOW_WATERMARK', 15, 1, 99);
+  if (lowWatermark >= maxQueueDepth) {
+    throw new Error('FEED_REFILL_LOW_WATERMARK must be below FEED_REFILL_TARGET_DEPTH.');
+  }
+  return { maxQueueDepth, lowWatermark };
+}
+
 export class ApplicationRuntime {
   readonly flags = getV2FeatureFlags();
   readonly featureErrors = validateFeatureDependencies(this.flags);
@@ -54,6 +72,7 @@ export class ApplicationRuntime {
     redisClient,
     intervalFromEnvironment('FEED_RESERVATION_TTL_MS', 60_000, 30_000, 900_000),
   );
+  readonly indexedFeedRefill = indexedFeedRefillConfiguration();
   readonly ml = this.flags.ML_V2_RECOMMENDATIONS || this.flags.ML_FEEDBACK_OUTBOX
     ? new MlV2Client()
     : null;
@@ -65,6 +84,7 @@ export class ApplicationRuntime {
       600,
       15_000,
       new PersonaRepairService(this.persistence, this.ml),
+      this.indexedFeedRefill,
     )
     : null;
   readonly shadow = this.ml ? new FeedShadowService(this.persistence, this.ml) : null;
@@ -80,6 +100,14 @@ export class ApplicationRuntime {
     1_500,
     25,
     process.env.JWT_SECRET,
+    5_000,
+    this.generation && this.indexedFeedRefill ? {
+      lowWatermark: this.indexedFeedRefill.lowWatermark,
+      generate: (userId, version, sessionId) => this.generation!.generate(
+        userId, this.indexedFeedRefill!.maxQueueDepth, [], 'live', sessionId, undefined,
+        { expectedVersion: version, lowWatermark: this.indexedFeedRefill!.lowWatermark },
+      ),
+    } : undefined,
   );
   readonly supervisor = new WorkerSupervisor();
 

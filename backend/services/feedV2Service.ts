@@ -8,6 +8,12 @@ import { incrementMetric } from '../observability/metrics.js';
 import { FeedCursorCodec } from './feedCursor.js';
 import type { FeedGenerationOutcome } from './feedGenerationService.js';
 import { FeedWaitCoordinator } from './feedWaitCoordinator.js';
+import { FeedRefillScheduler } from './feedRefillScheduler.js';
+
+interface FeedRefillOptions {
+  lowWatermark: number;
+  generate: (userId: string, version: bigint, sessionId: string) => Promise<unknown>;
+}
 
 export class FeedRequestInProgressError extends Error {
   constructor() {
@@ -47,15 +53,23 @@ export class FeedV2Service {
     private readonly reservationPollMs = 25,
     cursorSecret?: string,
     private readonly generationWaitMs = 5_000,
+    refill?: FeedRefillOptions,
   ) {
     this.cursorCodec = new FeedCursorCodec(cursorSecret);
     this.serveWaits = new FeedWaitCoordinator(reservationPollMs, () => new FeedRequestInProgressError());
     this.generationWaits = new FeedWaitCoordinator(reservationPollMs, () => new FeedRequestInProgressError());
+    if (refill) {
+      this.refillScheduler = new FeedRefillScheduler(refill.lowWatermark, async job => {
+        try { await refill.generate(job.userId, job.version, job.sessionId); }
+        finally { this.generationWaits.notify(this.generationKey(job.userId, job.version)); }
+      });
+    }
   }
 
   private readonly cursorCodec: FeedCursorCodec;
   private readonly serveWaits: FeedWaitCoordinator<FeedResponseV2>;
   private readonly generationWaits: FeedWaitCoordinator<true>;
+  private readonly refillScheduler?: FeedRefillScheduler;
 
   private requestKey(userId: string, requestId: string): string {
     return JSON.stringify([userId, requestId]);
@@ -150,7 +164,8 @@ export class FeedV2Service {
         const outcome = await this.generateOnMiss(userId, request.limit, [], request.session_id);
         if (outcome.status !== 'coalesced') this.generationWaits.notify(this.generationKey(userId, version));
         signal?.throwIfAborted();
-        if (outcome.status === 'stale' || outcome.feedVersion !== version) throw new FeedRequestInProgressError();
+        if (outcome.status === 'stale' || outcome.status === 'capacity'
+          || outcome.feedVersion !== version) throw new FeedRequestInProgressError();
         reservation = outcome.status === 'coalesced'
           ? await this.waitForGeneratedReservation(
             userId, version, request.feed_request_id, request.limit, token, signal,
@@ -229,7 +244,7 @@ export class FeedV2Service {
       let nextCursor: string | null = null;
       if (queueAvailable && source === 'personalized' && usable.length > 0) {
         try {
-          if (this.generateOnMiss || await this.queue.depth(userId, version) > 0) {
+          if (this.generateOnMiss || (reservation.remainingDepth ?? await this.queue.depth(userId, version)) > 0) {
             nextCursor = this.cursorCodec.encode({
               user_id: userId,
               session_id: request.session_id,
@@ -262,6 +277,11 @@ export class FeedV2Service {
       });
       this.serveWaits.notify(this.requestKey(userId, request.feed_request_id));
       if (queueAvailable) await this.queue.commit(userId, version, request.feed_request_id, token);
+      if (queueAvailable && stored.source === 'personalized' && stored.items.length > 0
+        && this.refillScheduler && reservation.remainingDepth !== undefined
+        && reservation.remainingDepth < this.refillScheduler.lowWatermark) {
+        this.refillScheduler.schedule(userId, version, request.session_id);
+      }
       return responseFromServe(stored);
     } catch (error) {
       const replayAfterFailure = await this.persistence.getServeByRequest(userId, request.feed_request_id);

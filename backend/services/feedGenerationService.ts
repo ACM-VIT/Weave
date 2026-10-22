@@ -8,9 +8,12 @@ import { canonicalEntries } from './feedV2Service.js';
 import { isMissingPersonaRecommendationError } from './mlService.js';
 import type { PersonaRepairService } from './personaRepairService.js';
 
+export interface IndexedFeedRefillPolicy { maxQueueDepth: number }
+export interface FeedRefillRequest { expectedVersion: bigint; lowWatermark: number }
+
 export type FeedGenerationOutcome =
   | { status: 'generated'; feedVersion: bigint; count: number }
-  | { status: 'coalesced' | 'stale' | 'satisfied'; feedVersion: bigint };
+  | { status: 'coalesced' | 'stale' | 'satisfied' | 'capacity'; feedVersion: bigint };
 
 export interface FeedGenerationFence {
   feedVersion: bigint;
@@ -25,7 +28,13 @@ export class FeedGenerationService {
     private readonly queueTtlSeconds = 600,
     private readonly lockTtlMs = 15_000,
     private readonly personaRepair?: Pick<PersonaRepairService, 'repair'>,
-  ) {}
+    private readonly indexedRefill?: IndexedFeedRefillPolicy,
+  ) {
+    if (indexedRefill && (!Number.isInteger(indexedRefill.maxQueueDepth)
+      || indexedRefill.maxQueueDepth < 2 || indexedRefill.maxQueueDepth > 100)) {
+      throw new Error('Indexed feed queue target must be an integer between 2 and 100.');
+    }
+  }
 
   async generate(
     userId: string,
@@ -34,10 +43,14 @@ export class FeedGenerationService {
     mode: 'live' | 'prewarm' = 'live',
     sessionId?: string,
     fence?: FeedGenerationFence,
+    refill?: FeedRefillRequest,
   ): Promise<FeedGenerationOutcome> {
     const context = await this.persistence.getGenerationContext?.(userId);
     const feedVersion = context?.feedVersion ?? await this.persistence.getFeedVersion(userId);
     if (this.persistence.getGenerationContext && !context) return { status: 'stale', feedVersion };
+    if (refill && (!this.indexedRefill || refill.expectedVersion !== feedVersion)) {
+      return { status: 'stale', feedVersion };
+    }
     const token = crypto.randomUUID();
     let generationId = crypto.randomUUID();
     const started = Date.now();
@@ -89,21 +102,45 @@ export class FeedGenerationService {
         // proof of current-profile ML success. Preserve it without completing.
         if (await this.persistence.hasServedFeed?.(userId, feedVersion)) return { status: 'stale', feedVersion };
       }
+      if (this.indexedRefill && (!this.queue.generationState || !this.queue.append)) {
+        throw new Error('Indexed feed refill requires reservation-aware queue support.');
+      }
+      const state = this.indexedRefill ? await this.queue.generationState!(userId, feedVersion, token) : undefined;
+      if (state === null) return { status: 'coalesced', feedVersion };
+      const generationLimit = this.indexedRefill
+        ? Math.max(0, Math.min(limit, this.indexedRefill.maxQueueDepth - state!.remainingDepth,
+          500 - state!.occupiedCount)) : limit;
+      if (generationLimit === 0) {
+        await this.persistence.recordGenerationAttempt?.({
+          generation_id: generationId, user_id: userId, feed_version: feedVersion, mode,
+          status: 'coalesced', latency_ms: Date.now() - started, result_count: 0,
+          error_code: 'FEED_RESERVATION_CAPACITY',
+        });
+        return { status: 'capacity', feedVersion };
+      }
+      if (refill && state!.remainingDepth >= refill.lowWatermark) return { status: 'coalesced', feedVersion };
       const history = await this.persistence.listExcludedRepositoryIds(userId, sessionId, 500);
-      const excluded = [...new Set([...excludeRepoIds, ...history])].slice(0, 500);
-      const excludedIds = new Set(excluded);
+      // Preserve every bounded snapshot/history exclusion locally even when
+      // ML's 500-ID request limit cannot hold the complete union.
+      const indexedExclusions = [
+        ...(state?.excludedRepoIds ?? []), ...excludeRepoIds.slice(0, 500), ...history.slice(0, 500),
+      ];
+      const excludedIds = new Set(this.indexedRefill
+        ? indexedExclusions : [...new Set([...excludeRepoIds, ...history])].slice(0, 500));
+      const excluded = [...excludedIds].slice(0, 500);
       let socialRepoIds: string[] = [];
       try {
         socialRepoIds = await this.persistence.listFollowedRepositoryIds(userId, 500);
       } catch (error) {
         console.error('[FeedGenerationService] Failed to load followed-owner repositories:', error);
       }
+      if (leaseLost || !await current()) return { status: 'stale', feedVersion };
       const request = {
         schema_version: 2,
         generation_id: generationId,
         user_id: userId,
         feed_version: Number(feedVersion),
-        limit,
+        limit: generationLimit,
         exclude_repo_ids: excluded,
         social_repo_ids: socialRepoIds,
         context: { cold_start: false },
@@ -153,21 +190,43 @@ export class FeedGenerationService {
         return { status: 'satisfied', feedVersion };
       }
       if (mode === 'prewarm' && await this.persistence.hasServedFeed?.(userId, feedVersion)) return { status: 'stale', feedVersion };
-      const published = await this.queue.publishGeneration(
-        userId,
-        feedVersion,
-        token,
-        canonicalEntries(usableItems, response.model_version, summaries, response.generation_id),
-        this.queueTtlSeconds,
-        mode === 'prewarm',
-      );
+      const canonical = canonicalEntries(this.indexedRefill ? usableItems.slice(0, generationLimit) : usableItems,
+        response.model_version, summaries, response.generation_id);
+      // A nonempty ML batch filtered entirely by existing exclusions is not
+      // proof of exhaustion either. Never publish it as a terminal empty page.
+      if (this.indexedRefill && response.items.length > 0 && canonical.length === 0) {
+        return { status: 'capacity', feedVersion };
+      }
+      if (leaseLost || !await current()) return { status: 'stale', feedVersion };
+      let published: boolean;
+      let count = canonical.length;
+      if (this.indexedRefill) {
+        const appended = await this.queue.append!(userId, feedVersion, token, canonical,
+          this.queueTtlSeconds, this.indexedRefill.maxQueueDepth, mode === 'prewarm');
+        if (!appended || appended.status === 'capacity') {
+          await this.persistence.recordGenerationAttempt?.({
+            generation_id: generationId, user_id: userId, feed_version: feedVersion, mode,
+            status: 'coalesced', latency_ms: Date.now() - started, result_count: 0,
+          });
+          return { status: appended ? 'capacity' : 'coalesced', feedVersion };
+        }
+        if (appended.status === 'satisfied') {
+          await this.persistence.markGenerationPublished?.(userId, feedVersion);
+          return { status: 'satisfied', feedVersion };
+        }
+        count = appended.count;
+        published = true;
+      } else {
+        published = await this.queue.publishGeneration(userId, feedVersion, token, canonical,
+          this.queueTtlSeconds, mode === 'prewarm');
+      }
       // Redis already holds an eight-day witness if this SQL write crashes.
       if (published) await this.persistence.markGenerationPublished?.(userId, feedVersion);
       await this.persistence.recordGenerationAttempt?.({
         generation_id: generationId, user_id: userId, feed_version: feedVersion, mode,
-        status: published ? 'completed' : 'stale', latency_ms: Date.now() - started, result_count: usableItems.length,
+        status: published ? 'completed' : 'stale', latency_ms: Date.now() - started, result_count: count,
       });
-      return published ? { status: 'generated', feedVersion, count: usableItems.length } : { status: 'stale', feedVersion };
+      return published ? { status: 'generated', feedVersion, count } : { status: 'stale', feedVersion };
     } catch (error) {
       await this.persistence.recordGenerationAttempt?.({
         generation_id: generationId, user_id: userId, feed_version: feedVersion, mode,

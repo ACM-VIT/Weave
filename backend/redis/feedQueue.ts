@@ -2,9 +2,11 @@ import type { RecommendationEntry } from '../contracts/feed.v2.js';
 import type { Redis } from 'ioredis';
 
 import {
+  APPEND_FEED_LUA,
   COMMIT_FEED_LUA,
   RENEW_GENERATION_LOCK_LUA,
   PUBLISH_GENERATION_LUA,
+  FEED_GENERATION_STATE_LUA,
   REFILL_FEED_LUA,
   RELEASE_FEED_LUA,
   RELEASE_LOCK_LUA,
@@ -15,7 +17,20 @@ export interface FeedReservation {
   token: string;
   requestId: string;
   items: RecommendationEntry[];
+  // Production Redis reservations always supply this atomically. Optional for
+  // existing custom ports that still use the depth() compatibility fallback.
+  remainingDepth?: number;
 }
+
+export interface FeedGenerationState {
+  remainingDepth: number;
+  excludedRepoIds: string[];
+  occupiedCount: number;
+}
+
+export type FeedAppendOutcome =
+  | { status: 'published'; count: number }
+  | { status: 'capacity' | 'satisfied'; count: 0 };
 
 export class ReservationOwnedError extends Error {
   constructor() {
@@ -38,6 +53,8 @@ export interface FeedQueuePort {
   releaseGenerationLock(userId: string, version: bigint, token: string): Promise<void>;
   scanReservations(): Promise<Array<{ userId: string; version: bigint; requestId: string; token: string; ttlMs: number }>>;
   deleteStaleVersions(userId: string, keepVersion: bigint): Promise<number>;
+  generationState?(userId: string, version: bigint, token: string): Promise<FeedGenerationState | null>;
+  append?(userId: string, version: bigint, token: string, items: RecommendationEntry[], ttlSeconds: number, maxDepth: number, onlyIfUnpublished?: boolean): Promise<FeedAppendOutcome | null>;
 }
 
 export class RedisFeedQueue implements FeedQueuePort {
@@ -56,53 +73,64 @@ export class RedisFeedQueue implements FeedQueuePort {
     return `feed:v2:generation-lock:${userId}:${version}`;
   }
 
+  // Shared tracking contract for feed refill/reconciliation. Members are meta
+  // keys and scores are Redis-clock reservation lease deadlines in milliseconds.
+  private reservationIndexKey(userId: string, version: bigint): string {
+    return `feed:v2:reservation-index:${userId}:${version}`;
+  }
+
   async reserve(userId: string, version: bigint, requestId: string, limit: number, token: string): Promise<FeedReservation> {
     const [meta, items] = this.reservationKeys(userId, version, requestId);
-    let result: string[];
+    let result: [number, string[]];
     try {
       result = await this.redis.eval(
         RESERVE_FEED_LUA,
-        3,
-        this.queueKey(userId, version), meta, items,
+        4,
+        this.queueKey(userId, version), meta, items, this.reservationIndexKey(userId, version),
         token, requestId, String(limit), String(this.reservationTtlMs),
-      ) as string[];
+      ) as [number, string[]];
     } catch (error) {
       if (error instanceof Error && error.message.includes('RESERVATION_OWNED')) {
         throw new ReservationOwnedError();
       }
       throw error;
     }
-    return { token, requestId, items: result.map((item) => JSON.parse(item) as RecommendationEntry) };
+    return { token, requestId, remainingDepth: Number(result[0]),
+      items: result[1].map((item) => JSON.parse(item) as RecommendationEntry) };
   }
 
   async commit(userId: string, version: bigint, requestId: string, token: string): Promise<boolean> {
     const [meta, items] = this.reservationKeys(userId, version, requestId);
-    return Number(await this.redis.eval(COMMIT_FEED_LUA, 2, meta, items, token)) === 1;
+    return Number(await this.redis.eval(
+      COMMIT_FEED_LUA, 3, meta, items, this.reservationIndexKey(userId, version), token,
+    )) === 1;
   }
 
   async refill(userId: string, version: bigint, requestId: string, limit: number, token: string): Promise<FeedReservation> {
     const [meta, items] = this.reservationKeys(userId, version, requestId);
-    let result: string[];
+    let result: [number, string[]];
     try {
       result = await this.redis.eval(
         REFILL_FEED_LUA,
-        3,
-        this.queueKey(userId, version), meta, items,
+        4,
+        this.queueKey(userId, version), meta, items, this.reservationIndexKey(userId, version),
         token, String(limit), String(this.reservationTtlMs),
-      ) as string[];
+      ) as [number, string[]];
     } catch (error) {
       if (error instanceof Error && error.message.includes('RESERVATION_OWNED')) {
         throw new ReservationOwnedError();
       }
       throw error;
     }
-    return { token, requestId, items: result.map((item) => JSON.parse(item) as RecommendationEntry) };
+    return { token, requestId, remainingDepth: Number(result[0]),
+      items: result[1].map((item) => JSON.parse(item) as RecommendationEntry) };
   }
 
   async release(userId: string, version: bigint, requestId: string, token: string): Promise<boolean> {
     const [meta, items] = this.reservationKeys(userId, version, requestId);
     return Number(await this.redis.eval(
-      RELEASE_FEED_LUA, 3, this.queueKey(userId, version), meta, items, token,
+      RELEASE_FEED_LUA, 4, this.queueKey(userId, version), meta, items,
+      this.reservationIndexKey(userId, version), token,
     )) === 1;
   }
 
@@ -136,6 +164,35 @@ export class RedisFeedQueue implements FeedQueuePort {
 
   async depth(userId: string, version: bigint): Promise<number> {
     return this.redis.llen(this.queueKey(userId, version));
+  }
+
+  async generationState(userId: string, version: bigint, token: string): Promise<FeedGenerationState | null> {
+    const result = await this.redis.eval(
+      FEED_GENERATION_STATE_LUA, 3, this.queueKey(userId, version),
+      this.lockKey(userId, version), this.reservationIndexKey(userId, version), token,
+    ) as [number, string[], number];
+    return Number(result[0]) < 0 ? null : {
+      remainingDepth: Number(result[0]), excludedRepoIds: result[1], occupiedCount: Number(result[2]),
+    };
+  }
+
+  async append(userId: string, version: bigint, token: string, items: RecommendationEntry[], ttlSeconds: number, maxDepth: number, onlyIfUnpublished = false): Promise<FeedAppendOutcome | null> {
+    if (!Number.isInteger(maxDepth) || maxDepth < 1 || maxDepth > 100 || items.length > 100) {
+      throw new Error('Indexed feed append exceeds its bounded queue capacity.');
+    }
+    const [status, rawCount] = await this.redis.eval(
+      APPEND_FEED_LUA, 4, this.queueKey(userId, version),
+      this.lockKey(userId, version), this.reservationIndexKey(userId, version), this.publicationKey(userId, version),
+      token, String(ttlSeconds), String(maxDepth), onlyIfUnpublished ? '1' : '0',
+      ...items.map(item => JSON.stringify(item)),
+    ) as [string, number];
+    if (status === 'fenced') return null;
+    if (status === 'capacity' || status === 'satisfied') return { status, count: 0 };
+    const count = Number(rawCount);
+    if (status !== 'published' || !Number.isInteger(count) || count < 0 || count > items.length) {
+      throw new Error('Invalid indexed feed publication outcome.');
+    }
+    return { status, count };
   }
 
   async acquireGenerationLock(userId: string, version: bigint, token: string, ttlMs: number): Promise<boolean> {
