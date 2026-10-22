@@ -344,7 +344,7 @@ integration('registered v2 HTTP paths complete controlled integration flows', as
     assert.deepEqual(trendingItem.selected_list_ids, []);
     const trendingEtag=trendingRepositories.headers.get('etag')!;
     const unchangedTrending=await fetch(`${base}/api/v2/repositories/trending?period=daily`,{
-      headers:{...authHeaders,'if-none-match':trendingEtag},
+      headers:{...authHeaders,'if-none-match':trendingEtag,'cache-control':'max-age=0'},
     });
     assert.equal(unchangedTrending.status,304);
     const anotherTrendingViewer=await fetch(`${base}/api/v2/repositories/trending?period=daily`,{
