@@ -61,9 +61,9 @@ test('Trending retains public repository content while viewer state stays outsid
   const source=readFileSync(new URL('../../controllers/trendingController.ts', import.meta.url),'utf8');
   assert.match(controllerSource,/export \{ listTrending \} from '.\/trendingController.js'/);
   const publicSource=source.slice(source.indexOf('export function createTrendingSnapshotSource'),source.indexOf('export const trendingSnapshotSource'));
-  for(const field of ['readme_md','summary_prompt_version','summary_source','languages','topics']) assert.match(publicSource,new RegExp(field));
+  for(const field of ['summary_prompt_version','summary_source','languages','topics']) assert.match(publicSource,new RegExp(field));
   assert.match(publicSource,/x.content_version=c.content_version/);
-  assert.doesNotMatch(publicSource,/viewer_reaction|viewer_saved|selected_list_ids/);
+  assert.doesNotMatch(publicSource,/viewer_reaction|viewer_saved|selected_list_ids|readme_md/);
   const privateSource=source.slice(source.indexOf('export const loadTrendingViewerState'),source.indexOf('export function createTrendingHandler'));
   for(const field of ['viewer_reaction','viewer_saved','selected_list_ids',"'collection:'","'legacy-board:'"]) assert.ok(privateSource.includes(field));
 });

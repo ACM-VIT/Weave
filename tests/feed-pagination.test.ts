@@ -374,3 +374,32 @@ test('catalogue errors never enter personalized stale-cursor recovery', async ()
   await assert.rejects(controller.load('discovery:10'));
   assert.deepEqual(calls, ['discovery:10']);
 });
+
+for (const invalidation of ['acknowledged', 'cursor-rejected'] as const) {
+  test(`personalized ${invalidation} continuation cannot append catalogue cards`, async () => {
+    const loaded=[{...page(['personalized-1']),mode:'personalized' as const}];
+    let available=false;
+    const calls:(string|null)[]=[];
+    const controller=new FeedPaginationController(async cursor=>{
+      calls.push(cursor);
+      if (cursor!==null) throw stale();
+      return available ? {...page(['personalized-2'],'2'),mode:'personalized'}
+        : {...page(['catalogue-1'],'0','discovery:10'),mode:'discovery'};
+    },loaded,()=>loaded);
+    if(invalidation==='acknowledged') controller.markStale('2');
+    await assert.rejects(controller.load('personalized-next'),{code:'PERSONALIZED_FEED_UNAVAILABLE'});
+    assert.deepEqual(loaded[0].items.map(item=>item.repo_id),['personalized-1']);
+    available=true;
+    assert.equal((await controller.load('personalized-next')).mode,'personalized');
+    controller.reset(); available=false;
+    assert.equal((await controller.load(null)).mode,'discovery','Deliberate refresh may change the source');
+  });
+}
+
+test('an explicit multi-page refresh may replace catalogue pages with personalized pages',async()=>{
+  const loaded=[{...page(['catalogue-old'],'0','discovery:10'),mode:'discovery' as const}];
+  const signal=new AbortController().signal;
+  const controller=new FeedPaginationController(async cursor=>({...page([cursor?'personalized-2':'personalized-1'],'2',cursor?null:'next'),mode:'personalized'}),loaded,()=>loaded);
+  assert.equal((await controller.load(null,signal)).mode,'personalized');
+  assert.equal((await controller.load('next',signal)).mode,'personalized');
+});

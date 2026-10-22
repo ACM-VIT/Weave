@@ -373,6 +373,7 @@ export function RepositoryDetailScreen({ repositoryId }: { repositoryId: string 
         isVisible={shareVisible}
         onClose={() => setShareVisible(false)}
         onShared={() => void queueActivity('share').catch(() => undefined)}
+        onGithubOpened={() => void queueActivity('github_open').catch(() => undefined)}
         repositoryDetails={repository}
         repositoryId={repository.id}
       />

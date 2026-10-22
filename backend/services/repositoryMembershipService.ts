@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import type postgres from 'postgres';
 
 import type { InteractionEventV2 } from '../contracts/interactions.v2.js';
@@ -113,13 +114,24 @@ function validateMembershipEvent(
   }
 }
 
+function createServerMembershipEvent(state: RepositoryMembershipState): InteractionEventV2 {
+  return {
+    event_id: randomUUID(), schema_version: 2, session_id: randomUUID(),
+    serve_id: null, position: null, repo_id: state.repository_id,
+    event_type: state.saved ? 'save' : 'unsave', dwell_ms: null,
+    client_occurred_at: new Date().toISOString(),
+    context: { save_state_source: 'list_membership', origin: 'server_membership' },
+  };
+}
+
 async function recordMembershipEvent(
   tx: TransactionSql,
   userId: string,
   event: InteractionEventV2 | undefined,
   state: RepositoryMembershipState,
 ): Promise<void> {
-  if (!event || !state.save_state_changed) return;
+  if (!state.save_state_changed) return;
+  event ??= createServerMembershipEvent(state);
   validateMembershipEvent(event, state.repository_id, state.saved);
   await processInteractionBatchV2InTransaction(tx, userId, [{
     ...event,
@@ -139,7 +151,11 @@ async function recomputeMany(
   for (const repositoryId of [...new Set(repositoryIds)].sort()) {
     states.push(await recomputeRepositorySaved(tx, userId, repositoryId));
   }
-  if (states.some((state) => state.save_state_changed)) await invalidateFutureFeed(tx, userId);
+  const changed = states.filter(state => state.save_state_changed);
+  if (changed.length) {
+    await invalidateFutureFeed(tx, userId);
+    await processInteractionBatchV2InTransaction(tx, userId, changed.map(createServerMembershipEvent));
+  }
   return states;
 }
 
@@ -344,6 +360,7 @@ export async function removeRepositoryFromBoard(
     if (!removed.length) return null;
     const state = await recomputeRepositorySaved(tx, userId, repositoryId);
     if (state.save_state_changed) await invalidateFutureFeed(tx, userId);
+    await recordMembershipEvent(tx, userId, undefined, state);
     return state;
   });
 }

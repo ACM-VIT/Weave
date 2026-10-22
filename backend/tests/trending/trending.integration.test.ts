@@ -40,6 +40,7 @@ integration('PostgreSQL Trending preserves ranking, freshness, snapshot activati
       await sqlClient`INSERT INTO app.repo_content(repo_id,description,primary_language,content_hash)
         VALUES (${id}::uuid,'Public Trending fixture','TypeScript',${id})`;
       await sqlClient`INSERT INTO app.repo_engagement(repo_id) VALUES (${id}::uuid)`;
+      await sqlClient`UPDATE app.repo_content SET readme=${'x'.repeat(1_000_000)} WHERE repo_id=${id}::uuid`;
     }
     await sqlClient`
       INSERT INTO app.trending_snapshots(snapshot_id,period,source,computed_at,activated_at,complete,active)
@@ -57,6 +58,8 @@ integration('PostgreSQL Trending preserves ranking, freshness, snapshot activati
     const previousDebug = sqlClient.options.debug;
     sqlClient.options.debug = () => { queryCount++; };
     const first = await service.get();
+    assert.ok(Buffer.byteLength(first.body)<40_000,'Card responses must not download megabyte READMEs');
+    assert.ok(unpack(first).items.every(item=>!('readme_md' in item)));
     assert.deepEqual(unpack(first).items.map(row => row.repo_id), [repos[1], repos[0]]);
     assert.deepEqual(unpack(first).items.map(row => row.position), [2, 7]);
     assert.deepEqual(unpack(first).available_periods, ['daily']);

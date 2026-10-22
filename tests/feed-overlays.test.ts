@@ -34,6 +34,8 @@ function feed(ids: string[], reducedMotion = false) {
   let saveRepository: () => Promise<any> = async () => { throw new Error('Unexpected save'); };
   let createCollection: () => Promise<any> = async () => { throw new Error('Unexpected create'); };
   let saveCollections: any[] = [];
+  let openExternal: () => Promise<void> = async () => undefined;
+  let shareHeight=800;
   let root: ReturnType<typeof create>;
   const animation = () => ({
     start: (callback?: (result: { finished: boolean }) => void) => { if (callback) closeAnimations.push(callback); },
@@ -50,8 +52,8 @@ function feed(ids: string[], reducedMotion = false) {
     StyleSheet: { create: (value: unknown) => value, absoluteFill: {}, hairlineWidth: 1 },
     Animated: { Value, View: 'AnimatedView', timing: animation, parallel: animation, sequence: animation, delay: animation },
     Easing: { bezier: () => 0, in: () => 0, out: () => 0, cubic: 0, quad: 0 },
-    useWindowDimensions: () => ({ height: 800, width: 400 }),
-    Keyboard: { dismiss() {} }, Linking: { openURL: async () => undefined },
+    useWindowDimensions: () => ({ height: shareHeight, width: 400 }),
+    Keyboard: { dismiss() {} }, Linking: { openURL: () => openExternal() },
     Share: { share: async () => ({ action: 'sharedAction' }) },
     ...Object.fromEntries(['ActivityIndicator', 'FlatList', 'Image', 'KeyboardAvoidingView', 'Modal', 'Pressable', 'ScrollView', 'Text', 'TextInput', 'View'].map(name => [name, name])),
   };
@@ -135,6 +137,10 @@ function feed(ids: string[], reducedMotion = false) {
   ];
   return {
     requests, events, client,
+    setExternalOpen(value: () => Promise<void>) {openExternal=value;},
+    setHeight(value:number) {shareHeight=value;},
+    get githubActionScrollable() {return this.button('Open on GitHub').findAllByType('Text').length>0
+      && root.root.findAllByType('ScrollView').some(scroll=>scroll.findAllByType('Pressable').some(node=>node.props.accessibilityLabel==='Open on GitHub'));},
     setPost(value: () => Promise<any>) { postComment = value; },
     setSave(value: () => Promise<any>) {
       saveRepository = value;
@@ -375,4 +381,23 @@ test('collection creation failure remains visible after closing and reopening it
     await app.requestClose(); await app.finishClose(); await app.open(0, 'onSavePress');
     assert.ok(app.messages.includes('Collection could not be created'), 'dismissal must not erase an unacknowledged failure');
   } finally { await app.unmount(); }
+});
+
+test('share sheet scrolls on short screens and records GitHub opens only after success', async () => {
+  const repoId='00000000-0000-4000-8000-000000000001';
+  const app=feed([repoId]);app.setHeight(300);
+  await app.mount();
+  try {
+    await app.open(0,'onSharePress');
+    assert.equal(app.githubActionScrollable,true);
+    app.setExternalOpen(async()=>{throw new Error('Unable to open');});
+    await app.press('Open on GitHub');
+    assert.deepEqual(app.events,[]);
+    let finish!:()=>void;
+    app.setExternalOpen(()=>new Promise(resolve=>{finish=resolve;}));
+    await app.press('Open on GitHub');
+    assert.deepEqual(app.events,[],'Do not acknowledge a pending external open');
+    await act(async()=>{finish();await new Promise(resolve=>setTimeout(resolve,0));});
+    assert.deepEqual(app.events,[{repo_id:repoId,action:'github_open',serve_id:repoId,position:3}]);
+  } finally {await app.unmount();}
 });

@@ -355,6 +355,10 @@ export function RepositoryFeedItem({
           { repo_id: repository.id, action: FEEDBACK_ACTIONS.share },
           true,
         )}
+        onGithubOpened={() => queueRepositoryActivity(
+          { repo_id: repository.id, action: FEEDBACK_ACTIONS.githubOpen },
+          true,
+        )}
         repositoryId={repository.id}
         repositoryDetails={{
           id: repository.id,

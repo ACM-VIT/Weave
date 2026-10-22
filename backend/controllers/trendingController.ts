@@ -38,7 +38,7 @@ export function createTrendingSnapshotSource(client: typeof sqlClient = sqlClien
         await tx`SELECT set_config('statement_timeout', ${String(TRENDING_QUERY_TIMEOUT_MS)}, true)`;
         return tx`SELECT i.position,i.score,i.features,r.repo_id,r.github_id,r.owner_github_id,r.full_name,r.owner,r.name,r.url,r.status,r.created_at,r.updated_at,
         c.description,c.primary_language,c.languages,c.content_version,
-        ${tx.unsafe(readmeSummaryProjection('r','c'))},c.readme AS readme_md,
+        ${tx.unsafe(readmeSummaryProjection('r','c'))},
         to_jsonb(c)->>'readme_source_path' AS readme_source_path,
         to_jsonb(c)->>'readme_default_branch' AS readme_default_branch,
         to_jsonb(c)->>'readme_base_url' AS readme_base_url,c.updated_at AS content_updated_at,c.source_updated_at,

@@ -334,6 +334,7 @@ test('card summaries and highlights preserve shared Unicode codepoint limits', (
   const highlight = '🚀' + 'a'.repeat(95);
   const document = prepareReadmeSummaryDocument({ readmeSummary: valid.summary,
     description: 'One-line subtitle.', summaryHighlights: [highlight, highlight + 'a'] });
+  assert.ok(document?.startsWith(valid.summary), 'The popup must preserve all 360 Unicode codepoints');
   assert.ok(document?.includes(`- ${highlight}`));
   assert.ok(!document?.includes(`- ${highlight}a`));
 });

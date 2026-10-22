@@ -9,6 +9,7 @@ import {
   Platform,
   Pressable,
   Share,
+  ScrollView,
   StyleSheet,
   Text,
   useWindowDimensions,
@@ -49,6 +50,7 @@ type ShareRepositorySheetProps = {
   isVisible: boolean;
   onClose: () => void;
   onShared?: () => void;
+  onGithubOpened?: () => void;
   repositoryId: string;
   repositoryDetails?: Pick<
     RepositoryDetail,
@@ -79,6 +81,7 @@ export function ShareRepositorySheet({
   isVisible,
   onClose,
   onShared,
+  onGithubOpened,
   repositoryId,
   repositoryDetails,
 }: ShareRepositorySheetProps) {
@@ -214,7 +217,8 @@ export function ShareRepositorySheet({
     if (!githubUrl) throw new Error('GitHub link is unavailable.');
     await haptic();
     await Linking.openURL(githubUrl);
-  }, [githubUrl, haptic]);
+    onGithubOpened?.();
+  }, [githubUrl, haptic, onGithubOpened]);
 
   if (!isVisible) return null;
 
@@ -260,6 +264,11 @@ export function ShareRepositorySheet({
               },
             ]}
           >
+            <ScrollView
+              style={{ flexShrink: 1, minHeight: 0 }}
+              keyboardShouldPersistTaps="handled"
+              keyboardDismissMode="on-drag"
+            >
             <View style={styles.header}>
               <View style={styles.headerText}>
                 <Text selectable style={[styles.title, { color: palette.text }]}>Share repository</Text>
@@ -388,6 +397,7 @@ export function ShareRepositorySheet({
                 <Text selectable style={[styles.toastText, { color: palette.text }]}>{toast}</Text>
               </View>
             ) : null}
+            </ScrollView>
           </Animated.View>
         </View>
       </View>

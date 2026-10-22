@@ -15,6 +15,7 @@ import {
   text,
   timestamp,
   uniqueIndex,
+  unique,
   uuid,
   varchar,
 } from 'drizzle-orm/pg-core';
@@ -270,6 +271,55 @@ export const repoCardSummaries = appSchema.table('repo_card_summaries', {
   check('repo_card_summaries_source_check', sql`
     ${table.summarySource} IN ('generated','description_fallback','legacy')
   `),
+]);
+
+export const repoReadmeSummaries = appSchema.table('repo_readme_summaries', {
+  summaryId: uuid('summary_id').defaultRandom().primaryKey(),
+  generationId: uuid('generation_id').notNull().unique('repo_readme_summaries_generation_id_key'),
+  repoId: uuid('repo_id').notNull(),
+  contentVersion: integer('content_version').notNull(),
+  contentHash: text('content_hash').notNull(),
+  promptVersion: text('prompt_version').notNull(),
+  formatVersion: text('format_version').notNull(),
+  modelVersion: text('model_version').notNull(),
+  artifact: jsonb('artifact').$type<Record<string, unknown>>().notNull(),
+  active: boolean('active').notNull().default(false),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, table => [
+  foreignKey({name: 'repo_readme_summaries_repo_id_fkey',columns: [table.repoId],foreignColumns: [appRepos.repoId]}).onDelete('cascade'),
+  check('repo_readme_summaries_content_version_check', sql`${table.contentVersion} > 0`),
+  check('repo_readme_summaries_content_hash_check', sql`btrim(${table.contentHash}) <> ''`),
+  check('repo_readme_summaries_prompt_version_check', sql`btrim(${table.promptVersion}) <> ''`),
+  check('repo_readme_summaries_format_version_check', sql`btrim(${table.formatVersion}) <> ''`),
+  check('repo_readme_summaries_model_version_check', sql`btrim(${table.modelVersion}) <> ''`),
+  check('repo_readme_summaries_artifact_check', sql`jsonb_typeof(${table.artifact}) = 'object' AND octet_length(${table.artifact}::text) <= 12000`),
+  uniqueIndex('repo_readme_summaries_active_uidx').on(table.repoId).where(sql`${table.active}`),
+]);
+
+export const readmeSummaryJobs = telemetrySchema.table('readme_summary_jobs', {
+  jobId: uuid('job_id').defaultRandom().primaryKey(),
+  generationId: uuid('generation_id').notNull().defaultRandom(),
+  repoId: uuid('repo_id').notNull(),
+  contentVersion: integer('content_version').notNull(),
+  contentHash: text('content_hash').notNull(),
+  promptVersion: text('prompt_version').notNull(),
+  status: text('status').notNull().default('pending'),
+  attempts: integer('attempts').notNull().default(0),
+  availableAt: timestamp('available_at', { withTimezone: true }).notNull().defaultNow(),
+  claimedAt: timestamp('claimed_at', { withTimezone: true }),
+  claimToken: uuid('claim_token'),
+  lastError: text('last_error'),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  completedAt: timestamp('completed_at', { withTimezone: true }),
+}, table => [
+  foreignKey({name: 'readme_summary_jobs_repo_id_fkey',columns: [table.repoId],foreignColumns: [appRepos.repoId]}).onDelete('cascade'),
+  check('readme_summary_jobs_content_version_check', sql`${table.contentVersion} > 0`),
+  check('readme_summary_jobs_status_check', sql`${table.status} IN ('pending','claimed','completed','failed','superseded')`),
+  check('readme_summary_jobs_attempts_check', sql`${table.attempts} >= 0`),
+  unique('readme_summary_jobs_repo_id_content_version_content_hash_pr_key')
+    .on(table.repoId, table.contentVersion, table.contentHash, table.promptVersion),
+  index('readme_summary_jobs_pending_idx').on(table.availableAt, table.createdAt)
+    .where(sql`${table.status} IN ('pending','claimed')`),
 ]);
 
 export const reactions = appSchema.table('reactions', {

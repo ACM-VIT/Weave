@@ -239,7 +239,7 @@ export function prepareReadmeSummaryDocument(repository: {
     .map(normalizeOptionalRepositoryText)
     .filter((item): item is string => item !== null && Array.from(item).length <= 96)
     .slice(0, 3);
-  return [preview.markdown, highlights.map((item) => `- ${item}`).join('\n')]
+  return [normalizeRepositoryCardSummary(repository.readmeSummary, repository.readmeFull), highlights.map((item) => `- ${item}`).join('\n')]
     .filter(Boolean).join('\n\n');
 }
 

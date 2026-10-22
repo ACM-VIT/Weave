@@ -334,7 +334,7 @@ integration('registered v2 HTTP paths complete controlled integration flows', as
     }).data.items[0];
     assert.equal(trendingItem.repo_id, repoId);
     assert.equal(trendingItem.summary, 'Concise generated repository summary.');
-    assert.equal(trendingItem.readme_md, '# HTTP Repo\n\nComplete README content.');
+    assert.equal('readme_md' in trendingItem, false, 'Trending cards load full README only on detail');
     assert.equal(trendingItem.summary_prompt_version, 'repo-card-summary-v1');
     assert.equal(trendingItem.readme_source_path, 'docs/README.md');
     assert.deepEqual(trendingItem.languages, ['TypeScript', 'SQL']);
@@ -353,7 +353,7 @@ integration('registered v2 HTTP paths complete controlled integration flows', as
     assert.equal(anotherTrendingViewer.status,200,'Viewer state must participate in conditional response validation');
     const anotherTrendingItem=((await anotherTrendingViewer.json()) as {data:{items:ViewerAwareRepositoryListItem[]}}).data.items[0];
     assert.equal(anotherTrendingItem.viewer_reaction,null,'The shared public cache must never leak another viewer reaction');
-    assert.equal(anotherTrendingItem.readme_md,trendingItem.readme_md);
+    assert.equal('readme_md' in anotherTrendingItem,false);
 
     const feedVersionBeforeFollow = BigInt((await sqlClient`
       SELECT feed_version FROM app.user_feed_state WHERE user_id=${userId}::uuid
