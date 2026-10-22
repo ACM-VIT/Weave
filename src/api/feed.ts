@@ -1,3 +1,5 @@
+import type { RecommendationSource } from '../models/recommendation';
+import { decodeFeedPage, type FeedResponseV2 } from './feed-data';
 import { apiV2Raw } from './client';
 import { createUuid, getAppSessionId } from '../utils/uuid';
 import { requestFeedWithRetry } from '../services/feedTransport';
@@ -39,6 +41,7 @@ export type FeedRepositoryPayload = {
   position: number;
   serve_id: string;
   feed_version: string;
+  recommendation_source?: RecommendationSource;
   // Legacy aliases may accompany a V2 payload during rollout. They stay
   // distinct so complete README content can never be mistaken for a summary.
   github_repo?: string;
@@ -51,13 +54,6 @@ export type FeedRepositoryPayload = {
   pr_count?: number;
   saves_count?: number;
   comment_count?: number;
-};
-
-type FeedResponseV2 = {
-  serve_id: string;
-  feed_version: string;
-  items: { repo_id: string; position: number; repository: Record<string, unknown> }[];
-  next_cursor: string | null;
 };
 
 export async function fetchFeed(
@@ -77,13 +73,5 @@ export async function fetchFeed(
     }, token);
     return result.data;
   }, options.signal, undefined, options.retryUnavailable);
-  return {
-    items: data.items.map((item) => ({
-      ...item.repository, repo_id: item.repo_id, position: item.position,
-      serve_id: data.serve_id, feed_version: data.feed_version,
-    })),
-    nextCursor: data.next_cursor,
-    feedVersion: data.feed_version,
-    sessionId: body.session_id,
-  };
+  return decodeFeedPage(data, body.session_id);
 }
