@@ -139,18 +139,21 @@ export async function reconcileGithubProfileForIngestion(
   identity: GithubProfileIdentity,
 ): Promise<string | null> {
   const matches = await tx`
-    SELECT profile_id,provider_subject,handle,claimed_by_user_id,status
-    FROM app.social_profiles
-    WHERE provider='github'
-      AND (
-        provider_subject=${identity.githubId}
-        OR (
-          status='active'
-          AND lower(handle)=lower(${identity.githubHandle})
+    WITH locked AS MATERIALIZED (
+      SELECT profile_id,provider_subject,handle,claimed_by_user_id,status,created_at
+      FROM app.social_profiles
+      WHERE provider='github'
+        AND (
+          provider_subject=${identity.githubId}
+          OR (
+            status='active'
+            AND lower(handle)=lower(${identity.githubHandle})
+          )
         )
-      )
+      ORDER BY profile_id FOR UPDATE
+    )
+    SELECT profile_id,provider_subject,handle,claimed_by_user_id,status FROM locked
     ORDER BY (provider_subject=${identity.githubId}) DESC,created_at ASC
-    FOR UPDATE
   `;
   const affectedFollowerIds = new Set<string>();
   const identifiedHandleCollision = matches.find(
@@ -293,15 +296,18 @@ export async function claimVerifiedGithubProfile(
     )
   `;
   const matches = await tx`
-    SELECT profile_id,provider_subject,handle,claimed_by_user_id
-    FROM app.social_profiles
-    WHERE provider='github'
-      AND (
-        provider_subject=${claim.githubId}
-        OR (provider_subject IS NULL AND lower(handle)=lower(${claim.githubHandle}))
-      )
+    WITH locked AS MATERIALIZED (
+      SELECT profile_id,provider_subject,handle,claimed_by_user_id,created_at
+      FROM app.social_profiles
+      WHERE provider='github'
+        AND (
+          provider_subject=${claim.githubId}
+          OR (provider_subject IS NULL AND lower(handle)=lower(${claim.githubHandle}))
+        )
+      ORDER BY profile_id FOR UPDATE
+    )
+    SELECT profile_id,provider_subject,handle,claimed_by_user_id FROM locked
     ORDER BY (provider_subject=${claim.githubId}) DESC,created_at ASC
-    FOR UPDATE
   `;
   const claimedByAnother = matches.find((profile) =>
     profile.claimed_by_user_id != null && String(profile.claimed_by_user_id) !== claim.userId

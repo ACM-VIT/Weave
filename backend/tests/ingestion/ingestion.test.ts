@@ -1,10 +1,13 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import crypto from 'node:crypto';
 
 import type { RepositoryUpsert, RepositoryUpsertResult, TrendingSnapshotInput } from '../../contracts/ingestion.v2.js';
 import type { RepositoryPersistencePort } from '../../ports/repositoryPersistencePort.js';
 import { IngestionService } from '../../services/ingestionService.js';
 import { isRepositoryUpsert } from '../../utils/ingestionValidation.js';
+import { planRepositoryObservationBatches } from '../../services/repositoryIngestionBatch.js';
+import { assertDisposableDatabase } from '../database/disposableDatabase.js';
 
 class FakeRepoPersistence implements RepositoryPersistencePort {
   async bulkUpsert(input: RepositoryUpsert[]): Promise<RepositoryUpsertResult[]> {
@@ -91,4 +94,167 @@ test('ingestion rejects optional values that would deterministically fail DB or 
     'https://raw.githubusercontent.com/owner/name/refs/heads/main/?token=secret',
     'https://user:secret@raw.githubusercontent.com/owner/name/refs/heads/main/',
   ]) assert.equal(isRepositoryUpsert({ ...valid, readme_base_url: url }), false);
+});
+
+function batchRepository(githubId: string): RepositoryUpsert {
+  return { github_id: githubId, owner_github_id: '77200', full_name: `batch-fixture/repo-${githubId}`,
+    owner: 'batch-fixture', name: `repo-${githubId}`, url: `https://github.com/batch-fixture/repo-${githubId}`,
+    observed_at: '2026-10-21T00:00:00Z', description: 'Initial content.', topics: [' Systems ', 'SYSTEMS'] };
+}
+
+function ownedRepository(githubId: string, ownerId: string, owner: string): RepositoryUpsert {
+  const repository = batchRepository(githubId);
+  const fullName = `${owner}/${repository.name}`;
+  return { ...repository, owner_github_id: ownerId, owner, full_name: fullName,
+    url: `https://github.com/${fullName}` };
+}
+
+test('ingestion planning bounds stages without losing ordered duplicate observations', () => {
+  const initial = batchRepository('77201');
+  const changed = { ...initial, description: 'Changed content.', observed_at: '2026-10-21T01:00:00Z' };
+  const batches = planRepositoryObservationBatches([batchRepository('77202'), initial, changed,
+    { ...changed, github_id: '077201', observed_at: '2026-10-21T02:00:00Z' }]);
+  assert.equal(batches.flat().length, 4);
+  for (const batch of batches) {
+    const keys = batch.map(({ repository }) => BigInt(repository.github_id).toString());
+    assert.equal(new Set(keys).size, keys.length, 'a set-based INSERT must not touch one conflict key twice');
+  }
+  assert.deepEqual(batches.flat().map(({ order }) => order), [0, 1, 2, 3],
+    'bounded stages must preserve the complete sequential order, not only each ID subsequence');
+  const repeated = batches.flat().filter(({ repository }) => BigInt(repository.github_id) === 77201n);
+  assert.deepEqual(repeated.map(({ repository }) => repository.description), ['Initial content.', 'Changed content.', 'Changed content.']);
+  assert.deepEqual(repeated.map(({ order }) => order), [0, 1, 2]);
+  const maximum = planRepositoryObservationBatches(Array.from({ length: 100 }, (_, index) => batchRepository(String(index + 1))));
+  assert.equal(maximum.flat().length, 100);
+  assert.ok(maximum.every(batch => batch.length <= 25));
+  assert.throws(() => planRepositoryObservationBatches([]), /1-100/);
+  assert.throws(() => planRepositoryObservationBatches(Array.from({ length: 101 }, () => initial)), /1-100/);
+});
+
+test('ingestion stages keep a repeated rename before a later unique-name reuse', () => {
+  const initial = batchRepository('101');
+  const renamed = { ...initial, full_name: 'batch-fixture/renamed', name: 'renamed' };
+  const reuse = { ...initial, github_id: '102' };
+  const batches = planRepositoryObservationBatches([initial, renamed, reuse]);
+  assert.deepEqual(batches.map(batch => batch.map(({ repository }) => [repository.github_id, repository.full_name])), [
+    [['101', initial.full_name]], [['101', renamed.full_name], ['102', initial.full_name]],
+  ], 'a later ID must not use a name in an earlier wave than the observation releasing it');
+});
+
+test('ingestion staging also bounds README bytes rather than only repository count', () => {
+  const batches = planRepositoryObservationBatches(Array.from({ length: 5 }, (_, index) => ({
+    ...batchRepository(String(index + 1)), readme: 'x'.repeat(1_000_000),
+  })));
+  assert.ok(batches.length > 1);
+  assert.ok(batches.every(batch => Buffer.byteLength(JSON.stringify(batch.map(value => value.repository))) <= 4 * 1024 * 1024));
+  assert.throws(() => planRepositoryObservationBatches([{
+    ...batchRepository('1'), readme: 'x'.repeat(4 * 1024 * 1024),
+  }]), /byte limit/);
+});
+
+test('set-based ingestion preserves versions, owner reconciliation, rollback and snapshot replay', {
+  skip: process.env.RUN_DATABASE_INTEGRATION !== '1',
+}, async () => {
+  assertDisposableDatabase();
+  const { sqlClient } = await import('../../db/index.js');
+  const { PostgresRepositoryPersistence } = await import('../../adapters/postgresRepositoryPersistence.js');
+  const persistence = new PostgresRepositoryPersistence();
+  const profileId = crypto.randomUUID();
+  const first = batchRepository('77201'), second = batchRepository('77202');
+  const changed = { ...first, description: 'Changed content.', observed_at: '2026-10-21T01:00:00Z' };
+  const final = { ...changed, star_count: 5, observed_at: '2026-10-21T02:00:00Z' };
+  const period = 'batch-fixture';
+  try {
+    await sqlClient`INSERT INTO app.social_profiles(profile_id,provider,handle,profile_kind)
+      VALUES (${profileId}::uuid,'github','batch-fixture','unknown')`;
+    const mappings = await persistence.bulkUpsert([second, first, changed, final]);
+    assert.deepEqual(mappings.map(row => [row.github_id,row.content_version,row.changed]), [
+      ['77201',1,true], ['77201',2,true], ['77201',2,false], ['77202',1,true],
+    ]);
+    assert.equal((await sqlClient`SELECT provider_subject FROM app.social_profiles
+      WHERE profile_id=${profileId}::uuid`)[0].provider_subject, first.owner_github_id);
+    const repoId = mappings[0].repo_id;
+    assert.equal(Number((await sqlClient`SELECT count(*) AS n FROM app.repo_stat_snapshots
+      WHERE repo_id=${repoId}::uuid`)[0].n), 3);
+    assert.equal(Number((await sqlClient`SELECT count(*) AS n FROM telemetry.ml_outbox
+      WHERE aggregate_id=${repoId}::uuid AND job_type='repo_index'`)[0].n), 2);
+    assert.equal((await sqlClient`SELECT description FROM app.repo_content WHERE repo_id=${repoId}::uuid`)[0].description, final.description);
+
+    const observed4 = '2026-10-21T03:00:00Z', observed5 = '2026-10-21T04:00:00Z';
+    await Promise.all([
+      persistence.bulkUpsert([{ ...final, observed_at: observed4, star_count: 6 }, { ...second, observed_at: observed4 }]),
+      persistence.bulkUpsert([{ ...second, observed_at: observed5 }, { ...final, observed_at: observed5, star_count: 7 }]),
+    ]);
+    assert.equal(Number((await sqlClient`SELECT content_version FROM app.repo_content WHERE repo_id=${repoId}::uuid`)[0].content_version), 2);
+    assert.equal(Number((await sqlClient`SELECT count(*) AS n FROM app.repo_stat_snapshots WHERE repo_id=${repoId}::uuid`)[0].n), 5);
+
+    const snapshot = { snapshot_id: crypto.randomUUID(), period, source: 'fixture', computed_at: final.observed_at,
+      repositories: [{ ...final, rank: 0 }, { ...second, rank: 1 }] };
+    await persistence.recordTrendingSnapshot(snapshot);
+    const jobCount = Number((await sqlClient`SELECT count(*) AS n FROM telemetry.ml_outbox
+      WHERE aggregate_id IN (${mappings[0].repo_id}::uuid,${mappings[3].repo_id}::uuid)`)[0].n);
+    await persistence.recordTrendingSnapshot(snapshot);
+    assert.equal(Number((await sqlClient`SELECT count(*) AS n FROM telemetry.ml_outbox
+      WHERE aggregate_id IN (${mappings[0].repo_id}::uuid,${mappings[3].repo_id}::uuid)`)[0].n), jobCount);
+    assert.equal(Number((await sqlClient`SELECT count(*) AS n FROM app.trending_snapshot_items
+      WHERE snapshot_id=${snapshot.snapshot_id}::uuid`)[0].n), 2);
+    await assert.rejects(persistence.recordTrendingSnapshot({ ...snapshot, period: 'other-period' }), /cannot change its period/);
+    await assert.rejects(persistence.recordTrendingSnapshot({ ...snapshot, snapshot_id: crypto.randomUUID(),
+      repositories: [{ ...final, rank: 0 }, { ...second, rank: 0 }] }), /unique repositories/);
+    await assert.rejects(persistence.recordTrendingSnapshot({ ...snapshot, snapshot_id: crypto.randomUUID(),
+      repositories: [{ ...final, rank: 0 }, { ...final, github_id: '077201', rank: 1 }] }), /unique repositories/);
+
+    const rolledBack = { ...batchRepository('77203'), rank: 0, score: 'not-a-number' as unknown as number };
+    await assert.rejects(persistence.recordTrendingSnapshot({ ...snapshot, snapshot_id: crypto.randomUUID(),
+      repositories: [rolledBack] }));
+    assert.equal(Number((await sqlClient`SELECT count(*) AS n FROM app.repos WHERE github_id=77203`)[0].n), 0,
+      'a failure after repository writes must roll back repository, observation and outbox state');
+    assert.deepEqual((await sqlClient`SELECT snapshot_id FROM app.trending_snapshots WHERE period=${period} AND active`)
+      .map(row => String(row.snapshot_id)), [snapshot.snapshot_id]);
+
+    // Same handle, different identities, then the original identity again. Every
+    // observation must reconcile: caching the first A/H leaves A deleted by B/H.
+    await persistence.bulkUpsert([
+      ownedRepository('77204', '77210', 'owner-reuse-fixture'),
+      ownedRepository('77205', '77211', 'owner-reuse-fixture'),
+      ownedRepository('77206', '77210', 'owner-reuse-fixture'),
+    ]);
+    const ownerStates = await sqlClient`SELECT provider_subject,status FROM app.social_profiles
+      WHERE provider='github' AND provider_subject IN ('77210','77211') ORDER BY provider_subject`;
+    assert.deepEqual(ownerStates.map(row => [row.provider_subject,row.status]), [['77210','active'],['77211','deleted']]);
+
+    const renamed = { ...final, full_name: 'batch-fixture/renamed', name: 'renamed',
+      url: 'https://github.com/batch-fixture/renamed' };
+    await persistence.bulkUpsert([final, renamed, { ...final, github_id: '77207' }]);
+    assert.deepEqual((await sqlClient`SELECT github_id::text,full_name FROM app.repos
+      WHERE github_id IN (77201,77207) ORDER BY github_id`).map(row => [row.github_id,row.full_name]),
+    [['77201','batch-fixture/renamed'],['77207',final.full_name]]);
+
+    const caseSnapshotId = 'abcdefab-' + crypto.randomUUID().slice(9);
+    const caseResults = await Promise.allSettled([
+      persistence.recordTrendingSnapshot({ ...snapshot, snapshot_id: caseSnapshotId.toUpperCase(), period: 'case-upper-fixture',
+        repositories: [{ ...ownedRepository('77208', '77212', 'upper-snapshot-fixture'), topics: [], rank: 0 }] }),
+      persistence.recordTrendingSnapshot({ ...snapshot, snapshot_id: caseSnapshotId, period: 'case-lower-fixture',
+        repositories: [{ ...ownedRepository('77209', '77213', 'lower-snapshot-fixture'), topics: [], rank: 0 }] }),
+    ]);
+    assert.equal(caseResults.filter(result => result.status === 'fulfilled').length, 1,
+      'case aliases must share a snapshot lock and cannot both overwrite different periods');
+    const rejected = caseResults.find(result => result.status === 'rejected');
+    assert.ok(rejected && rejected.status === 'rejected');
+    assert.match(String(rejected.reason), /cannot change its period/);
+    const storedCase = (await sqlClient`SELECT period FROM app.trending_snapshots
+      WHERE snapshot_id=${caseSnapshotId}::uuid`)[0].period;
+    const winningId = storedCase === 'case-upper-fixture' ? '77208' : '77209';
+    assert.deepEqual((await sqlClient`SELECT repo.github_id::text FROM app.trending_snapshot_items item
+      JOIN app.repos repo USING(repo_id) WHERE item.snapshot_id=${caseSnapshotId}::uuid`)
+      .map(row => row.github_id), [winningId]);
+  } finally {
+    await sqlClient`DELETE FROM app.trending_snapshots WHERE period IN (${period},'case-upper-fixture','case-lower-fixture')`;
+    await sqlClient`DELETE FROM telemetry.ml_outbox WHERE aggregate_id IN
+      (SELECT repo_id FROM app.repos WHERE github_id BETWEEN 77201 AND 77209)`;
+    await sqlClient`DELETE FROM app.repos WHERE github_id BETWEEN 77201 AND 77209`;
+    await sqlClient`DELETE FROM app.social_profiles WHERE profile_id=${profileId}::uuid
+      OR (provider='github' AND provider_subject IN ('77210','77211','77212','77213'))`;
+    await sqlClient.end({ timeout: 1 });
+  }
 });
