@@ -113,7 +113,9 @@ export class DataReconciliationService {
     return result;
   }
 
-  private repairRepositories(tx: postgres.TransactionSql, ids: string[]) {
+  // Overridable so integration tests can pause after counter locks without
+  // blocking a SQL statement against the production lock timeout.
+  protected async repairRepositories(tx: postgres.TransactionSql, ids: string[]) {
     return tx`
       WITH reactions AS (
         SELECT repo_id,count(*) FILTER (WHERE reaction='like')::integer AS likes,

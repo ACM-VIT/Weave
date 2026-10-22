@@ -82,6 +82,38 @@ async function waitFor(check: () => Promise<boolean>) {
   }
 }
 
+async function settleAndClose(
+  client: Pick<typeof sqlClient, 'end'>,
+  operations: (Promise<unknown> | undefined)[],
+) {
+  try {
+    const results = await Promise.allSettled(operations);
+    const failure = results.find(result => result.status === 'rejected');
+    if (failure) throw failure.reason;
+  } finally {
+    await client.end({ timeout: 1 });
+  }
+}
+
+test('failed concurrent operations settle before the dedicated client closes and preserve the error', async () => {
+  const failure = new Error('injected repair failure');
+  const pending = gate();
+  let otherSettled = false; let closed = false;
+  const done = assert.rejects(settleAndClose({ end: async () => {
+    closed = true;
+    assert.equal(otherSettled, true);
+  } }, [Promise.reject(failure), pending.promise.then(() => { otherSettled = true; })]),
+  error => error === failure);
+  try {
+    await delay(0);
+    assert.equal(closed, false);
+  } finally {
+    pending.open();
+    await done;
+  }
+  assert.equal(closed, true);
+});
+
 integration('bounded batches resume after restart, repair all aggregates and leave correct rows untouched', async () => {
   await fixture();
   await sqlClient`INSERT INTO app.reactions(user_id,repo_id,reaction) VALUES
@@ -181,19 +213,26 @@ integration('foreground interaction locks are skipped without losing committed i
 integration('a writer arriving after counter locks keeps its increment after repair commits', async () => {
   await fixture();
   await sqlClient`UPDATE app.repo_engagement SET likes_count=8 WHERE repo_id=${repos[0]}::uuid`;
-  const blocker = postgres(process.env.DATABASE_URL!, { max: 1, prepare: false });
+  const repairClient = postgres(process.env.DATABASE_URL!, { max: 1, prepare: false });
   const ready = gate(); const release = gate();
-  const holding = Promise.resolve(blocker.begin(async tx => {
-    await tx`LOCK TABLE app.saves IN ACCESS EXCLUSIVE MODE`;
-    ready.open(); await release.promise;
-  }));
+  class PausedReconciliation extends DataReconciliationService {
+    protected override async repairRepositories(tx: postgres.TransactionSql, ids: string[]) {
+      ready.open();
+      await release.promise;
+      return super.repairRepositories(tx, ids);
+    }
+  }
   let repair: Promise<unknown> | undefined;
   let write: Promise<unknown> | undefined;
   try {
-    await Promise.race([ready.promise,holding]);
-    repair = Promise.resolve(new DataReconciliationService(sqlClient, 1).reconcileCounters());
-    await waitFor(async () => (await sqlClient`SELECT 1 FROM pg_stat_activity
-      WHERE wait_event_type='Lock' AND query LIKE '%WITH reactions AS (%'`).length > 0);
+    repair = new PausedReconciliation(repairClient, 1).reconcileCounters();
+    // Attach rejection handlers while synchronization is pending. Cleanup below
+    // still awaits both original promises and propagates any failure.
+    void repair.catch(() => {});
+    await Promise.race([ready.promise,repair]);
+    // Prove synchronization can exceed the 250 ms production lock timeout:
+    // maintenance holds row locks but has no SQL statement waiting on a lock.
+    await delay(350);
     write = Promise.resolve(sqlClient.begin(async tx => {
       await processInteractionBatchV2InTransaction(tx, users[0], [{
         event_id: randomUUID(),schema_version: 2,session_id: randomUUID(),serve_id: null,
@@ -201,11 +240,12 @@ integration('a writer arriving after counter locks keeps its increment after rep
         client_occurred_at: new Date().toISOString(),context: {},
       }]);
     }));
+    void write.catch(() => {});
     await waitFor(async () => (await sqlClient`SELECT 1 FROM pg_stat_activity
       WHERE wait_event_type='Lock' AND query LIKE '%FOR UPDATE%' AND query LIKE '%app.repo_engagement%'`).length > 0);
   } finally {
-    release.open(); await holding;
-    await Promise.all([repair,write]); await blocker.end();
+    release.open();
+    await settleAndClose(repairClient, [repair,write]);
   }
   assert.equal((await sqlClient`SELECT likes_count FROM app.repo_engagement WHERE repo_id=${repos[0]}::uuid`)[0].likes_count, 1);
 });
@@ -258,7 +298,10 @@ integration('lock timeouts roll back the batch and transaction-local settings do
     assert.deepEqual([progress.last_id,progress.upper_id,Number(progress.completed_sweeps)], [null,null,0]);
     assert.equal((await client`SHOW statement_timeout`)[0].statement_timeout, originalStatement);
     assert.equal((await client`SHOW lock_timeout`)[0].lock_timeout, originalLock);
-  } finally { release.open(); await holding; await client.end(); }
+  } finally {
+    release.open();
+    await settleAndClose(client, [holding]);
+  }
   await drain();
 });
 
