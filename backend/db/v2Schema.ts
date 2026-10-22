@@ -115,6 +115,9 @@ export const socialProfiles = appSchema.table('social_profiles', {
   uniqueIndex('social_profiles_provider_subject_uidx')
     .on(table.provider, table.providerSubject)
     .where(sql`${table.providerSubject} IS NOT NULL`),
+  index('social_profiles_github_numeric_subject_idx')
+    .on(sql`ltrim(${table.providerSubject},'0')`)
+    .where(sql`${table.provider}='github'`),
   uniqueIndex('social_profiles_provider_handle_uidx')
     .on(table.provider, sql`lower(${table.handle})`)
     .where(sql`${table.status}='active'`),

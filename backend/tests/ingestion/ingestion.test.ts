@@ -158,8 +158,12 @@ test('set-based ingestion preserves versions, owner reconciliation, rollback and
   assertDisposableDatabase();
   const { sqlClient } = await import('../../db/index.js');
   const { PostgresRepositoryPersistence } = await import('../../adapters/postgresRepositoryPersistence.js');
+  const { PostgresFeedPersistence } = await import('../../adapters/postgresFeedPersistence.js');
+  const { claimVerifiedGithubProfile } = await import('../../services/socialProfileService.js');
   const persistence = new PostgresRepositoryPersistence();
   const profileId = crypto.randomUUID();
+  const followerId = crypto.randomUUID(), claimantId = crypto.randomUUID(), otherClaimantId = crypto.randomUUID();
+  const aliasProfileId = crypto.randomUUID();
   const first = batchRepository('77201'), second = batchRepository('77202');
   const changed = { ...first, description: 'Changed content.', observed_at: '2026-10-21T01:00:00Z' };
   const final = { ...changed, star_count: 5, observed_at: '2026-10-21T02:00:00Z' };
@@ -179,6 +183,70 @@ test('set-based ingestion preserves versions, owner reconciliation, rollback and
     assert.equal(Number((await sqlClient`SELECT count(*) AS n FROM telemetry.ml_outbox
       WHERE aggregate_id=${repoId}::uuid AND job_type='repo_index'`)[0].n), 2);
     assert.equal((await sqlClient`SELECT description FROM app.repo_content WHERE repo_id=${repoId}::uuid`)[0].description, final.description);
+
+    // Upgrade a historical padded subject in place, not by deleting the followed
+    // profile. Canonical ingestion and verified claims must share its identity.
+    await sqlClient`INSERT INTO auth.users(id,raw_user_meta_data) VALUES
+      (${followerId}::uuid,'{}'::jsonb),(${claimantId}::uuid,'{}'::jsonb),(${otherClaimantId}::uuid,'{}'::jsonb)`;
+    await sqlClient`INSERT INTO app.users(user_id,username,status) VALUES
+      (${followerId}::uuid,${`batch-follower-${followerId.slice(0,8)}`},'active'),
+      (${claimantId}::uuid,${`batch-claimant-${claimantId.slice(0,8)}`},'active'),
+      (${otherClaimantId}::uuid,${`batch-other-${otherClaimantId.slice(0,8)}`},'active')`;
+    await sqlClient`INSERT INTO app.user_stats(user_id,following_count) VALUES
+      (${followerId}::uuid,1),(${claimantId}::uuid,0),(${otherClaimantId}::uuid,0)`;
+    await sqlClient`INSERT INTO app.user_feed_state(user_id) VALUES (${followerId}::uuid)`;
+    await sqlClient`INSERT INTO app.social_profile_follows(follower_id,profile_id)
+      VALUES (${followerId}::uuid,${profileId}::uuid)`;
+    await sqlClient`UPDATE app.social_profiles SET provider_subject='077200' WHERE profile_id=${profileId}::uuid`;
+    const followerVersion = BigInt((await sqlClient`SELECT feed_version FROM app.user_feed_state
+      WHERE user_id=${followerId}::uuid`)[0].feed_version);
+    await persistence.bulkUpsert([{ ...final, owner_github_id: '077200' }]);
+    const upgraded = (await sqlClient`SELECT profile_id,provider_subject,claimed_by_user_id,status FROM app.social_profiles
+      WHERE provider='github' AND ltrim(provider_subject,'0')='77200'`)[0];
+    assert.equal(String(upgraded.profile_id),profileId);
+    assert.equal(upgraded.provider_subject,'77200');
+    assert.equal(upgraded.claimed_by_user_id,null);
+    assert.equal(upgraded.status,'active');
+    assert.equal(Number((await sqlClient`SELECT count(*) AS n FROM app.social_profile_follows
+      WHERE follower_id=${followerId}::uuid AND profile_id=${profileId}::uuid`)[0].n),1);
+    assert.ok(BigInt((await sqlClient`SELECT feed_version FROM app.user_feed_state
+      WHERE user_id=${followerId}::uuid`)[0].feed_version)>followerVersion);
+    assert.deepEqual(new Set(await new PostgresFeedPersistence().listFollowedRepositoryIds(followerId,10)),
+      new Set([repoId,mappings[3].repo_id]),'The retained follow must still resolve the numeric owner repositories');
+
+    // The same upgrade through verified claiming keeps the original profile and
+    // migrates its follow through the existing, ownership-checked claim path.
+    await sqlClient`UPDATE app.social_profiles SET provider_subject='077200',handle='batch-former-fixture'
+      WHERE profile_id=${profileId}::uuid`;
+    assert.equal(await sqlClient.begin(tx=>claimVerifiedGithubProfile(tx,{
+      userId:claimantId,githubId:'77200',githubHandle:'batch-fixture',
+    })),profileId);
+    assert.equal(Number((await sqlClient`SELECT count(*) AS n FROM app.follows
+      WHERE follower_id=${followerId}::uuid AND following_id=${claimantId}::uuid`)[0].n),1);
+    await sqlClient`UPDATE app.social_profiles SET provider_subject='077200' WHERE profile_id=${profileId}::uuid`;
+    await assert.rejects(sqlClient.begin(tx=>claimVerifiedGithubProfile(tx,{
+      userId:otherClaimantId,githubId:'77200',githubHandle:'other-owner-fixture',
+    })),/already claimed by another account/);
+    await persistence.bulkUpsert([final]);
+    const claimed = (await sqlClient`SELECT profile_id,provider_subject,claimed_by_user_id FROM app.social_profiles
+      WHERE provider='github' AND ltrim(provider_subject,'0')='77200'`)[0];
+    assert.deepEqual([String(claimed.profile_id),claimed.provider_subject,String(claimed.claimed_by_user_id)],
+      [profileId,'77200',claimantId]);
+    assert.equal(Number((await sqlClient`SELECT count(*) AS n FROM app.follows
+      WHERE follower_id=${followerId}::uuid AND following_id=${claimantId}::uuid`)[0].n),1);
+
+    // Ambiguous identified rows must not be merged or transfer either claim.
+    await sqlClient`INSERT INTO app.social_profiles(profile_id,provider,provider_subject,handle,claimed_by_user_id)
+      VALUES (${aliasProfileId}::uuid,'github','077200','batch-alias-fixture',${otherClaimantId}::uuid)`;
+    await assert.rejects(persistence.bulkUpsert([final]),/multiple existing profiles/);
+    await assert.rejects(sqlClient.begin(tx=>claimVerifiedGithubProfile(tx,{
+      userId:claimantId,githubId:'77200',githubHandle:'batch-fixture',
+    })),/multiple existing profiles/);
+    const ambiguous = await sqlClient`SELECT profile_id,provider_subject,claimed_by_user_id,status FROM app.social_profiles
+      WHERE profile_id IN (${profileId}::uuid,${aliasProfileId}::uuid) ORDER BY provider_subject`;
+    assert.deepEqual(ambiguous.map(row=>[String(row.profile_id),row.provider_subject,String(row.claimed_by_user_id),row.status]),
+      [[aliasProfileId,'077200',otherClaimantId,'active'],[profileId,'77200',claimantId,'active']]);
+    await sqlClient`DELETE FROM app.social_profiles WHERE profile_id=${aliasProfileId}::uuid`;
 
     const observed4 = '2026-10-21T03:00:00Z', observed5 = '2026-10-21T04:00:00Z';
     await Promise.all([
@@ -253,8 +321,10 @@ test('set-based ingestion preserves versions, owner reconciliation, rollback and
     await sqlClient`DELETE FROM telemetry.ml_outbox WHERE aggregate_id IN
       (SELECT repo_id FROM app.repos WHERE github_id BETWEEN 77201 AND 77209)`;
     await sqlClient`DELETE FROM app.repos WHERE github_id BETWEEN 77201 AND 77209`;
-    await sqlClient`DELETE FROM app.social_profiles WHERE profile_id=${profileId}::uuid
-      OR (provider='github' AND provider_subject IN ('77210','77211','77212','77213'))`;
+    await sqlClient`DELETE FROM app.social_profiles WHERE profile_id IN (${profileId}::uuid,${aliasProfileId}::uuid)
+      OR (provider='github' AND provider_subject IN ('77200','077200','77210','77211','77212','77213'))`;
+    await sqlClient`DELETE FROM app.users WHERE user_id IN (${followerId}::uuid,${claimantId}::uuid,${otherClaimantId}::uuid)`;
+    await sqlClient`DELETE FROM auth.users WHERE id IN (${followerId}::uuid,${claimantId}::uuid,${otherClaimantId}::uuid)`;
     await sqlClient.end({ timeout: 1 });
   }
 });

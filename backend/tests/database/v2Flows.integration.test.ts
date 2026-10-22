@@ -231,7 +231,7 @@ integration('v2 database, outbox, and Redis feed flows preserve invariants', asy
     INSERT INTO telemetry.ml_outbox (
       job_type,aggregate_id,idempotency_key,payload,created_at
     ) VALUES
-      ('repo_index',${repoId}::uuid,'integration:old-repo-index','{}'::jsonb,now()-interval '1 day'),
+      ('repo_index',${repoId}::uuid,'integration:old-repo-index','{"content_version":1}'::jsonb,now()-interval '1 day'),
       ('onboard',${userId}::uuid,'integration:new-onboard','{}'::jsonb,now())
   `;
   const priorityWorker = new OutboxService();

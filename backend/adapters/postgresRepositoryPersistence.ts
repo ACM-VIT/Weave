@@ -21,7 +21,7 @@ import {
 } from '../services/repositoryIngestionBatch.js';
 import { enqueueReadmeSummaryBatch } from '../services/readmeSummaryService.js';
 import { isValidUuid } from '../utils/validators.js';
-import { reconcileGithubProfileForIngestion } from '../services/socialProfileService.js';
+import { canonicalGithubProfileSubject, reconcileGithubProfileForIngestion } from '../services/socialProfileService.js';
 
 type OutboxInput = {
   job_type: 'repo_index' | 'repo_refresh';
@@ -73,7 +73,7 @@ export class PostgresRepositoryPersistence implements RepositoryPersistencePort 
     const repositories = batches.flat().map(({ repository }) => repository);
     const identities = repositories.map((repo) => ({
       github_id: BigInt(repo.github_id).toString(),
-      owner_github_id: BigInt(repo.owner_github_id).toString(),
+      owner_github_id: canonicalGithubProfileSubject(repo.owner_github_id),
       owner: repo.owner, topics: repo.topics ?? [],
     }));
     // Sort actual signed advisory keys, including collisions between namespaces.
@@ -105,7 +105,7 @@ export class PostgresRepositoryPersistence implements RepositoryPersistencePort 
       WHERE provider='github' AND EXISTS (
         SELECT 1 FROM jsonb_to_recordset(${JSON.stringify(identities)}::text::jsonb)
           AS incoming(github_id text,owner_github_id text,owner text)
-        WHERE profile.provider_subject=incoming.owner_github_id
+        WHERE ltrim(profile.provider_subject,'0')=incoming.owner_github_id
           OR (profile.status='active' AND lower(profile.handle)=lower(incoming.owner))
       )
       ORDER BY profile_id FOR UPDATE
@@ -120,7 +120,7 @@ export class PostgresRepositoryPersistence implements RepositoryPersistencePort 
     // observations in their original sorted order rather than dropping history.
     const ordered = batches.flat().sort((left, right) => left.order - right.order);
     for (const { repository: repo } of ordered) {
-      const ownerId = BigInt(repo.owner_github_id).toString();
+      const ownerId = canonicalGithubProfileSubject(repo.owner_github_id);
       await reconcileGithubProfileForIngestion(tx, { githubId: ownerId, githubHandle: repo.owner });
     }
 

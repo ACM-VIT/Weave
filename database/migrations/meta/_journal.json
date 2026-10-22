@@ -252,6 +252,13 @@
       "when": 1793059200000,
       "tag": "0032_repository_index_outbox_lookup",
       "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "7",
+      "when": 1793145600000,
+      "tag": "0033_social_profile_numeric_identity_lookup",
+      "breakpoints": true
     }
   ]
 }

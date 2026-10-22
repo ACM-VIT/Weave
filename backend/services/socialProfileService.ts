@@ -26,6 +26,14 @@ function domainError(message: string, statusCode: number): Error & { statusCode:
   return Object.assign(new Error(message), { statusCode });
 }
 
+/** Compare positive GitHub numeric subjects without unbounded numeric casts. */
+export function canonicalGithubProfileSubject(subject: string): string {
+  if (!/^[0-9]{1,32}$/.test(subject)) throw domainError('Invalid GitHub identity.', 400);
+  const canonical = subject.replace(/^0+/, '');
+  if (!canonical) throw domainError('Invalid GitHub identity.', 400);
+  return canonical;
+}
+
 async function bumpFeedVersion(tx: TransactionSql, userId: string): Promise<void> {
   await tx`
     INSERT INTO app.user_feed_state (user_id,feed_version,updated_at)
@@ -138,13 +146,14 @@ export async function reconcileGithubProfileForIngestion(
   tx: TransactionSql,
   identity: GithubProfileIdentity,
 ): Promise<string | null> {
+  const githubId = canonicalGithubProfileSubject(identity.githubId);
   const matches = await tx`
     WITH locked AS MATERIALIZED (
       SELECT profile_id,provider_subject,handle,claimed_by_user_id,status,created_at
       FROM app.social_profiles
       WHERE provider='github'
         AND (
-          provider_subject=${identity.githubId}
+          ltrim(provider_subject,'0')=${githubId}
           OR (
             status='active'
             AND lower(handle)=lower(${identity.githubHandle})
@@ -153,14 +162,20 @@ export async function reconcileGithubProfileForIngestion(
       ORDER BY profile_id FOR UPDATE
     )
     SELECT profile_id,provider_subject,handle,claimed_by_user_id,status FROM locked
-    ORDER BY (provider_subject=${identity.githubId}) DESC,created_at ASC
+    ORDER BY (ltrim(provider_subject,'0')=${githubId}) DESC,created_at ASC
   `;
+  const identified = matches.filter(
+    profile => String(profile.provider_subject ?? '').replace(/^0+/, '') === githubId,
+  );
+  if (identified.length > 1) {
+    throw domainError('This GitHub identity has multiple existing profiles; explicit resolution is required.', 409);
+  }
   const affectedFollowerIds = new Set<string>();
   const identifiedHandleCollision = matches.find(
     (profile) =>
       profile.status === 'active'
       && profile.provider_subject != null
-      && String(profile.provider_subject) !== identity.githubId
+      && !identified.includes(profile)
       && String(profile.handle).toLowerCase() === identity.githubHandle.toLowerCase(),
   );
   if (identifiedHandleCollision) {
@@ -180,9 +195,7 @@ export async function reconcileGithubProfileForIngestion(
     `;
   }
 
-  let canonical = matches.find(
-    (profile) => String(profile.provider_subject ?? '') === identity.githubId,
-  ) ?? matches.find(
+  let canonical = identified[0] ?? matches.find(
     (profile) =>
       profile.status === 'active'
       && profile.provider_subject == null
@@ -191,7 +204,7 @@ export async function reconcileGithubProfileForIngestion(
   if (!canonical) {
     const inserted = await tx`
       INSERT INTO app.social_profiles(provider,provider_subject,handle,profile_kind)
-      VALUES ('github',${identity.githubId},${identity.githubHandle},'unknown')
+      VALUES ('github',${githubId},${identity.githubHandle},'unknown')
       ON CONFLICT DO NOTHING
       RETURNING profile_id,provider_subject,handle,claimed_by_user_id,status
     `;
@@ -213,7 +226,7 @@ export async function reconcileGithubProfileForIngestion(
     .map((profile) => String(profile.profile_id))
     .filter((profileId) => profileId !== canonicalId);
 
-  if (canonical.provider_subject == null || canonical.status !== 'active') {
+  if (String(canonical.provider_subject ?? '') !== githubId || canonical.status !== 'active') {
     const canonicalFollowers = await tx`
       SELECT follower_id
       FROM app.social_profile_follows
@@ -274,7 +287,7 @@ export async function reconcileGithubProfileForIngestion(
 
   await tx`
     UPDATE app.social_profiles
-    SET provider_subject=${identity.githubId},
+    SET provider_subject=${githubId},
         handle=${identity.githubHandle},
         status='active',
         updated_at=now()
@@ -290,9 +303,10 @@ export async function claimVerifiedGithubProfile(
   tx: TransactionSql,
   claim: VerifiedGithubClaim,
 ): Promise<string> {
+  const githubId = canonicalGithubProfileSubject(claim.githubId);
   await tx`
     SELECT pg_advisory_xact_lock(
-      hashtextextended(${'github-owner:' + claim.githubId},0)
+      hashtextextended(${'github-owner:' + githubId},0)
     )
   `;
   const matches = await tx`
@@ -301,14 +315,20 @@ export async function claimVerifiedGithubProfile(
       FROM app.social_profiles
       WHERE provider='github'
         AND (
-          provider_subject=${claim.githubId}
+          ltrim(provider_subject,'0')=${githubId}
           OR (provider_subject IS NULL AND lower(handle)=lower(${claim.githubHandle}))
         )
       ORDER BY profile_id FOR UPDATE
     )
     SELECT profile_id,provider_subject,handle,claimed_by_user_id FROM locked
-    ORDER BY (provider_subject=${claim.githubId}) DESC,created_at ASC
+    ORDER BY (ltrim(provider_subject,'0')=${githubId}) DESC,created_at ASC
   `;
+  const identified = matches.filter(
+    profile => String(profile.provider_subject ?? '').replace(/^0+/, '') === githubId,
+  );
+  if (identified.length > 1) {
+    throw domainError('This GitHub identity has multiple existing profiles; explicit resolution is required.', 409);
+  }
   const claimedByAnother = matches.find((profile) =>
     profile.claimed_by_user_id != null && String(profile.claimed_by_user_id) !== claim.userId
   );
@@ -316,14 +336,13 @@ export async function claimVerifiedGithubProfile(
     throw domainError('This GitHub identity is already claimed by another account.', 409);
   }
 
-  let canonical = matches.find((profile) => String(profile.provider_subject ?? '') === claim.githubId)
-    ?? matches[0];
+  let canonical = identified[0] ?? matches[0];
   if (!canonical) {
     const inserted = await tx`
       INSERT INTO app.social_profiles(
         provider,provider_subject,handle,display_name,avatar_url,profile_kind,claimed_by_user_id
       ) VALUES (
-        'github',${claim.githubId},${claim.githubHandle},${claim.displayName ?? null},
+        'github',${githubId},${claim.githubHandle},${claim.displayName ?? null},
         ${claim.avatarUrl ?? null},'user',${claim.userId}::uuid
       )
       RETURNING profile_id,provider_subject,handle,claimed_by_user_id
@@ -363,7 +382,7 @@ export async function claimVerifiedGithubProfile(
 
   await tx`
     UPDATE app.social_profiles
-    SET provider_subject=${claim.githubId},
+    SET provider_subject=${githubId},
         handle=${claim.githubHandle},
         display_name=COALESCE(${claim.displayName ?? null},display_name),
         avatar_url=COALESCE(${claim.avatarUrl ?? null},avatar_url),
