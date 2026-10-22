@@ -15,6 +15,13 @@ const otherRepoId = '00000000-0000-4000-8000-000000000003';
 
 class GenerationPersistence implements FeedPersistencePort {
   inactive = new Set<string>();
+  published = false;
+  failPublicationRecord = false;
+  async hasPublishedGeneration() { return this.published; }
+  async markGenerationPublished() {
+    if (this.failPublicationRecord) throw new Error('publication SQL unavailable');
+    this.published = true;
+  }
   identities: Array<Pick<RepositoryProjection, 'repo_id' | 'summary_id'>> = [
     { repo_id: otherRepoId, summary_id: null },
     { repo_id: socialRepoId, summary_id: '00000000-0000-4000-8000-000000000004' },
@@ -39,12 +46,15 @@ class GenerationQueue implements FeedQueuePort {
   replaced = false;
   entries: RecommendationEntry[] = [];
   owned = true;
+  locked = false;
+  published = false;
   async renewGenerationLock() { return this.owned; }
-  async publishGeneration(user: string, version: bigint, _token: string, entries: RecommendationEntry[]) {
-    if (!this.owned) return false;
-    await this.replace(user,version,entries); return true;
+  async hasPublishedGeneration() { return this.published; }
+  async publishGeneration(user: string, version: bigint, _token: string, entries: RecommendationEntry[], _ttl: number, onlyIfUnpublished = false) {
+    if (!this.owned || (onlyIfUnpublished && this.published)) return false;
+    await this.replace(user,version,entries); this.published = true; return true;
   }
-  async acquireGenerationLock() { return true; }
+  async acquireGenerationLock() { return !this.locked; }
   released = false;
   async releaseGenerationLock() { this.released = true; }
   async replace(_userId: string, _version: bigint, entries: RecommendationEntry[]) {
@@ -235,4 +245,59 @@ test('generation combines unique exclusions within the existing 500-ID ML contra
   assert.equal(recommendations.request?.exclude_repo_ids.length,500);
   assert.equal(new Set(recommendations.request?.exclude_repo_ids).size,500);
   assert.equal(recommendations.request?.exclude_repo_ids[0],socialRepoId);
+});
+
+
+test('prewarm preserves a successful same-version feed after every card was consumed', async () => {
+  const persistence = new GenerationPersistence();
+  const queue = new GenerationQueue();
+  const recommendations = new CapturingRecommendations();
+  const service = new FeedGenerationService(persistence, queue, recommendations);
+  await service.generate(userId);
+  const firstRequest = recommendations.request;
+  queue.entries = []; // Page one consumed the generated list; depth is not success evidence.
+  queue.replaced = false;
+  assert.deepEqual(await service.generate(userId,45,[],'prewarm'), { status: 'satisfied', feedVersion: 1n });
+  assert.equal(recommendations.request, firstRequest);
+  assert.equal(queue.replaced, false);
+  queue.published = false; // Lost Redis witness: durable success remains fail-closed.
+  assert.equal((await service.generate(userId,45,[],'prewarm')).status, 'satisfied');
+  assert.equal(queue.replaced, false);
+});
+
+test('prewarm recovers publication-before-SQL crash without replacing an empty successful feed', async () => {
+  const persistence = new GenerationPersistence();
+  persistence.failPublicationRecord = true;
+  const queue = new GenerationQueue();
+  const recommendations = new CapturingRecommendations();
+  recommendations.generate = async input => ({ schema_version: 2, generation_id: input.generation_id,
+    user_id: input.user_id, feed_version: input.feed_version, model_version: 'test', embedding_version: 'test', items: [] });
+  const service = new FeedGenerationService(persistence, queue, recommendations);
+  await assert.rejects(service.generate(userId,45,[],'prewarm'), /publication SQL unavailable/);
+  assert.equal(queue.published, true);
+  assert.deepEqual(queue.entries, []);
+  queue.replaced = false;
+  persistence.failPublicationRecord = false;
+  assert.equal((await service.generate(userId,45,[],'prewarm')).status, 'satisfied');
+  assert.equal(queue.replaced, false);
+  assert.equal(persistence.published, true);
+});
+
+test('prewarm retries an unsuccessful lock holder but fences an obsolete claim before publication', async () => {
+  const persistence = new GenerationPersistence();
+  const queue = new GenerationQueue();
+  const recommendations = new CapturingRecommendations();
+  const service = new FeedGenerationService(persistence, queue, recommendations);
+  queue.locked = true;
+  assert.equal((await service.generate(userId,45,[],'prewarm')).status, 'coalesced');
+  queue.locked = false;
+  let current = true;
+  const read = persistence.listActiveRepositoryIdentities.bind(persistence);
+  persistence.listActiveRepositoryIdentities = async ids => { current = false; return read(ids); };
+  assert.equal((await service.generate(userId,45,[],'prewarm',undefined, {
+    feedVersion: 1n,isCurrent: async () => current,
+  })).status, 'stale');
+  assert.equal(queue.published, false);
+  persistence.listActiveRepositoryIdentities = read;
+  assert.equal((await service.generate(userId,45,[],'prewarm')).status, 'generated');
 });

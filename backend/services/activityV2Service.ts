@@ -58,6 +58,8 @@ export async function processInteractionBatchV2InTransaction(
   userId = userId.toLowerCase();
   events = events.map(event => ({ ...event, event_id: event.event_id.toLowerCase(), repo_id: event.repo_id.toLowerCase(),
     session_id: event.session_id.toLowerCase(), serve_id: event.serve_id?.toLowerCase() ?? null }));
+  // Profile/persona changes lock user first, then feed: preserve that order.
+  await tx`SELECT user_id FROM app.users WHERE user_id=${userId}::uuid FOR KEY SHARE`;
   await tx`INSERT INTO app.user_feed_state (user_id) VALUES (${userId}::uuid) ON CONFLICT (user_id) DO NOTHING`;
   const states = await tx`SELECT feed_version,feedback_version FROM app.user_feed_state WHERE user_id=${userId}::uuid FOR UPDATE`;
   if (states.length === 0) throw new Error('User feed state is unavailable.');

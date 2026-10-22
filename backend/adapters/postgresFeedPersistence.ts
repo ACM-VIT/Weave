@@ -66,6 +66,28 @@ export class PostgresFeedPersistence implements FeedPersistencePort, FeedReconci
     `;
   }
 
+  async hasPublishedGeneration(userId: string, feedVersion: bigint): Promise<boolean> {
+    const rows = await sqlClient`
+      SELECT state.last_published_feed_version >= ${feedVersion.toString()}::bigint
+        OR EXISTS (SELECT 1 FROM telemetry.generation_attempts attempt
+          WHERE attempt.user_id=state.user_id AND attempt.feed_version=${feedVersion.toString()}::bigint
+            AND attempt.status='completed' AND attempt.mode IN ('live','prewarm'))
+        OR EXISTS (SELECT 1 FROM telemetry.feed_serves serve
+          WHERE serve.user_id=state.user_id AND serve.feed_version=${feedVersion.toString()}::bigint)
+        AS published
+      FROM app.user_feed_state state WHERE state.user_id=${userId}::uuid
+    `;
+    return rows[0]?.published === true;
+  }
+
+  async markGenerationPublished(userId: string, feedVersion: bigint): Promise<void> {
+    await sqlClient`
+      UPDATE app.user_feed_state SET last_published_feed_version=
+        greatest(last_published_feed_version,${feedVersion.toString()}::bigint)
+      WHERE user_id=${userId}::uuid AND feed_version>=${feedVersion.toString()}::bigint
+    `;
+  }
+
   async getFeedVersion(userId: string): Promise<bigint> {
     const rows = await sqlClient`SELECT feed_version FROM app.user_feed_state WHERE user_id=${userId}::uuid`;
     if (rows.length) return BigInt(rows[0].feed_version);

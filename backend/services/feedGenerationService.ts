@@ -10,7 +10,12 @@ import type { PersonaRepairService } from './personaRepairService.js';
 
 export type FeedGenerationOutcome =
   | { status: 'generated'; feedVersion: bigint; count: number }
-  | { status: 'coalesced' | 'stale'; feedVersion: bigint };
+  | { status: 'coalesced' | 'stale' | 'satisfied'; feedVersion: bigint };
+
+export interface FeedGenerationFence {
+  feedVersion: bigint;
+  isCurrent: () => Promise<boolean>;
+}
 
 export class FeedGenerationService {
   constructor(
@@ -28,11 +33,15 @@ export class FeedGenerationService {
     excludeRepoIds: string[] = [],
     mode: 'live' | 'prewarm' = 'live',
     sessionId?: string,
+    fence?: FeedGenerationFence,
   ): Promise<FeedGenerationOutcome> {
     const feedVersion = await this.persistence.getFeedVersion(userId);
     const token = crypto.randomUUID();
     let generationId = crypto.randomUUID();
     const started = Date.now();
+    const current = async () => await this.persistence.getFeedVersion(userId) === feedVersion
+      && (!fence || (fence.feedVersion === feedVersion && await fence.isCurrent()));
+    if (fence && !await current()) return { status: 'stale', feedVersion };
     if (!await this.queue.acquireGenerationLock(userId, feedVersion, token, this.lockTtlMs)) {
       await this.persistence.recordGenerationAttempt?.({
         generation_id: generationId, user_id: userId, feed_version: feedVersion, mode,
@@ -51,6 +60,17 @@ export class FeedGenerationService {
     }, Math.max(1, Math.floor(this.lockTtlMs / 3)));
     heartbeat.unref();
     try {
+      if (mode === 'prewarm') {
+        // A lock collision is not success. Once we own the lock, either a
+        // durable witness or the atomic Redis witness proves publication.
+        const published = await this.persistence.hasPublishedGeneration?.(userId, feedVersion)
+          || await this.queue.hasPublishedGeneration(userId, feedVersion);
+        if (published) {
+          if (!await current()) return { status: 'stale', feedVersion };
+          await this.persistence.markGenerationPublished?.(userId, feedVersion);
+          return { status: 'satisfied', feedVersion };
+        }
+      }
       const history = await this.persistence.listExcludedRepositoryIds(userId, sessionId, 500);
       const excluded = [...new Set([...excludeRepoIds, ...history])].slice(0, 500);
       const excludedIds = new Set(excluded);
@@ -83,7 +103,7 @@ export class FeedGenerationService {
           generation_id: generationId,
         });
       }
-      if (leaseLost || await this.persistence.getFeedVersion(userId) !== feedVersion) {
+      if (leaseLost || !await current()) {
         await this.persistence.recordGenerationAttempt?.({
           generation_id: generationId, user_id: userId, feed_version: feedVersion, mode,
           status: 'stale', latency_ms: Date.now() - started, result_count: response.items.length,
@@ -104,13 +124,25 @@ export class FeedGenerationService {
         incrementMetric('feed_v2_invalid_repository_recommendations_total');
       }
       if (items.length > 0 && usableItems.length === 0) throw new Error('ML returned no active canonical repositories.');
+      // Profile updates advance the feed namespace in their source transaction;
+      // a racing old builder can publish only under the obsolete namespace.
+      if (leaseLost || !await current()) return { status: 'stale', feedVersion };
+      // A durable serve/success may have appeared while ML was running (for
+      // example a Redis-outage fallback). Preserve it rather than resetting it.
+      if (mode === 'prewarm' && await this.persistence.hasPublishedGeneration?.(userId, feedVersion)) {
+        await this.persistence.markGenerationPublished?.(userId, feedVersion);
+        return { status: 'satisfied', feedVersion };
+      }
       const published = await this.queue.publishGeneration(
         userId,
         feedVersion,
         token,
         canonicalEntries(usableItems, response.model_version, summaries, response.generation_id),
         this.queueTtlSeconds,
+        mode === 'prewarm',
       );
+      // Redis already holds an eight-day witness if this SQL write crashes.
+      if (published) await this.persistence.markGenerationPublished?.(userId, feedVersion);
       await this.persistence.recordGenerationAttempt?.({
         generation_id: generationId, user_id: userId, feed_version: feedVersion, mode,
         status: published ? 'completed' : 'stale', latency_ms: Date.now() - started, result_count: usableItems.length,

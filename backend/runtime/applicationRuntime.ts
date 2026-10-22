@@ -13,6 +13,11 @@ import { DataReconciliationWorker } from '../workers/dataReconciliationWorker.js
 import { DataReconciliationService, DEFAULT_COUNTER_BATCH_SIZE } from '../services/dataReconciliationService.js';
 import { RetentionWorker } from '../workers/retentionWorker.js';
 import { WorkerSupervisor } from './workerSupervisor.js';
+import { WorkerWakeups } from './workerWakeups.js';
+import { workerErrorSummary } from './workerError.js';
+import { FeedPrewarmService } from '../services/feedPrewarmService.js';
+import { FeedPrewarmWorker } from '../workers/feedPrewarmWorker.js';
+import { getMlRuntimeConfig } from '../config/ml.js';
 import { FeedShadowService } from '../services/feedShadowService.js';
 import { validateProductionIntegrations } from '../config/runtimeConfig.js';
 import { applyMlReadinessGate } from './mlReadiness.js';
@@ -64,6 +69,7 @@ export class ApplicationRuntime {
     : null;
   readonly shadow = this.ml ? new FeedShadowService(this.persistence, this.ml) : null;
   readonly outbox = new OutboxService();
+  readonly prewarm = new FeedPrewarmService(sqlClient, getMlRuntimeConfig().timeoutMs + 60_000);
   readonly feed = new FeedV2Service(
     this.persistence,
     this.queue,
@@ -83,13 +89,24 @@ export class ApplicationRuntime {
       const worker = new OutboxWorker(
         this.outbox,
         this.ml,
-        this.generation ? async (row) => {
-          if (row.job_type === 'onboard') await this.generation!.generate(row.aggregate_id, 45, [], 'prewarm');
-        } : undefined,
       );
       const activeInterval = intervalFromEnvironment('OUTBOX_ACTIVE_INTERVAL_MS', 1_000, 100, 60_000);
       const idleInterval = intervalFromEnvironment('OUTBOX_IDLE_INTERVAL_MS', 30_000, 1_000, 300_000);
       this.supervisor.registerAdaptive('ml-outbox', activeInterval, idleInterval, () => worker.runOnce());
+      if (this.generation) {
+        // Capacity is one generation per process; PostgreSQL leases coordinate
+        // multiple workers and the durable queue coalesces by user/version.
+        const prewarm = new FeedPrewarmWorker(this.prewarm, this.generation);
+        this.supervisor.registerAdaptive('feed-prewarm', 1_000, idleInterval, () => prewarm.runOnce());
+      }
+      const wakeups = new WorkerWakeups(this.supervisor);
+      this.supervisor.onStop(() => wakeups.stop());
+      this.supervisor.registerAdaptive('outbox-notification-listener', 1_000, 30_000, async () => {
+        await wakeups.start().catch(error => {
+          console.error('[WorkerWakeups] Listener unavailable; fallback polling remains active:', workerErrorSummary(error));
+        });
+        return 0;
+      });
     }
     if ((role === 'feed' || role === 'all') && this.flags.FEED_RESERVATIONS) {
       const interval = intervalFromEnvironment(

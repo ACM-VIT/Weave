@@ -57,7 +57,7 @@ integration('generation renewal and publish are atomically fenced by the current
   const user='generation-fence-test';const lock=`feed:v2:generation-lock:${user}:1`;
   const latest=[{repo_id:'latest-repo',score:1,source:'semantic',model_version:'test',summary_id:null}];
   try{
-    await redis.del(lock,`feed:v2:${user}:1`);
+    await redis.del(lock,`feed:v2:${user}:1`,`feed:v2:published:${user}:1`);
     assert.equal(await queue.acquireGenerationLock(user,1n,'old',1000),true);
     await redis.pexpire(lock,0); // Deterministically expire the old lease.
     assert.equal(await queue.acquireGenerationLock(user,1n,'new',1000),true);
@@ -66,7 +66,14 @@ integration('generation renewal and publish are atomically fenced by the current
     assert.ok(await redis.pttl(lock)>1000);
     assert.equal(await queue.publishGeneration(user,1n,'new',latest,60),true);
     assert.equal(await queue.publishGeneration(user,1n,'old',[],60),false);
+    assert.equal(await queue.hasPublishedGeneration(user,1n),true);
+    await redis.del(`feed:v2:${user}:1`); // Consumed list does not remove success.
+    assert.equal(await queue.publishGeneration(user,1n,'new',latest,60,true),false);
+    assert.equal(await queue.depth(user,1n),0);
+    assert.equal(await queue.publishGeneration(user,1n,'new',[],60),true);
+    assert.equal(await queue.hasPublishedGeneration(user,1n),true);
+    assert.equal(await queue.publishGeneration(user,1n,'new',latest,60,true),false);
     await queue.releaseGenerationLock(user,1n,'old');assert.equal(await redis.get(lock),'new');
-    assert.deepEqual((await redis.lrange(`feed:v2:${user}:1`,0,-1)).map(value=>JSON.parse(value)),latest);
-  }finally{await redis.del(lock,`feed:v2:${user}:1`);await redis.quit();}
+    assert.deepEqual((await redis.lrange(`feed:v2:${user}:1`,0,-1)).map(value=>JSON.parse(value)),[]);
+  }finally{await redis.del(lock,`feed:v2:${user}:1`,`feed:v2:published:${user}:1`);await redis.quit();}
 });

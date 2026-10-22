@@ -24,6 +24,8 @@ export interface FeedReconciliationPersistencePort {
 
 export interface FeedPersistencePort {
   getFeedVersion(userId: string): Promise<bigint>;
+  hasPublishedGeneration?(userId: string, feedVersion: bigint): Promise<boolean>;
+  markGenerationPublished?(userId: string, feedVersion: bigint): Promise<void>;
   getMlOnboardingJob?(userId: string): Promise<MlOnboardingJob | null>;
   listExcludedRepositoryIds(userId: string, sessionId: string | undefined, limit: number): Promise<string[]>;
   listFollowedRepositoryIds(userId: string, limit: number): Promise<string[]>;
