@@ -22,6 +22,8 @@ try {
       app.repo_content, app.repos, app.user_topics, app.topics, app.oauth_codes,
       app.refresh_tokens, app.user_feed_state, app.user_stats, app.users
       RESTART IDENTITY CASCADE`);
+    await tx`UPDATE telemetry.counter_reconciliation_progress
+      SET last_id=NULL,upper_id=NULL,completed_sweeps=0,updated_at=now()`;
   });
   console.log('Canonical app and telemetry data cleared. Supabase auth.users was not modified.');
 } finally {

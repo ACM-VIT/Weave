@@ -23,6 +23,18 @@ import { sql } from 'drizzle-orm';
 export const appSchema = pgSchema('app');
 export const telemetrySchema = pgSchema('telemetry');
 
+export const counterReconciliationProgress = telemetrySchema.table('counter_reconciliation_progress', {
+  scope: text('scope').primaryKey(),
+  lastId: uuid('last_id'),
+  upperId: uuid('upper_id'),
+  completedSweeps: bigint('completed_sweeps', { mode: 'bigint' }).notNull().default(0n),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+}, table => [
+  check('counter_reconciliation_scope_check', sql`${table.scope} IN ('repositories','users')`),
+  check('counter_reconciliation_sweeps_check', sql`${table.completedSweeps} >= 0`),
+  check('counter_reconciliation_cursor_check', sql`${table.lastId} IS NULL OR (${table.upperId} IS NOT NULL AND ${table.lastId} <= ${table.upperId})`),
+]);
+
 export const appUsers = appSchema.table('users', {
   userId: uuid('user_id').primaryKey(),
   username: varchar('username', { length: 50 }).notNull(),

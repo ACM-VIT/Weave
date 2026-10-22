@@ -337,6 +337,46 @@ It creates and removes its own synthetic repositories and snapshots; do not run
 it alongside other suites that change those tables. Redis and ML are not needed.
 Without `RUN_TRENDING_INTEGRATION=1`, these PostgreSQL checks are skipped.
 
+### Counter reconciliation
+
+Apply `0028_counter_reconciliation_progress` before starting the updated
+maintenance worker. `COUNTER_RECONCILIATION_BATCH_SIZE` bounds each repository
+and user transaction to 250 candidate counter rows by default (range 1–1000).
+The worker continues every second while a sweep has remaining work, then waits
+five minutes. Abandoned outbox claims retain their independent five-minute scan.
+
+PostgreSQL stores the last UUID and fixed upper UUID for each sweep. Repairs and
+cursor advancement commit together; a restart resumes the same range. A rotating
+audit finds drift without relying on dirty markers. Both scopes finish the same
+sweep before the worker backs off. Inserts behind the cursor
+and rows skipped under foreground locks are retried on the next sweep. Missing
+counter rows themselves are not created by this audit.
+
+Each batch locks only its bounded candidate IDs with `FOR UPDATE SKIP LOCKED`,
+then computes grouped source aggregates in a **new READ COMMITTED statement**.
+Interaction writers must update their source rows and counters in the same
+transaction; maintenance never locks source rows. Separate repository/user
+transactions preserve foreground lock ordering. Only differing counters are
+updated; follow counts are outside this repair's scope. Transaction-local
+statement/lock timeouts are 3000/250 ms. These bound individual statements, not
+the entire sweep; exceptionally large source histories can time out and require
+a smaller batch or query investigation.
+
+`counter_reconciliation_batch_ms` and `counter_reconciliation_rows` expose
+per-scope batch duration and scanned/updated/skipped counts. Run the dedicated
+concurrency, restart, rollback and WAL checks alone against an empty, migrated
+disposable loopback `weave_scroll` database:
+
+```sh
+DATABASE_URL=postgresql://postgres@127.0.0.1:55429/weave_scroll \
+  RUN_RECONCILIATION_INTEGRATION=1 \
+  node --import tsx --test tests/database/counterReconciliation.integration.test.ts
+```
+
+Use your local instance's port and credentials. These fixtures create and remove
+their own users/repositories and reset the maintenance cursors. Redis and ML are
+not needed. The WAL comparison is a local sample, not a production benchmark.
+
 For a strict ML collection rebuild, run `npm run reindex:ml -- --campaign=<id>`
 first as a dry run, then repeat with `--execute` only after reviewing the counts
 and confirming the ML target collection. The campaign is idempotent and only
