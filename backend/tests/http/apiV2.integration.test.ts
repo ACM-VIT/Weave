@@ -21,6 +21,8 @@ const ingestionDuplicateProfileId = '00000000-0000-4000-8000-000000000209';
 const renamedIngestionProfileId = '00000000-0000-4000-8000-000000000210';
 const recycledHandleProfileId = '00000000-0000-4000-8000-000000000211';
 
+const fixtureReadme = '# HTTP Repo\n\nComplete README content.\n' + 'Full source documentation. '.repeat(40_000);
+
 async function seed(): Promise<void> {
   await sqlClient`
     TRUNCATE app.social_profiles,app.users,app.repos,app.trending_snapshots,
@@ -59,7 +61,7 @@ async function seed(): Promise<void> {
       repo_id,content_hash,description,readme,readme_source_path,
       readme_default_branch,readme_base_url,primary_language,languages
     ) VALUES (
-      ${repoId}::uuid,'http-test','repo','# HTTP Repo\n\nComplete README content.',
+      ${repoId}::uuid,'http-test','repo',${fixtureReadme},
       'docs/README.md','main','https://raw.githubusercontent.com/owner/http-repo/refs/heads/main/docs/',
       'TypeScript','["TypeScript","SQL"]'::jsonb
     )
@@ -271,7 +273,7 @@ integration('registered v2 HTTP paths complete controlled integration flows', as
     assert.equal(repositoryDetailData.data.summary_prompt_version, 'repo-card-summary-v1');
     assert.equal(repositoryDetailData.data.summary_format_version, 'repo-card-summary-json-v1');
     assert.equal(repositoryDetailData.data.summary_source, 'generated');
-    assert.equal(repositoryDetailData.data.readme_md, '# HTTP Repo\n\nComplete README content.');
+    assert.equal(repositoryDetailData.data.readme_md, fixtureReadme, 'Detail retains the entire million-character document');
     assert.equal(repositoryDetailData.data.readme_source_path, 'docs/README.md');
     assert.equal(repositoryDetailData.data.readme_default_branch, 'main');
     assert.equal(
@@ -292,7 +294,6 @@ integration('registered v2 HTTP paths complete controlled integration flows', as
       summary: string | null;
       summary_prompt_version: string | null;
       summary_source: string | null;
-      readme_md: string | null;
       readme_source_path: string | null;
       readme_default_branch: string | null;
       readme_base_url: string | null;
@@ -312,7 +313,8 @@ integration('registered v2 HTTP paths complete controlled integration flows', as
     }).data.items[0];
     assert.equal(exploreItem.repo_id, repoId);
     assert.equal(exploreItem.summary, 'Concise generated repository summary.');
-    assert.equal(exploreItem.readme_md, '# HTTP Repo\n\nComplete README content.');
+    assert.equal('readme_md' in exploreItem, false, 'Card lists fetch full README only through detail');
+    assert.ok(Buffer.byteLength(JSON.stringify(exploreItem)) < 20_000, 'Card size stays bounded by metadata despite a million-character README');
     assert.equal(exploreItem.summary_prompt_version, 'repo-card-summary-v1');
     assert.equal(exploreItem.summary_source, 'generated');
     assert.equal(exploreItem.readme_source_path, 'docs/README.md');
@@ -572,7 +574,8 @@ integration('registered v2 HTTP paths complete controlled integration flows', as
     assert.equal(likedItems.data.items[0].viewer_saved, false);
     assert.deepEqual(likedItems.data.items[0].selected_list_ids, []);
     assert.equal(likedItems.data.items[0].summary, 'Concise generated repository summary.');
-    assert.equal(likedItems.data.items[0].readme_md, '# HTTP Repo\n\nComplete README content.');
+    assert.equal('readme_md' in likedItems.data.items[0], false, 'Card lists fetch full README only through detail');
+    assert.ok(Buffer.byteLength(JSON.stringify(likedItems.data.items[0])) < 20_000, 'Card size stays bounded by metadata despite a million-character README');
 
     const me = await fetch(`${base}/api/v2/users/me`, { headers: authHeaders });
     assert.equal(me.status, 200);
@@ -690,7 +693,8 @@ integration('registered v2 HTTP paths complete controlled integration flows', as
     assert.equal(collectionRepoItems.data.items[0].viewer_saved, true);
     assert.deepEqual(collectionRepoItems.data.items[0].selected_list_ids, [`collection:${collectionId}`]);
     assert.equal(collectionRepoItems.data.items[0].summary, 'Concise generated repository summary.');
-    assert.equal(collectionRepoItems.data.items[0].readme_md, '# HTTP Repo\n\nComplete README content.');
+    assert.equal('readme_md' in collectionRepoItems.data.items[0], false, 'Card lists fetch full README only through detail');
+    assert.ok(Buffer.byteLength(JSON.stringify(collectionRepoItems.data.items[0])) < 20_000, 'Card size stays bounded by metadata despite a million-character README');
     const secondCollection = await fetch(`${base}/api/v2/collections`, {
       method: 'POST', headers: authHeaders, body: JSON.stringify({ name: 'Read next' }),
     });
@@ -806,7 +810,8 @@ integration('registered v2 HTTP paths complete controlled integration flows', as
     assert.equal(boardRepoItems[0].viewer_saved, true);
     assert.deepEqual(boardRepoItems[0].selected_list_ids, [`legacy-board:${boardId}`]);
     assert.equal(boardRepoItems[0].summary, 'Concise generated repository summary.');
-    assert.equal(boardRepoItems[0].readme_md, '# HTTP Repo\n\nComplete README content.');
+    assert.equal('readme_md' in boardRepoItems[0], false, 'Card lists fetch full README only through detail');
+    assert.ok(Buffer.byteLength(JSON.stringify(boardRepoItems[0])) < 20_000, 'Card size stays bounded by metadata despite a million-character README');
     const savedRepos = await fetch(`${base}/api/v2/repositories/saved`, { headers: authHeaders });
     assert.equal(savedRepos.status, 200);
     const savedRepoItems = ((await savedRepos.json()) as {
@@ -817,7 +822,8 @@ integration('registered v2 HTTP paths complete controlled integration flows', as
     assert.equal(savedRepoItems[0].viewer_saved, true);
     assert.deepEqual(savedRepoItems[0].selected_list_ids, [`legacy-board:${boardId}`]);
     assert.equal(savedRepoItems[0].summary, 'Concise generated repository summary.');
-    assert.equal(savedRepoItems[0].readme_md, '# HTTP Repo\n\nComplete README content.');
+    assert.equal('readme_md' in savedRepoItems[0], false, 'Card lists fetch full README only through detail');
+    assert.ok(Buffer.byteLength(JSON.stringify(savedRepoItems[0])) < 20_000, 'Card size stays bounded by metadata despite a million-character README');
 
     const mixedCollection = await fetch(`${base}/api/v2/collections`, {
       method: 'POST', headers: authHeaders, body: JSON.stringify({ name: 'Mixed membership' }),

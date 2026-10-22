@@ -375,6 +375,7 @@ export class OutboxService {
         SELECT 1 FROM telemetry.ml_outbox
         WHERE aggregate_id=${String(row.aggregate_id)}::uuid
           AND job_type IN ('repo_index','repo_refresh')
+          AND (${String(row.job_type)} <> 'repo_index' OR job_type='repo_index')
           AND status='delivered'
           AND created_at>=${row.created_at as string}::timestamptz
           AND outbox_id<>${outboxId}::uuid
@@ -402,6 +403,8 @@ export class OutboxService {
             SELECT 1 FROM telemetry.ml_outbox successor
             WHERE successor.aggregate_id=dead.aggregate_id
               AND successor.job_type IN ('repo_index','repo_refresh')
+              -- A metadata refresh cannot repair a failed content index.
+              AND (dead.job_type <> 'repo_index' OR successor.job_type='repo_index')
               AND successor.status='delivered'
               AND successor.created_at>=dead.created_at
               AND successor.outbox_id<>dead.outbox_id

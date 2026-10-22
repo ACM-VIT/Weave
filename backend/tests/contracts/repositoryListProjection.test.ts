@@ -32,7 +32,7 @@ test('every authenticated repository list projects real viewer state and reposit
     assert.match(source, /AS selected_list_ids/, `${handler} must project all selected Lists`);
     assert.match(source, /'collection:'/, `${handler} must namespace Collection memberships`);
     assert.match(source, /'legacy-board:'/, `${handler} must include legacy Board memberships`);
-    assert.match(source, /AS readme_md/, `${handler} must keep full README separate`);
+    assert.doesNotMatch(source, /c\.readme\b|AS readme_md/, `${handler} loads full README only through detail`);
     assert.match(source, /summary/, `${handler} must include the active concise summary`);
     assert.ok(
       /languages/.test(source)

@@ -136,3 +136,51 @@ rewrites historical rows and preserves each repository's current
 `content_version`. The idempotency key includes the campaign ID, so rerunning
 the same command is safe: completed batches report as `already_queued`. Use a
 new campaign ID only for an intentional new complete reindex.
+
+## Previously purged repository-index checkpoints
+
+The retention fix preserves the last delivered index row going forward. It cannot
+recreate checkpoints deleted by an older worker. A pending `repo_refresh` without
+a delivered `repo_index` remains intentionally unclaimable. This is separate
+from dead-job replay and invalid-summary repair. Do not bypass that ordering gate
+or manufacture a delivered row.
+
+After the compatible ML/backend rollout and schema audit, inspect this read-only
+report on the authorized target:
+
+```sql
+SELECT repo.repo_id, repo.full_name, content.content_version, content.content_hash
+FROM app.repos repo JOIN app.repo_content content USING (repo_id)
+WHERE repo.status = 'active'
+  AND EXISTS (SELECT 1 FROM telemetry.ml_outbox refresh
+    WHERE refresh.aggregate_id = repo.repo_id AND refresh.job_type = 'repo_refresh'
+      AND refresh.status = 'pending')
+  AND NOT EXISTS (SELECT 1 FROM telemetry.ml_outbox checkpoint
+    WHERE checkpoint.aggregate_id = repo.repo_id AND checkpoint.job_type = 'repo_index'
+      AND checkpoint.status = 'delivered')
+ORDER BY repo.repo_id;
+```
+
+For each reviewed canonical repository ID, run a fresh, explicitly scoped campaign
+from `backend/` (repeat `--repo-id` for a reviewed batch):
+
+```text
+npm run reindex:ml -- --campaign=checkpoint-recovery-YYYYMMDD --repo-id=<canonical-UUID>
+```
+
+Review the target collection, IDs, content/hash, `invalid`, `missing_content`,
+`would_queue` and `already_queued`. With separate execution authorization, repeat
+the exact command with `--execute`. Keep the same campaign ID for retries. The
+job uses current canonical content and the strict V2 projection; it neither
+replays an obsolete historical payload nor rewrites source content.
+
+Allow the real ML index delivery to complete successfully, then verify a new
+`repo_index` is delivered and the pending refresh becomes claimable. Failed or
+terminal jobs require explicit inspection, not a success relabel. The query above
+should no longer include recovered repositories. Retain the new checkpoint and
+historical artifact references. Stop the worker if verification fails; do not
+delete history or repeatedly create campaigns to hide a delivery error.
+
+This recovery is covered on disposable local PostgreSQL with a validated fixture
+ML response. It is not evidence of affected deployed data or a live ML/provider
+probe, and production execution still requires authorization.

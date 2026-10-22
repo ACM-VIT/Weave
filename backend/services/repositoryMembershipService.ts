@@ -130,8 +130,9 @@ async function recordMembershipEvent(
   event: InteractionEventV2 | undefined,
   state: RepositoryMembershipState,
 ): Promise<void> {
-  if (!state.save_state_changed) return;
-  event ??= createServerMembershipEvent(state);
+  // Legacy callers submit their own interaction after the membership response.
+  // Only deletion paths explicitly request a server-generated event.
+  if (!state.save_state_changed || !event) return;
   validateMembershipEvent(event, state.repository_id, state.saved);
   await processInteractionBatchV2InTransaction(tx, userId, [{
     ...event,
@@ -360,7 +361,7 @@ export async function removeRepositoryFromBoard(
     if (!removed.length) return null;
     const state = await recomputeRepositorySaved(tx, userId, repositoryId);
     if (state.save_state_changed) await invalidateFutureFeed(tx, userId);
-    await recordMembershipEvent(tx, userId, undefined, state);
+    await recordMembershipEvent(tx, userId, createServerMembershipEvent(state), state);
     return state;
   });
 }

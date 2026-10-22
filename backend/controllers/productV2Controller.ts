@@ -404,7 +404,7 @@ export async function listLikesGiven(req: AuthRequest, res: Response): Promise<v
     SELECT r.repo_id,r.github_id,r.owner_github_id,r.url AS github_repo_url,
       r.owner AS owner_id,r.name AS repo_name,r.full_name,r.owner,r.name,r.url,r.status,
       r.created_at,r.updated_at,c.description,c.languages AS language_used,
-      c.primary_language,c.languages,${sqlClient.unsafe(readmeSummaryProjection('r','c'))},c.readme AS readme_md,to_jsonb(c)->>'readme_source_path' AS readme_source_path,
+      c.primary_language,c.languages,${sqlClient.unsafe(readmeSummaryProjection('r','c'))},to_jsonb(c)->>'readme_source_path' AS readme_source_path,
       to_jsonb(c)->>'readme_default_branch' AS readme_default_branch,to_jsonb(c)->>'readme_base_url' AS readme_base_url,c.content_version,
       c.updated_at AS content_updated_at,c.source_updated_at,
       COALESCE((SELECT json_agg(t.slug ORDER BY t.slug) FROM app.repo_topics rt JOIN app.topics t USING(topic_id)
@@ -458,7 +458,7 @@ export async function listRepositories(req: AuthRequest, res: Response): Promise
   const page = paging(req); if (!page) return sendError(res, 400, 'Invalid pagination.');
   const q = typeof req.query.q === 'string' ? req.query.q.trim().slice(0, 100) : '';
   const rows = await sqlClient.unsafe(`SELECT ${repoProjection},r.owner_github_id,r.status,r.created_at,r.updated_at,
-    ${readmeSummaryProjection('r','c')},c.readme AS readme_md,to_jsonb(c)->>'readme_source_path' AS readme_source_path,to_jsonb(c)->>'readme_default_branch' AS readme_default_branch,to_jsonb(c)->>'readme_base_url' AS readme_base_url,
+    ${readmeSummaryProjection('r','c')},to_jsonb(c)->>'readme_source_path' AS readme_source_path,to_jsonb(c)->>'readme_default_branch' AS readme_default_branch,to_jsonb(c)->>'readme_base_url' AS readme_base_url,
     c.updated_at AS content_updated_at,c.source_updated_at,
     s.observed_at AS stats_observed_at,
     owner_profile.profile_id AS owner_profile_id,
@@ -554,7 +554,7 @@ export async function listSaved(req: AuthRequest, res: Response): Promise<void> 
   if (!page) return sendError(res, 400, 'Invalid pagination.');
   const rows = await sqlClient`SELECT s.created_at,s.created_at AS saved_at,r.repo_id,r.github_id,r.owner_github_id,
     r.full_name,r.owner,r.name,r.url,r.status,r.created_at AS repository_created_at,r.updated_at,
-    c.description,c.primary_language,c.languages,${sqlClient.unsafe(readmeSummaryProjection('r','c'))},c.readme AS readme_md,to_jsonb(c)->>'readme_source_path' AS readme_source_path,
+    c.description,c.primary_language,c.languages,${sqlClient.unsafe(readmeSummaryProjection('r','c'))},to_jsonb(c)->>'readme_source_path' AS readme_source_path,
     to_jsonb(c)->>'readme_default_branch' AS readme_default_branch,to_jsonb(c)->>'readme_base_url' AS readme_base_url,c.content_version,
     c.updated_at AS content_updated_at,c.source_updated_at,
     e.likes_count,e.dislikes_count,e.saves_count,e.comments_count,e.views_count,
@@ -767,7 +767,7 @@ export async function listCollectionRepos(req: AuthRequest, res: Response): Prom
   const rows = await sqlClient`
     SELECT cr.added_at,r.repo_id,r.github_id,r.owner_github_id,r.full_name,r.owner,r.name,r.url,
       r.status,r.created_at,r.updated_at,c.description,c.primary_language,c.languages,
-      ${sqlClient.unsafe(readmeSummaryProjection('r','c'))},c.readme AS readme_md,to_jsonb(c)->>'readme_source_path' AS readme_source_path,to_jsonb(c)->>'readme_default_branch' AS readme_default_branch,to_jsonb(c)->>'readme_base_url' AS readme_base_url,
+      ${sqlClient.unsafe(readmeSummaryProjection('r','c'))},to_jsonb(c)->>'readme_source_path' AS readme_source_path,to_jsonb(c)->>'readme_default_branch' AS readme_default_branch,to_jsonb(c)->>'readme_base_url' AS readme_base_url,
       c.content_version,c.updated_at AS content_updated_at,c.source_updated_at,
       e.likes_count,e.dislikes_count,e.saves_count,e.comments_count,e.views_count,
       COALESCE(stat.star_count,0) AS star_count,COALESCE(stat.fork_count,0) AS fork_count,
@@ -848,7 +848,7 @@ export async function listBoardRepos(req: AuthRequest, res: Response): Promise<v
   const rows = await sqlClient`
     SELECT br.added_at,r.repo_id,r.github_id,r.owner_github_id,r.full_name,r.owner,r.name,r.url,
       r.status,r.created_at,r.updated_at,c.description,c.primary_language,c.languages,
-      ${sqlClient.unsafe(readmeSummaryProjection('r','c'))},c.readme AS readme_md,to_jsonb(c)->>'readme_source_path' AS readme_source_path,to_jsonb(c)->>'readme_default_branch' AS readme_default_branch,to_jsonb(c)->>'readme_base_url' AS readme_base_url,
+      ${sqlClient.unsafe(readmeSummaryProjection('r','c'))},to_jsonb(c)->>'readme_source_path' AS readme_source_path,to_jsonb(c)->>'readme_default_branch' AS readme_default_branch,to_jsonb(c)->>'readme_base_url' AS readme_base_url,
       c.content_version,c.updated_at AS content_updated_at,c.source_updated_at,
       e.likes_count,e.dislikes_count,e.saves_count,e.comments_count,e.views_count,
       COALESCE(stat.star_count,0) AS star_count,COALESCE(stat.fork_count,0) AS fork_count,

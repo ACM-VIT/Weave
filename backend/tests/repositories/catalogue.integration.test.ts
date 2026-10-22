@@ -32,7 +32,7 @@ integration('canonical catalogue returns stored counts, summaries and real owner
     assert.equal(payload.data.items.length,1);
     const row=payload.data.items[0];
     assert.equal(row.repo_id,repoId);assert.equal(row.likes_count,7);assert.equal(Number(row.star_count),42);
-    assert.equal(row.readme_md,'# Source documentation');assert.equal(row.readme_digest,null);
+    assert.equal('readme_md' in row,false);assert.equal(row.readme_digest,null);
     assert.ok(row.owner_profile_id);assert.equal(row.owner_username,owner);
     assert.equal(row.viewer_follows_owner,false);assert.equal(row.viewer_reaction,null);assert.equal(row.viewer_saved,false);
     assert.equal(row.serve_id,undefined,'Catalogue reads cannot invent a recommendation serve');

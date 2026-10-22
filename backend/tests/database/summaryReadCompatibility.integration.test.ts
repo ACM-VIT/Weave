@@ -14,6 +14,7 @@ integration('repository summary reads support older schemas and never promote le
     const readmeProjections = new Set<string>();
     for (const file of [
       '../../controllers/productV2Controller.ts',
+      '../../controllers/trendingController.ts',
       '../../services/repositoryDetailService.ts',
       '../../adapters/postgresFeedPersistence.ts',
     ]) {
@@ -24,7 +25,7 @@ integration('repository summary reads support older schemas and never promote le
       const laterals = source.matchAll(/LEFT JOIN LATERAL \(\s*(SELECT (?:(?!LEFT JOIN)[\s\S])*?FROM app\.repo_card_summaries (?:(?!LEFT JOIN)[\s\S])*?LIMIT 1)\s*\) \w+ ON/g);
       for (const match of laterals) queries.push(match[1].replace('app.repo_card_summaries', 'pg_temp.compat_summaries'));
     }
-    assert.equal(queries.length, 9, 'Exercise every summary subquery used by Lists, detail, and feed reads');
+    assert.equal(queries.length, 9, 'Exercise every summary subquery used by Lists, Trending, detail, and feed reads');
     assert.equal(readmeProjections.size, 3);
     await db`CREATE TEMP TABLE compat_content (readme text)`;
     await db`INSERT INTO pg_temp.compat_content VALUES ('# Complete README')`;
