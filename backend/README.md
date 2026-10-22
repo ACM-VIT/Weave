@@ -124,6 +124,20 @@ The frontend cannot import or mutate repository metadata. It records likes, save
 
 The response contains `serve_id`, `feed_version`, `source`, `model_version`, `items`, and `next_cursor`. Reusing the same `feed_request_id` is an idempotent replay and returns the same persisted serve. Pass a non-null `next_cursor` with a new `feed_request_id` to consume the next queue page. Cursors are opaque, signed, and bound to the user, session, feed version, and next position; invalid or stale cursors return `400`. `limit` is 1-25. Home feed fails closed: if live generation is unavailable, it may reuse only a previously served personalized ranking for the same user and feed version. It never substitutes a generic or trending list.
 
+New foreground feed work is admitted only while active foreground operations
+plus unobserved retained shared probes remain below 256 per process, including
+replay checks and same-request waiters, with no pending queue. A shared probe may
+own multiple SQL/Redis commands; this is not a per-command limit. New
+requests during shutdown or above that bound use the existing retryable `409`
+response (`Retry-After: 1`); request/response and cursor formats are unchanged.
+A disconnected caller stops observing, but an already-owned reservation keeps
+its writer through durable publication/release so live same-ID waiters can
+replay it. Shutdown closes admission and drains actual foreground operations
+before Redis/SQL close; cancelling an observer never releases their resources.
+After foreground operations settle, shutdown also drains retained shared probes.
+Each coordinator separately caps ownership at 256 groups, including probes whose
+last observer already cancelled or expired; observer deadlines remain unchanged.
+
 ### Interactions
 
 `POST /api/v2/interactions/batch` accepts 1-50 events:

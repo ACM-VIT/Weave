@@ -4,6 +4,7 @@ import { type AuthRequest } from '../middlewares/authMiddleware.js';
 import crypto from 'node:crypto';
 import { getV2FeatureFlags, inRolloutCohort } from '../config/features.js';
 import { getApplicationRuntime } from '../runtime/applicationRuntime.js';
+import { FeedRequestInProgressError } from '../services/feedV2Service.js';
 import { isValidUuid } from '../utils/validators.js';
 
 const feedService = new FeedService();
@@ -36,6 +37,9 @@ export const receiveMlRecommendations = async (req: Request, res: Response): Pro
 };
 
 export const getFeedForMobile = async (req: AuthRequest, res: Response): Promise<void> => {
+  const controller = new AbortController();
+  const cancel = () => { if (!res.writableEnded) controller.abort(); };
+  res.once('close', cancel);
   try {
     const userId = req.user?.userId;
 
@@ -54,7 +58,8 @@ export const getFeedForMobile = async (req: AuthRequest, res: Response): Promise
         session_id: sessionHeader && isValidUuid(sessionHeader) ? sessionHeader : crypto.randomUUID(),
         limit: 10,
         cursor: null,
-      });
+      }, controller.signal);
+      if (controller.signal.aborted) return;
       const data = response.items.map((item) => ({
         ...item.repository,
         score: item.score,
@@ -85,7 +90,15 @@ export const getFeedForMobile = async (req: AuthRequest, res: Response): Promise
       data: feed
     });
   } catch (error) {
+    if (controller.signal.aborted) return;
+    if (error instanceof FeedRequestInProgressError) {
+      res.setHeader('Retry-After', '1');
+      res.status(409).json({ success: false, message: error.message });
+      return;
+    }
     console.error('[FeedController] Failed to serve mobile feed:', error);
      res.status(500).json({ success: false, message: 'Internal server error.' });
+  } finally {
+    res.removeListener('close', cancel);
   }
 };
