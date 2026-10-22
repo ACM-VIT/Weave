@@ -34,3 +34,18 @@ if (
 // Disable prefetch as it is not supported for pooled connections
 export const sqlClient = postgres(connectionString, { prepare: false });
 export const db = drizzle(sqlClient, { schema });
+
+export const SEARCH_SQL_CONNECTIONS = 3;
+
+/** Called only after search admission; ordinary API/worker imports open no search sockets. */
+export function createSearchSqlClient() {
+  // The pinned driver's failover path can suppress the pending query's rejection
+  // while reconnecting. Do not silently choose a host or change the main pool.
+  if (sqlClient.options.host.length !== 1 || sqlClient.options.target_session_attrs) {
+    throw new Error('Search SQL requires one database endpoint without target-session failover.');
+  }
+  return postgres(connectionString!, {
+    prepare: false, max: SEARCH_SQL_CONNECTIONS,
+    connect_timeout: 2, backoff: false, idle_timeout: 20,
+  });
+}

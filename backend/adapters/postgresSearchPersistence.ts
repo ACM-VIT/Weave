@@ -1,6 +1,7 @@
-import { sqlClient } from '../db/index.js';
+import { searchSql } from '../db/searchSqlLane.js';
 import { isValidUuid } from '../utils/validators.js';
 import type { SearchPersistence, SearchRef, SearchRequest, SearchResult } from '../services/searchService.js';
+import { checkSearchWork, createSearchWork, settleSearchWork } from '../services/searchWork.js';
 
 export function searchPattern(query: string): string { return `%${query.toLowerCase().replace(/[\\%_]/g, '\\$&')}%`; }
 const userText = `lower(coalesce(u.username::text,'')||' '||coalesce(u.full_name,'')||' '||coalesce(u.github_handle,'')||' '||coalesce(u.bio,''))`;
@@ -37,53 +38,60 @@ const peopleRows = (userPredicate = '', profilePredicate = '') => `SELECT 'user:
       AND u.github_identity_verified_at IS NOT NULL AND lower(u.github_handle)=lower(p.handle)))`;
 
 export class PostgresSearchPersistence implements SearchPersistence {
-  async lexical(request: SearchRequest) {
-    // Keep short substring queries on the joined scan: they have no useful trigrams.
-    const useCandidateBranches = Array.from(request.query).length >= 3;
-    const candidates = useCandidateBranches ? sqlClient`
-      WITH candidates AS (
-        SELECT repo_id FROM app.repos
-        WHERE status='active' AND lower(full_name) LIKE ${searchPattern(request.query)}
+  async lexical(request: SearchRequest, work = createSearchWork()) {
+    return searchSql(work, async sql => {
+      // Keep short substring queries on the joined scan: they have no useful trigrams.
+      const useCandidateBranches = Array.from(request.query).length >= 3;
+      const candidates = useCandidateBranches ? sql`
+        WITH candidates AS (
+          SELECT repo_id FROM app.repos
+          WHERE status='active' AND lower(full_name) LIKE ${searchPattern(request.query)}
+          UNION
+          SELECT repo_id FROM app.repo_content
+          WHERE lower(coalesce(description,'')) LIKE ${searchPattern(request.query)}
+        )
+      ` : sql``;
+      const repositorySource = useCandidateBranches
+        ? sql`candidates JOIN app.repos r USING(repo_id)` : sql`app.repos r`;
+      const rows = await sql`
+        ${candidates}
+        SELECT r.repo_id AS id,(lower(r.name)=lower(${request.query}) OR lower(r.full_name)=lower(${request.query})) AS exact
+        FROM ${repositorySource} LEFT JOIN app.repo_content c USING(repo_id)
+        WHERE r.status='active' AND NOT (r.repo_id=ANY(${request.exclude_repo_ids}::uuid[]))
+          AND (${useCandidateBranches} OR lower(r.full_name) LIKE ${searchPattern(request.query)}
+            OR lower(coalesce(c.description,'')) LIKE ${searchPattern(request.query)})
+          AND (${request.filters.languages.length === 0} OR c.primary_language=ANY(${request.filters.languages}::text[]))
+          AND (${request.filters.topics.length === 0} OR EXISTS (
+            SELECT 1 FROM app.repo_topics rt JOIN app.topics t USING(topic_id)
+            WHERE rt.repo_id=r.repo_id AND t.slug=ANY(${request.filters.topics}::text[])))
+        ORDER BY exact DESC,(lower(r.name) LIKE ${searchPattern(request.query).slice(1)}) DESC,app.explore_similarity(lower(r.full_name),lower(${request.query})) DESC,r.repo_id LIMIT 100
+      `;
+      return rows.map(row => ({ id: String(row.id), exact: row.exact === true }));
+    });
+  }
+  async people(request: SearchRequest, work = createSearchWork()): Promise<SearchRef[]> {
+    return searchSql(work, async sql => {
+      const rows = await sql.unsafe(`WITH matching_users AS (
+        SELECT u.user_id FROM app.users u WHERE u.status='active' AND ${userText} LIKE $1
         UNION
-        SELECT repo_id FROM app.repo_content
-        WHERE lower(coalesce(description,'')) LIKE ${searchPattern(request.query)}
-      )
-    ` : sqlClient``;
-    const repositorySource = useCandidateBranches
-      ? sqlClient`candidates JOIN app.repos r USING(repo_id)` : sqlClient`app.repos r`;
-    const rows = await sqlClient`
-      ${candidates}
-      SELECT r.repo_id AS id,(lower(r.name)=lower(${request.query}) OR lower(r.full_name)=lower(${request.query})) AS exact
-      FROM ${repositorySource} LEFT JOIN app.repo_content c USING(repo_id)
-      WHERE r.status='active' AND NOT (r.repo_id=ANY(${request.exclude_repo_ids}::uuid[]))
-        AND (${useCandidateBranches} OR lower(r.full_name) LIKE ${searchPattern(request.query)}
-          OR lower(coalesce(c.description,'')) LIKE ${searchPattern(request.query)})
-        AND (${request.filters.languages.length === 0} OR c.primary_language=ANY(${request.filters.languages}::text[]))
-        AND (${request.filters.topics.length === 0} OR EXISTS (
-          SELECT 1 FROM app.repo_topics rt JOIN app.topics t USING(topic_id)
-          WHERE rt.repo_id=r.repo_id AND t.slug=ANY(${request.filters.topics}::text[])))
-      ORDER BY exact DESC,(lower(r.name) LIKE ${searchPattern(request.query).slice(1)}) DESC,app.explore_similarity(lower(r.full_name),lower(${request.query})) DESC,r.repo_id LIMIT 100
-    `;
-    return rows.map(row => ({ id: String(row.id), exact: row.exact === true }));
+        SELECT p.claimed_by_user_id FROM app.social_profiles p
+        WHERE p.status='active' AND p.claimed_by_user_id IS NOT NULL AND ${profileText} LIKE $1
+      ), candidates AS (${peopleRows(
+        'AND u.user_id IN (SELECT user_id FROM matching_users)', `AND ${profileText} LIKE $1`,
+      )}) SELECT id FROM candidates
+        ORDER BY (lower(username)=lower($2)) DESC,app.explore_similarity(search_text,lower($2)) DESC,id LIMIT 100`, [searchPattern(request.query),request.query]);
+      return rows.map(row => ({ type: 'person', id: String(row.id) }));
+    });
   }
-  async people(request: SearchRequest): Promise<SearchRef[]> {
-    const rows = await sqlClient.unsafe(`WITH matching_users AS (
-      SELECT u.user_id FROM app.users u WHERE u.status='active' AND ${userText} LIKE $1
-      UNION
-      SELECT p.claimed_by_user_id FROM app.social_profiles p
-      WHERE p.status='active' AND p.claimed_by_user_id IS NOT NULL AND ${profileText} LIKE $1
-    ), candidates AS (${peopleRows(
-      'AND u.user_id IN (SELECT user_id FROM matching_users)', `AND ${profileText} LIKE $1`,
-    )}) SELECT id FROM candidates
-      ORDER BY (lower(username)=lower($2)) DESC,app.explore_similarity(search_text,lower($2)) DESC,id LIMIT 100`, [searchPattern(request.query),request.query]);
-    return rows.map(row => ({ type: 'person', id: String(row.id) }));
+  async lists(viewer: string, request: SearchRequest, work = createSearchWork()): Promise<SearchRef[]> {
+    return searchSql(work, async sql => {
+      const rows = await sql.unsafe(`WITH candidates AS (${listRows()}) SELECT id FROM candidates
+        WHERE search_text LIKE $2 ORDER BY (lower(name)=lower($3)) DESC,app.explore_similarity(search_text,lower($3)) DESC,id LIMIT 100`,[viewer,searchPattern(request.query),request.query]);
+      return rows.map(row => ({ type: 'list', id: String(row.id) }));
+    });
   }
-  async lists(viewer: string, request: SearchRequest): Promise<SearchRef[]> {
-    const rows = await sqlClient.unsafe(`WITH candidates AS (${listRows()}) SELECT id FROM candidates
-      WHERE search_text LIKE $2 ORDER BY (lower(name)=lower($3)) DESC,app.explore_similarity(search_text,lower($3)) DESC,id LIMIT 100`,[viewer,searchPattern(request.query),request.query]);
-    return rows.map(row => ({ type: 'list', id: String(row.id) }));
-  }
-  async hydrate(viewer: string, refs: SearchRef[], request?: SearchRequest): Promise<SearchResult[]> {
+  async hydrate(viewer: string, refs: SearchRef[], request?: SearchRequest, work = createSearchWork()): Promise<SearchResult[]> {
+    checkSearchWork(work);
     const ids = { repository: [], user: [], profile: [], collection: [], 'legacy-board': [] } as Record<
       'repository' | 'user' | 'profile' | 'collection' | 'legacy-board', string[]>;
     const validRefs: SearchRef[] = [];
@@ -111,8 +119,8 @@ export class PostgresSearchPersistence implements SearchPersistence {
       validRefs.push({ type: ref.type, id });
     }
     const repoIds = ids.repository;
-    const [repos,people,lists] = await Promise.all([
-      repoIds.length ? sqlClient`
+    const [repos,people,lists] = await settleSearchWork([
+      repoIds.length ? searchSql(work, sql => sql`
         SELECT r.repo_id,r.github_id,r.full_name,r.owner,r.name,r.url,
           c.description,c.primary_language,c.languages,
           COALESCE(stats.star_count,0) AS star_count,
@@ -130,14 +138,15 @@ export class PostgresSearchPersistence implements SearchPersistence {
             SELECT 1 FROM app.repo_topics rt JOIN app.topics topic USING(topic_id)
             WHERE rt.repo_id=r.repo_id AND topic.slug=ANY(${request?.filters.topics ?? []}::text[])
           ))
-      ` : [],
-      ids.user.length || ids.profile.length ? sqlClient.unsafe(`WITH candidates AS (${peopleRows(
+      `) : [],
+      ids.user.length || ids.profile.length ? searchSql(work, sql => sql.unsafe(`WITH candidates AS (${peopleRows(
         'AND u.user_id=ANY($1::uuid[])', 'AND p.profile_id=ANY($2::uuid[])',
-      )}) SELECT id,user_id,profile_id,username,display_name,github_handle,bio,avatar_url FROM candidates`, [ids.user, ids.profile]) : [],
-      ids.collection.length || ids['legacy-board'].length ? sqlClient.unsafe(`WITH candidates AS (${listRows(
+      )}) SELECT id,user_id,profile_id,username,display_name,github_handle,bio,avatar_url FROM candidates`, [ids.user, ids.profile])) : [],
+      ids.collection.length || ids['legacy-board'].length ? searchSql(work, sql => sql.unsafe(`WITH candidates AS (${listRows(
         'AND c.collection_id=ANY($2::uuid[])', 'AND b.board_id=ANY($3::uuid[])',
-      )}) SELECT * FROM candidates`, [viewer, ids.collection, ids['legacy-board']]) : [],
-    ]);
+      )}) SELECT * FROM candidates`, [viewer, ids.collection, ids['legacy-board']])) : [],
+    ] as const);
+    checkSearchWork(work);
     const rows: SearchResult[] = [
       ...repos.map(repo => ({ type: 'repository' as const, id: String(repo.repo_id), data: { ...repo } })),
       ...people.map(row => ({ type: 'person' as const, id: String(row.id), data: { ...row } })),
