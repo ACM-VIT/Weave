@@ -1,3 +1,4 @@
+import { readmeSummaryProjection } from '../services/readmeSummaryService.js';
 import type {
   CreateServeInput,
   RepositoryProjection,
@@ -10,6 +11,7 @@ import type {
 } from '../ports/feedPersistencePort.js';
 import { isValidUuid } from '../utils/validators.js';
 import { sqlClient } from '../db/index.js';
+import { buildMlOnboardingJob, hasMlEmbeddingContext } from '../services/mlOnboardingService.js';
 
 function projection(row: Record<string, unknown>): RepositoryProjection {
   return {
@@ -38,6 +40,7 @@ function projection(row: Record<string, unknown>): RepositoryProjection {
     summary_format_version: row.summary_format_version == null ? null : String(row.summary_format_version),
     summary_source: row.summary_source === 'generated' || row.summary_source === 'description_fallback'
       ? row.summary_source : null,
+    readme_digest: (row.readme_digest ?? null) as RepositoryProjection['readme_digest'],
     readme_md: row.readme == null ? null : String(row.readme),
     readme_source_path: row.readme_source_path == null ? null : String(row.readme_source_path),
     readme_default_branch: row.readme_default_branch == null ? null : String(row.readme_default_branch),
@@ -93,6 +96,73 @@ export class PostgresFeedPersistence implements FeedPersistencePort, FeedReconci
       ORDER BY min(priority),max(observed_at) DESC,repo_id LIMIT ${boundedLimit}
     `;
     return rows.map(row => String(row.repo_id));
+  }
+
+  async getMlOnboardingJob(userId: string) {
+    const rows = await sqlClient`
+      SELECT username,full_name,bio,github_handle,avatar_url,interests,skills,tech_stack,
+             profile_version,onboarding_completed
+      FROM app.users
+      WHERE user_id=${userId}::uuid AND status='active'
+      LIMIT 1
+    `;
+    const row = rows[0];
+    if (!row || row.onboarding_completed !== true) return null;
+    const job = buildMlOnboardingJob(userId, Number(row.profile_version), {
+      username: row.username == null ? null : String(row.username),
+      fullName: row.full_name == null ? null : String(row.full_name),
+      bio: row.bio == null ? null : String(row.bio),
+      githubUsername: row.github_handle == null ? null : String(row.github_handle),
+      avatarUrl: row.avatar_url == null ? null : String(row.avatar_url),
+      interests: Array.isArray(row.interests) ? row.interests.map(String) : [],
+      skills: Array.isArray(row.skills) ? row.skills.map(String) : [],
+      techStack: Array.isArray(row.tech_stack) ? row.tech_stack.map(String) : [],
+    });
+    return hasMlEmbeddingContext(job.profile) ? job : null;
+  }
+
+  async getRecentPersonalizedEntries(
+    userId: string,
+    feedVersion: bigint,
+    limit: number,
+    excludeRepoIds: string[],
+  ) {
+    const rows = await sqlClient`
+      WITH candidates AS (
+        SELECT item.repo_id,item.score,item.source,item.model_version,current_summary.summary_id,serve.generation_id,
+               serve.created_at,item.position,
+               row_number() OVER (
+                 PARTITION BY item.repo_id ORDER BY serve.created_at DESC,item.position ASC
+               ) AS repo_rank
+        FROM telemetry.feed_serves serve
+        JOIN telemetry.feed_serve_items item USING(serve_id)
+        JOIN app.repos repo ON repo.repo_id=item.repo_id AND repo.status='active'
+        JOIN app.repo_content content ON content.repo_id=repo.repo_id
+        LEFT JOIN LATERAL (
+          SELECT card.summary_id FROM app.repo_card_summaries card
+          WHERE card.repo_id=repo.repo_id AND card.active
+            AND card.content_version=content.content_version
+            AND to_jsonb(card)->>'source' IN ('generated','description_fallback')
+          ORDER BY card.created_at DESC LIMIT 1
+        ) current_summary ON true
+        WHERE serve.user_id=${userId}::uuid
+          AND serve.feed_version=${feedVersion.toString()}::bigint
+          AND serve.source='personalized'
+          AND NOT (item.repo_id=ANY(${excludeRepoIds}::uuid[]))
+      )
+      SELECT repo_id,score,source,model_version,summary_id,generation_id
+      FROM candidates WHERE repo_rank=1
+      ORDER BY created_at DESC,position ASC
+      LIMIT ${Math.max(1, Math.min(100, limit))}
+    `;
+    return rows.map((row) => ({
+      repo_id: String(row.repo_id),
+      score: Number(row.score ?? 0),
+      source: String(row.source),
+      model_version: String(row.model_version),
+      summary_id: row.summary_id == null ? null : String(row.summary_id),
+      ...(row.generation_id == null ? {} : { generation_id: String(row.generation_id) }),
+    }));
   }
 
   async listFollowedRepositoryIds(userId: string, limit: number): Promise<string[]> {
@@ -155,18 +225,19 @@ export class PostgresFeedPersistence implements FeedPersistencePort, FeedReconci
     const rows = await sqlClient`
       SELECT item.serve_id,item.position,item.repo_id,item.score,item.source,item.model_version,
              COALESCE(exact_summary.summary_id,current_summary.summary_id) AS summary_id,
+             ${sqlClient.unsafe(readmeSummaryProjection('repo','content'))},
              repo.full_name, repo.updated_at, content.description, content.primary_language,
-             content.languages, content.readme,content.readme_source_path,
-             content.readme_default_branch,content.readme_base_url,
+             content.languages, content.readme,to_jsonb(content)->>'readme_source_path' AS readme_source_path,
+             to_jsonb(content)->>'readme_default_branch' AS readme_default_branch,to_jsonb(content)->>'readme_base_url' AS readme_base_url,
              COALESCE(topic_values.topics, '[]'::jsonb) AS topics,
              stats.star_count, stats.fork_count, stats.open_issues_count,
              engagement.likes_count, engagement.comments_count, engagement.views_count,
              COALESCE(exact_summary.summary,current_summary.summary) AS summary,
-             COALESCE(exact_summary.highlights,current_summary.highlights,'[]'::jsonb) AS summary_highlights,
-             COALESCE(exact_summary.prompt_version,current_summary.prompt_version) AS summary_prompt_version,
+             COALESCE((to_jsonb(exact_summary)->'highlights'),current_summary.highlights,'[]'::jsonb) AS summary_highlights,
+             COALESCE((to_jsonb(exact_summary)->>'prompt_version'),current_summary.prompt_version) AS summary_prompt_version,
              COALESCE(exact_summary.model_version,current_summary.model_version) AS summary_model_version,
-             COALESCE(exact_summary.format_version,current_summary.format_version) AS summary_format_version,
-             COALESCE(exact_summary.source,current_summary.source) AS summary_source,
+             COALESCE((to_jsonb(exact_summary)->>'format_version'),current_summary.format_version) AS summary_format_version,
+             COALESCE((to_jsonb(exact_summary)->>'source'),current_summary.source) AS summary_source,
              reaction.reaction AS viewer_reaction,
              (saved.repo_id IS NOT NULL) AS viewer_saved,
              social_profile.claimed_by_user_id AS owner_user_id,
@@ -220,14 +291,16 @@ export class PostgresFeedPersistence implements FeedPersistencePort, FeedReconci
         ON exact_summary.summary_id=item.summary_id
        AND exact_summary.repo_id=repo.repo_id
        AND exact_summary.content_version=content.content_version
-       AND exact_summary.source<>'legacy'
+       AND (to_jsonb(exact_summary)->>'source') IN ('generated','description_fallback')
        AND char_length(btrim(exact_summary.summary)) BETWEEN 1 AND 360
       LEFT JOIN LATERAL (
-        SELECT card.summary_id,card.summary,card.highlights,card.prompt_version,
-          card.model_version,card.format_version,card.source
+        SELECT card.summary_id,card.summary,to_jsonb(card)->'highlights' AS highlights,
+          to_jsonb(card)->>'prompt_version' AS prompt_version,card.model_version,
+          to_jsonb(card)->>'format_version' AS format_version,to_jsonb(card)->>'source' AS source
         FROM app.repo_card_summaries card
         WHERE card.repo_id=repo.repo_id AND card.active
           AND card.content_version=content.content_version
+          AND to_jsonb(card)->>'source' IN ('generated','description_fallback')
         ORDER BY card.created_at DESC LIMIT 1
       ) current_summary ON exact_summary.summary_id IS NULL
       LEFT JOIN app.reactions reaction ON reaction.repo_id=repo.repo_id AND reaction.user_id=${String(serve.user_id)}::uuid
@@ -296,7 +369,10 @@ export class PostgresFeedPersistence implements FeedPersistencePort, FeedReconci
     const rows = await sqlClient`
       SELECT repo.repo_id, summary.summary_id
       FROM app.repos repo
+      LEFT JOIN app.repo_content content ON content.repo_id=repo.repo_id
       LEFT JOIN app.repo_card_summaries summary ON summary.repo_id=repo.repo_id AND summary.active
+        AND summary.content_version=content.content_version
+        AND to_jsonb(summary.*)->>'source' IN ('generated','description_fallback')
       WHERE repo.repo_id = ANY(${repoIds}::uuid[]) AND repo.status='active'
     `;
     return rows.map((row) => ({
@@ -308,16 +384,17 @@ export class PostgresFeedPersistence implements FeedPersistencePort, FeedReconci
   async listActiveRepositories(repoIds: string[], viewerUserId?: string): Promise<RepositoryProjection[]> {
     if (repoIds.length === 0) return [];
     const rows = await sqlClient`
-      SELECT repo.repo_id, repo.full_name, repo.status, repo.updated_at, content.description,
-             content.primary_language,content.languages,content.readme,content.readme_source_path,
-             content.readme_default_branch,content.readme_base_url,
+      SELECT ${sqlClient.unsafe(readmeSummaryProjection('repo','content'))},
+             repo.repo_id, repo.full_name, repo.status, repo.updated_at, content.description,
+             content.primary_language,content.languages,content.readme,to_jsonb(content)->>'readme_source_path' AS readme_source_path,
+             to_jsonb(content)->>'readme_default_branch' AS readme_default_branch,to_jsonb(content)->>'readme_base_url' AS readme_base_url,
              COALESCE(topic_values.topics, '[]'::jsonb) AS topics,
              COALESCE(stats.star_count, 0) AS star_count, COALESCE(stats.fork_count, 0) AS fork_count, COALESCE(stats.open_issues_count, 0) AS open_issues_count,
              COALESCE(engagement.likes_count, 0) AS likes_count, COALESCE(engagement.comments_count, 0) AS comments_count, COALESCE(engagement.views_count, 0) AS views_count,
-             summary.summary_id,summary.summary,summary.highlights AS summary_highlights,
-             summary.prompt_version AS summary_prompt_version,
+             summary.summary_id,summary.summary,to_jsonb(summary.*)->'highlights' AS summary_highlights,
+             to_jsonb(summary.*)->>'prompt_version' AS summary_prompt_version,
              summary.model_version AS summary_model_version,
-             summary.format_version AS summary_format_version,summary.source AS summary_source,
+             to_jsonb(summary.*)->>'format_version' AS summary_format_version,to_jsonb(summary.*)->>'source' AS summary_source,
              reaction.reaction AS viewer_reaction,
              (saved.repo_id IS NOT NULL) AS viewer_saved,
              social_profile.claimed_by_user_id AS owner_user_id,
@@ -366,6 +443,7 @@ export class PostgresFeedPersistence implements FeedPersistencePort, FeedReconci
       LEFT JOIN app.repo_engagement engagement ON engagement.repo_id = repo.repo_id
       LEFT JOIN app.repo_card_summaries summary ON summary.repo_id=repo.repo_id AND summary.active
         AND summary.content_version=content.content_version
+        AND to_jsonb(summary.*)->>'source' IN ('generated','description_fallback')
       LEFT JOIN app.reactions reaction ON reaction.repo_id=repo.repo_id AND reaction.user_id=${viewerUserId ?? null}::uuid
       LEFT JOIN app.saves saved ON saved.repo_id=repo.repo_id AND saved.user_id=${viewerUserId ?? null}::uuid
       WHERE repo.repo_id = ANY(${repoIds}::uuid[]) AND repo.status='active'

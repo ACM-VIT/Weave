@@ -20,13 +20,6 @@ import { incrementMetric, observeMetric } from '../observability/metrics.js';
 type RecommendationFailureKind = 'dependency' | 'contract';
 type RecommendationCircuitState = 'closed' | 'open' | 'half-open';
 
-export class MlRecommendationError extends Error {
-  constructor(message: string, readonly kind: RecommendationFailureKind, readonly statusCode?: number) {
-    super(message);
-    this.name = 'MlRecommendationError';
-  }
-}
-
 interface RecommendationCircuitOptions {
   /** Monotonic milliseconds; injectable for deterministic recovery checks. */
   now?: () => number;
@@ -41,6 +34,26 @@ function positiveInt(value: unknown, fallback: number): number {
 
 function isDependencyStatus(status: number): boolean {
   return status === 408 || status === 425 || status === 429 || status >= 500;
+}
+
+export type MlRecommendationFailureKind =
+  | 'persona_unavailable'
+  | 'authentication'
+  | 'service_unavailable'
+  | 'contract';
+
+export class MlRecommendationError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+    readonly kind: MlRecommendationFailureKind,
+    readonly detail?: string,
+    readonly retryAfterMs?: number,
+  ) {
+    super(message);
+    this.name = 'MlRecommendationError';
+  }
+  get statusCode(): number { return this.status; }
 }
 
 export class MlRepositoryIndexContractError extends Error {
@@ -62,6 +75,19 @@ function responseDetail(body: unknown): string | undefined {
     if (typeof value[key] === 'string' && value[key].trim()) return value[key].trim();
   }
   return undefined;
+}
+
+function recommendationFailureKind(status: number, body: unknown): MlRecommendationFailureKind {
+  const detail = `${responseDetail(body) ?? ''} ${JSON.stringify(body ?? '')}`.toLowerCase();
+  const mentionsPersona = /(user|persona|profile)/.test(detail);
+  const mentionsVector = /(vector|embedding)/.test(detail);
+  const mentionsMissing = /(missing|unavailable|not[ _-]?found|does not exist)/.test(detail);
+  if (mentionsPersona && mentionsVector && mentionsMissing) return 'persona_unavailable';
+  if (status === 401 || status === 403) return 'authentication';
+  if (status === 408 || status === 425 || status === 429 || status >= 500) {
+    return 'service_unavailable';
+  }
+  return 'contract';
 }
 
 function exactObjectKeys(value: Record<string, unknown>, expected: string[]): boolean {
@@ -159,6 +185,10 @@ export function parseMlRepositoryIndexResponse(
   return body as MlRepositoryIndexResponse;
 }
 
+export function isMissingPersonaRecommendationError(error: unknown): boolean {
+  return error instanceof MlRecommendationError && error.kind === 'persona_unavailable';
+}
+
 /** The same acceptance policy applies to incoming and already persisted artifacts. */
 export function validateRepositoryCardSummary(
   body: unknown,
@@ -252,20 +282,21 @@ export class MlV2Client implements RecommendationPort, OutboxTransportPort {
       const text = await response.text();
       const oversized = Buffer.byteLength(text) > this.config.maxResponseBytes;
       if (oversized && response.ok) {
-        if (path === '/api/v2/repositories/embed' && response.ok) {
-          throw new MlRepositoryIndexContractError('ML response exceeded size limit.');
+        if (responseFormat === 'required-json') {
+          if (path === '/api/v2/recommendations/generate') {
+            throw new MlRecommendationError('ML response exceeded size limit.', response.status, 'contract');
+          }
+          repositoryIndexContractError('ML successful response exceeded size limit.');
         }
-        throw new MlRecommendationError('ML response exceeded size limit.', 'contract', response.status);
+        throw new Error('ML response exceeded size limit.');
       }
       let body: unknown = oversized ? text.slice(0, 4_000) : null;
       if (text && !oversized) {
         try { body = JSON.parse(text); }
         catch {
           if (responseFormat === 'required-json' && response.ok) {
-            if (path === '/api/v2/repositories/embed' && response.ok) {
-              throw new MlRepositoryIndexContractError('ML returned invalid JSON.');
-            }
-            throw new MlRecommendationError('ML returned invalid JSON.', 'contract', response.status);
+            if (path === '/api/v2/recommendations/generate') throw new MlRecommendationError('ML returned invalid JSON.', response.status, 'contract');
+            repositoryIndexContractError('ML returned invalid JSON.');
           }
           body = text;
         }
@@ -298,23 +329,35 @@ export class MlV2Client implements RecommendationPort, OutboxTransportPort {
     const started = this.now();
     let outcome = 'success';
     try {
-      const { status, body } = await this.request('/api/v2/recommendations/generate', input, input.generation_id);
+      const { status, body, retryAfterMs } = await this.request(
+        '/api/v2/recommendations/generate',
+        input,
+        input.generation_id,
+      );
       if (status < 200 || status >= 300) {
-        throw new MlRecommendationError(`ML recommendation request failed with status ${status}.`,
-          isDependencyStatus(status) ? 'dependency' : 'contract', status);
+        const detail = responseDetail(body);
+        throw new MlRecommendationError(
+          detail
+            ? `ML recommendation request failed with status ${status}: ${detail}`
+            : `ML recommendation request failed with status ${status}.`,
+          status,
+          recommendationFailureKind(status, body),
+          detail,
+          retryAfterMs,
+        );
       }
       const value = body as MlRecommendationResponse;
       if (!value || value.schema_version !== 2 || value.generation_id !== input.generation_id
         || value.user_id !== input.user_id || value.feed_version !== input.feed_version
         || typeof value.model_version !== 'string' || typeof value.embedding_version !== 'string'
         || !Array.isArray(value.items)) {
-        throw new MlRecommendationError('ML recommendation response violated the v2 envelope.', 'contract');
+        throw new MlRecommendationError('ML recommendation response violated the v2 envelope.', 200, 'contract');
       }
       const ids = new Set<string>();
       for (const item of value.items) {
         if (!item || !isValidUuid(item.repo_id) || ids.has(item.repo_id) || !Number.isFinite(item.score)
           || typeof item.source !== 'string' || item.source.length === 0) {
-          throw new MlRecommendationError('ML recommendation response contains an invalid or duplicate item.', 'contract');
+          throw new MlRecommendationError('ML recommendation response contains an invalid or duplicate item.', 200, 'contract');
         }
         ids.add(item.repo_id);
       }
@@ -325,7 +368,7 @@ export class MlV2Client implements RecommendationPort, OutboxTransportPort {
       }
       return value;
     } catch (error) {
-      outcome = error instanceof MlRecommendationError ? error.kind : 'dependency';
+      outcome = error instanceof MlRecommendationError ? (error.kind === 'service_unavailable' ? 'dependency' : 'contract') : 'dependency';
       if (epoch === this.circuitEpoch) {
         if (outcome === 'dependency') this.consecutiveGenerateFailures++;
         if (probe || this.consecutiveGenerateFailures >= this.circuitFailureThreshold) {
@@ -361,6 +404,7 @@ export class MlV2Client implements RecommendationPort, OutboxTransportPort {
           ? (body as { detail: string }).detail
           : typeof body === 'string' ? body.slice(0, 4_000) : undefined,
         ...(retryAfterMs ? { retry_after_ms: retryAfterMs } : {}),
+        ...(status >= 200 && status < 300 ? { response_body: body } : {}),
       };
     } catch (error) {
       return { accepted: false, retryable: true, status_code: 0, detail: String(error) };

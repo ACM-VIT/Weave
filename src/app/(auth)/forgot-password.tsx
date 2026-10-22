@@ -1,9 +1,10 @@
+import { KeyboardForm } from '@/components/keyboard/keyboard-layout';
 import { requestPasswordReset } from '@/api/auth';
 import LoginInput from '@/components/Auth/LoginInput';
 import PrimaryButton from '@/components/Auth/PrimaryButton';
 import { useRouter } from 'expo-router';
 import { useState } from 'react';
-import { KeyboardAvoidingView, Platform, Pressable, Text, View } from 'react-native';
+import { Pressable, Text, View } from 'react-native';
 
 export default function ForgotPasswordScreen() {
   const router = useRouter();
@@ -27,8 +28,8 @@ export default function ForgotPasswordScreen() {
   };
 
   return (
-    <KeyboardAvoidingView className="flex-1 bg-black" behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
-      <View className="flex-1 justify-center px-8 w-full max-w-[450px] self-center">
+    <KeyboardForm className="flex-1 bg-black" contentContainerStyle={{ flexGrow: 1, justifyContent: "center" }}>
+      <View className="justify-center py-6 px-8 w-full max-w-[450px] self-center">
         <Text className="text-white text-[30px] font-nataBold">Reset your password</Text>
         <Text className="text-[#8A898F] text-[14px] leading-6 font-nata mt-3 mb-8">
           Enter your account email and we’ll send a secure reset link if an account exists.
@@ -44,6 +45,6 @@ export default function ForgotPasswordScreen() {
           <Text className="text-[#63E08A] font-nataSemiBold">Back to login</Text>
         </Pressable>
       </View>
-    </KeyboardAvoidingView>
+    </KeyboardForm>
   );
 }

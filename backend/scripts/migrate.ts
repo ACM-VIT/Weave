@@ -254,7 +254,48 @@ async function adoptStructurallyVerifiedV2History(): Promise<void> {
   }
 }
 
+async function applyReadmePipelineMigrations(): Promise<void> {
+  const entries = migrationEntries(['0025_repository_summary_artifacts','0026_readme_summary_pipeline']);
+  const recorded = await recordedMigrationHashes();
+  const pending = entries.filter((entry) => !recorded.has(entry.hash));
+  console.log(`README pipeline migrations: ${pending.map((entry) => entry.tag).join(', ') || 'current'}`);
+  if (!process.argv.includes('--execute')) {
+    console.log('Dry run only. Add --execute to apply these README migrations; unrelated migrations are not applied.');
+    return;
+  }
+  for (const [schema, table] of [['app','repos'],['app','repo_content'],['app','repo_card_summaries'],['telemetry','ml_outbox']]) {
+    if (!await relationExists(schema,table)) throw new Error('The canonical V2 baseline is required before README migrations.');
+  }
+  // Drizzle uses the newest timestamp, so a scoped upgrade must never leap
+  // over required V2 DDL, including Search. The scoped entries themselves
+  // are applied below; every other earlier entry must already be recorded.
+  const scopedTags = new Set(entries.map(entry => entry.tag));
+  const newestScopedTimestamp = Math.max(...entries.map(entry => entry.when));
+  const prerequisites = journal.entries.filter(entry =>
+    entry.when <= newestScopedTimestamp && !scopedTags.has(entry.tag));
+  const missing = migrationEntries(prerequisites.map(entry => entry.tag))
+    .filter(entry => !recorded.has(entry.hash));
+  if (missing.length) {
+    throw new Error(`Complete the normal migration before the scoped README upgrade. Missing prerequisites: ${missing.map(entry => entry.tag).join(', ')}`);
+  }
+  await ensureMigrationHistoryTable();
+  await client.begin(async (tx) => {
+    await tx`SELECT pg_advisory_xact_lock(hashtextextended('weave-readme-migrations',0))`;
+    await tx`SET LOCAL lock_timeout='5s'`;
+    await tx`SET LOCAL statement_timeout='30s'`;
+    for (const entry of pending) {
+      await tx.unsafe(entry.sql).simple();
+      await tx`INSERT INTO drizzle.__drizzle_migrations (hash,created_at)
+        SELECT ${entry.hash},${entry.when} WHERE NOT EXISTS (SELECT 1 FROM drizzle.__drizzle_migrations WHERE hash=${entry.hash})`;
+      console.log(`Applied ${entry.tag}`);
+    }
+  });
+}
+
 try {
+  if (process.argv.includes('--readme-summary-only')) {
+    await applyReadmePipelineMigrations();
+  } else {
   await bootstrapSupabaseAuthStub();
   await adoptLegacyHistory();
   await applyRetroactiveLegacyMigrations();
@@ -265,8 +306,11 @@ try {
     migrationsSchema: 'drizzle',
     migrationsTable: '__drizzle_migrations',
   });
+  // Run repairs after Drizzle applies pending migrations in timestamp order.
+  // Recording a newer repair first would make Drizzle skip older required DDL.
   await applyRetroactiveV2Migrations();
   console.log('Drizzle migrations are current.');
+  }
 } finally {
   await client.end();
 }

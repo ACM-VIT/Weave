@@ -5,6 +5,7 @@ export type FeedPage = {
   items: Record<string, unknown>[];
   nextCursor: string | null;
   feedVersion: string;
+  mode?: 'personalized' | 'discovery';
   sessionId?: string;
 };
 
@@ -25,7 +26,7 @@ export class FeedPaginationController {
   private epoch = 0;
   private active: Promise<FeedPage> | null = null;
   private pending: Request | null = null;
-  private staged = new WeakMap<AbortSignal, { seen: Set<unknown>; nextCursor: string | null; replacement: boolean }>();
+  private staged = new WeakMap<AbortSignal, { seen: Set<unknown>; nextCursor: string | null; replacement: boolean; mode: FeedPage['mode'] }>();
 
   constructor(
     private readonly fetchPage: (cursor: string | null, signal: AbortSignal | undefined, requestId: string, sessionId: string) => Promise<FeedPage>,
@@ -104,9 +105,16 @@ export class FeedPaginationController {
     const committedSeen = committed && !replacement ? this.committedHistory(committed) : undefined;
     const seen = staged?.seen ?? (committed ? new Set<unknown>() : this.seen);
     const hasHistory = () => seen.size > 0 || Boolean(committedSeen?.size);
+    // Catalogue offsets are independent of personalized feed versions.
+    const catalogueRequest = cursor?.startsWith('discovery:') === true;
+    // A restart at null is still continuation recovery when loaded pages remain.
+    // Only an actual first-page/refetch request may switch the browsing source.
+    const continuationMode = cursor === null ? undefined
+      : staged?.mode ?? (committed ?? this.committedPages)[0]?.mode ?? (catalogueRequest ? 'discovery' : 'personalized');
+    const recoverStale = this.stale && !catalogueRequest;
     let request = this.pending;
-    if (!request || (this.stale && !request.recovery) || request.initialCursor !== cursor) {
-      request = { cursor: this.stale ? null : cursor, id: createUuid(), recovery: this.stale && hasHistory(), initialCursor: cursor };
+    if (!request || (recoverStale && !request.recovery) || request.initialCursor !== cursor) {
+      request = { cursor: recoverStale ? null : cursor, id: createUuid(), recovery: recoverStale && hasHistory(), initialCursor: cursor };
     }
     let restarted = request.recovery;
     let duplicatePages = 0;
@@ -118,7 +126,12 @@ export class FeedPaginationController {
       try {
         const page = await this.fetchPage(request.cursor, signal, request.id, this.sessionId);
         check();
-        if (revision !== this.unversionedRevision || isNewer(this.minimumVersion, page.feedVersion)) {
+        if (continuationMode && (page.mode ?? 'personalized') !== continuationMode) {
+          throw Object.assign(new Error('Personalized recommendations are unavailable. Try again or refresh Home.'), {
+            status: 503, code: 'PERSONALIZED_FEED_UNAVAILABLE',
+          });
+        }
+        if (page.mode !== 'discovery' && (revision !== this.unversionedRevision || isNewer(this.minimumVersion, page.feedVersion))) {
           throw Object.assign(new Error('Recommendations changed. Try loading more again.'), { status: 400, code: 'FEED_CURSOR_STALE' });
         }
         const items = page.items.filter((item) => {
@@ -140,11 +153,11 @@ export class FeedPaginationController {
           continue;
         }
         this.pending = null;
-        if (committed && signal) this.staged.set(signal, { seen, nextCursor: page.nextCursor, replacement });
+        if (committed && signal) this.staged.set(signal, { seen, nextCursor: page.nextCursor, replacement, mode: page.mode ?? 'personalized' });
         return { ...page, items };
       } catch (error) {
         check();
-        if (!isStaleCursor(error)) throw error;
+        if (catalogueRequest || !isStaleCursor(error)) throw error;
         this.stale = true;
         this.pending = null;
         if (restarted) throw error;

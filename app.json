@@ -28,7 +28,8 @@
       "adaptiveIcon": {
         "foregroundImage": "./assets/images/logo/weavelogo.png",
         "backgroundColor": "#151110"
-      }
+      },
+      "softwareKeyboardLayoutMode": "resize"
     },
     "web": {
       "output": "static",
@@ -53,7 +54,9 @@
           "resizeMode": "contain"
         }
       ],
-      "@sentry/react-native"
+      "@sentry/react-native",
+      "expo-web-browser",
+      "expo-image"
     ],
     "experiments": {
       "typedRoutes": true,

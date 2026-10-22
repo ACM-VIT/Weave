@@ -1,5 +1,6 @@
+import type { ReadmeDigest } from '@/models/readme-digest';
 import React from 'react';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useQueryClient } from '@tanstack/react-query';
 import {
   Pressable,
   Linking,
@@ -13,12 +14,12 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
   Bookmark,
+  ChevronRight,
   CircleAlert,
   Eye,
   ExternalLink,
   GitFork,
   MessageCircle,
-  Pin,
   Share as ShareIcon,
   Star,
   ThumbsDown,
@@ -26,7 +27,6 @@ import {
 } from 'lucide-react-native';
 
 import { REFERENCE_THEME } from '@/constants/theme';
-import { DEVELOPMENT_PREVIEW_ENABLED } from '@/config/development-preview';
 import { useAuth } from '@/store/AuthContext';
 import { getAvatarColor } from '@/utils/avatar-color';
 import {
@@ -39,11 +39,6 @@ import ReadmeCard from './ReadmeCard';
 import type { FeedbackAction } from '../../api/activity';
 import { FEEDBACK_ACTIONS } from '../../constants/feedbackActions';
 import { FollowButton } from '../follow-button';
-import {
-  loadPinnedRepositories,
-  pinnedRepositoryKey,
-  setRepositoryPinned,
-} from '../../services/pinnedRepositoryStorage';
 
 type QueueActivity = (
   event: { repo_id: string; action: FeedbackAction; dwell_seconds?: number },
@@ -62,10 +57,10 @@ type ActionButtonProps = {
   onPress: () => void;
 };
 
-function formatCount(value?: string) {
+function formatCount(value?: number | string) {
   if (!value) return '0';
   const parsed = Number(value);
-  if (!Number.isFinite(parsed)) return value;
+  if (!Number.isFinite(parsed)) return String(value);
   if (parsed >= 1_000_000) return `${(parsed / 1_000_000).toFixed(parsed >= 10_000_000 ? 0 : 1).replace(/\.0$/, '')}M`;
   if (parsed >= 1_000) return `${(parsed / 1_000).toFixed(parsed >= 10_000 ? 0 : 1).replace(/\.0$/, '')}K`;
   return String(parsed);
@@ -175,6 +170,7 @@ export function RepositoryScreen({
   onSharePress,
   onCommentPress,
   onOwnerPress,
+  onRepositoryPress,
   onQueueActivity,
 }: {
   pageWidth: number;
@@ -183,41 +179,30 @@ export function RepositoryScreen({
   isActive?: boolean;
   isSaved?: boolean;
   commentCount?: number;
-  onReadFullPress: () => void;
+  onReadFullPress: (digest?: ReadmeDigest | null) => void;
   onSavePress: () => void;
   onSharePress: () => void;
   onCommentPress: () => void;
   onOwnerPress?: () => void;
+  onRepositoryPress?: () => void;
   onQueueActivity?: QueueActivity;
 }) {
   const insets = useSafeAreaInsets();
   const { user, checkOnboardingStatus } = useAuth();
   const queryClient = useQueryClient();
   const compact = pageWidth < 360 || pageHeight < 720;
-  const serverLiked = repository.viewerReaction === 'like';
-  const serverDisliked = repository.viewerReaction === 'dislike';
-  const [liked, setLiked] = React.useState(serverLiked);
-  const [disliked, setDisliked] = React.useState(serverDisliked);
-  const pinKey = pinnedRepositoryKey(repository);
-  const pinnedRepositoriesQuery = useQuery({
-    queryKey: ['pinned-repositories', user?.user_id],
-    enabled: Boolean(user?.user_id),
-    queryFn: () => loadPinnedRepositories(user!.user_id),
-    staleTime: Infinity,
+  const serverReaction = repository.viewerReaction ?? null;
+  const reactionStateKey = `${repository.serveId ?? 'repository'}:${repository.id}:${repository.feedPosition ?? 'unknown'}`;
+  const [localReactionState, setLocalReactionState] = React.useState({
+    key: reactionStateKey,
+    reaction: serverReaction,
   });
-  const storedPinned = pinnedRepositoriesQuery.data?.some((item) => item.key === pinKey) === true;
-  const pinStateKey = `${pinKey}:${storedPinned}`;
-  const [localPinState, setLocalPinState] = React.useState({ key: pinStateKey, pinned: storedPinned });
-  const pinned = localPinState.key === pinStateKey ? localPinState.pinned : storedPinned;
-  const pinMutation = useMutation<void, Error, boolean>({
-    mutationFn: async (nextPinned) => {
-      if (!user?.user_id) throw new Error('Sign in to pin repositories.');
-      await setRepositoryPinned(user.user_id, repository, nextPinned);
-    },
-    onSettled: () => {
-      void queryClient.invalidateQueries({ queryKey: ['pinned-repositories', user?.user_id] });
-    },
-  });
+  const reaction = localReactionState.key === reactionStateKey
+    ? localReactionState.reaction
+    : serverReaction;
+  const serverLiked = serverReaction === 'like';
+  const liked = reaction === 'like';
+  const disliked = reaction === 'dislike';
 
   const initialLikes = Number(repository.stats.likes || 0) || 0;
   const likeCount = Math.max(0, initialLikes + Number(liked) - Number(serverLiked));
@@ -254,34 +239,22 @@ export function RepositoryScreen({
 
   const toggleLike = () => {
     if (liked) {
-      setLiked(false);
+      setLocalReactionState({ key: reactionStateKey, reaction: null });
       onQueueActivity?.({ repo_id: repository.id, action: FEEDBACK_ACTIONS.unlike }, true);
       return;
     }
-    setLiked(true);
-    setDisliked(false);
+    setLocalReactionState({ key: reactionStateKey, reaction: 'like' });
     onQueueActivity?.({ repo_id: repository.id, action: FEEDBACK_ACTIONS.like }, true);
   };
 
   const toggleDislike = () => {
     if (disliked) {
-      setDisliked(false);
+      setLocalReactionState({ key: reactionStateKey, reaction: null });
       onQueueActivity?.({ repo_id: repository.id, action: FEEDBACK_ACTIONS.undislike }, true);
       return;
     }
-    setDisliked(true);
-    setLiked(false);
+    setLocalReactionState({ key: reactionStateKey, reaction: 'dislike' });
     onQueueActivity?.({ repo_id: repository.id, action: FEEDBACK_ACTIONS.dislike }, true);
-  };
-
-  const togglePinned = () => {
-    if (pinMutation.isPending || !user?.user_id) return;
-    const previous = pinned;
-    const next = !previous;
-    setLocalPinState({ key: pinStateKey, pinned: next });
-    pinMutation.mutate(next, {
-      onError: () => setLocalPinState({ key: pinStateKey, pinned: previous }),
-    });
   };
 
   const handleOwnerFollowingChange = (following: boolean) => {
@@ -300,12 +273,16 @@ export function RepositoryScreen({
     queryClient.setQueryData(feedQueryKey, (cachedFeed) =>
       patchOwnerFollowState(cachedFeed, ownerUserId, ownerProfileId, following)
     );
-    void queryClient.invalidateQueries({ queryKey: feedQueryKey, exact: true });
+    void queryClient.invalidateQueries({
+      queryKey: feedQueryKey,
+      exact: true,
+      refetchType: 'none',
+    });
     void checkOnboardingStatus().catch(() => undefined);
   };
 
   const openGithubRepository = async () => {
-    const url = repository.githubUrl ?? `https://github.com/${repository.owner}/${repository.title}`;
+    const url = repository.githubUrl;
     try {
       await Linking.openURL(url);
       onQueueActivity?.({ repo_id: repository.id, action: FEEDBACK_ACTIONS.githubOpen }, true);
@@ -363,27 +340,42 @@ export function RepositoryScreen({
                 compact={compact}
                 identityKey={repository.owner}
                 isFollowing={repository.viewerFollowsOwner === true}
-                localOnly={DEVELOPMENT_PREVIEW_ENABLED}
                 neutral
                 onFollowingChange={handleOwnerFollowingChange}
-                stateKnown={ownerFollowStateKnown || DEVELOPMENT_PREVIEW_ENABLED}
+                stateKnown={ownerFollowStateKnown}
                 targetProfileId={repository.ownerProfileId}
                 targetUserId={repository.ownerUserId}
               />
             ) : null}
           </View>
 
-          <Text
-            style={[
-              styles.repoTitle,
+          <Pressable
+            accessibilityHint="Opens the repository detail inside Weave"
+            accessibilityLabel={`View ${repository.name} repository details`}
+            accessibilityRole="link"
+            disabled={!onRepositoryPress}
+            onPress={onRepositoryPress}
+            style={({ pressed }) => [
+              styles.repoTitleButton,
               styles.repoTitleSpacing,
-              compact && styles.repoTitleCompact,
               compact && styles.repoTitleSpacingCompact,
+              pressed && styles.ownerPressed,
             ]}
-            numberOfLines={2}
           >
-            {repository.title}
-          </Text>
+            <Text
+              style={[styles.repoTitle, compact && styles.repoTitleCompact]}
+              numberOfLines={2}
+            >
+              {repository.name}
+            </Text>
+            {onRepositoryPress ? (
+              <ChevronRight
+                color={REFERENCE_THEME.textSecondary}
+                size={compact ? 17 : 19}
+                strokeWidth={2}
+              />
+            ) : null}
+          </Pressable>
           <ScrollView
             style={[
               styles.descriptionScroller,
@@ -430,9 +422,9 @@ export function RepositoryScreen({
               <Eye size={16} color={REFERENCE_THEME.text} strokeWidth={1.9} />
               <Text style={styles.statText}>{formatCount(repository.stats.views)}</Text>
             </View>
-            <View accessibilityLabel={`${formatCount(repository.stats.bugs)} open issues`} style={styles.statButton}>
+            <View accessibilityLabel={`${formatCount(repository.stats.openIssues)} open issues`} style={styles.statButton}>
               <CircleAlert size={16} color={REFERENCE_THEME.text} strokeWidth={1.9} />
-              <Text style={styles.statText}>{formatCount(repository.stats.bugs)}</Text>
+              <Text style={styles.statText}>{formatCount(repository.stats.openIssues)}</Text>
             </View>
           </View>
         </View>
@@ -482,21 +474,11 @@ export function RepositoryScreen({
           onPress={onSavePress}
         />
         <ActionButton
-          accessibilityLabel={pinned ? 'Unpin repository' : 'Pin repository'}
-          active={pinned}
-          activeColor="#1EE15B"
-          dense={veryShort}
-          icon={Pin}
-          iconSize={26}
-          label="Pin"
-          onPress={togglePinned}
-        />
-        <ActionButton
           accessibilityLabel="Open repository on GitHub"
           dense={veryShort}
           icon={ExternalLink}
           iconSize={26}
-          label="GitHub"
+          label="Open on GitHub"
           onPress={openGithubRepository}
         />
         <ActionButton
@@ -545,6 +527,13 @@ const styles = StyleSheet.create({
   repoDetailsCompact: {
     paddingTop: 5,
     gap: 8,
+  },
+  repoTitleButton: {
+    alignItems: 'center',
+    alignSelf: 'flex-start',
+    flexDirection: 'row',
+    gap: 4,
+    maxWidth: '100%',
   },
   avatar: {
     width: 37,

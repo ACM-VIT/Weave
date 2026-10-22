@@ -31,7 +31,7 @@ function acknowledgement(events: QueuedActivity[]): InteractionBatchResultV2 {
 
 const prepare = (input: ActivityInput): QueuedActivity => input as QueuedActivity;
 
-test('durable outbox persists before sending, chunks at 50, and retains a feed reset for remount', async () => {
+test('durable outbox persists before sending, chunks at 50, and retains deferred regeneration state', async () => {
   const initial = Array.from({ length: 121 }, (_, index) => event(index, index === 0 ? 'like' : 'impression'));
   let stored = [...initial];
   const batchSizes: number[] = [];

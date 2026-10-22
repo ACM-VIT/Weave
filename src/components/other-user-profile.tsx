@@ -17,9 +17,8 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import RepoCard from '@/components/explore/RepoCard';
 import { FollowButton } from '@/components/follow-button';
 import { BoardListCard } from '@/components/profile/BoardListCard';
-import { DEVELOPMENT_PREVIEW_ENABLED } from '@/config/development-preview';
 import { APP_THEME, REFERENCE_THEME } from '@/constants/theme';
-import type { Repo } from '@/types';
+import type { RepositoryDetail } from '@/models/repository';
 import { getAvatarColor } from '@/utils/avatar-color';
 import { formatCompactCount } from '@/utils/format-count';
 
@@ -44,7 +43,7 @@ export type OtherUserProfileData = {
     description?: string | null;
     repositoryCount: number;
   }[];
-  pinnedRepositories: Repo[];
+  pinnedRepositories: RepositoryDetail[];
 };
 
 type OtherUserProfileProps = {
@@ -56,7 +55,7 @@ type OtherUserProfileProps = {
   onFollowError?: (error: Error) => void;
   onFollowingChange?: (following: boolean) => void;
   onListPress: (listId: string) => void;
-  onRepositoryPress: (repository: Repo) => void;
+  onRepositoryPress: (repository: RepositoryDetail) => void;
 };
 
 const PINNED_PREVIEW_LIMIT = 3;
@@ -213,7 +212,6 @@ export function OtherUserProfile({
                       compact={compact}
                       identityKey={profile.username}
                       isFollowing={profile.isFollowing}
-                      localOnly={DEVELOPMENT_PREVIEW_ENABLED}
                       onError={onFollowError}
                       onFollowingChange={onFollowingChange}
                       stateKnown={profile.followStateKnown ?? Boolean(profile.userId || profile.profileId)}

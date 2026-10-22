@@ -39,7 +39,7 @@ Public API errors use:
 
 Feed, interaction, ingestion, and operations v2 endpoints return their versioned contract directly. Authentication uses `Authorization: Bearer <accessToken>`. The access token lasts 15 minutes. Refresh tokens are rotated in a secure HTTP-only cookie scoped to `/api/auth`. Internal routes require `x-internal-secret`; during rotation they accept `INTERNAL_API_SECRET_PREVIOUS` as well.
 
-All timestamps are ISO 8601 UTC. All IDs described as UUIDs must be valid UUID strings. Request bodies are limited to 256 KB. List endpoints accept `limit=1..100` and `offset=0..10000` unless stated otherwise.
+All timestamps are ISO 8601 UTC. All IDs described as UUIDs must be valid UUID strings. Request bodies are limited to 256 KB, except canonical internal ingestion, whose JSON parser is applied only after internal-secret authentication and is limited to 8 MiB. List endpoints accept `limit=1..100` and `offset=0..10000` unless stated otherwise.
 
 ## Frontend API
 
@@ -85,7 +85,7 @@ Topic slugs are lowercase letters/numbers/hyphens, 1-50 characters. Onboarding a
 | `GET /api/v2/repositories/trending` | `period` default `daily` | Active complete trending snapshot, ordered by position |
 | `GET /api/v2/repositories/saved` | `limit`, `offset` | Current user's saved repositories |
 
-Trending card responses are shared across viewers inside each API process, with
+Public Trending card projections are shared across viewers inside each API process, with
 at most three cached responses of 100 cards and a five-second freshness bound
 for counters, summaries, content and repository status. Every request rechecks
 eligible active snapshots; snapshot IDs, activation versions and available-period
@@ -93,12 +93,19 @@ changes invalidate the response immediately, including ingestion from another
 process. `ETag` covers the exact JSON response. Conditional GET/HEAD requests
 return an empty `304` when unchanged; `Cache-Control: private, no-cache` requires
 clients to revalidate through authentication rather than serving stale responses.
-Hydration has a five-second caller deadline and a transaction-local four-second
-PostgreSQL statement timeout. Expired pending work accepts no new waiters or
+The full handler has one five-second caller deadline across public lookup, private
+hydration and final serialization/hash, with monotonic pre/post work checks. Public
+card hydration also retains its transaction-local four-second PostgreSQL timeout.
+Expired pending work accepts no new waiters or
 replacement query for that period until the underlying operation settles;
 over-budget/busy requests return `503` with `Retry-After: 1` rather than stale cards.
-Viewer reactions, saves and List selections must be loaded outside this shared
-public cache; any viewer overlay must have its final response ETag recomputed.
+Viewer reactions, saves and List selections are batch-loaded on every request
+outside this public cache, with at most three private hydrations in flight. A
+timed-out request retains its private admission slot until its actual transaction
+settles. After connection acquisition, expired work rolls back before projection;
+the local query timeout is the smaller of four seconds and the remaining caller
+budget. The final viewer-specific JSON is serialized and hashed for its ETag;
+conditional requests cannot reuse another viewer's private state or skip this read.
 
 The frontend cannot import or mutate repository metadata. It records likes, saves, views, and other behavior through the interaction endpoint below. Repository details come from PostgreSQL, not ML/Qdrant.
 
@@ -115,7 +122,7 @@ The frontend cannot import or mutate repository metadata. It records likes, save
 }
 ```
 
-The response contains `serve_id`, `feed_version`, `source`, `model_version`, `items`, and `next_cursor`. Reusing the same `feed_request_id` is an idempotent replay and returns the same persisted serve. Pass a non-null `next_cursor` with a new `feed_request_id` to consume the next queue page. Cursors are opaque, signed, and bound to the user, session, feed version, and next position; invalid or stale cursors return `400`. `limit` is 1-25. If ML or Redis is unavailable, the backend serves a durable PostgreSQL fallback when possible.
+The response contains `serve_id`, `feed_version`, `source`, `model_version`, `items`, and `next_cursor`. Reusing the same `feed_request_id` is an idempotent replay and returns the same persisted serve. Pass a non-null `next_cursor` with a new `feed_request_id` to consume the next queue page. Cursors are opaque, signed, and bound to the user, session, feed version, and next position; invalid or stale cursors return `400`. `limit` is 1-25. Home feed fails closed: if live generation is unavailable, it may reuse only a previously served personalized ranking for the same user and feed version. It never substitutes a generic or trending list.
 
 ### Interactions
 
@@ -157,7 +164,7 @@ Comment bodies are 1-5000 trimmed characters.
 |---|---|---|
 | `GET /api/v2/collections` | `repository_id?` | Current user's collections, repository counts, timestamps, and optional membership state |
 | `POST /api/v2/collections` | `{name,description?,icon?,color?}` | Creates collection |
-| `POST /api/v2/collections/save` | `{repositoryId,collectionIds[]}` | Atomically synchronizes a repository across owned collections |
+| `POST /api/v2/collections/save` | `{repositoryId,collectionIds[],boardIds[],event?}` | Atomically synchronizes a repository across all owned product Lists; a stable save/unsave event records feedback only when the saved union changes |
 | `PUT /api/v2/collections/:collectionId` | `{name,description?,icon?,color?}` | Replaces mutable fields |
 | `DELETE /api/v2/collections/:collectionId` | none | Deletes collection; boards become ungrouped |
 | `GET /api/v2/boards` | none | Current user's boards and repo counts |
@@ -208,6 +215,12 @@ The response is `{mappings:[{github_id,repo_id,content_version,changed}]}`. The 
 
 `POST /api/internal/v2/ingestion/trending/snapshots` accepts `{snapshot_id,period,computed_at,source,repositories}` where repository entries use the upsert shape plus unique non-negative `rank` and optional `score`. Activation is atomic: incomplete snapshots never become frontend-visible.
 
+The maintenance worker also builds a canonical GitHub trending candidate snapshot immediately on startup and every `TRENDING_INGESTION_INTERVAL_MS` (six hours by default) when `TRENDING_INGESTION=true`. These repositories expand the indexed candidate corpus; the home feed still requires the ML service to rank that corpus against the current user persona.
+
+Run the same bounded ingestion once with `npm run ingest:trending`; the command closes its database pool before exiting and is safe to retry because the daily snapshot ID is deterministic.
+
+To repair persona vectors after an ML collection restore or drift event, first dry-run `npm run reindex:personas -- --campaign=<incident-id>`, then repeat with `--execute`. The campaign key makes reruns idempotent and queues only completed users with real embedding context.
+
 ## Backend-to-ML API
 
 The backend is the client and ML implements these internal endpoints. Every request includes `x-internal-secret`, `x-request-id`, `idempotency-key`, and `schema_version:2`.
@@ -222,6 +235,49 @@ The backend is the client and ML implements these internal endpoints. Every requ
 | `GET /api/v2/health` | ML/Qdrant readiness | Non-2xx when ML cannot safely accept work |
 
 ML must return 2xx only after durable acceptance. Use `429` or `503` for retryable pressure/failure and an optional `Retry-After`; use other 4xx responses for terminal contract errors. The backend outbox retries with capped jitter, leases jobs with `SKIP LOCKED`, and moves terminal/expired work to `dead` for operator replay.
+
+### Concise summary backfill
+
+Roll out the Phase 3 contract in this order:
+
+1. Stop the old outbox worker before changing ML. Confirm no `repo_index` row
+   remains `claimed`; leave pending rows durable in PostgreSQL. An old worker
+   would accept a strict ML `2xx` and mark it delivered without storing the
+   returned summary artifact.
+2. Deploy the backward-compatible ML release first and canary the strict
+   repository-index response, including its bounded versioned `card_summary`.
+   Do not allow repository-index jobs to drain through an older backend during
+   this compatibility window, because that backend cannot persist the artifact.
+3. Apply migration `0025_repository_summary_artifacts`, run `schema:audit`, and
+   deploy the matching backend/outbox worker. The migration deliberately makes
+   legacy or ambiguous summary rows inactive; do not reverse that normalization.
+4. Start only the new outbox worker. Verify a live isolated ingestion canary stores `response_payload` and an
+   active current-version summary. Only then enqueue the bounded, dry-run-reviewed
+   summary backfill below. Do not run a production backfill as part of deployment.
+
+Repository summary reindexing is dry-run only unless `--execute` is supplied,
+and every run requires a stable campaign name. To inspect only active repository
+content versions that do not have a matching active card summary:
+
+```bash
+npm run reindex:ml -- --campaign=phase3-card-summary-v1 --summary-backfill
+```
+
+After reviewing the report against fixtures or isolated local services, enqueue
+the same idempotent campaign explicitly:
+
+```bash
+npm run reindex:ml -- --campaign=phase3-card-summary-v1 --summary-backfill --execute
+```
+
+Re-running the command with the same campaign does not duplicate outbox jobs.
+An active `description_fallback` remains eligible for a later campaign until a
+generated summary is active. ML identifies that bounded fallback with
+`model_version: "repository-description-fallback-v1"`, so a recovered provider
+can insert and activate a distinct generated tuple. Use a new campaign ID for
+an intentional fallback-upgrade pass; the original campaign remains immutable.
+Do not point this command at production without a separately approved migration
+and rollout window.
 
 Recommendation response shape:
 
@@ -319,7 +375,12 @@ after a newer canonical job for that repository has been delivered.
 
 Databases with the known parent-journal history are upgraded directly: the migrator executes and records the retroactive `0004_add_likes_given` and `0005_add_is_saved` SQL before `0008`. Do not set `ADOPT_LEGACY_SCHEMA` for that normal upgrade. The one-time `ADOPT_LEGACY_SCHEMA=1` escape hatch is only for an audited schema whose baseline Drizzle history is genuinely absent or incomplete. The migrator structurally verifies each legacy/v2 migration before recording its hash and refuses adoption when a required table, column, grant, view, or role is missing. Exercise it on a clone and run `schema:audit` before using it against the target.
 
-For verification use `npm run build`, `npm test`, database integration with `RUN_DATABASE_INTEGRATION=1`, parent-history migration integration with `RUN_MIGRATION_UPGRADE_INTEGRATION=1`, and HTTP integration with `RUN_HTTP_INTEGRATION=1`. The integration suite uses Redis database 14 by default and clears only that test database.
+For verification use `npm run build`, `npm test`, database integration with `RUN_DATABASE_INTEGRATION=1`, parent-history migration integration with `RUN_MIGRATION_UPGRADE_INTEGRATION=1`, seeded Phase 3 migration/reapply integration with `RUN_REPOSITORY_SUMMARY_MIGRATION_INTEGRATION=1`, and HTTP integration with `RUN_HTTP_INTEGRATION=1`. Migration integration is destructive and refuses non-local PostgreSQL; use only an isolated local database. The integration suite uses Redis database 14 by default and clears only that test database.
+
+Trending caches only public card content. Viewer reactions, saved state and List
+memberships are loaded per request, then included in that response's ETag;
+conditional requests cannot reuse another viewer's state. README content and
+summary provenance remain distinct in the cached projection.
 
 Run the PostgreSQL Trending cache checks separately from other database suites:
 
@@ -343,7 +404,8 @@ Apply `0028_counter_reconciliation_progress` before starting the updated
 maintenance worker. `COUNTER_RECONCILIATION_BATCH_SIZE` bounds each repository
 and user transaction to 250 candidate counter rows by default (range 1–1000).
 The worker continues every second while a sweep has remaining work, then waits
-five minutes. Abandoned outbox claims retain their independent five-minute scan.
+five minutes. Abandoned outbox claims and superseded repository-job repairs
+retain their independent five-minute scan.
 
 PostgreSQL stores the last UUID and fixed upper UUID for each sweep. Repairs and
 cursor advancement commit together; a restart resumes the same range. A rotating
@@ -384,7 +446,7 @@ adds new outbox rows; see the outbox worker runbook.
 
 Repository summary compatibility requires the ML repository-index endpoint to
 return its versioned `card_summary` response. Deploy that ML contract before
-enabling this backend worker. Apply `0025_repository_summary_artifacts` and run
+enabling this backend worker. Apply `0024_repository_summary_artifacts` and run
 `npm run schema:audit` before starting the updated backend. These are release
 steps requiring the normal environment authorization; local tests do not run
 them against a deployed service.

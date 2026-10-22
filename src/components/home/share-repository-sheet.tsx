@@ -1,13 +1,15 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { useReducedMotion } from 'react-native-reanimated';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Animated,
   Easing,
   Linking,
   Modal,
+  Platform,
   Pressable,
-  ScrollView,
   Share,
+  ScrollView,
   StyleSheet,
   Text,
   useWindowDimensions,
@@ -15,62 +17,48 @@ import {
 } from 'react-native';
 import { BlurView } from 'expo-blur';
 import * as Clipboard from 'expo-clipboard';
+import * as ExpoLinking from 'expo-linking';
 import * as Haptics from 'expo-haptics';
 import { useQuery } from '@tanstack/react-query';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import QRCode from 'react-native-qrcode-svg';
 import {
-  AtSign,
-  BriefcaseBusiness,
   Check,
   Copy,
-  Hash,
-  Network,
-  Mail,
-  MessageCircle,
-  QrCode,
+  ExternalLink,
   RotateCcw,
-  Send,
   Share2,
   X,
 } from 'lucide-react-native';
 
 import {
-  getRepositoryShareDetails,
-  type RepositoryShareDetails,
-} from '@/api/repository-actions';
+  fetchRepositoryDetail,
+  repositoryDetailQueryKey,
+} from '@/api/repositories';
 import { REFERENCE_THEME } from '@/constants/theme';
 import { useModalScrollLock } from '@/hooks/use-modal-scroll-lock';
+import type { RepositoryDetail } from '@/models/repository';
+import { useAuth } from '@/store/AuthContext';
+import { getStorageItem } from '@/utils/storage';
+import {
+  buildRepositoryShareContent,
+  repositoryPath,
+  resolveRepositoryShareUrl,
+} from '@/utils/repository-links';
+import { shareResultConfirmsCompletion } from '@/utils/share-feedback';
 
 type ShareRepositorySheetProps = {
   isVisible: boolean;
   onClose: () => void;
   onShared?: () => void;
+  onGithubOpened?: () => void;
   repositoryId: string;
-  repositoryDetails?: RepositoryShareDetails;
+  repositoryDetails?: Pick<
+    RepositoryDetail,
+    'id' | 'fullName' | 'githubUrl' | 'description'
+  >;
 };
 
-type ShareActionId = 'copy' | 'system' | 'whatsapp' | 'telegram'
-  | 'discord' | 'slack' | 'x' | 'linkedin' | 'email' | 'qr';
-
-type Action = {
-  id: ShareActionId;
-  label: string;
-  shortLabel: string;
-  icon: React.ComponentType<{ color?: string; size?: number; strokeWidth?: number }>;
-};
-
-const APP_ACTIONS: Action[] = [
-  { id: 'whatsapp', label: 'Share to WhatsApp', shortLabel: 'WhatsApp', icon: MessageCircle },
-  { id: 'telegram', label: 'Share to Telegram', shortLabel: 'Telegram', icon: Send },
-  { id: 'discord', label: 'Share to Discord', shortLabel: 'Discord', icon: Hash },
-  { id: 'slack', label: 'Share to Slack', shortLabel: 'Slack', icon: AtSign },
-  { id: 'x', label: 'Share to X', shortLabel: 'X', icon: BriefcaseBusiness },
-  { id: 'linkedin', label: 'Share to LinkedIn', shortLabel: 'LinkedIn', icon: Network },
-  { id: 'email', label: 'Share via email', shortLabel: 'Email', icon: Mail },
-  { id: 'system', label: 'Open system share options', shortLabel: 'More', icon: Share2 },
-  { id: 'qr', label: 'Generate QR code', shortLabel: 'QR code', icon: QrCode },
-];
+const configuredWebUrl = process.env.EXPO_PUBLIC_WEB_URL;
 
 const palette = {
   background: REFERENCE_THEME.surface,
@@ -79,40 +67,71 @@ const palette = {
   border: REFERENCE_THEME.border,
   text: REFERENCE_THEME.text,
   secondary: REFERENCE_THEME.textSecondary,
-  tertiary: REFERENCE_THEME.textTertiary,
   accent: REFERENCE_THEME.accent,
   accentText: '#07130A',
   overlay: 'rgba(0,0,0,0.70)',
-  danger: REFERENCE_THEME.danger,
 };
+
+function githubRepositoryUrl(value: string | null | undefined): string | null {
+  if (!value || !/^https:\/\/github\.com\//i.test(value)) return null;
+  return value;
+}
 
 export function ShareRepositorySheet({
   isVisible,
   onClose,
   onShared,
+  onGithubOpened,
   repositoryId,
   repositoryDetails,
 }: ShareRepositorySheetProps) {
   const { height, width } = useWindowDimensions();
+  const reducedMotion = useReducedMotion();
   const insets = useSafeAreaInsets();
-  const sheetMaxHeight = Math.min(610, height * 0.82);
+  const { user } = useAuth();
+  const viewerUserId = user?.user_id;
+  const sheetMaxHeight = Math.min(500, height * 0.82);
   const [translateY] = useState(() => new Animated.Value(height));
   const [overlayOpacity] = useState(() => new Animated.Value(0));
   const [toast, setToast] = useState('');
-  const [showQr, setShowQr] = useState(false);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useModalScrollLock(isVisible);
 
   const repositoryQuery = useQuery({
-    queryKey: ['repository-share-details', repositoryId],
-    queryFn: ({ signal }) => getRepositoryShareDetails(repositoryId, signal),
-    enabled: isVisible && Boolean(repositoryId) && !repositoryDetails,
-    staleTime: 0,
-    refetchOnMount: 'always',
+    queryKey: repositoryDetailQueryKey(repositoryId, viewerUserId),
+    queryFn: async ({ signal }) => {
+      const token = await getStorageItem('access_token');
+      if (!token) throw new Error('Sign in to load repository details.');
+      return fetchRepositoryDetail(repositoryId, token, signal);
+    },
+    enabled: isVisible && Boolean(repositoryId && viewerUserId) && !repositoryDetails,
+    staleTime: 5 * 60 * 1000,
     retry: 1,
     retryDelay: 500,
   });
+
+  const details = repositoryDetails ?? repositoryQuery.data;
+  const githubUrl = githubRepositoryUrl(details?.githubUrl);
+  const linkLoading = !details && (repositoryQuery.isLoading || repositoryQuery.isFetching);
+  const linkFailed = !details && repositoryQuery.isError;
+  const weaveUrl = useMemo(() => {
+    try {
+      const path = repositoryPath(repositoryId);
+      const nativeUrl = ExpoLinking.createURL(path.slice(1));
+      return resolveRepositoryShareUrl({
+        repoId: repositoryId,
+        webBaseUrl: configuredWebUrl
+          ?? (Platform.OS === 'web' && typeof window !== 'undefined' ? window.location.origin : null),
+        nativeUrl,
+      });
+    } catch {
+      return null;
+    }
+  }, [repositoryId]);
+  const shareContent = useMemo(() => weaveUrl
+    ? buildRepositoryShareContent(details?.fullName, weaveUrl)
+    : null, [details?.fullName, weaveUrl]);
 
   const haptic = useCallback(async (kind: 'selection' | 'success' = 'selection') => {
     if (process.env.EXPO_OS === 'web') return;
@@ -133,22 +152,21 @@ export function ShareRepositorySheet({
     Animated.parallel([
       Animated.timing(translateY, {
         toValue: height,
-        duration: 210,
+        duration: reducedMotion ? 0 : 210,
         easing: Easing.in(Easing.cubic),
         useNativeDriver: true,
       }),
       Animated.timing(overlayOpacity, {
         toValue: 0,
-        duration: 170,
+        duration: reducedMotion ? 0 : 170,
         useNativeDriver: true,
       }),
     ]).start(({ finished }) => {
       if (!finished) return;
-      setShowQr(false);
       setToast('');
       onClose();
     });
-  }, [height, onClose, overlayOpacity, translateY]);
+  }, [height, onClose, overlayOpacity, translateY, reducedMotion]);
 
   useEffect(() => {
     if (!isVisible) return;
@@ -157,70 +175,54 @@ export function ShareRepositorySheet({
     Animated.parallel([
       Animated.timing(translateY, {
         toValue: 0,
-        duration: 290,
+        duration: reducedMotion ? 0 : 290,
         easing: Easing.bezier(0.32, 0.72, 0, 1),
         useNativeDriver: true,
       }),
       Animated.timing(overlayOpacity, {
         toValue: 1,
-        duration: 200,
+        duration: reducedMotion ? 0 : 200,
         useNativeDriver: true,
       }),
     ]).start();
-  }, [height, isVisible, overlayOpacity, translateY]);
+  }, [height, isVisible, overlayOpacity, translateY, reducedMotion]);
 
   useEffect(() => () => {
     if (toastTimer.current) clearTimeout(toastTimer.current);
   }, []);
 
-  const details = repositoryDetails ?? repositoryQuery.data;
-  const shareUnavailable = !details;
-  const linkLoading = !details && (repositoryQuery.isLoading || repositoryQuery.isFetching);
-  const linkFailed = !details && repositoryQuery.isError;
-  const shareText = details ? `Take a look at ${details.fullName}: ${details.githubUrl}` : '';
-
-  const copyLink = useCallback(async (message = 'Repository link copied') => {
-    if (!details) return;
-    await Clipboard.setStringAsync(details.githubUrl);
+  const copyWeaveLink = useCallback(async () => {
+    if (!weaveUrl) throw new Error('Weave link is unavailable.');
+    const copied = await Clipboard.setStringAsync(weaveUrl);
+    if (!copied) throw new Error('Unable to copy the Weave link.');
     await haptic('success');
-    showToast(message);
-  }, [details, haptic, showToast]);
+    showToast('Weave link copied');
+    onShared?.();
+  }, [haptic, onShared, showToast, weaveUrl]);
 
-  const openUrl = useCallback(async (url: string) => {
+  const shareWeaveLink = useCallback(async () => {
+    if (!shareContent) throw new Error('Weave link is unavailable.');
     await haptic();
-    await Linking.openURL(url);
-    onShared?.();
-  }, [haptic, onShared]);
-
-  const openClipboardDestination = useCallback(async (url: string, destination: string) => {
-    await copyLink(`Link copied — paste it in ${destination}`);
-    await Linking.openURL(url);
-    onShared?.();
-  }, [copyLink, onShared]);
-
-  const handleAction = useCallback(async (id: ShareActionId) => {
-    if (!details) return;
-    const encodedUrl = encodeURIComponent(details.githubUrl);
-    const encodedText = encodeURIComponent(`Take a look at ${details.fullName}`);
-    switch (id) {
-      case 'copy': await copyLink(); onShared?.(); break;
-      case 'system':
-        await haptic();
-        await Share.share({ title: details.fullName, message: shareText, url: details.githubUrl });
-        onShared?.();
-        break;
-      case 'whatsapp': await openUrl(`https://wa.me/?text=${encodeURIComponent(shareText)}`); break;
-      case 'telegram': await openUrl(`https://t.me/share/url?url=${encodedUrl}&text=${encodedText}`); break;
-      case 'discord': await openClipboardDestination('https://discord.com/channels/@me', 'Discord'); break;
-      case 'slack': await openClipboardDestination('https://slack.com/app_redirect', 'Slack'); break;
-      case 'x': await openUrl(`https://twitter.com/intent/tweet?url=${encodedUrl}&text=${encodedText}`); break;
-      case 'linkedin': await openUrl(`https://www.linkedin.com/sharing/share-offsite/?url=${encodedUrl}`); break;
-      case 'email': await openUrl(`mailto:?subject=${encodeURIComponent(details.fullName)}&body=${encodeURIComponent(shareText)}`); break;
-      case 'qr': await haptic(); setShowQr((current) => !current); break;
+    const result = await Share.share(shareContent);
+    if (shareResultConfirmsCompletion(
+      process.env.EXPO_OS ?? 'unknown',
+      result.action,
+      Share.sharedAction,
+    )) {
+      onShared?.();
     }
-  }, [copyLink, details, haptic, onShared, openClipboardDestination, openUrl, shareText]);
+  }, [haptic, onShared, shareContent]);
+
+  const openOnGithub = useCallback(async () => {
+    if (!githubUrl) throw new Error('GitHub link is unavailable.');
+    await haptic();
+    await Linking.openURL(githubUrl);
+    onGithubOpened?.();
+  }, [githubUrl, haptic, onGithubOpened]);
 
   if (!isVisible) return null;
+
+  const shareUnavailable = !shareContent;
 
   return (
     <Modal
@@ -233,8 +235,17 @@ export function ShareRepositorySheet({
       visible
     >
       <View style={styles.root}>
-        <Pressable accessibilityLabel="Close share sheet" accessibilityRole="button" onPress={closeAnimated} style={StyleSheet.absoluteFill}>
-          <Animated.View style={[styles.overlay, { backgroundColor: palette.overlay, opacity: overlayOpacity }]}>
+        <Pressable
+          accessibilityLabel="Close share sheet"
+          accessibilityRole="button"
+          onPress={closeAnimated}
+          style={StyleSheet.absoluteFill}
+        >
+          <Animated.View style={[styles.overlay, {
+            backgroundColor: palette.overlay,
+            opacity: overlayOpacity,
+          }]}
+          >
             <BlurView intensity={22} tint="dark" style={StyleSheet.absoluteFill} />
           </Animated.View>
         </Pressable>
@@ -253,111 +264,140 @@ export function ShareRepositorySheet({
               },
             ]}
           >
+            <ScrollView
+              style={{ flexShrink: 1, minHeight: 0 }}
+              keyboardShouldPersistTaps="handled"
+              keyboardDismissMode="on-drag"
+            >
             <View style={styles.header}>
               <View style={styles.headerText}>
-                <Text style={[styles.title, { color: palette.text }]}>Share repository</Text>
+                <Text selectable style={[styles.title, { color: palette.text }]}>Share repository</Text>
+                <Text selectable style={[styles.subtitle, { color: palette.secondary }]}>Share a link that opens this repository in Weave.</Text>
               </View>
-              <Pressable accessibilityLabel="Close" accessibilityRole="button" hitSlop={8} onPress={closeAnimated} style={[styles.closeButton, { backgroundColor: palette.elevated }]}>
+              <Pressable
+                accessibilityLabel="Close"
+                accessibilityRole="button"
+                hitSlop={14}
+                onPress={closeAnimated}
+                style={[styles.closeButton, { backgroundColor: palette.elevated }]}
+              >
                 <X color={palette.secondary} size={18} />
               </Pressable>
             </View>
 
             <View style={styles.actions}>
-                  <View accessibilityLiveRegion="polite" style={[styles.linkCard, { backgroundColor: palette.elevatedMuted, borderColor: palette.border }]}>
-                    <View style={styles.linkCopy}>
-                      <Text numberOfLines={1} selectable style={[styles.linkName, { color: palette.text }]}>{details?.fullName ?? 'GitHub repository link'}</Text>
-                      <Text numberOfLines={1} selectable style={[styles.linkUrl, { color: palette.secondary }]}>
-                        {details?.githubUrl ?? (linkLoading ? 'Loading repository link…' : 'Repository link unavailable')}
-                      </Text>
-                    </View>
-                    {linkLoading ? (
-                      <View accessibilityLabel="Loading repository link" style={styles.linkStatusAction}>
-                        <ActivityIndicator color={palette.accent} size="small" />
-                      </View>
-                    ) : linkFailed ? (
-                      <Pressable
-                        accessibilityLabel="Retry loading repository link"
-                        accessibilityRole="button"
-                        onPress={() => repositoryQuery.refetch()}
-                        style={({ pressed }) => [styles.linkStatusAction, { borderColor: palette.border }, pressed && styles.pressed]}
-                      >
-                        <RotateCcw color={palette.accent} size={17} />
-                      </Pressable>
-                    ) : (
-                      <Pressable
-                        accessibilityLabel="Copy GitHub repository link"
-                        accessibilityRole="button"
-                        accessibilityState={{ disabled: shareUnavailable }}
-                        disabled={shareUnavailable}
-                        onPress={() => void handleAction('copy').catch((error) => {
-                          showToast(error instanceof Error ? error.message : 'Unable to copy repository link.');
-                        })}
-                        style={({ pressed }) => [styles.copyButton, { backgroundColor: palette.accent }, shareUnavailable && styles.disabled, pressed && styles.pressed]}
-                      >
-                        <Copy color={palette.accentText} size={17} strokeWidth={2.2} />
-                        <Text style={[styles.copyButtonText, { color: palette.accentText }]}>Copy</Text>
-                      </Pressable>
-                    )}
+              <View
+                accessibilityLiveRegion="polite"
+                style={[styles.linkCard, {
+                  backgroundColor: palette.elevatedMuted,
+                  borderColor: palette.border,
+                }]}
+              >
+                <View style={styles.linkCopy}>
+                  <Text numberOfLines={1} selectable style={[styles.linkName, { color: palette.text }]}>
+                    {details?.fullName ?? (linkLoading ? 'Loading repository…' : 'Weave repository')}
+                  </Text>
+                  <Text numberOfLines={2} selectable style={[styles.linkUrl, { color: palette.secondary }]}>
+                    {weaveUrl ?? 'Weave link unavailable'}
+                  </Text>
+                </View>
+                {linkLoading ? (
+                  <View accessibilityLabel="Loading repository details" style={styles.linkStatusAction}>
+                    <ActivityIndicator color={palette.accent} size="small" />
                   </View>
+                ) : linkFailed ? (
+                  <Pressable
+                    accessibilityLabel="Retry loading repository details"
+                    accessibilityRole="button"
+                    onPress={() => repositoryQuery.refetch()}
+                    style={({ pressed }) => [
+                      styles.linkStatusAction,
+                      { borderColor: palette.border },
+                      pressed && styles.pressed,
+                    ]}
+                  >
+                    <RotateCcw color={palette.accent} size={17} />
+                  </Pressable>
+                ) : null}
+              </View>
 
-                <ScrollView
-                  accessibilityLabel="Repository sharing apps"
-                  alwaysBounceHorizontal={false}
-                  bounces={false}
-                  contentContainerStyle={styles.appRail}
-                  decelerationRate="fast"
-                  horizontal
-                  nestedScrollEnabled
-                  showsHorizontalScrollIndicator={false}
-                  style={styles.appScroller}
+              <View style={styles.primaryActions}>
+                <Pressable
+                  accessibilityLabel="Share Weave repository link"
+                  accessibilityRole="button"
+                  accessibilityState={{ disabled: shareUnavailable }}
+                  disabled={shareUnavailable}
+                  onPress={() => void shareWeaveLink().catch((error) => {
+                    showToast(error instanceof Error ? error.message : 'Unable to share the Weave link.');
+                  })}
+                  style={({ pressed }) => [
+                    styles.primaryAction,
+                    { backgroundColor: palette.accent },
+                    shareUnavailable && styles.disabled,
+                    pressed && styles.pressed,
+                  ]}
                 >
-                  {APP_ACTIONS.map(({ id, icon: Icon, label, shortLabel }) => {
-                    const visibleLabel = id === 'qr' && showQr ? 'Hide QR code' : label;
-                    const visibleShortLabel = id === 'qr' && showQr ? 'Hide QR' : shortLabel;
-                    return (
-                    <Pressable
-                      accessibilityLabel={visibleLabel}
-                      accessibilityRole="button"
-                      accessibilityState={{ disabled: shareUnavailable }}
-                      disabled={shareUnavailable}
-                      key={id}
-                      onPress={() => void handleAction(id).catch((error) => {
-                        showToast(error instanceof Error ? error.message : 'Unable to open share destination.');
-                      })}
-                      style={({ pressed }) => [
-                        styles.appAction,
-                        { backgroundColor: palette.elevatedMuted, borderColor: palette.border },
-                        shareUnavailable && styles.disabled,
-                        pressed && styles.pressed,
-                      ]}
-                    >
-                      <View style={[styles.appIcon, { backgroundColor: `${palette.accent}18` }]}>
-                        <Icon color={palette.accent} size={20} strokeWidth={1.9} />
-                      </View>
-                      <Text numberOfLines={1} style={[styles.appActionLabel, { color: palette.secondary }]}>
-                        {visibleShortLabel}
-                      </Text>
-                    </Pressable>
-                  )})}
-                </ScrollView>
+                  <Share2 color={palette.accentText} size={21} strokeWidth={2.1} />
+                  <Text style={[styles.primaryActionText, { color: palette.accentText }]}>Share</Text>
+                </Pressable>
+
+                <Pressable
+                  accessibilityLabel="Copy Weave repository link"
+                  accessibilityRole="button"
+                  accessibilityState={{ disabled: !weaveUrl }}
+                  disabled={!weaveUrl}
+                  onPress={() => void copyWeaveLink().catch((error) => {
+                    showToast(error instanceof Error ? error.message : 'Unable to copy the Weave link.');
+                  })}
+                  style={({ pressed }) => [
+                    styles.primaryAction,
+                    { backgroundColor: palette.elevatedMuted, borderColor: palette.border, borderWidth: 1 },
+                    !weaveUrl && styles.disabled,
+                    pressed && styles.pressed,
+                  ]}
+                >
+                  <Copy color={palette.accent} size={21} strokeWidth={2.1} />
+                  <Text style={[styles.primaryActionText, { color: palette.text }]}>Copy Weave Link</Text>
+                </Pressable>
+              </View>
+
+              <Pressable
+                accessibilityHint="Leaves Weave and opens the repository on github.com"
+                accessibilityLabel="Open on GitHub"
+                accessibilityRole="link"
+                accessibilityState={{ disabled: !githubUrl }}
+                disabled={!githubUrl}
+                onPress={() => void openOnGithub().catch((error) => {
+                  showToast(error instanceof Error ? error.message : 'Unable to open GitHub.');
+                })}
+                style={({ pressed }) => [
+                  styles.githubAction,
+                  { borderColor: palette.border },
+                  !githubUrl && styles.disabled,
+                  pressed && styles.pressed,
+                ]}
+              >
+                <ExternalLink color={palette.secondary} size={19} strokeWidth={1.9} />
+                <View style={styles.githubActionCopy}>
+                  <Text style={[styles.githubActionTitle, { color: palette.text }]}>Open on GitHub</Text>
+                  <Text style={[styles.githubActionSubtitle, { color: palette.secondary }]}>External link</Text>
+                </View>
+              </Pressable>
             </View>
 
             {toast ? (
-              <View accessibilityLiveRegion="polite" style={[styles.toast, { backgroundColor: palette.elevated, borderColor: palette.border }]}>
+              <View
+                accessibilityLiveRegion="polite"
+                style={[styles.toast, {
+                  backgroundColor: palette.elevated,
+                  borderColor: palette.border,
+                }]}
+              >
                 <Check color={palette.accent} size={17} strokeWidth={2.4} />
-                <Text style={[styles.toastText, { color: palette.text }]}>{toast}</Text>
+                <Text selectable style={[styles.toastText, { color: palette.text }]}>{toast}</Text>
               </View>
             ) : null}
-
-            {showQr && details ? (
-              <View accessibilityViewIsModal style={styles.qrOverlay}>
-                <Pressable accessibilityLabel="Hide QR code" accessibilityRole="button" onPress={() => setShowQr(false)} style={[StyleSheet.absoluteFill, styles.qrDim]} />
-                <View style={[styles.qrCard, { backgroundColor: '#FFFFFF', borderColor: palette.border }]}>
-                  <QRCode backgroundColor="#FFFFFF" color="#111711" quietZone={8} size={Math.min(154, width - 120)} value={details.githubUrl} />
-                  <Text style={styles.qrLabel}>Scan to open repository</Text>
-                </View>
-              </View>
-            ) : null}
+            </ScrollView>
           </Animated.View>
         </View>
       </View>
@@ -375,29 +415,91 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
     boxShadow: '0 22px 64px rgba(0,0,0,0.48)',
   },
-  header: { paddingHorizontal: 18, paddingTop: 18, paddingBottom: 14, flexDirection: 'row', alignItems: 'center', gap: 12 },
-  headerText: { flex: 1 },
+  header: {
+    paddingHorizontal: 18,
+    paddingTop: 18,
+    paddingBottom: 14,
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 12,
+  },
+  headerText: { flex: 1, gap: 3 },
   title: { fontFamily: 'NataSans-Bold', fontSize: 19, lineHeight: 24 },
-  closeButton: { width: 36, height: 36, borderRadius: 18, alignItems: 'center', justifyContent: 'center' },
+  subtitle: { fontFamily: 'NataSans-Regular', fontSize: 12, lineHeight: 17 },
+  closeButton: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   actions: { paddingHorizontal: 14, paddingBottom: 16, gap: 12 },
-  linkCard: { minHeight: 62, borderWidth: 1, borderRadius: 16, padding: 10, paddingLeft: 13, flexDirection: 'row', alignItems: 'center', gap: 10 },
+  linkCard: {
+    minHeight: 68,
+    borderWidth: 1,
+    borderRadius: 16,
+    padding: 11,
+    paddingLeft: 13,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
   linkCopy: { flex: 1, minWidth: 0, gap: 2 },
   linkName: { fontFamily: 'NataSans-SemiBold', fontSize: 13.5, lineHeight: 18 },
   linkUrl: { fontFamily: 'NataSans-Regular', fontSize: 10.5, lineHeight: 15 },
-  copyButton: { minHeight: 38, borderRadius: 12, paddingHorizontal: 12, flexDirection: 'row', alignItems: 'center', gap: 6 },
-  copyButtonText: { fontFamily: 'NataSans-Bold', fontSize: 12.5 },
-  linkStatusAction: { width: 38, height: 38, borderWidth: 1, borderColor: 'transparent', borderRadius: 12, alignItems: 'center', justifyContent: 'center' },
-  appScroller: { marginHorizontal: -14 },
-  appRail: { paddingHorizontal: 14, paddingVertical: 2, gap: 8 },
-  appAction: { width: 78, minHeight: 72, borderWidth: 1, borderRadius: 14, paddingHorizontal: 5, paddingVertical: 8, alignItems: 'center', justifyContent: 'center', gap: 6 },
-  appIcon: { width: 32, height: 32, borderRadius: 10, alignItems: 'center', justifyContent: 'center' },
-  appActionLabel: { maxWidth: '100%', fontFamily: 'NataSans-Medium', fontSize: 9.5, lineHeight: 12, textAlign: 'center' },
+  linkStatusAction: {
+    width: 38,
+    height: 38,
+    borderWidth: 1,
+    borderColor: 'transparent',
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  primaryActions: { flexDirection: 'row', gap: 10 },
+  primaryAction: {
+    flex: 1,
+    minHeight: 72,
+    borderRadius: 16,
+    paddingHorizontal: 10,
+    paddingVertical: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 7,
+  },
+  primaryActionText: {
+    fontFamily: 'NataSans-Bold',
+    fontSize: 12,
+    lineHeight: 16,
+    textAlign: 'center',
+  },
+  githubAction: {
+    minHeight: 54,
+    borderWidth: 1,
+    borderRadius: 15,
+    paddingHorizontal: 14,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 11,
+  },
+  githubActionCopy: { flex: 1, gap: 1 },
+  githubActionTitle: { fontFamily: 'NataSans-SemiBold', fontSize: 13, lineHeight: 17 },
+  githubActionSubtitle: { fontFamily: 'NataSans-Regular', fontSize: 10.5, lineHeight: 14 },
   pressed: { opacity: 0.72, transform: [{ scale: 0.985 }] },
   disabled: { opacity: 0.45 },
-  qrOverlay: { position: 'absolute', left: 0, top: 0, right: 0, bottom: 0, zIndex: 20, alignItems: 'center', justifyContent: 'center', padding: 18 },
-  qrDim: { backgroundColor: 'rgba(4,6,4,0.82)' },
-  qrCard: { borderWidth: 1, borderRadius: 18, padding: 14, alignItems: 'center', gap: 8, boxShadow: '0 18px 50px rgba(0,0,0,0.55)' },
-  qrLabel: { color: '#3E463E', fontFamily: 'NataSans-SemiBold', fontSize: 11.5 },
-  toast: { position: 'absolute', left: 14, right: 14, bottom: 14, minHeight: 44, borderWidth: 1, borderRadius: 13, paddingHorizontal: 14, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8 },
+  toast: {
+    position: 'absolute',
+    left: 14,
+    right: 14,
+    bottom: 14,
+    minHeight: 44,
+    borderWidth: 1,
+    borderRadius: 13,
+    paddingHorizontal: 14,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+  },
   toastText: { fontFamily: 'NataSans-SemiBold', fontSize: 12 },
 });

@@ -1,0 +1,81 @@
+{
+  "node": "22.23.2",
+  "automated": {
+    "lint": "passed",
+    "typecheck": "passed",
+    "frontend_tests": {
+      "passed": 152,
+      "failed": 0
+    },
+    "backend_build": "passed",
+    "backend_tests": {
+      "passed": 148,
+      "failed": 0,
+      "skipped": 11
+    },
+    "isolated_readme_integration": {
+      "passed": 11,
+      "failed": 0,
+      "note": "Nine generator/unit tests plus two enabled isolated PostgreSQL integration tests"
+    },
+    "expo_install_check": "passed",
+    "export_all": [
+      "ios",
+      "android",
+      "web"
+    ],
+    "expo_doctor": {
+      "passed": 20,
+      "total": 21,
+      "failure": "Existing unmaintained react-native-render-html metadata warning"
+    },
+    "git_diff_check": "passed"
+  },
+  "live_acceptance": {
+    "newly_ingested": 10,
+    "additional_ingestion_during_provider_testing": 0,
+    "before_repository_count": 1589,
+    "after_repository_count": 1599,
+    "persisted_current_summaries": 10,
+    "latest_prompt_summaries": 10,
+    "additional_livekit_digest": true,
+    "status": "completed_after_scoped_provider_retries",
+    "provider": "Gemini API",
+    "selected_local_model": "gemini-3.1-flash-lite",
+    "artifact_models": [
+      "gemini:gemini-2.5-flash",
+      "gemini:gemini-3.1-flash-lite",
+      "gemini:gemini-3.5-flash"
+    ],
+    "prompt_version": "readme-digest-v3",
+    "all_active_sources_match": true,
+    "word_count_range": [
+      97,
+      229
+    ],
+    "old_inaccurate_digest_retired": true,
+    "application_deployed": false,
+    "recommendation_ml_called": false,
+    "legacy_storage_used": false
+  },
+  "browser": {
+    "repository": "livekit/components-js",
+    "viewport": [
+      470,
+      674
+    ],
+    "detail_loaded": true,
+    "positive_generated_summary_verified": true,
+    "distinct_subtitle_and_digest": true,
+    "structured_popup_open_scroll_close": true,
+    "separate_stored_readme_open_close": true,
+    "auth_restoration_loading_fixed": true,
+    "personalized_home_available": false,
+    "note": "Home still depends on the unavailable recommendation generation. No fake feed or artificial ranking was substituted."
+  },
+  "manual_remaining": [
+    "Populated main feed preview at 320x568 and 360x640, including large text, once a real recommendation generation is available",
+    "Authenticated native iOS/Android keyboard, sheet, gesture and accessibility QA matrix",
+    "Confirm future GPT Luna service endpoint, model and compatible protocol when its key is provided"
+  ]
+}

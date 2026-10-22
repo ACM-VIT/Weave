@@ -1,4 +1,4 @@
-import express, { type Request, type Response, type NextFunction } from 'express';
+import express, { type NextFunction, type Request, type Response } from 'express';
 import cors from 'cors';
 import authRoutes from './routes/authRoutes.js';
 import cookieParser from 'cookie-parser';

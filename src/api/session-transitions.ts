@@ -154,7 +154,7 @@ export async function revokeSession<T>(
   let logoutPreparationPromise: Promise<LogoutPreparation> | undefined;
   let logoutGeneration: number | undefined;
   try {
-    return await authSessionLifecycle.runTransition(async (_lease, preparation) => {
+    return await authSessionLifecycle.runTransition<T, LogoutPreparation>(async (_lease, preparation) => {
       // The coordinator waits for any older refresh response first. Reading and
       // clearing is prepared as soon as logout starts; the network request still
       // waits for the rotated cookie and therefore wins last.

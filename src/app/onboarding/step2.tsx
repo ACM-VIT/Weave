@@ -1,7 +1,7 @@
+import { KeyboardForm } from '@/components/keyboard/keyboard-layout';
 import { useState } from "react";
 import { router } from "expo-router";
 import {
-    ScrollView,
     Text,
     TextInput,
     TouchableOpacity,
@@ -21,7 +21,7 @@ const PREDEFINED_TECHS = SUGGESTED_TECHS.map(t => t.name);
 
 export default function Step2() {
   const { data, updateData } = useOnboarding();
-  
+
   const [selectedTechs, setSelectedTechs] = useState<string[]>(data.tech_stack ?? []);
   const [customTechs, setCustomTechs] = useState<string[]>([]);
   const [inputText, setInputText] = useState("");
@@ -63,7 +63,7 @@ export default function Step2() {
 
   return (
     <SafeAreaView className="flex-1 bg-black">
-      <ScrollView
+      <KeyboardForm safeArea={false}
         showsVerticalScrollIndicator={false}
         contentContainerStyle={{
           paddingHorizontal: 20,
@@ -156,11 +156,13 @@ export default function Step2() {
           }}
         >
           <TextInput
+            accessibilityLabel="Technology"
+            returnKeyType="done"
             value={inputText}
             onChangeText={setInputText}
             onSubmitEditing={handleAddTech}
             placeholder="Add your own tech stack"
-            placeholderTextColor="rgba(235,235,245,0.3)"
+            placeholderTextColor="#A6A6AE"
             style={{
               flex: 1,
               paddingVertical: 14,
@@ -168,7 +170,7 @@ export default function Step2() {
               color: "white",
             }}
           />
-          <TouchableOpacity onPress={handleAddTech} style={{ padding: 8 }}>
+          <TouchableOpacity accessibilityRole="button" accessibilityLabel="Add technology" onPress={handleAddTech} style={{ padding: 8, minWidth: 48, minHeight: 48, alignItems: "center" }}>
             <Text style={{ color: "#63E08A", fontSize: 24, fontWeight: "500" }}>
               +
             </Text>
@@ -246,7 +248,7 @@ export default function Step2() {
         </View>
 
         </View>
-      </ScrollView>
+      </KeyboardForm>
     </SafeAreaView>
   );
 }

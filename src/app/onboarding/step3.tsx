@@ -1,5 +1,6 @@
+import { KeyboardForm } from '@/components/keyboard/keyboard-layout';
 import { useState } from "react";
-import { ScrollView, View, Text } from "react-native";
+import {  View, Text } from "react-native";
 import { useAuth } from "../../store/AuthContext";
 import { useOnboarding } from "../../store/OnboardingContext";
 import * as SecureStore from '../../utils/storage';
@@ -56,7 +57,7 @@ export default function Step3() {
   };
 
   return (
-    <ScrollView
+    <KeyboardForm
       style={{
         flex: 1,
         backgroundColor: "#000000",
@@ -158,6 +159,6 @@ export default function Step3() {
       </View>
 
     </View>
-    </ScrollView>
+    </KeyboardForm>
   );
 }

@@ -4,7 +4,6 @@ import React, { useEffect, useMemo, useRef } from 'react';
 import {
   Animated,
   Easing,
-  Linking,
   Modal,
   Pressable,
   ScrollView,
@@ -17,18 +16,27 @@ import { BookOpen, X } from 'lucide-react-native';
 import { BlurView } from 'expo-blur';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useReducedMotion } from 'react-native-reanimated';
-import RenderHtml, { defaultSystemFonts } from 'react-native-render-html';
-import { marked } from 'marked';
+import RenderHtml, {
+  defaultSystemFonts,
+  type CustomTagRendererRecord,
+} from 'react-native-render-html';
 
 import { REFERENCE_THEME } from '@/constants/theme';
-import { useTypewriterText } from '@/hooks/use-typewriter-text';
-import { prepareReadmeForDisplay } from '@/utils/readme';
+import { prepareReadmeForDisplay, README_SUMMARY_PENDING } from '@/utils/readme';
+import { openReadmeExternalLink } from '@/utils/readme-external-link';
+import {
+  renderReadmeMarkdown,
+  type ReadmeImageContext,
+} from '@/utils/readme-images';
+import { SafeReadmeImageRenderer } from './SafeReadmeImage';
 
 interface ReadmePopupProps {
   isVisible: boolean;
   onClose: () => void;
   title: string;
-  readmeText: string;
+  readmeText: string | null;
+  contentKind?: 'readme' | 'summary';
+  readmeSource: ReadmeImageContext;
 }
 
 const POPUP_OPEN_DURATION = 200;
@@ -42,6 +50,10 @@ const markdownFonts = [
   'NataSans-SemiBold',
   'NataSans-Bold',
 ];
+
+const markdownRenderers: CustomTagRendererRecord = {
+  img: SafeReadmeImageRenderer,
+};
 
 const markdownTagStyles = {
   body: {
@@ -149,27 +161,26 @@ const markdownTagStyles = {
   },
 } as const;
 
-export function ReadmePopup({ isVisible, onClose, title, readmeText }: ReadmePopupProps) {
+export function ReadmePopup({
+  isVisible,
+  onClose,
+  title,
+  readmeText,
+  contentKind = 'readme',
+  readmeSource,
+}: ReadmePopupProps) {
   const { width, height } = useWindowDimensions();
   const insets = useSafeAreaInsets();
   const reduceMotion = useReducedMotion();
   const opacity = useMemo(() => new Animated.Value(0), []);
   const contentProgress = useMemo(() => new Animated.Value(0), []);
   const closingRef = useRef(false);
-  const content = useMemo(() => prepareReadmeForDisplay(readmeText), [readmeText]);
-  const typedContent = useTypewriterText(content, {
-    delay: 110,
-    duration: 1_100,
-    enabled: isVisible,
-    maxAnimatedCharacters: 1_200,
-    reducedMotion: reduceMotion,
-  });
-  const animatedContent = typedContent.isTyping
-    ? `${typedContent.text}${typedContent.cursorVisible ? ' ▍' : '  '}`
-    : typedContent.text;
+  const content = useMemo(() => contentKind === 'summary'
+    ? readmeText || README_SUMMARY_PENDING
+    : prepareReadmeForDisplay(readmeText), [contentKind, readmeText]);
   const markdownHtml = useMemo(
-    () => marked.parse(animatedContent, { async: false, gfm: true }) as string,
-    [animatedContent],
+    () => renderReadmeMarkdown(content, readmeSource),
+    [content, readmeSource],
   );
   const cardAnimationStyle = useMemo(() => ({
     opacity,
@@ -288,7 +299,7 @@ export function ReadmePopup({ isVisible, onClose, title, readmeText }: ReadmePop
     >
       <View style={styles.root}>
         <Pressable
-          accessibilityLabel="Close README"
+          accessibilityLabel={contentKind === 'summary' ? 'Close README summary' : 'Close README'}
           accessibilityRole="button"
           onPress={closeAnimated}
           style={StyleSheet.absoluteFill}
@@ -313,10 +324,10 @@ export function ReadmePopup({ isVisible, onClose, title, readmeText }: ReadmePop
           <View style={styles.header}>
             <View style={styles.headerTitle}>
               <BookOpen size={14} color={REFERENCE_THEME.accentLight} strokeWidth={2} />
-              <Text style={styles.headerText}>README Summary</Text>
+              <Text style={styles.headerText}>{contentKind === 'summary' ? 'README SUMMARY' : 'README'}</Text>
             </View>
             <Pressable
-              accessibilityLabel="Close"
+              accessibilityLabel={contentKind === 'summary' ? 'Close README summary' : 'Close README'}
               accessibilityRole="button"
               onPress={closeAnimated}
               style={({ pressed }) => [styles.closeButton, pressed && styles.pressed]}
@@ -336,11 +347,26 @@ export function ReadmePopup({ isVisible, onClose, title, readmeText }: ReadmePop
                 contentWidth={cardWidth - 44}
                 defaultTextProps={{ selectable: true }}
                 enableExperimentalMarginCollapsing
-                ignoredDomTags={['script', 'style', 'iframe', 'object', 'embed', 'form', 'input', 'button']}
+                ignoredDomTags={[
+                  'script',
+                  'style',
+                  'iframe',
+                  'object',
+                  'embed',
+                  'form',
+                  'input',
+                  'button',
+                  'link',
+                  'meta',
+                  'video',
+                  'audio',
+                  'source',
+                ]}
+                renderers={markdownRenderers}
                 renderersProps={{
                   a: {
                     onPress: (_event, href) => {
-                      if (/^(https?:|mailto:)/i.test(href)) void Linking.openURL(href);
+                      openReadmeExternalLink(href);
                     },
                   },
                 }}
@@ -407,9 +433,9 @@ const styles = StyleSheet.create({
     letterSpacing: 0.3,
   },
   closeButton: {
-    width: 26,
-    height: 26,
-    borderRadius: 13,
+    width: 44,
+    height: 44,
+    borderRadius: 22,
     backgroundColor: REFERENCE_THEME.controlStrong,
     alignItems: 'center',
     justifyContent: 'center',

@@ -7,9 +7,11 @@ import test from 'node:test';
 import type { MlRepositoryIndexJob, MlRepositoryIndexResponse } from '../../contracts/ml.v2.js';
 import { ML_DESCRIPTION_FALLBACK_MODEL_VERSION } from '../../contracts/ml.v2.js';
 import {
+  MlRecommendationError,
   MlV2Client,
   parseMlRepositoryIndexResponse,
 } from '../../services/mlService.js';
+
 import { snapshotMetrics } from '../../observability/metrics.js';
 
 async function withServer(handler: RequestListener, run: (url: string) => Promise<void>): Promise<void> {
@@ -292,6 +294,10 @@ os.environ['INTERNAL_API_SECRET'] = 'test'
 os.environ['INTERNAL_API_HEADER'] = 'x-internal-secret'
 template = json.load(sys.stdin)
 cases = json.loads(Path('tests/fixtures/summary_compatibility.json').read_text())
+cases += [
+    {'valid': True, 'summary': '', 'metadata': {'full_name': 'acme/license-checker', 'description': '', 'primary_language': 'Python'}},
+    {'valid': True, 'summary': '', 'metadata': {'full_name': 'acme/tool', 'description': '', 'primary_language': 'Unknown', 'topics': ['reference']}},
+]
 exchanges = []
 client, store = _qdrant_store()
 http = TestClient(app)
@@ -302,6 +308,7 @@ try:
         job['content_version'] = index + 1
         job['repository']['content_hash'] = str(index)
         job['repository']['description'] = 'A focused developer tool.' if len(case['summary']) >= 180 else case['summary']
+        job['repository'].update(case.get('metadata', {}))
         class Provider:
             def generate(self, *args, **kwargs):
                 return json.dumps({'summary': case['summary'], 'highlights': case.get('highlights', [])})
@@ -380,6 +387,34 @@ test('repository-index transport preserves HTTP failures without requiring JSON'
       assert.equal(result.detail, text);
     });
   }
+});
+
+test('oversized HTTP failures preserve retry policy while oversized recommendation success is a contract error', async () => {
+  for (const [status, retryable] of [[400, false], [429, true], [503, true]] as const) {
+    await withServer((_request, response) => {
+      response.writeHead(status, { 'content-type': 'text/plain', 'retry-after': '2' });
+      response.end('x'.repeat(8_000));
+    }, async (url) => {
+      const result = await new MlV2Client({
+        baseUrl: url, internalSecret: 'test', timeoutMs: 500, maxResponseBytes: 100,
+      }).deliverRepositoryIndex(repositoryJob);
+      assert.equal(result.accepted, false);
+      assert.equal(result.status_code, status);
+      assert.equal(result.retryable, retryable);
+      assert.equal(result.retry_after_ms, 2_000);
+      assert.equal(result.detail?.length, 4_000);
+    });
+  }
+  await withServer((_request, response) => {
+    response.writeHead(200, { 'content-type': 'application/json' });
+    response.end(JSON.stringify({ padding: 'x'.repeat(8_000) }));
+  }, async (url) => {
+    const client = new MlV2Client({
+      baseUrl: url, internalSecret: 'test', timeoutMs: 500, maxResponseBytes: 100,
+    });
+    await assert.rejects(client.generate(recommendationInput), (error: unknown) =>
+      error instanceof MlRecommendationError && error.kind === 'contract' && error.statusCode === 200);
+  });
 });
 
 test('description fallback may repeat its canonical description even when README repeats it', () => {
@@ -496,6 +531,39 @@ test('ML recommendation client accepts validated empty success', async () => {
     });
     assert.deepEqual(result.items, []);
   });
+});
+
+test('missing user vectors are classified for persona repair and do not open the service circuit', async () => {
+  let requests = 0;
+  await withServer((_req, response) => {
+    requests++;
+    response.writeHead(503, { 'content-type': 'application/json' });
+    response.end(JSON.stringify({ detail: 'User profile vector is unavailable' }));
+  }, async (url) => {
+    const previousThreshold = process.env.ML_CIRCUIT_FAILURE_THRESHOLD;
+    process.env.ML_CIRCUIT_FAILURE_THRESHOLD = '1';
+    try {
+      const client = new MlV2Client({
+        baseUrl: url, internalSecret: 'test', timeoutMs: 500, maxResponseBytes: 10_000,
+      });
+      for (let attempt = 0; attempt < 2; attempt++) {
+        await assert.rejects(client.generate({
+          schema_version: 2,
+          generation_id: `00000000-0000-4000-8000-00000000000${attempt + 1}`,
+          user_id: '00000000-0000-4000-8000-000000000010',
+          feed_version: 1,
+          limit: 10,
+          exclude_repo_ids: [],
+          context: { cold_start: false },
+        }), (error: unknown) => error instanceof MlRecommendationError
+          && error.kind === 'persona_unavailable');
+      }
+    } finally {
+      if (previousThreshold === undefined) delete process.env.ML_CIRCUIT_FAILURE_THRESHOLD;
+      else process.env.ML_CIRCUIT_FAILURE_THRESHOLD = previousThreshold;
+    }
+  });
+  assert.equal(requests, 2);
 });
 
 test('ML recommendation client rejects non-canonical repository IDs', async () => {
@@ -653,7 +721,7 @@ test('contract failures remain visible without consuming the dependency failure 
   status = 400;
   await assert.rejects(client.generate(recommendationInput), { kind: 'contract', statusCode: 400 });
   status = 429;
-  await assert.rejects(client.generate(recommendationInput), { kind: 'dependency', statusCode: 429 });
+  await assert.rejects(client.generate(recommendationInput), { kind: 'service_unavailable', statusCode: 429 });
   await assert.rejects(client.generate(recommendationInput), /circuit is open/);
   assert.equal(calls, 9);
 });
@@ -678,7 +746,7 @@ test('failed or malformed half-open probes reopen and release their slot', async
   now = 200;
   await assert.rejects(client.generate(recommendationInput), /violated the v2 envelope/);
   now = 300;
-  await assert.rejects(client.generate(recommendationInput), { kind: 'dependency' });
+  await assert.rejects(client.generate(recommendationInput), { kind: 'service_unavailable' });
   now = 400;
   assert.deepEqual((await client.generate(recommendationInput)).items, []);
   assert.equal(calls, 5);

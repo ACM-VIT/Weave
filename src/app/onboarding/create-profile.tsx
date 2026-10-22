@@ -1,6 +1,7 @@
+import { KeyboardForm } from '@/components/keyboard/keyboard-layout';
 import { useRouter } from "expo-router";
 import { useState } from "react";
-import { ScrollView, Text, View } from "react-native";
+import {  Text, View } from "react-native";
 import { useOnboarding } from "../../store/OnboardingContext";
 import { useAuth } from "../../store/AuthContext";
 import { isValidDateOfBirth } from "../../utils/date-of-birth";
@@ -42,7 +43,7 @@ export default function CreateProfile() {
   };
 
   return (
-    <ScrollView
+    <KeyboardForm
       className="flex-1 bg-[#000000]"
       showsVerticalScrollIndicator={false}
       contentContainerStyle={{ paddingBottom: 50 }}
@@ -124,6 +125,6 @@ export default function CreateProfile() {
         <TermsFooter />
 
       </View>
-    </ScrollView>
+    </KeyboardForm>
   );
 }

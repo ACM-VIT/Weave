@@ -1,8 +1,10 @@
 import type { TabName } from '../types';
 import { getStorageItem } from '../utils/storage';
+import type { RepositoryApiPayload } from './repositories';
+import { mapRepositoryList } from '@/utils/repository-mapper';
 import { apiV2 } from './client';
-import { EXPLORE_PAGE_SIZE, getNextExploreOffset, mapExploreRepository, mapTrendingRepository } from './explore-data';
-import type { ExploreRepoPage, RepositoryProjection } from './explore-data';
+import { EXPLORE_PAGE_SIZE, getNextExploreOffset, mapTrendingRepository } from './explore-data';
+import type { ExploreRepoPage } from './explore-data';
 
 export { EXPLORE_PAGE_SIZE, mergeExplorePages } from './explore-data';
 export type { ExploreRepoPage } from './explore-data';
@@ -20,13 +22,10 @@ export async function fetchExploreRepos(
   const path = tab === 'Trending'
     ? `/repositories/trending${period ? `?period=${encodeURIComponent(period)}` : ''}`
     : `/repositories?limit=${EXPLORE_PAGE_SIZE}&offset=${offset}${query ? `&q=${encodeURIComponent(query)}` : ''}`;
-  const data = await apiV2<{ items: RepositoryProjection[]; period?: string; available_periods?: string[] }>(path, { signal }, token);
-
-  const items = tab === 'Trending'
-    ? data.items.flatMap(repo => { const mapped = mapTrendingRepository(repo); return mapped ? [mapped] : []; })
-    : data.items.map(mapExploreRepository);
+  const data = await apiV2<{ items: RepositoryApiPayload[]; period?: string; available_periods?: string[]; captured_at?: string }>(path, { signal }, token);
+  const items = tab === 'Trending' ? data.items.map(item => mapTrendingRepository(item, data.period ?? 'daily', data.captured_at ?? null)).filter((item): item is NonNullable<typeof item> => item !== null) : mapRepositoryList(data.items);
 
   const nextOffset = getNextExploreOffset(tab, offset, items.length);
 
-  return { items, nextOffset, period: data.period, availablePeriods: data.available_periods };
+  return { items, nextOffset, availablePeriods: data.available_periods, period: data.period };
 }

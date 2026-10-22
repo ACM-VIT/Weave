@@ -7,12 +7,14 @@ import type { FeedPersistencePort } from '../../ports/feedPersistencePort.js';
 import type { RecommendationPort } from '../../ports/recommendationPort.js';
 import type { FeedQueuePort } from '../../redis/feedQueue.js';
 import { FeedGenerationService } from '../../services/feedGenerationService.js';
+import { MlRecommendationError } from '../../services/mlService.js';
 
 const userId = '00000000-0000-4000-8000-000000000001';
 const socialRepoId = '00000000-0000-4000-8000-000000000002';
 const otherRepoId = '00000000-0000-4000-8000-000000000003';
 
 class GenerationPersistence implements FeedPersistencePort {
+  inactive = new Set<string>();
   identities: Array<Pick<RepositoryProjection, 'repo_id' | 'summary_id'>> = [
     { repo_id: otherRepoId, summary_id: null },
     { repo_id: socialRepoId, summary_id: '00000000-0000-4000-8000-000000000004' },
@@ -23,7 +25,7 @@ class GenerationPersistence implements FeedPersistencePort {
   async listFollowedRepositoryIds() { return [socialRepoId]; }
   async listActiveRepositoryIdentities(repoIds: string[]) {
     this.validatedRepoIds = repoIds;
-    return this.identities.filter(repo => repoIds.includes(repo.repo_id));
+    return this.identities.filter(row => repoIds.includes(row.repo_id) && !this.inactive.has(row.repo_id));
   }
   async listActiveRepositories(): Promise<RepositoryProjection[]> {
     throw new Error('Generation must not hydrate repository cards.');
@@ -36,8 +38,14 @@ class GenerationPersistence implements FeedPersistencePort {
 class GenerationQueue implements FeedQueuePort {
   replaced = false;
   entries: RecommendationEntry[] = [];
-  released = false;
+  owned = true;
+  async renewGenerationLock() { return this.owned; }
+  async publishGeneration(user: string, version: bigint, _token: string, entries: RecommendationEntry[]) {
+    if (!this.owned) return false;
+    await this.replace(user,version,entries); return true;
+  }
   async acquireGenerationLock() { return true; }
+  released = false;
   async releaseGenerationLock() { this.released = true; }
   async replace(_userId: string, _version: bigint, entries: RecommendationEntry[]) {
     this.replaced = true;
@@ -95,14 +103,14 @@ test('feed generation sends followed-owner repositories as bounded ML context', 
   ]);
 });
 
-test('feed generation rejects missing or inactive identities without replacing the queue', async () => {
+test('feed generation rejects an entirely missing or inactive set without replacing the queue', async () => {
   const persistence = new GenerationPersistence();
-  persistence.identities = persistence.identities.slice(0, 1);
+  persistence.identities = [];
   const queue = new GenerationQueue();
 
   await assert.rejects(
     new FeedGenerationService(persistence, queue, new CapturingRecommendations()).generate(userId),
-    /ML returned unknown or inactive repositories/,
+    /ML returned no active canonical repositories/,
   );
   assert.equal(queue.replaced, false);
   assert.equal(queue.released, true);
@@ -119,6 +127,84 @@ test('feed generation takes the current summary identity on each generation', as
 
   await service.generate(userId);
   assert.equal(queue.entries[0].summary_id, currentSummary);
+});
+
+test('feed generation repairs a missing ML persona and retries exactly once', async () => {
+  const persistence = new GenerationPersistence();
+  const queue = new GenerationQueue();
+  const recommendations = new CapturingRecommendations();
+  let calls = 0;
+  const originalGenerate = recommendations.generate.bind(recommendations);
+  recommendations.generate = async (input) => {
+    calls++;
+    if (calls === 1) {
+      throw new MlRecommendationError(
+        'User vector unavailable', 503, 'persona_unavailable', 'User vector unavailable',
+      );
+    }
+    return originalGenerate(input);
+  };
+  let repairs = 0;
+  const records: Parameters<NonNullable<FeedPersistencePort['recordGenerationAttempt']>>[0][] = [];
+  const auditedPersistence: FeedPersistencePort = Object.assign(persistence, {
+    recordGenerationAttempt: async (record: typeof records[number]) => { records.push(record); },
+  });
+
+  const result = await new FeedGenerationService(
+    auditedPersistence,
+    queue,
+    recommendations,
+    600,
+    15_000,
+    { repair: async () => { repairs++; } },
+  ).generate(userId, 45);
+
+  assert.equal(result.status, 'generated');
+  assert.equal(calls, 2);
+  assert.equal(repairs, 1);
+  assert.equal(records[0].generation_id, recommendations.request?.generation_id);
+  assert.ok(queue.entries.every(entry => entry.generation_id === records[0].generation_id));
+});
+
+test('feed generation drops stale ML repository IDs while preserving valid personalized ranking', async () => {
+  const persistence = new GenerationPersistence();
+  persistence.inactive.add(socialRepoId);
+  const queue = new GenerationQueue();
+
+  const result = await new FeedGenerationService(
+    persistence,
+    queue,
+    new CapturingRecommendations(),
+  ).generate(userId, 45);
+
+  assert.equal(result.status, 'generated');
+  assert.deepEqual(queue.entries.map((entry) => entry.repo_id), [otherRepoId]);
+});
+
+test('an expired generation cannot overwrite recommendations published by a newer owner',async()=>{
+  const queue=new GenerationQueue();const recommendations=new CapturingRecommendations();
+  const original=recommendations.generate.bind(recommendations);
+  recommendations.generate=async input=>{queue.owned=false;queue.entries=[{...queue.entries[0],repo_id:'newer-owner-result'} as RecommendationEntry];return original(input);};
+  const result=await new FeedGenerationService(new GenerationPersistence(),queue,recommendations).generate(userId);
+  assert.equal(result.status,'stale');assert.equal(queue.replaced,false);
+  assert.equal(queue.entries[0].repo_id,'newer-owner-result');
+});
+
+test('long persona repair renews its lease before publishing',async()=>{
+  const queue=new GenerationQueue();let renewed!:()=>void;
+  const renewal=new Promise<void>(resolve=>{renewed=resolve;});let renewals=0;
+  queue.renewGenerationLock=async()=>{renewals++;renewed();return true;};
+  const recommendations=new CapturingRecommendations();const original=recommendations.generate.bind(recommendations);let calls=0;
+  recommendations.generate=async input=>{if(calls++===0)throw new MlRecommendationError('No persona',503,'persona_unavailable','User vector unavailable');return original(input);};
+  // Keep this deterministic without depending on a 30-second provider request.
+  const alive=setTimeout(()=>{},1000);
+  try {
+    const result=await new FeedGenerationService(new GenerationPersistence(),queue,recommendations,600,9,
+      {repair:async()=>{await renewal;}}).generate(userId);
+    assert.equal(result.status,'generated');assert.ok(renewals>=1);assert.equal(queue.replaced,true);
+    const atCompletion=renewals;await new Promise(resolve=>setTimeout(resolve,15));
+    assert.equal(renewals,atCompletion,'Heartbeat stops when generation finishes');
+  }finally{clearTimeout(alive);}
 });
 
 test('generation excludes actual exposure and current-session deliveries before enqueueing recommendations', async () => {

@@ -1,4 +1,5 @@
 import { sqlClient } from '../db/index.js';
+import { getRepositoryDetails } from '../services/repositoryDetailService.js';
 import { isValidUuid } from '../utils/validators.js';
 import type { SearchPersistence, SearchRef, SearchRequest, SearchResult } from '../services/searchService.js';
 
@@ -112,25 +113,7 @@ export class PostgresSearchPersistence implements SearchPersistence {
     }
     const repoIds = ids.repository;
     const [repos,people,lists] = await Promise.all([
-      repoIds.length ? sqlClient`
-        SELECT r.repo_id,r.github_id,r.full_name,r.owner,r.name,r.url,
-          c.description,c.primary_language,c.languages,
-          COALESCE(stats.star_count,0) AS star_count,
-          COALESCE(stats.fork_count,0) AS fork_count
-        FROM app.repos r
-        LEFT JOIN app.repo_content c USING(repo_id)
-        LEFT JOIN LATERAL (
-          SELECT star_count,fork_count FROM app.repo_stat_snapshots snapshot
-          WHERE snapshot.repo_id=r.repo_id ORDER BY observed_at DESC LIMIT 1
-        ) stats ON true
-        WHERE r.repo_id=ANY(${repoIds}::uuid[]) AND r.status='active'
-          AND (${!request?.filters.languages.length}
-            OR c.primary_language=ANY(${request?.filters.languages ?? []}::text[]))
-          AND (${!request?.filters.topics.length} OR EXISTS (
-            SELECT 1 FROM app.repo_topics rt JOIN app.topics topic USING(topic_id)
-            WHERE rt.repo_id=r.repo_id AND topic.slug=ANY(${request?.filters.topics ?? []}::text[])
-          ))
-      ` : [],
+      getRepositoryDetails(viewer, repoIds, false, request?.filters),
       ids.user.length || ids.profile.length ? sqlClient.unsafe(`WITH candidates AS (${peopleRows(
         'AND u.user_id=ANY($1::uuid[])', 'AND p.profile_id=ANY($2::uuid[])',
       )}) SELECT id,user_id,profile_id,username,display_name,github_handle,bio,avatar_url FROM candidates`, [ids.user, ids.profile]) : [],

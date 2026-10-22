@@ -8,16 +8,17 @@ import { create } from 'react-test-renderer';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import ts from 'typescript';
 import type { RepositoryData } from '../src/data/repositories';
+import { subscribeToHomeFeedInvalidations } from '../src/utils/home-feed';
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 (globalThis as any).requestAnimationFrame = (callback: (time: number) => void) => { callback(0); return 0; };
 
 function repository(id: string): RepositoryData {
   return {
-    id, title: id, owner: 'owner', description: '', readmeSummary: 'Summary.', readmeFull: '# README',
-    serveId: `serve-${id}`, feedPosition: 3, updatedText: '',
-    stats: { stars: '0', views: '0', bugs: '0', forks: '0', comments: '0' },
-  };
+    id, name: id, fullName: `owner/${id}`, owner: 'owner', description: '', readmeSummary: 'Summary.', readmeFull: '# README',
+    serveId: id, feedPosition: 3, githubUrl: `https://github.com/owner/${id}`,
+    stats: { stars: 0, views: 0, openIssues: 0, forks: 0, comments: 0, likes: 0, dislikes: 0, saves: 0 },
+  } as RepositoryData;
 }
 
 // Keep the real row, all four overlays, React state and QueryClient observers.
@@ -33,6 +34,8 @@ function feed(ids: string[], reducedMotion = false) {
   let saveRepository: () => Promise<any> = async () => { throw new Error('Unexpected save'); };
   let createCollection: () => Promise<any> = async () => { throw new Error('Unexpected create'); };
   let saveCollections: any[] = [];
+  let openExternal: () => Promise<void> = async () => undefined;
+  let shareHeight=800;
   let root: ReturnType<typeof create>;
   const animation = () => ({
     start: (callback?: (result: { finished: boolean }) => void) => { if (callback) closeAnimations.push(callback); },
@@ -49,19 +52,32 @@ function feed(ids: string[], reducedMotion = false) {
     StyleSheet: { create: (value: unknown) => value, absoluteFill: {}, hairlineWidth: 1 },
     Animated: { Value, View: 'AnimatedView', timing: animation, parallel: animation, sequence: animation, delay: animation },
     Easing: { bezier: () => 0, in: () => 0, out: () => 0, cubic: 0, quad: 0 },
-    useWindowDimensions: () => ({ height: 800, width: 400 }),
-    Keyboard: { dismiss() {} }, Linking: { openURL: async () => undefined },
+    useWindowDimensions: () => ({ height: shareHeight, width: 400 }),
+    Keyboard: { dismiss() {} }, Linking: { openURL: () => openExternal() },
     Share: { share: async () => ({ action: 'sharedAction' }) },
     ...Object.fromEntries(['ActivityIndicator', 'FlatList', 'Image', 'KeyboardAvoidingView', 'Modal', 'Pressable', 'ScrollView', 'Text', 'TextInput', 'View'].map(name => [name, name])),
   };
   const auth = { useAuth: () => ({ user: { user_id: 'viewer', username: 'viewer' }, checkOnboardingStatus: async () => undefined }) };
-  const storage = { getItemAsync: async () => 'token' };
+  const storage = { getItemAsync: async () => 'token', getStorageItem: async () => 'token' };
+  const gesture = new Proxy({}, {get: () => () => gesture});
   const mocks: Record<string, any> = {
     'react-native': native,
+    '@/api/client': {apiV2: async () => {throw new Error('Unexpected API call');}, apiV2Raw: async () => {throw new Error('Unexpected API call');}},
+    './client': {apiV2: async () => {throw new Error('Unexpected API call');}, apiV2Raw: async () => {throw new Error('Unexpected API call');}},
     'react-native-safe-area-context': { useSafeAreaInsets: () => ({ top: 0, bottom: 0 }) },
-    'react-native-reanimated': { useReducedMotion: () => reducedMotion },
+    'react-native-reanimated': {
+      __esModule: true, default: { View: 'AnimatedView' }, useReducedMotion: () => reducedMotion,
+      useSharedValue: (initial: unknown) => React.useRef({value: initial, get() {return this.value;}, set(value: unknown) {this.value = value;}}).current,
+      useAnimatedStyle: (style: () => unknown) => style(), withSpring: (value: unknown) => value,
+    },
+    'react-native-worklets': {scheduleOnRN: (fn: (...args: any[]) => void, ...args: any[]) => fn(...args)},
+    'react-native-gesture-handler': {Gesture: {Pan: () => gesture}, GestureDetector: ({children}: any) => children},
+    './SafeReadmeImage': {SafeReadmeImageRenderer: 'SafeReadmeImageRenderer'},
+    './DescriptionCard': {SaveSwipeGestureContext: React.createContext(null)},
+    '@/components/keyboard/keyboard-layout': {KeyboardSurface: 'KeyboardSurface'},
     'expo-blur': { BlurView: 'BlurView' },
     'expo-haptics': { selectionAsync: async () => undefined, notificationAsync: async () => undefined, NotificationFeedbackType: { Success: 'success' } },
+    'expo-linking': {createURL: (path: string) => `ghsocial://${path}`},
     'expo-clipboard': { setStringAsync: async () => undefined },
     'lucide-react-native': new Proxy({}, { get: (_target, key) => String(key) }),
     'react-native-qrcode-svg': { __esModule: true, default: 'QRCode' },
@@ -71,6 +87,12 @@ function feed(ids: string[], reducedMotion = false) {
     '../../utils/storage': storage, '@/utils/storage': storage,
     '@/constants/theme': { REFERENCE_THEME: {} }, '../../constants/theme': { REFERENCE_THEME: {} },
     '@/hooks/use-modal-scroll-lock': { useModalScrollLock: () => undefined },
+    '@/api/lists': {
+      ...createRequire(resolve('src/api/lists.ts'))('../models/list'),
+      getRepositoryLists: async (id: string) => { requests.push(`save:${id}`); return saveCollections; },
+      createRepositoryList: () => createCollection(),
+      syncRepositoryLists: () => saveRepository(),
+    },
     '@/api/repository-actions': {
       getSaveCollections: async (id: string) => { requests.push(`save:${id}`); return saveCollections; },
       getRepositoryShareDetails: async (id: string) => { requests.push(`share:${id}`); return {}; },
@@ -115,10 +137,14 @@ function feed(ids: string[], reducedMotion = false) {
   ];
   return {
     requests, events, client,
+    setExternalOpen(value: () => Promise<void>) {openExternal=value;},
+    setHeight(value:number) {shareHeight=value;},
+    get githubActionScrollable() {return this.button('Open on GitHub').findAllByType('Text').length>0
+      && root.root.findAllByType('ScrollView').some(scroll=>scroll.findAllByType('Pressable').some(node=>node.props.accessibilityLabel==='Open on GitHub'));},
     setPost(value: () => Promise<any>) { postComment = value; },
     setSave(value: () => Promise<any>) {
       saveRepository = value;
-      saveCollections = [{ collection_id: 'list', name: 'List', repo_count: 0, selected: true }];
+      saveCollections = [{ id: 'list', source: 'collection', name: 'List', repositoryCount: 0, selected: true }];
     },
     setCreate(value: () => Promise<any>) { createCollection = value; },
     get pendingCloseAnimations() { return closeAnimations.length; },
@@ -128,6 +154,12 @@ function feed(ids: string[], reducedMotion = false) {
     get mountedOverlays() { return overlayTypes.reduce((count, type) => count + root.root.findAllByType(type).length, 0); },
     get observers() { return client.getQueryCache().getAll().reduce((count, query) => count + query.getObserversCount(), 0); },
     get input() { return root.root.findAllByType('Modal').find(node => node.props.visible)!.findAllByType('TextInput').find(node => node.props.accessibilityLabel === 'Add a comment')!; },
+    async mountStandaloneSave(repoId: string) {
+      await act(async () => { root = create(React.createElement(QueryClientProvider, { client },
+        React.createElement(overlayTypes[0], {repoId, isVisible: true, onClose: () => undefined}),
+      )); });
+      await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)); });
+    },
     async mount() {
       await act(async () => { root = create(React.createElement(QueryClientProvider, { client },
         ids.map(id => React.createElement(Row, { key: id, repository: repository(id), pageWidth: 400, pageHeight: 800,
@@ -147,8 +179,8 @@ function feed(ids: string[], reducedMotion = false) {
     async type(text: string) { await act(async () => { this.input.props.onChangeText(text); }); },
     async submit() { await act(async () => { this.input.props.onSubmitEditing(); await new Promise(resolve => setTimeout(resolve, 0)); }); },
     async createCollection(name: string) {
-      await this.press('Create new collection');
-      const input = () => root.root.findAllByType('TextInput').find(node => node.props.accessibilityLabel === 'Collection name')!;
+      await this.press('Create new List');
+      const input = () => root.root.findAllByType('TextInput').find(node => node.props.accessibilityLabel === 'List name')!;
       await act(async () => { input().props.onChangeText(name); });
       await act(async () => { input().props.onSubmitEditing(); await new Promise(resolve => setTimeout(resolve, 0)); });
     },
@@ -168,7 +200,7 @@ test('100 inactive rows mount no overlays, hidden fetches or query observers', a
 });
 
 test('each real overlay survives interrupted close and unmounts only after its close animation', async () => {
-  const app = feed(['one']);
+  const app = feed(['00000000-0000-4000-8000-000000000001']);
   await app.mount();
   try {
     for (const action of ['onSavePress', 'onSharePress', 'onCommentPress', 'onReadFullPress']) {
@@ -183,13 +215,13 @@ test('each real overlay survives interrupted close and unmounts only after its c
       assert.equal(app.mountedOverlays, 0);
       assert.equal(app.observers, 0);
     }
-    assert.deepEqual(app.requests, ['save:one', 'comments:one']);
-    assert.deepEqual(app.events, [{ repo_id: 'one', action: 'readme_open', serve_id: 'serve-one', position: 3 }]);
+    assert.deepEqual(app.requests, ['save:00000000-0000-4000-8000-000000000001', 'comments:00000000-0000-4000-8000-000000000001']);
+    assert.deepEqual(app.events, [{ repo_id: '00000000-0000-4000-8000-000000000001', action: 'readme_open', serve_id: '00000000-0000-4000-8000-000000000001', position: 3 }]);
   } finally { await app.unmount(); }
 });
 
 test('comment drafts remain repository-local across close, reopen and repository switches', async () => {
-  const app = feed(['one', 'two']);
+  const app = feed(['00000000-0000-4000-8000-000000000001', '00000000-0000-4000-8000-000000000002']);
   await app.mount();
   try {
     await app.open(0, 'onCommentPress');
@@ -208,7 +240,7 @@ test('comment drafts remain repository-local across close, reopen and repository
 });
 
 test('a failed comment after dismissal restores its draft before the next mount', async () => {
-  const app = feed(['one']);
+  const app = feed(['00000000-0000-4000-8000-000000000001']);
   let reject!: (error: Error) => void;
   app.setPost(() => new Promise((_yes, no) => { reject = no; }));
   await app.mount();
@@ -224,7 +256,7 @@ test('a failed comment after dismissal restores its draft before the next mount'
 
 // Reduced-motion README intentionally skips the close animation altogether.
 test('reduced-motion README dismisses immediately through its existing close callback', async () => {
-  const app = feed(['one'], true);
+  const app = feed(['00000000-0000-4000-8000-000000000001'], true);
   await app.mount();
   try {
     await app.open(0, 'onReadFullPress');
@@ -235,7 +267,7 @@ test('reduced-motion README dismisses immediately through its existing close cal
 });
 
 test('reopening comments during an in-flight post cannot submit that draft twice', async () => {
-  const app = feed(['one']);
+  const app = feed(['00000000-0000-4000-8000-000000000001']);
   let finish!: (comment: any) => void;
   let posts = 0;
   app.setPost(() => { posts++; return new Promise(resolve => { finish = resolve; }); });
@@ -247,27 +279,27 @@ test('reopening comments during an in-flight post cannot submit that draft twice
     assert.equal(app.input.props.editable, false);
     await app.type('Post once'); await app.submit();
     assert.equal(posts, 1);
-    await act(async () => { finish({ comment_id: 'saved', user_id: 'viewer', repo_id: 'one', comment: 'Post once' }); });
+    await act(async () => { finish({ comment_id: 'saved', user_id: 'viewer', repo_id: '00000000-0000-4000-8000-000000000001', comment: 'Post once' }); });
     assert.equal(app.input.props.editable, true);
   } finally { await app.unmount(); }
 });
 
 test('reopening a pending save blocks overlapping replacements and ignores the old popup close timer', async () => {
-  const app = feed(['one']);
+  const app = feed(['00000000-0000-4000-8000-000000000001']);
   let finish!: (result: any) => void;
   let saves = 0;
   app.setSave(() => { saves++; return new Promise(resolve => { finish = resolve; }); });
   await app.mount();
   try {
-    await app.open(0, 'onSavePress'); await app.press('Save repository to selected collections');
+    await app.open(0, 'onSavePress'); await app.press('Save repository to selected Lists');
     assert.equal(saves, 1);
     await app.requestClose(); await app.finishClose();
     await app.open(0, 'onSavePress');
-    assert.equal(app.button('Save repository to selected collections').props.disabled, true);
-    await app.press('Save repository to selected collections');
+    assert.equal(app.button('Save repository to selected Lists').props.disabled, true);
+    await app.press('Save repository to selected Lists');
     assert.equal(saves, 1, 'a second full collection-set replacement must not race the first');
-    await act(async () => { finish({ saved: true, collection_ids: ['list'] }); await new Promise(resolve => setTimeout(resolve, 0)); });
-    assert.equal(app.button('Save repository to selected collections').props.disabled, false);
+    await act(async () => { finish({ saved: true, selectedListIds: ['collection:list'], saveStateChanged: true }); await new Promise(resolve => setTimeout(resolve, 0)); });
+    assert.equal(app.button('Save repository to selected Lists').props.disabled, false);
     await act(async () => { await new Promise(resolve => setTimeout(resolve, 950)); });
     assert.equal(app.pendingCloseAnimations, 0, 'the unmounted instance must not schedule a close on the reopened popup');
     assert.equal(app.mountedOverlays, 1);
@@ -275,45 +307,66 @@ test('reopening a pending save blocks overlapping replacements and ignores the o
 });
 
 test('a failed save after close/reopen releases busy state so the user can retry', async () => {
-  const app = feed(['one']);
+  const app = feed(['00000000-0000-4000-8000-000000000001']);
   let reject!: (error: Error) => void;
   let saves = 0;
   app.setSave(() => {
     saves++;
-    return saves === 1 ? new Promise((_yes, no) => { reject = no; }) : Promise.resolve({ saved: true, collection_ids: ['list'] });
+    return saves === 1 ? new Promise((_yes, no) => { reject = no; }) : Promise.resolve({ saved: true, selectedListIds: ['collection:list'], saveStateChanged: true });
   });
   await app.mount();
   try {
-    await app.open(0, 'onSavePress'); await app.press('Save repository to selected collections');
+    await app.open(0, 'onSavePress'); await app.press('Save repository to selected Lists');
     await app.requestClose(); await app.finishClose(); await app.open(0, 'onSavePress');
-    assert.equal(app.button('Save repository to selected collections').props.disabled, true);
+    assert.equal(app.button('Save repository to selected Lists').props.disabled, true);
     await act(async () => { reject(new Error('offline')); await new Promise(resolve => setTimeout(resolve, 0)); });
-    assert.equal(app.button('Save repository to selected collections').props.disabled, false);
+    assert.equal(app.button('Save repository to selected Lists').props.disabled, false);
     assert.ok(app.messages.includes('offline'), 'the reopened popup must display the original failure');
-    await app.press('Save repository to selected collections');
+    await app.press('Save repository to selected Lists');
     assert.equal(saves, 2);
   } finally { await app.unmount(); }
 });
 
 test('collection creation also remains busy across save-popup close/reopen until it settles', async () => {
-  const app = feed(['one']);
+  const app = feed(['00000000-0000-4000-8000-000000000001']);
   let finish!: (collection: any) => void;
   app.setCreate(() => new Promise(resolve => { finish = resolve; }));
   await app.mount();
   try {
     await app.open(0, 'onSavePress'); await app.createCollection('New collection');
     await app.requestClose(); await app.finishClose(); await app.open(0, 'onSavePress');
-    assert.equal(app.button('Create new collection').props.disabled, true);
-    assert.equal(app.button('Save repository to selected collections').props.disabled, true);
-    await act(async () => { finish({ collection_id: 'new', name: 'New collection' }); await new Promise(resolve => setTimeout(resolve, 0)); });
-    assert.equal(app.button('Create new collection').props.disabled, false);
-    assert.equal(app.button('Save repository to selected collections').props.disabled, false);
+    assert.equal(app.button('Create new List').props.disabled, true);
+    assert.equal(app.button('Save repository to selected Lists').props.disabled, true);
+    await act(async () => { finish({ id: 'new', source: 'collection', name: 'New collection' }); await new Promise(resolve => setTimeout(resolve, 0)); });
+    assert.equal(app.button('Create new List').props.disabled, false);
+    assert.equal(app.button('Save repository to selected Lists').props.disabled, false);
   } finally { await app.unmount(); }
 });
 
+for (const changed of [true, false]) {
+  test(`standalone detail save invalidates Home only when save state changes: ${changed}`, async () => {
+    const app = feed([]);
+    const repoId = '00000000-0000-4000-8000-000000000001';
+    app.setSave(async () => ({saved: true, selectedListIds: ['collection:list'], saveStateChanged: changed}));
+    const key = ['feed', 'viewer'] as const;
+    app.client.setQueryData(key, {pages: [{mode: 'personalized', nextCursor: 'loaded-cursor', items: [{repo_id: repoId, viewer_saved: false}]}], pageParams: [null]});
+    let invalidations = 0;
+    const unsubscribe = subscribeToHomeFeedInvalidations(app.client, key, () => {invalidations++;});
+    await app.mountStandaloneSave(repoId);
+    try {
+      await app.press('Save repository to selected Lists');
+      assert.equal(invalidations, changed ? 1 : 0);
+      assert.equal(app.client.getQueryState(key)?.isInvalidated, changed);
+      const data = app.client.getQueryData<any>(key);
+      assert.equal(data.pages[0].items[0].viewer_saved, true);
+      assert.equal(data.pages[0].nextCursor, 'loaded-cursor', 'Keep loaded pages until the user refreshes');
+    } finally {unsubscribe(); await app.unmount();}
+  });
+}
+
 
 test('collection creation failure remains visible after closing and reopening its popup', async () => {
-  const app = feed(['one', 'two']);
+  const app = feed(['00000000-0000-4000-8000-000000000001', '00000000-0000-4000-8000-000000000002']);
   let reject!: (error: Error) => void;
   app.setCreate(() => new Promise((_yes, no) => { reject = no; }));
   await app.mount();
@@ -321,11 +374,30 @@ test('collection creation failure remains visible after closing and reopening it
     await app.open(0, 'onSavePress'); await app.createCollection('New collection');
     await app.requestClose(); await app.finishClose(); await app.open(0, 'onSavePress');
     await act(async () => { reject(new Error('Collection could not be created')); await new Promise(resolve => setTimeout(resolve, 0)); });
-    assert.equal(app.button('Create new collection').props.disabled, false);
+    assert.equal(app.button('Create new List').props.disabled, false);
     assert.ok(app.messages.includes('Collection could not be created'));
     await app.requestClose(); await app.finishClose(); await app.open(1, 'onSavePress');
     assert.ok(!app.messages.includes('Collection could not be created'), 'errors must stay repository-local');
     await app.requestClose(); await app.finishClose(); await app.open(0, 'onSavePress');
     assert.ok(app.messages.includes('Collection could not be created'), 'dismissal must not erase an unacknowledged failure');
   } finally { await app.unmount(); }
+});
+
+test('share sheet scrolls on short screens and records GitHub opens only after success', async () => {
+  const repoId='00000000-0000-4000-8000-000000000001';
+  const app=feed([repoId]);app.setHeight(300);
+  await app.mount();
+  try {
+    await app.open(0,'onSharePress');
+    assert.equal(app.githubActionScrollable,true);
+    app.setExternalOpen(async()=>{throw new Error('Unable to open');});
+    await app.press('Open on GitHub');
+    assert.deepEqual(app.events,[]);
+    let finish!:()=>void;
+    app.setExternalOpen(()=>new Promise(resolve=>{finish=resolve;}));
+    await app.press('Open on GitHub');
+    assert.deepEqual(app.events,[],'Do not acknowledge a pending external open');
+    await act(async()=>{finish();await new Promise(resolve=>setTimeout(resolve,0));});
+    assert.deepEqual(app.events,[{repo_id:repoId,action:'github_open',serve_id:repoId,position:3}]);
+  } finally {await app.unmount();}
 });

@@ -1,9 +1,7 @@
+import { KeyboardForm } from '@/components/keyboard/keyboard-layout';
 import { useRouter } from "expo-router";
-import { useRef, useState } from "react";
+import { useState } from "react";
 import {
-    KeyboardAvoidingView,
-    Platform,
-    ScrollView,
     Text,
     View,
 } from "react-native";
@@ -28,7 +26,6 @@ import { isValidUsername, normalizeUsername, USERNAME_GUIDANCE } from "@/utils/u
 
 export default function SignUpEmail() {
   const router = useRouter();
-  const scrollViewRef = useRef<ScrollView>(null);
   const { signInWithProvider, isLoading: oauthLoading, error: oauthError } = useOAuth();
 
   const [fullName, setFullName] = useState("");
@@ -92,13 +89,7 @@ export default function SignUpEmail() {
   };
 
   return (
-    <KeyboardAvoidingView
-      style={{ flex: 1 }}
-      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-      keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 20}
-    >
-      <ScrollView
-        ref={scrollViewRef}
+      <KeyboardForm
         className="flex-1 bg-[#000000]"
         showsVerticalScrollIndicator={false}
         contentContainerStyle={{ paddingBottom: 40, flexGrow: 1, justifyContent: 'center' }}
@@ -240,7 +231,6 @@ export default function SignUpEmail() {
           />
 
         </View>
-      </ScrollView>
-    </KeyboardAvoidingView>
+      </KeyboardForm>
   );
 }

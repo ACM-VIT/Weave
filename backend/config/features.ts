@@ -9,6 +9,7 @@ export const V2_FEATURE_NAMES = [
   'ML_FEEDBACK_OUTBOX',
   'ML_QDRANT_ONLY',
   'TRENDING_FALLBACK',
+  'TRENDING_INGESTION',
 ] as const;
 
 export type V2FeatureName = typeof V2_FEATURE_NAMES[number];
@@ -37,6 +38,7 @@ export function getV2FeatureFlags(): V2FeatureFlags {
     ML_FEEDBACK_OUTBOX: enabled('ML_FEEDBACK_OUTBOX', true),
     ML_QDRANT_ONLY: enabled('ML_QDRANT_ONLY', true),
     TRENDING_FALLBACK: enabled('TRENDING_FALLBACK', false),
+    TRENDING_INGESTION: enabled('TRENDING_INGESTION', true),
   };
 }
 

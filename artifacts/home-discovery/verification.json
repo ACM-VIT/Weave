@@ -1,0 +1,50 @@
+{
+  "node": "22.23.2",
+  "checks": {
+    "lint": "passed",
+    "typecheck": "passed",
+    "frontend": {
+      "passed": 157,
+      "failed": 0
+    },
+    "backend_build": "passed",
+    "backend": {
+      "passed": 148,
+      "failed": 0,
+      "skipped": 12
+    },
+    "isolated_catalogue_integration": {
+      "passed": 1
+    },
+    "all_platform_export": [
+      "ios",
+      "android",
+      "web"
+    ],
+    "diff_check": "passed"
+  },
+  "browser": {
+    "viewport": [
+      470,
+      674
+    ],
+    "real_home_cards": true,
+    "source_label": "Recently updated / Not personalized",
+    "read_more_open_close": true,
+    "reaction_cycle_restored": [
+      0,
+      1,
+      0
+    ],
+    "paging_beyond_ten_after_reaction": true,
+    "full_reload": true
+  },
+  "ml_enabled": false,
+  "fake_recommendation_serves": false,
+  "schema_changed": false,
+  "deployed": false,
+  "manual_remaining": [
+    "Native small-screen source caption and interaction QA",
+    "Live personalized recovery after ML becomes available"
+  ]
+}

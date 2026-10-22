@@ -1,6 +1,11 @@
 import React from 'react';
 import { ScrollView, StyleSheet, Text, View } from 'react-native';
 import { Layers } from 'lucide-react-native';
+import {
+  Gesture,
+  GestureDetector,
+  type GestureType,
+} from 'react-native-gesture-handler';
 
 import { REFERENCE_THEME } from '@/constants/theme';
 import type { RepositoryData } from '../../data/repositories';
@@ -48,6 +53,9 @@ type DescriptionCardProps = {
   availableWidth: number;
 };
 
+export const SaveSwipeGestureContext = React.createContext<GestureType | null>(null);
+SaveSwipeGestureContext.displayName = 'SaveSwipeGestureContext';
+
 function clamp(value: number, minimum: number, maximum: number) {
   return Math.min(Math.max(value, minimum), maximum);
 }
@@ -57,13 +65,26 @@ export default function DescriptionCard({
   compact = false,
   availableWidth,
 }: DescriptionCardProps) {
-  const technologies = repository.techStack ?? [];
+  const technologies = repository.languages;
   const veryNarrow = availableWidth < 240;
   const circleSize = compact
     ? clamp(availableWidth * 0.14, 31, 38)
     : clamp(availableWidth * 0.12, 40, 50);
   const iconSize = Math.round(circleSize * 0.58);
   const horizontalPadding = veryNarrow ? 10 : compact ? 12 : 21;
+  const itemGap = compact ? 6 : 12;
+  const hasOverflowingTechnologies = technologies.length > 3;
+  const trailingPeek = hasOverflowingTechnologies ? (compact ? 26 : 36) : 0;
+  const itemWidth = Math.max(
+    (availableWidth - horizontalPadding * 2 - itemGap * 2 - trailingPeek) / 3,
+    64,
+  );
+  const saveSwipeGesture = React.useContext(SaveSwipeGestureContext);
+  const techStackScrollGesture = React.useMemo(() => {
+    const gesture = Gesture.Native().shouldCancelWhenOutside(false);
+    if (saveSwipeGesture) gesture.blocksExternalGesture(saveSwipeGesture);
+    return gesture;
+  }, [saveSwipeGesture]);
 
   return (
     <View
@@ -78,53 +99,60 @@ export default function DescriptionCard({
         <Text style={styles.heading}>TECH STACK</Text>
       </View>
 
-      <ScrollView
-        contentContainerStyle={[styles.grid, compact && styles.gridCompact]}
-        horizontal
-        nestedScrollEnabled
-        showsHorizontalScrollIndicator={technologies.length > 3}
-      >
-        {technologies.length > 0 ? technologies.map((technology) => {
-          const colour = TECH_COLORS[technology] ?? '#8E8E93';
+      <GestureDetector gesture={techStackScrollGesture}>
+        <ScrollView
+          contentContainerStyle={[
+            styles.grid,
+            compact && styles.gridCompact,
+            hasOverflowingTechnologies && styles.gridScrollable,
+          ]}
+          directionalLockEnabled
+          horizontal
+          nestedScrollEnabled
+          showsHorizontalScrollIndicator={false}
+        >
+          {technologies.length > 0 ? technologies.map((technology) => {
+            const colour = TECH_COLORS[technology] ?? '#8E8E93';
 
-          return (
-            <View
-              key={technology}
-              style={[styles.item, { width: Math.max((availableWidth - horizontalPadding * 2 - 24) / 3, 64) }]}
-            >
+            return (
               <View
-                style={[
-                  styles.iconCircle,
-                  {
-                    width: circleSize,
-                    height: circleSize,
-                    borderRadius: circleSize / 2,
-                    backgroundColor: `${colour}26`,
-                  },
-                ]}
+                key={technology}
+                style={[styles.item, { width: itemWidth }]}
               >
-                <TechStackIcon color={colour} name={technology} size={iconSize} />
+                <View
+                  style={[
+                    styles.iconCircle,
+                    {
+                      width: circleSize,
+                      height: circleSize,
+                      borderRadius: circleSize / 2,
+                      backgroundColor: `${colour}26`,
+                    },
+                  ]}
+                >
+                  <TechStackIcon color={colour} name={technology} size={iconSize} />
+                </View>
+                <Text
+                  adjustsFontSizeToFit
+                  minimumFontScale={0.76}
+                  style={[
+                    styles.label,
+                    compact && styles.labelCompact,
+                    veryNarrow && styles.labelVeryNarrow,
+                  ]}
+                  numberOfLines={1}
+                >
+                  {technology}
+                </Text>
               </View>
-              <Text
-                adjustsFontSizeToFit
-                minimumFontScale={0.76}
-                style={[
-                  styles.label,
-                  compact && styles.labelCompact,
-                  veryNarrow && styles.labelVeryNarrow,
-                ]}
-                numberOfLines={1}
-              >
-                {technology}
-              </Text>
+            );
+          }) : (
+            <View style={styles.emptyRow}>
+              <Text style={styles.emptyText}>Stack details unavailable</Text>
             </View>
-          );
-        }) : (
-          <View style={styles.emptyRow}>
-            <Text style={styles.emptyText}>Stack details unavailable</Text>
-          </View>
-        )}
-      </ScrollView>
+          )}
+        </ScrollView>
+      </GestureDetector>
     </View>
   );
 }
@@ -164,6 +192,9 @@ const styles = StyleSheet.create({
   gridCompact: {
     marginTop: 8,
     columnGap: 6,
+  },
+  gridScrollable: {
+    paddingRight: 18,
   },
   item: {
     alignItems: 'center',

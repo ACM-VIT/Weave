@@ -1,9 +1,10 @@
+import { KeyboardForm } from '@/components/keyboard/keyboard-layout';
 import { confirmPasswordReset } from '@/api/auth';
 import LoginInput from '@/components/Auth/LoginInput';
 import PrimaryButton from '@/components/Auth/PrimaryButton';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useEffect, useState } from 'react';
-import { KeyboardAvoidingView, Platform, Pressable, Text, View } from 'react-native';
+import { Platform, Pressable, Text, View } from 'react-native';
 
 export default function ResetPasswordScreen() {
   const router = useRouter();
@@ -57,17 +58,17 @@ export default function ResetPasswordScreen() {
   };
 
   return (
-    <KeyboardAvoidingView className="flex-1 bg-black" behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
-      <View className="flex-1 justify-center px-8 w-full max-w-[450px] self-center">
+    <KeyboardForm className="flex-1 bg-black" contentContainerStyle={{ flexGrow: 1, justifyContent: "center" }}>
+      <View className="justify-center py-6 px-8 w-full max-w-[450px] self-center">
         <Text className="text-white text-[30px] font-nataBold">Choose a new password</Text>
         <Text className="text-[#8A898F] text-[14px] leading-6 font-nata mt-3 mb-8">
           Use at least 12 characters. Avoid reusing a password from another service.
         </Text>
         {(!accessToken || !refreshToken) && !message ? <Text className="text-[#FF6878] text-[13px] font-nata mb-5">This reset link is invalid or expired.</Text> : null}
         <Text className="text-white text-[15px] font-nata mb-3">New Password</Text>
-        <LoginInput value={password} onChangeText={setPassword} placeholder="Enter a new password" secureTextEntry />
+        <LoginInput value={password} onChangeText={setPassword} placeholder="Enter a new password" autoComplete="new-password" secureTextEntry />
         <Text className="text-white text-[15px] font-nata mt-6 mb-3">Confirm Password</Text>
-        <LoginInput value={confirmation} onChangeText={setConfirmation} placeholder="Repeat the new password" secureTextEntry />
+        <LoginInput value={confirmation} onChangeText={setConfirmation} placeholder="Repeat the new password" autoComplete="new-password" secureTextEntry />
         {confirmation && password !== confirmation ? <Text className="text-[#FF6878] text-[13px] font-nata mt-4">Passwords do not match.</Text> : null}
         {message ? <Text className="text-[#63E08A] text-[13px] font-nata mt-4">{message}</Text> : null}
         {error ? <Text className="text-[#FF6878] text-[13px] font-nata mt-4">{error}</Text> : null}
@@ -78,6 +79,6 @@ export default function ResetPasswordScreen() {
           <Text className="text-[#63E08A] font-nataSemiBold">Go to login</Text>
         </Pressable>
       </View>
-    </KeyboardAvoidingView>
+    </KeyboardForm>
   );
 }

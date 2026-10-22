@@ -1,3 +1,4 @@
+import { KeyboardSurface } from '@/components/keyboard/keyboard-layout';
 import { Pressable, StyleSheet, Text, View, useWindowDimensions } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
 import { ArrowLeft } from 'lucide-react-native';
@@ -19,7 +20,7 @@ export default function ConnectionListScreen({ type }: { type: ConnectionType })
   const title = type === 'followers' ? 'Followers' : 'Following';
 
   return (
-    <View style={styles.screen}>
+    <KeyboardSurface style={styles.screen}>
       <View
         style={[
           styles.content,
@@ -60,7 +61,7 @@ export default function ConnectionListScreen({ type }: { type: ConnectionType })
           username={username}
         />
       </View>
-    </View>
+    </KeyboardSurface>
   );
 }
 

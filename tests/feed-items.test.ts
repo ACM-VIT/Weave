@@ -31,6 +31,7 @@ test('mutation updates only the changed entry and keeps its serve attribution', 
   assert.equal(mapped, 3);
   assert.strictEqual(after[0], before[0]);
   assert.notStrictEqual(after[1], before[1]);
+  assert.equal(after[1].feedId, before[1].feedId, 'Reactions and saves must not remount the card');
   assert.equal(after[1].repository.viewerReaction, 'like');
   assert.equal(after[1].repository.viewerSaved, true);
   assert.equal(after[1].repository.serveId, 'serve-1');
@@ -57,8 +58,17 @@ test('reset and reordered refresh drop old cards and filter invalid records with
   assert.deepEqual(project(undefined), []);
   const refreshed = project([{ items: [invalid, second, first] }]);
   assert.deepEqual(refreshed.map(entry => entry.repository.id), ['second', 'first']);
-  assert.match(refreshed[0].feedId, /^second-0-/);
-  assert.match(refreshed[1].feedId, /^first-1-/);
+  assert.equal(refreshed[0].feedId, 'serve-1:second:0');
+  assert.equal(refreshed[1].feedId, 'serve-1:first:0');
   const otherViewer = createFeedItemMapper();
   assert.notStrictEqual(otherViewer([{ items: [first] }])[0].repository, project([{ items: [first] }])[0].repository);
+});
+
+ test('memoized discovery pages suppress overlap while retaining unchanged cards', () => {
+  const project = createFeedItemMapper();
+  const first = {mode: 'discovery' as const, items: [item('first')]};
+  const before = project([first]);
+  const after = project([first, {mode: 'discovery', items: [item('first'), item('second')]}]);
+  assert.deepEqual(after.map(entry => entry.repository.id), ['first', 'second']);
+  assert.strictEqual(after[0], before[0]);
 });

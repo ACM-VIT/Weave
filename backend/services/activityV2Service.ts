@@ -10,9 +10,17 @@ import { isDeepStrictEqual } from 'node:util';
 import { sqlClient } from '../db/index.js';
 import type postgres from 'postgres';
 import { buildMlFeedbackEvent } from './mlFeedbackPayloadService.js';
-import { setRepositorySaved } from './savedRepositoryService.js';
+import {
+  getRepositoryMembershipSavedState,
+  setRepositorySaved,
+} from './savedRepositoryService.js';
 
 export type ReactionState = 'like' | 'dislike' | null;
+
+export function isMembershipManagedSaveEvent(event: InteractionEventV2): boolean {
+  return (event.event_type === 'save' || event.event_type === 'unsave')
+    && event.context.save_state_source === 'list_membership';
+}
 
 export function transitionReaction(current: ReactionState, event: InteractionEventType): ReactionState {
   if (event === 'like') return 'like';
@@ -139,8 +147,9 @@ export async function processInteractionBatchV2InTransaction(
           dislikes_count=GREATEST(0,dislikes_count+${dislikeDelta}),updated_at=now() WHERE repo_id=${event.repo_id}::uuid`;
         await tx`UPDATE app.user_stats SET likes_given_count=GREATEST(0,likes_given_count+${likeDelta}),updated_at=now() WHERE user_id=${userId}::uuid`;
       }
-    } else if (event.event_type === 'save' || event.event_type === 'unsave') {
-      stateChanged = await setRepositorySaved(tx, userId, event.repo_id, event.event_type === 'save', { engagementLocked: true });
+    } else if ((event.event_type === 'save' || event.event_type === 'unsave') && !isMembershipManagedSaveEvent(event)) {
+      const membershipSaved = await getRepositoryMembershipSavedState(tx, userId, event.repo_id);
+      stateChanged = await setRepositorySaved(tx, userId, event.repo_id, membershipSaved, { engagementLocked: true });
     }
     let delta = engagement.get(event.repo_id);
     if (!delta) {

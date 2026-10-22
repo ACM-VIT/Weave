@@ -20,6 +20,7 @@ test('reindex campaign is dry-run by default and execute requires the same expli
   assert.throws(() => parseReindexOptions(['--campaign=unsafe campaign']), /--campaign/);
   assert.throws(() => parseReindexOptions(['--campaign=safe', '--unknown']), /Unknown argument/);
 });
+
 test('campaign reindex preserves canonical identity/version and builds a fresh scoped key', () => {
   const job = buildCampaignRepositoryJob({
     repo_id: '00000000-0000-4000-8000-000000000001',
@@ -56,6 +57,7 @@ test('campaign reindex preserves canonical identity/version and builds a fresh s
     'repo_index:00000000-0000-4000-8000-000000000001:7:campaign:v2-strict-20260721',
   );
 });
+
 test('invalid-summary repair is read-only by default and execution requires explicit repository scope', () => {
   assert.deepEqual(parseReindexOptions(['--campaign=repair-contract-v1', '--repair-invalid-summaries']), {
     campaignId: 'repair-contract-v1', execute: false, batchSize: 100, summaryBackfill: false, repairInvalidSummaries: true,

@@ -1,4 +1,7 @@
 import { apiV2, apiV2Raw } from './client';
+import type { RepositoryApiPayload } from './repositories';
+import type { RepositoryDetail } from '@/models/repository';
+import { mapRepositoryList } from '@/utils/repository-mapper';
 import {
   prepareQueuedActivity,
   toInteractionEventV2,
@@ -19,7 +22,7 @@ export type FrontendBoard = BoardRecord & {
   repos_count: number;
 };
 
-export type BoardRepositoryRecord = {
+export type BoardRepositoryRecord = RepositoryApiPayload & {
   added_at: string;
   repo_id: string;
   full_name: string;
@@ -43,26 +46,26 @@ export async function getBoardRepositories(
   boardId: string,
   token: string,
   signal?: AbortSignal,
-): Promise<BoardRepositoryRecord[]> {
+): Promise<RepositoryDetail[]> {
   const data = await apiV2<{ items: BoardRepositoryRecord[] }>(
     `/boards/${encodeURIComponent(boardId)}/repositories`,
     { signal },
     token,
   );
-  return data.items;
+  return mapRepositoryList(data.items);
 }
 
 export async function getCollectionRepositories(
   collectionId: string,
   token: string,
   signal?: AbortSignal,
-): Promise<BoardRepositoryRecord[]> {
+): Promise<RepositoryDetail[]> {
   const data = await apiV2<{ items: BoardRepositoryRecord[] }>(
     `/collections/${encodeURIComponent(collectionId)}/repositories`,
     { signal },
     token,
   );
-  return data.items;
+  return mapRepositoryList(data.items);
 }
 
 export async function createBoard(_userId: string, boardName: string, token: string) {

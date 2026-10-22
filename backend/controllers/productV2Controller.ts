@@ -1,11 +1,18 @@
+import { getReadmeSummaryStatus, readmeSummaryProjection } from '../services/readmeSummaryService.js';
 import type { Response } from 'express';
 import { sqlClient } from '../db/index.js';
 import type { AuthRequest } from '../middlewares/authMiddleware.js';
-import { processInteractionBatchV2InTransaction } from '../services/activityV2Service.js';
 import { buildMlOnboardingJob, hasMlEmbeddingContext } from '../services/mlOnboardingService.js';
 import { setFollowRelationship } from '../services/followService.js';
 import { setSocialProfileFollowing } from '../services/socialProfileService.js';
-import { setRepositorySaved } from '../services/savedRepositoryService.js';
+import { getRepositoryDetail } from '../services/repositoryDetailService.js';
+import {
+  addRepositoryToBoard,
+  deleteRepositoryBoard,
+  deleteRepositoryList,
+  removeRepositoryFromBoard,
+  syncRepositoryLists,
+} from '../services/repositoryMembershipService.js';
 import { isInteractionEventV2 } from '../utils/interactionValidation.js';
 import { isValidDateOfBirth } from '../utils/dateOfBirth.js';
 import { normalizeUsername } from '../utils/username.js';
@@ -387,19 +394,55 @@ async function followList(req: AuthRequest, res: Response, direction: 'followers
 export const listFollowers = (req: AuthRequest, res: Response) => followList(req, res, 'followers');
 export const listFollowing = (req: AuthRequest, res: Response) => followList(req, res, 'following');
 
+// Optional summary/README metadata is read through JSON until migration 0025 is deployed.
+// Missing provenance excludes legacy text so it can never appear as a concise Summary.
 export async function listLikesGiven(req: AuthRequest, res: Response): Promise<void> {
-  const target = idParam(req, res, 'userId'); const page = paging(req); if (!target) return;
+  const viewer = userId(req, res); const target = idParam(req, res, 'userId'); const page = paging(req);
+  if (!viewer || !target) return;
   if (!page) return sendError(res, 400, 'limit must be 1-100 and offset must be 0-10000.');
   const rows = await sqlClient`
-    SELECT r.repo_id,r.url AS github_repo_url,r.owner AS owner_id,r.name AS repo_name,r.full_name,
-      c.description,c.languages AS language_used,
+    SELECT r.repo_id,r.github_id,r.owner_github_id,r.url AS github_repo_url,
+      r.owner AS owner_id,r.name AS repo_name,r.full_name,r.owner,r.name,r.url,r.status,
+      r.created_at,r.updated_at,c.description,c.languages AS language_used,
+      c.primary_language,c.languages,${sqlClient.unsafe(readmeSummaryProjection('r','c'))},to_jsonb(c)->>'readme_source_path' AS readme_source_path,
+      to_jsonb(c)->>'readme_default_branch' AS readme_default_branch,to_jsonb(c)->>'readme_base_url' AS readme_base_url,c.content_version,
+      c.updated_at AS content_updated_at,c.source_updated_at,
       COALESCE((SELECT json_agg(t.slug ORDER BY t.slug) FROM app.repo_topics rt JOIN app.topics t USING(topic_id)
         WHERE rt.repo_id=r.repo_id),'[]'::json) AS topics,
-      e.likes_count,COALESCE(s.star_count,0) AS star_count,COALESCE(s.fork_count,0) AS forks_count
+      e.likes_count,e.dislikes_count,e.saves_count,e.comments_count,e.views_count,
+      COALESCE(s.star_count,0) AS star_count,COALESCE(s.fork_count,0) AS forks_count,
+      COALESCE(s.fork_count,0) AS fork_count,COALESCE(s.open_issues_count,0) AS open_issues_count,
+      s.observed_at AS stats_observed_at,summary.summary_id,summary.summary,
+      summary.highlights AS summary_highlights,summary.prompt_version AS summary_prompt_version,
+      summary.model_version AS summary_model_version,
+      summary.format_version AS summary_format_version,summary.source AS summary_source,
+      viewer_reaction.reaction AS viewer_reaction,
+      (viewer_save.repo_id IS NOT NULL) AS viewer_saved,
+      COALESCE((SELECT json_agg(selection.list_id ORDER BY selection.list_id) FROM (
+        SELECT 'collection:' || collection.collection_id::text AS list_id
+        FROM app.collection_repos membership
+        JOIN app.board_collections collection USING(collection_id)
+        WHERE membership.repo_id=r.repo_id AND collection.user_id=${viewer}::uuid
+        UNION ALL
+        SELECT 'legacy-board:' || board.board_id::text AS list_id
+        FROM app.board_repos membership JOIN app.boards board USING(board_id)
+        WHERE membership.repo_id=r.repo_id AND board.user_id=${viewer}::uuid
+      ) selection),'[]'::json) AS selected_list_ids
     FROM app.reactions reaction JOIN app.repos r USING(repo_id)
     JOIN app.repo_content c USING(repo_id) JOIN app.repo_engagement e USING(repo_id)
-    LEFT JOIN LATERAL (SELECT star_count,fork_count FROM app.repo_stat_snapshots snapshot
+    LEFT JOIN LATERAL (SELECT star_count,fork_count,open_issues_count,observed_at FROM app.repo_stat_snapshots snapshot
       WHERE snapshot.repo_id=r.repo_id ORDER BY observed_at DESC LIMIT 1) s ON true
+    LEFT JOIN LATERAL (SELECT card.summary_id,card.summary,to_jsonb(card)->'highlights' AS highlights,
+      to_jsonb(card)->>'prompt_version' AS prompt_version,card.model_version,
+      to_jsonb(card)->>'format_version' AS format_version,to_jsonb(card)->>'source' AS source
+      FROM app.repo_card_summaries card
+      WHERE card.repo_id=r.repo_id AND active AND card.content_version=c.content_version
+        AND to_jsonb(card)->>'source' IN ('generated','description_fallback')
+      ORDER BY created_at DESC LIMIT 1) summary ON true
+    LEFT JOIN app.reactions viewer_reaction
+      ON viewer_reaction.repo_id=r.repo_id AND viewer_reaction.user_id=${viewer}::uuid
+    LEFT JOIN app.saves viewer_save
+      ON viewer_save.repo_id=r.repo_id AND viewer_save.user_id=${viewer}::uuid
     WHERE reaction.user_id=${target}::uuid AND reaction.reaction='like' AND r.status='active'
     ORDER BY reaction.updated_at DESC LIMIT ${page.limit} OFFSET ${page.offset}
   `;
@@ -408,31 +451,87 @@ export async function listLikesGiven(req: AuthRequest, res: Response): Promise<v
 
 const repoProjection = `r.repo_id,r.github_id,r.full_name,r.owner,r.name,r.url,c.description,c.primary_language,c.languages,c.content_version,
   e.likes_count,e.dislikes_count,e.saves_count,e.comments_count,e.views_count,
-  s.star_count,s.fork_count,s.open_issues_count,s.observed_at,cs.summary_id,cs.summary,cs.model_version,cs.prompt_version AS summary_prompt_version,
-  cs.format_version AS summary_format_version,cs.highlights AS summary_highlights,cs.source AS summary_source`;
+  s.star_count,s.fork_count,s.open_issues_count,s.observed_at,cs.summary,cs.model_version`;
 
 export async function listRepositories(req: AuthRequest, res: Response): Promise<void> {
+  const viewer = userId(req, res); if (!viewer) return;
   const page = paging(req); if (!page) return sendError(res, 400, 'Invalid pagination.');
   const q = typeof req.query.q === 'string' ? req.query.q.trim().slice(0, 100) : '';
-  const rows = await sqlClient.unsafe(`SELECT ${repoProjection} FROM app.repos r
+  const rows = await sqlClient.unsafe(`SELECT ${repoProjection},r.owner_github_id,r.status,r.created_at,r.updated_at,
+    ${readmeSummaryProjection('r','c')},to_jsonb(c)->>'readme_source_path' AS readme_source_path,to_jsonb(c)->>'readme_default_branch' AS readme_default_branch,to_jsonb(c)->>'readme_base_url' AS readme_base_url,
+    c.updated_at AS content_updated_at,c.source_updated_at,
+    s.observed_at AS stats_observed_at,
+    owner_profile.profile_id AS owner_profile_id,
+    owner_profile.claimed_by_user_id AS owner_user_id,
+    owner_profile.claimed_by_user_id AS owner_profile_claimed_user_id,
+    owner_profile.profile_kind AS owner_profile_kind,
+    COALESCE(owner_user.username,owner_profile.handle) AS owner_username,
+    COALESCE(owner_user.full_name,owner_profile.display_name,r.owner) AS owner_display_name,
+    COALESCE(owner_user.avatar_url,owner_profile.avatar_url) AS owner_avatar_url,
+    owner_user.bio AS owner_bio,
+    CASE WHEN owner_profile.claimed_by_user_id IS NOT NULL THEN owner_follow.following_id IS NOT NULL
+      WHEN owner_profile.profile_id IS NOT NULL THEN external_owner_follow.profile_id IS NOT NULL
+      ELSE NULL END AS viewer_follows_owner,
+    cs.summary_id,cs.highlights AS summary_highlights,
+    cs.prompt_version AS summary_prompt_version,cs.model_version AS summary_model_version,
+    cs.format_version AS summary_format_version,cs.source AS summary_source,
+    COALESCE((SELECT json_agg(topic.slug ORDER BY topic.slug)
+      FROM app.repo_topics repository_topic JOIN app.topics topic USING(topic_id)
+      WHERE repository_topic.repo_id=r.repo_id),'[]'::json) AS topics,
+    viewer_reaction.reaction AS viewer_reaction,
+    (viewer_save.repo_id IS NOT NULL) AS viewer_saved,
+    COALESCE((SELECT json_agg(selection.list_id ORDER BY selection.list_id) FROM (
+      SELECT 'collection:' || collection.collection_id::text AS list_id
+      FROM app.collection_repos membership JOIN app.board_collections collection USING(collection_id)
+      WHERE membership.repo_id=r.repo_id AND collection.user_id=$4::uuid
+      UNION ALL
+      SELECT 'legacy-board:' || board.board_id::text AS list_id
+      FROM app.board_repos membership JOIN app.boards board USING(board_id)
+      WHERE membership.repo_id=r.repo_id AND board.user_id=$4::uuid
+    ) selection),'[]'::json) AS selected_list_ids
+    FROM app.repos r
     JOIN app.repo_content c USING(repo_id) JOIN app.repo_engagement e USING(repo_id)
     LEFT JOIN LATERAL (SELECT * FROM app.repo_stat_snapshots x WHERE x.repo_id=r.repo_id ORDER BY observed_at DESC LIMIT 1) s ON true
-    LEFT JOIN LATERAL (SELECT summary_id,summary,model_version,prompt_version,format_version,highlights,source FROM app.repo_card_summaries x WHERE x.repo_id=r.repo_id AND active AND x.content_version=c.content_version ORDER BY created_at DESC LIMIT 1) cs ON true
+    LEFT JOIN LATERAL (SELECT x.summary_id,x.summary,to_jsonb(x)->'highlights' AS highlights,
+      to_jsonb(x)->>'prompt_version' AS prompt_version,x.model_version,
+      to_jsonb(x)->>'format_version' AS format_version,to_jsonb(x)->>'source' AS source
+      FROM app.repo_card_summaries x WHERE x.repo_id=r.repo_id AND active
+        AND x.content_version=c.content_version
+        AND to_jsonb(x)->>'source' IN ('generated','description_fallback') ORDER BY created_at DESC LIMIT 1) cs ON true
+    LEFT JOIN LATERAL (
+      SELECT profile.profile_id,profile.claimed_by_user_id,profile.handle,profile.display_name,profile.avatar_url,profile.profile_kind
+      FROM app.social_profiles profile WHERE profile.provider='github' AND profile.status='active'
+        AND ((r.owner_github_id IS NOT NULL AND profile.provider_subject=r.owner_github_id::text)
+          OR (r.owner_github_id IS NULL AND lower(profile.handle)=lower(r.owner)))
+      ORDER BY (profile.claimed_by_user_id IS NOT NULL) DESC,profile.created_at ASC LIMIT 1
+    ) owner_profile ON true
+    LEFT JOIN app.users owner_user ON owner_user.user_id=owner_profile.claimed_by_user_id
+    LEFT JOIN app.follows owner_follow ON owner_follow.follower_id=$4::uuid AND owner_follow.following_id=owner_profile.claimed_by_user_id
+    LEFT JOIN app.social_profile_follows external_owner_follow ON external_owner_follow.follower_id=$4::uuid
+      AND external_owner_follow.profile_id=owner_profile.profile_id AND owner_profile.claimed_by_user_id IS NULL
+    LEFT JOIN app.reactions viewer_reaction ON viewer_reaction.repo_id=r.repo_id AND viewer_reaction.user_id=$4::uuid
+    LEFT JOIN app.saves viewer_save ON viewer_save.repo_id=r.repo_id AND viewer_save.user_id=$4::uuid
     WHERE r.status='active' AND ($1='' OR r.full_name ILIKE '%'||$1||'%' OR COALESCE(c.description,'') ILIKE '%'||$1||'%')
-    ORDER BY r.updated_at DESC,r.repo_id LIMIT $2 OFFSET $3`, [q, page.limit, page.offset]);
+    ORDER BY r.updated_at DESC,r.repo_id LIMIT $2 OFFSET $3`, [q, page.limit, page.offset, viewer]);
   sendSuccess(res, 200, { items: rows, ...page });
 }
 
+export async function getRepositoryReadmeSummary(req: AuthRequest, res: Response): Promise<void> {
+  const viewer=userId(req,res); const repo=idParam(req,res,'repoId');
+  if (!viewer || !repo) return;
+  const result=await getReadmeSummaryStatus(repo);
+  if (!result) return sendError(res,404,'Repository not found.');
+  sendSuccess(res,200,result);
+}
+
 export async function getRepository(req: AuthRequest, res: Response): Promise<void> {
-  const repo = idParam(req, res, 'repoId'); if (!repo) return;
-  const rows = await sqlClient.unsafe(`SELECT ${repoProjection},c.readme,
-    COALESCE((SELECT json_agg(t.slug ORDER BY t.slug) FROM app.repo_topics rt JOIN app.topics t USING(topic_id) WHERE rt.repo_id=r.repo_id),'[]'::json) topics
-    FROM app.repos r JOIN app.repo_content c USING(repo_id) JOIN app.repo_engagement e USING(repo_id)
-    LEFT JOIN LATERAL (SELECT * FROM app.repo_stat_snapshots x WHERE x.repo_id=r.repo_id ORDER BY observed_at DESC LIMIT 1) s ON true
-    LEFT JOIN LATERAL (SELECT summary_id,summary,model_version,prompt_version,format_version,highlights,source FROM app.repo_card_summaries x WHERE x.repo_id=r.repo_id AND active AND x.content_version=c.content_version ORDER BY created_at DESC LIMIT 1) cs ON true
-    WHERE r.repo_id=$1::uuid AND r.status='active'`, [repo]);
-  if (!rows[0]) return sendError(res, 404, 'Repository not found.');
-  sendSuccess(res, 200, rows[0]);
+  const viewer = userId(req, res); const repo = idParam(req, res, 'repoId');
+  if (!viewer || !repo) return;
+  try {
+    const detail = await getRepositoryDetail(viewer, repo);
+    if (!detail) return sendError(res, 404, 'Repository not found.');
+    sendSuccess(res, 200, detail);
+  } catch (error) { sendControllerError(res, error); }
 }
 
 export async function getRepositoryShare(req: AuthRequest, res: Response): Promise<void> {
@@ -453,14 +552,42 @@ export { listTrending } from './trendingController.js';
 export async function listSaved(req: AuthRequest, res: Response): Promise<void> {
   const id = userId(req, res); const page = paging(req); if (!id) return;
   if (!page) return sendError(res, 400, 'Invalid pagination.');
-  const rows = await sqlClient`SELECT s.created_at,r.repo_id,r.github_id,r.full_name,r.owner,r.name,r.url,
-    c.description,c.primary_language,c.languages,e.likes_count,e.comments_count,e.views_count,
+  const rows = await sqlClient`SELECT s.created_at,s.created_at AS saved_at,r.repo_id,r.github_id,r.owner_github_id,
+    r.full_name,r.owner,r.name,r.url,r.status,r.created_at AS repository_created_at,r.updated_at,
+    c.description,c.primary_language,c.languages,${sqlClient.unsafe(readmeSummaryProjection('r','c'))},to_jsonb(c)->>'readme_source_path' AS readme_source_path,
+    to_jsonb(c)->>'readme_default_branch' AS readme_default_branch,to_jsonb(c)->>'readme_base_url' AS readme_base_url,c.content_version,
+    c.updated_at AS content_updated_at,c.source_updated_at,
+    e.likes_count,e.dislikes_count,e.saves_count,e.comments_count,e.views_count,
     COALESCE(stat.star_count,0) AS star_count,COALESCE(stat.fork_count,0) AS fork_count,
-    COALESCE(stat.open_issues_count,0) AS open_issues_count
+    COALESCE(stat.open_issues_count,0) AS open_issues_count,stat.observed_at AS stats_observed_at,
+    summary.summary_id,summary.summary,summary.highlights AS summary_highlights,
+    summary.prompt_version AS summary_prompt_version,summary.model_version AS summary_model_version,
+    summary.format_version AS summary_format_version,summary.source AS summary_source,
+    COALESCE((SELECT json_agg(topic.slug ORDER BY topic.slug)
+      FROM app.repo_topics repository_topic JOIN app.topics topic USING(topic_id)
+      WHERE repository_topic.repo_id=r.repo_id),'[]'::json) AS topics,
+    viewer_reaction.reaction AS viewer_reaction,true AS viewer_saved,
+    COALESCE((SELECT json_agg(selection.list_id ORDER BY selection.list_id) FROM (
+      SELECT 'collection:' || collection.collection_id::text AS list_id
+      FROM app.collection_repos membership JOIN app.board_collections collection USING(collection_id)
+      WHERE membership.repo_id=r.repo_id AND collection.user_id=${id}::uuid
+      UNION ALL
+      SELECT 'legacy-board:' || board.board_id::text AS list_id
+      FROM app.board_repos membership JOIN app.boards board USING(board_id)
+      WHERE membership.repo_id=r.repo_id AND board.user_id=${id}::uuid
+    ) selection),'[]'::json) AS selected_list_ids
     FROM app.saves s JOIN app.repos r USING(repo_id) JOIN app.repo_content c USING(repo_id)
     JOIN app.repo_engagement e USING(repo_id)
-    LEFT JOIN LATERAL (SELECT star_count,fork_count,open_issues_count FROM app.repo_stat_snapshots x
+    LEFT JOIN LATERAL (SELECT star_count,fork_count,open_issues_count,observed_at FROM app.repo_stat_snapshots x
       WHERE x.repo_id=r.repo_id ORDER BY observed_at DESC LIMIT 1) stat ON true
+    LEFT JOIN LATERAL (SELECT x.summary_id,x.summary,to_jsonb(x)->'highlights' AS highlights,
+      to_jsonb(x)->>'prompt_version' AS prompt_version,x.model_version,
+      to_jsonb(x)->>'format_version' AS format_version,to_jsonb(x)->>'source' AS source
+      FROM app.repo_card_summaries x WHERE x.repo_id=r.repo_id AND active
+        AND x.content_version=c.content_version
+        AND to_jsonb(x)->>'source' IN ('generated','description_fallback') ORDER BY created_at DESC LIMIT 1) summary ON true
+    LEFT JOIN app.reactions viewer_reaction
+      ON viewer_reaction.repo_id=r.repo_id AND viewer_reaction.user_id=${id}::uuid
     WHERE s.user_id=${id}::uuid AND r.status='active' ORDER BY s.created_at DESC LIMIT ${page.limit} OFFSET ${page.offset}`;
   sendSuccess(res, 200, { items: rows, ...page });
 }
@@ -542,7 +669,23 @@ async function listOwned(req: AuthRequest, res: Response, resource: Resource): P
           FROM app.board_collections c WHERE c.user_id=${id}::uuid
           ORDER BY c.updated_at DESC,c.created_at DESC
         `
-    : await sqlClient`SELECT b.*,count(br.repo_id)::int AS repo_count FROM app.boards b LEFT JOIN app.board_repos br USING(board_id) WHERE b.user_id=${id}::uuid GROUP BY b.board_id ORDER BY b.created_at DESC`;
+    : requestedRepo
+      ? await sqlClient`
+          SELECT b.*,count(br.repo_id)::int AS repo_count,
+            EXISTS(
+              SELECT 1 FROM app.board_repos selected
+              WHERE selected.board_id=b.board_id AND selected.repo_id=${requestedRepo}::uuid
+            ) AS selected
+          FROM app.boards b LEFT JOIN app.board_repos br USING(board_id)
+          WHERE b.user_id=${id}::uuid
+          GROUP BY b.board_id ORDER BY b.created_at DESC
+        `
+      : await sqlClient`
+          SELECT b.*,count(br.repo_id)::int AS repo_count,false AS selected
+          FROM app.boards b LEFT JOIN app.board_repos br USING(board_id)
+          WHERE b.user_id=${id}::uuid
+          GROUP BY b.board_id ORDER BY b.created_at DESC
+        `;
   sendSuccess(res, 200, { items: rows });
 }
 export const listCollections = (req: AuthRequest, res: Response) => listOwned(req, res, 'collection');
@@ -569,56 +712,23 @@ export async function saveRepositoryCollections(req: AuthRequest, res: Response)
   const id = userId(req, res); if (!id) return;
   const repositoryId = req.body?.repositoryId;
   const rawCollectionIds = req.body?.collectionIds;
-  if (!isValidUuid(repositoryId) || !Array.isArray(rawCollectionIds) || rawCollectionIds.length > 100
-    || !rawCollectionIds.every((value) => isValidUuid(value))) {
-    return sendError(res, 400, 'repositoryId must be a UUID and collectionIds must contain at most 100 UUIDs.');
+  const rawBoardIds = Object.hasOwn(req.body ?? {}, 'boardIds') ? req.body.boardIds : undefined;
+  if (!isValidUuid(repositoryId) || !Array.isArray(rawCollectionIds) || (rawBoardIds !== undefined && !Array.isArray(rawBoardIds))
+    || rawCollectionIds.length + (rawBoardIds?.length ?? 0) > 100
+    || !rawCollectionIds.every((value) => isValidUuid(value))
+    || (rawBoardIds !== undefined && !rawBoardIds.every((value: unknown) => typeof value === 'string' && isValidUuid(value)))) {
+    return sendError(res, 400, 'repositoryId must be a UUID and List IDs must contain at most 100 UUIDs.');
   }
   const collectionIds = [...new Set(rawCollectionIds as string[])];
+  const boardIds = rawBoardIds === undefined ? undefined : [...new Set(rawBoardIds as string[])];
+  const event = req.body?.event;
+  if (event !== undefined && (!isInteractionEventV2(event)
+    || (event.event_type !== 'save' && event.event_type !== 'unsave')
+    || event.repo_id !== repositoryId)) {
+    return sendError(res, 400, 'event must be a stable v2 save or unsave event matching repositoryId.');
+  }
   try {
-    const result = await sqlClient.begin(async (tx) => {
-      const repository = await tx`SELECT 1 FROM app.repos WHERE repo_id=${repositoryId}::uuid AND status='active'`;
-      if (!repository.length) throw Object.assign(new Error('Repository not found.'), { statusCode: 404 });
-      await tx`SELECT pg_advisory_xact_lock(hashtextextended(${`${id}:${repositoryId}`}, 0))`;
-
-      if (collectionIds.length) {
-        const owned = await tx`SELECT collection_id FROM app.board_collections WHERE user_id=${id}::uuid AND collection_id = ANY(${collectionIds}::uuid[])`;
-        if (owned.length !== collectionIds.length) throw Object.assign(new Error('One or more collections were not found.'), { statusCode: 400 });
-      }
-
-      const changedCollections = await tx`
-        SELECT collection_id FROM app.collection_repos
-        WHERE repo_id=${repositoryId}::uuid AND collection_id IN (
-          SELECT collection_id FROM app.board_collections WHERE user_id=${id}::uuid
-        )
-      `;
-      await tx`
-        DELETE FROM app.collection_repos
-        WHERE repo_id=${repositoryId}::uuid AND collection_id IN (
-          SELECT collection_id FROM app.board_collections WHERE user_id=${id}::uuid
-        )
-      `;
-      for (const collectionId of collectionIds) {
-        await tx`
-          INSERT INTO app.collection_repos(collection_id,repo_id,added_by)
-          VALUES(${collectionId}::uuid,${repositoryId}::uuid,${id}::uuid)
-          ON CONFLICT (collection_id,repo_id) DO NOTHING
-        `;
-      }
-      const touchedIds = [...new Set([
-        ...collectionIds,
-        ...changedCollections.map((row) => String(row.collection_id)),
-      ])];
-      if (touchedIds.length) {
-        await tx`UPDATE app.board_collections SET updated_at=now() WHERE collection_id = ANY(${touchedIds}::uuid[])`;
-      }
-      const boardMembership = await tx`
-        SELECT 1 FROM app.board_repos br JOIN app.boards b USING(board_id)
-        WHERE br.repo_id=${repositoryId}::uuid AND b.user_id=${id}::uuid LIMIT 1
-      `;
-      const saved = collectionIds.length > 0 || boardMembership.length > 0;
-      const saveStateChanged = await setRepositorySaved(tx, id, repositoryId, saved);
-      return { repository_id: repositoryId, collection_ids: collectionIds, saved, save_state_changed: saveStateChanged };
-    });
+    const result = await syncRepositoryLists(id, repositoryId, collectionIds, boardIds, event);
     sendSuccess(res, 200, result);
   } catch (error) { sendControllerError(res, error); }
 }
@@ -640,8 +750,11 @@ export async function updateCollection(req: AuthRequest, res: Response): Promise
 
 export async function deleteCollection(req: AuthRequest, res: Response): Promise<void> {
   const id = userId(req, res); const collection = idParam(req, res, 'collectionId'); if (!id || !collection) return;
-  const rows = await sqlClient`DELETE FROM app.board_collections WHERE collection_id=${collection}::uuid AND user_id=${id}::uuid RETURNING collection_id`;
-  if (!rows[0]) return sendError(res, 404, 'Collection not found.'); res.status(204).end();
+  try {
+    const deleted = await deleteRepositoryList(id, collection);
+    if (!deleted) return sendError(res, 404, 'Collection not found.');
+    res.status(204).end();
+  } catch (error) { sendControllerError(res, error); }
 }
 
 export async function listCollectionRepos(req: AuthRequest, res: Response): Promise<void> {
@@ -652,11 +765,49 @@ export async function listCollectionRepos(req: AuthRequest, res: Response): Prom
   `;
   if (!owned.length) return sendError(res, 404, 'Collection not found.');
   const rows = await sqlClient`
-    SELECT cr.added_at,r.repo_id,r.full_name,r.owner,r.name,r.url,c.description,c.primary_language
+    SELECT cr.added_at,r.repo_id,r.github_id,r.owner_github_id,r.full_name,r.owner,r.name,r.url,
+      r.status,r.created_at,r.updated_at,c.description,c.primary_language,c.languages,
+      ${sqlClient.unsafe(readmeSummaryProjection('r','c'))},to_jsonb(c)->>'readme_source_path' AS readme_source_path,to_jsonb(c)->>'readme_default_branch' AS readme_default_branch,to_jsonb(c)->>'readme_base_url' AS readme_base_url,
+      c.content_version,c.updated_at AS content_updated_at,c.source_updated_at,
+      e.likes_count,e.dislikes_count,e.saves_count,e.comments_count,e.views_count,
+      COALESCE(stat.star_count,0) AS star_count,COALESCE(stat.fork_count,0) AS fork_count,
+      COALESCE(stat.open_issues_count,0) AS open_issues_count,stat.observed_at AS stats_observed_at,
+      summary.summary_id,summary.summary,summary.highlights AS summary_highlights,
+      summary.prompt_version AS summary_prompt_version,summary.model_version AS summary_model_version,
+      summary.format_version AS summary_format_version,summary.source AS summary_source,
+      COALESCE((SELECT json_agg(topic.slug ORDER BY topic.slug)
+        FROM app.repo_topics repository_topic JOIN app.topics topic USING(topic_id)
+        WHERE repository_topic.repo_id=r.repo_id),'[]'::json) AS topics,
+      viewer_reaction.reaction AS viewer_reaction,
+      (viewer_save.repo_id IS NOT NULL) AS viewer_saved,
+      COALESCE((SELECT json_agg(selection.list_id ORDER BY selection.list_id) FROM (
+        SELECT 'collection:' || viewer_list.collection_id::text AS list_id
+        FROM app.collection_repos viewer_membership
+        JOIN app.board_collections viewer_list USING(collection_id)
+        WHERE viewer_membership.repo_id=r.repo_id AND viewer_list.user_id=${id}::uuid
+        UNION ALL
+        SELECT 'legacy-board:' || viewer_board.board_id::text AS list_id
+        FROM app.board_repos viewer_membership JOIN app.boards viewer_board USING(board_id)
+        WHERE viewer_membership.repo_id=r.repo_id AND viewer_board.user_id=${id}::uuid
+      ) selection),'[]'::json) AS selected_list_ids
     FROM app.collection_repos cr
     JOIN app.repos r USING(repo_id)
     JOIN app.repo_content c USING(repo_id)
-    WHERE cr.collection_id=${collection}::uuid
+    JOIN app.repo_engagement e USING(repo_id)
+    LEFT JOIN LATERAL (SELECT star_count,fork_count,open_issues_count,observed_at
+      FROM app.repo_stat_snapshots snapshot WHERE snapshot.repo_id=r.repo_id
+      ORDER BY observed_at DESC LIMIT 1) stat ON true
+    LEFT JOIN LATERAL (SELECT card.summary_id,card.summary,to_jsonb(card)->'highlights' AS highlights,
+      to_jsonb(card)->>'prompt_version' AS prompt_version,card.model_version,
+      to_jsonb(card)->>'format_version' AS format_version,to_jsonb(card)->>'source' AS source
+      FROM app.repo_card_summaries card WHERE card.repo_id=r.repo_id AND active
+        AND card.content_version=c.content_version
+        AND to_jsonb(card)->>'source' IN ('generated','description_fallback') ORDER BY created_at DESC LIMIT 1) summary ON true
+    LEFT JOIN app.reactions viewer_reaction
+      ON viewer_reaction.repo_id=r.repo_id AND viewer_reaction.user_id=${id}::uuid
+    LEFT JOIN app.saves viewer_save
+      ON viewer_save.repo_id=r.repo_id AND viewer_save.user_id=${id}::uuid
+    WHERE cr.collection_id=${collection}::uuid AND r.status='active'
     ORDER BY cr.added_at DESC
   `;
   sendSuccess(res, 200, { items: rows });
@@ -683,15 +834,63 @@ export async function updateBoard(req: AuthRequest, res: Response): Promise<void
 
 export async function deleteBoard(req: AuthRequest, res: Response): Promise<void> {
   const id = userId(req, res); const board = idParam(req, res, 'boardId'); if (!id || !board) return;
-  const rows = await sqlClient`DELETE FROM app.boards WHERE board_id=${board}::uuid AND user_id=${id}::uuid RETURNING board_id`;
-  if (!rows[0]) return sendError(res, 404, 'Board not found.'); res.status(204).end();
+  try {
+    const deleted = await deleteRepositoryBoard(id, board);
+    if (!deleted) return sendError(res, 404, 'Board not found.');
+    res.status(204).end();
+  } catch (error) { sendControllerError(res, error); }
 }
 
 export async function listBoardRepos(req: AuthRequest, res: Response): Promise<void> {
   const id = userId(req, res); const board = idParam(req, res, 'boardId'); if (!id || !board) return;
   const allowed = await sqlClient`SELECT 1 FROM app.boards WHERE board_id=${board}::uuid AND (user_id=${id}::uuid OR visibility IN ('public','unlisted'))`;
   if (!allowed.length) return sendError(res, 404, 'Board not found.');
-  const rows = await sqlClient`SELECT br.added_at,r.repo_id,r.full_name,r.owner,r.name,r.url,c.description,c.primary_language FROM app.board_repos br JOIN app.repos r USING(repo_id) JOIN app.repo_content c USING(repo_id) WHERE br.board_id=${board}::uuid ORDER BY br.added_at DESC`;
+  const rows = await sqlClient`
+    SELECT br.added_at,r.repo_id,r.github_id,r.owner_github_id,r.full_name,r.owner,r.name,r.url,
+      r.status,r.created_at,r.updated_at,c.description,c.primary_language,c.languages,
+      ${sqlClient.unsafe(readmeSummaryProjection('r','c'))},to_jsonb(c)->>'readme_source_path' AS readme_source_path,to_jsonb(c)->>'readme_default_branch' AS readme_default_branch,to_jsonb(c)->>'readme_base_url' AS readme_base_url,
+      c.content_version,c.updated_at AS content_updated_at,c.source_updated_at,
+      e.likes_count,e.dislikes_count,e.saves_count,e.comments_count,e.views_count,
+      COALESCE(stat.star_count,0) AS star_count,COALESCE(stat.fork_count,0) AS fork_count,
+      COALESCE(stat.open_issues_count,0) AS open_issues_count,stat.observed_at AS stats_observed_at,
+      summary.summary_id,summary.summary,summary.highlights AS summary_highlights,
+      summary.prompt_version AS summary_prompt_version,summary.model_version AS summary_model_version,
+      summary.format_version AS summary_format_version,summary.source AS summary_source,
+      COALESCE((SELECT json_agg(topic.slug ORDER BY topic.slug)
+        FROM app.repo_topics repository_topic JOIN app.topics topic USING(topic_id)
+        WHERE repository_topic.repo_id=r.repo_id),'[]'::json) AS topics,
+      viewer_reaction.reaction AS viewer_reaction,
+      (viewer_save.repo_id IS NOT NULL) AS viewer_saved,
+      COALESCE((SELECT json_agg(selection.list_id ORDER BY selection.list_id) FROM (
+        SELECT 'collection:' || viewer_list.collection_id::text AS list_id
+        FROM app.collection_repos viewer_membership
+        JOIN app.board_collections viewer_list USING(collection_id)
+        WHERE viewer_membership.repo_id=r.repo_id AND viewer_list.user_id=${id}::uuid
+        UNION ALL
+        SELECT 'legacy-board:' || viewer_board.board_id::text AS list_id
+        FROM app.board_repos viewer_membership JOIN app.boards viewer_board USING(board_id)
+        WHERE viewer_membership.repo_id=r.repo_id AND viewer_board.user_id=${id}::uuid
+      ) selection),'[]'::json) AS selected_list_ids
+    FROM app.board_repos br
+    JOIN app.repos r USING(repo_id)
+    JOIN app.repo_content c USING(repo_id)
+    JOIN app.repo_engagement e USING(repo_id)
+    LEFT JOIN LATERAL (SELECT star_count,fork_count,open_issues_count,observed_at
+      FROM app.repo_stat_snapshots snapshot WHERE snapshot.repo_id=r.repo_id
+      ORDER BY observed_at DESC LIMIT 1) stat ON true
+    LEFT JOIN LATERAL (SELECT card.summary_id,card.summary,to_jsonb(card)->'highlights' AS highlights,
+      to_jsonb(card)->>'prompt_version' AS prompt_version,card.model_version,
+      to_jsonb(card)->>'format_version' AS format_version,to_jsonb(card)->>'source' AS source
+      FROM app.repo_card_summaries card WHERE card.repo_id=r.repo_id AND active
+        AND card.content_version=c.content_version
+        AND to_jsonb(card)->>'source' IN ('generated','description_fallback') ORDER BY created_at DESC LIMIT 1) summary ON true
+    LEFT JOIN app.reactions viewer_reaction
+      ON viewer_reaction.repo_id=r.repo_id AND viewer_reaction.user_id=${id}::uuid
+    LEFT JOIN app.saves viewer_save
+      ON viewer_save.repo_id=r.repo_id AND viewer_save.user_id=${id}::uuid
+    WHERE br.board_id=${board}::uuid AND r.status='active'
+    ORDER BY br.added_at DESC
+  `;
   sendSuccess(res, 200, { items: rows });
 }
 
@@ -702,22 +901,16 @@ export async function addBoardRepo(req: AuthRequest, res: Response): Promise<voi
     return sendError(res, 400, 'A stable v2 save event matching repoId is required.');
   }
   try {
-    await sqlClient.begin(async (tx) => {
-      const owned = await tx`SELECT 1 FROM app.boards WHERE board_id=${board}::uuid AND user_id=${id}::uuid`;
-      if (!owned.length) throw Object.assign(new Error('Board not found.'), { statusCode: 404 });
-      await processInteractionBatchV2InTransaction(tx, id, [event]);
-      await tx`
-        INSERT INTO app.board_repos(board_id,repo_id,added_by)
-        VALUES (${board}::uuid,${repo}::uuid,${id}::uuid)
-        ON CONFLICT (board_id,repo_id) DO NOTHING
-      `;
-    });
+    await addRepositoryToBoard(id, board, repo, event);
     res.status(204).end();
   } catch (error) { sendControllerError(res, error); }
 }
 
 export async function removeBoardRepo(req: AuthRequest, res: Response): Promise<void> {
   const id = userId(req, res); const board = idParam(req, res, 'boardId'); const repo = idParam(req, res, 'repoId'); if (!id || !board || !repo) return;
-  const rows = await sqlClient`DELETE FROM app.board_repos br USING app.boards b WHERE br.board_id=b.board_id AND br.board_id=${board}::uuid AND br.repo_id=${repo}::uuid AND b.user_id=${id}::uuid RETURNING br.board_id`;
-  if (!rows.length) return sendError(res, 404, 'Board repository entry not found.'); res.status(204).end();
+  try {
+    const removed = await removeRepositoryFromBoard(id, board, repo);
+    if (!removed) return sendError(res, 404, 'Board repository entry not found.');
+    res.status(204).end();
+  } catch (error) { sendControllerError(res, error); }
 }

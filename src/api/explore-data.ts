@@ -1,7 +1,10 @@
-import type { Repo, TabName } from '../types';
+import { mapRepositoryDetail } from '@/utils/repository-mapper';
+import type { RepositoryApiPayload } from '@/api/repositories';
+import type { RepositoryDetail } from '@/models/repository';
+import type { TabName } from '../types';
 
 export type ExploreRepoPage = {
-  items: ExploreRepository[];
+  items: RepositoryDetail[];
   nextOffset?: number;
   availablePeriods?: string[];
   period?: string;
@@ -19,51 +22,20 @@ export function getNextExploreOffset(tab: TabName, offset: number, itemCount: nu
     : undefined;
 }
 
-export function mergeExplorePages(pages: ExploreRepoPage[]): ExploreRepository[] {
-  const repos = new Map<string, ExploreRepository>();
+export function mergeExplorePages(pages: ExploreRepoPage[]): RepositoryDetail[] {
+  const repos = new Map<string, RepositoryDetail>();
   pages.forEach((page) => page.items.forEach((repo) => repos.set(repo.id, repo)));
   return [...repos.values()];
 }
 
-export type ExploreRepository = Repo & {
-  trend?: { rank: number; score: number | null; velocity: number | null };
-};
-
-export type RepositoryProjection = {
-  repo_id: string; name: string; full_name: string; owner: string; url: string;
-  description: string | null; primary_language: string | null;
-  star_count?: number | null; fork_count?: number | null;
-  position?: unknown; score?: unknown; features?: unknown;
-};
-
-function compactCount(value = 0): string {
-  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(value >= 10_000_000 ? 0 : 1)}M`;
-  if (value >= 1_000) return `${(value / 1_000).toFixed(value >= 10_000 ? 0 : 1)}K`;
-  return value.toString();
-}
-
-export function mapExploreRepository(repo: RepositoryProjection): ExploreRepository {
-  const gradients = [
-    ['#64D2FF', '#2A7FBF'], ['#FFB340', '#E08700'], ['#BF5AF2', '#8944AB'],
-    ['#63E6A9', '#2E9E6B'], ['#FF6482', '#C93A56'],
-  ] as const;
-  const seed = [...repo.owner].reduce((sum, character) => sum + character.charCodeAt(0), 0);
-  const avatarGradient = gradients[seed % gradients.length];
-  return {
-    id: repo.repo_id, name: repo.name, author: repo.owner, url: repo.url,
-    description: repo.description ?? 'No description provided.',
-    stars: compactCount(repo.star_count ?? 0), forks: compactCount(repo.fork_count ?? 0),
-    language: repo.primary_language ?? undefined, avatarInitial: repo.owner.slice(0, 2).toUpperCase(),
-    avatarColor: avatarGradient[0], avatarGradient,
-  };
-}
-
-export function mapTrendingRepository(repo: RepositoryProjection): ExploreRepository | null {
-  if (typeof repo.position !== 'number' || !Number.isInteger(repo.position) || repo.position < 0) return null;
-  const features = repo.features && typeof repo.features === 'object' ? repo.features as Record<string, unknown> : {};
-  return { ...mapExploreRepository(repo), trend: {
-    rank: repo.position + 1,
-    score: typeof repo.score === 'number' && Number.isFinite(repo.score) ? repo.score : null,
-    velocity: typeof features.trend_velocity === 'number' && Number.isFinite(features.trend_velocity) ? features.trend_velocity : null,
+export function mapTrendingRepository(payload: RepositoryApiPayload & { position?: unknown; score?: unknown; features?: unknown }, period: string, capturedAt: string | null): RepositoryDetail | null {
+  const repo = mapRepositoryDetail(payload);
+  if (!repo) return null;
+  const rank = payload.position;
+  if (typeof rank !== 'number' || !Number.isInteger(rank) || rank < 0) return null;
+  return { ...repo, trend: {
+    rank: rank + 1, score: typeof payload.score === 'number' && Number.isFinite(payload.score) ? payload.score : null,
+    features: payload.features && typeof payload.features === 'object' && !Array.isArray(payload.features) ? payload.features as Record<string, unknown> : {},
+    period, capturedAt,
   } };
 }

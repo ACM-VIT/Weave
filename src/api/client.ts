@@ -18,7 +18,15 @@ import {
 } from './session-transitions';
 import { retryUnauthorizedResponse, type TokenResponse } from './unauthorized-retry';
 
-type ApiEnvelope<T> = { success: true; data: T } | { success?: false; error?: string };
+type ApiEnvelope<T> = {
+  success: true;
+  data: T;
+} | {
+  success?: false;
+  error?: string;
+  code?: string;
+  retryable?: boolean;
+};
 
 type RefreshResponse = {
   accessToken?: string;
@@ -224,7 +232,11 @@ export async function apiV2Raw<T>(
 ): Promise<{ data: T; response: Response }> {
   const result = await requestV2(path, options, token);
   const { response } = result;
-  const payload = await readJson(response) as T | { error?: string; code?: string } | null;
+  const payload = await readJson(response) as T | {
+    error?: string;
+    code?: string;
+    retryable?: boolean;
+  } | null;
   authSessionLifecycle.assertCurrent(result.generation);
   if (!response.ok) {
     const error = new Error(payload && typeof payload === 'object' && 'error' in payload && payload.error
@@ -233,7 +245,10 @@ export async function apiV2Raw<T>(
       status: response.status,
       retryAfter: response.headers.get('retry-after'),
       accessToken: result.token,
-      code: payload && typeof payload === 'object' && 'code' in payload ? payload.code : undefined,
+      code: payload && typeof payload === 'object' && 'code' in payload
+        ? payload.code : undefined,
+      retryable: payload && typeof payload === 'object' && 'retryable' in payload
+        ? payload.retryable === true : false,
     });
     throw error;
   }

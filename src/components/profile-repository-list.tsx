@@ -1,8 +1,7 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   FlatList,
-  Linking,
   Pressable,
   StyleSheet,
   Text,
@@ -10,60 +9,34 @@ import {
   View,
   useWindowDimensions,
 } from 'react-native';
+import { router } from 'expo-router';
 import { useQuery } from '@tanstack/react-query';
 import { FolderGit2, GitFork, Heart, RotateCcw, Search, Star, X } from 'lucide-react-native';
 
 import { apiV2 } from '@/api/client';
+import type { RepositoryApiPayload } from '@/api/repositories';
 import { REFERENCE_THEME } from '@/constants/theme';
+import type { RepositoryDetail } from '@/models/repository';
 import { formatCompactCount } from '@/utils/format-count';
+import { README_SUMMARY_PENDING } from '@/utils/readme';
+import { repositoryHref } from '@/utils/repository-links';
+import { mapRepositoryList } from '@/utils/repository-mapper';
 import { getStorageItem } from '@/utils/storage';
 
 export type ProfileRepositoryType = 'likes' | 'saved';
-
-type RepositoryRecord = {
-  repo_id: string;
-  name: string;
-  owner: string;
-  full_name: string;
-  url: string;
-  description: string;
-  star_count: number;
-  fork_count: number;
-  likes_count: number;
-};
-
-type RawRepository = Record<string, unknown>;
-
-function normalizeRepository(repository: RawRepository): RepositoryRecord {
-  const fullName = String(repository.full_name ?? 'Unknown repository');
-  const [fallbackOwner = 'Unknown owner', fallbackName = fullName] = fullName.split('/');
-  const owner = String(repository.owner ?? repository.owner_id ?? fallbackOwner);
-  const name = String(repository.name ?? repository.repo_name ?? fallbackName);
-  return {
-    repo_id: String(repository.repo_id),
-    name,
-    owner,
-    full_name: fullName,
-    url: String(repository.url ?? repository.github_repo_url ?? `https://github.com/${owner}/${name}`),
-    description: String(repository.description ?? 'No description provided.'),
-    star_count: Number(repository.star_count ?? 0) || 0,
-    fork_count: Number(repository.fork_count ?? repository.forks_count ?? 0) || 0,
-    likes_count: Number(repository.likes_count ?? 0) || 0,
-  };
-}
 
 async function loadRepositories(
   type: ProfileRepositoryType,
   userId: string,
   signal?: AbortSignal,
-): Promise<RepositoryRecord[]> {
+): Promise<RepositoryDetail[]> {
   const token = await getStorageItem('access_token');
   if (!token) throw new Error('Your session has expired. Please sign in again.');
   const path = type === 'likes'
     ? `/users/${encodeURIComponent(userId)}/likes-given?limit=100&offset=0`
     : '/repositories/saved?limit=100&offset=0';
-  const data = await apiV2<{ items: RawRepository[] }>(path, { signal }, token);
-  return (Array.isArray(data.items) ? data.items : []).map(normalizeRepository);
+  const data = await apiV2<{ items: RepositoryApiPayload[] }>(path, { signal }, token);
+  return mapRepositoryList(Array.isArray(data.items) ? data.items : []);
 }
 
 export function ProfileRepositoryList({
@@ -78,6 +51,7 @@ export function ProfileRepositoryList({
   userId?: string;
 }) {
   const { width } = useWindowDimensions();
+  const searchInputRef = useRef<TextInput>(null);
   const compact = width < 360;
   const searchKey = `${type}:${userId ?? 'missing'}`;
   const [searchState, setSearchState] = useState({ key: searchKey, value: '' });
@@ -97,6 +71,7 @@ export function ProfileRepositoryList({
       repository.name.toLocaleLowerCase().includes(query)
       || repository.owner.toLocaleLowerCase().includes(query)
       || repository.description.toLocaleLowerCase().includes(query)
+      || repository.readmeSummary?.toLocaleLowerCase().includes(query)
     );
   }, [repositoriesQuery.data, search]);
 
@@ -128,18 +103,19 @@ export function ProfileRepositoryList({
       <View style={[styles.searchBox, compact && styles.searchBoxCompact]}>
         <Search color={REFERENCE_THEME.textTertiary} size={18} strokeWidth={1.8} />
         <TextInput
+          ref={searchInputRef}
           accessibilityLabel={`Search ${type === 'likes' ? 'liked' : 'saved'} repositories`}
           autoCapitalize="none"
           autoCorrect={false}
           onChangeText={setSearch}
           placeholder="Search repositories"
-          placeholderTextColor={REFERENCE_THEME.textTertiary}
+          placeholderTextColor={REFERENCE_THEME.textSecondary}
           returnKeyType="search"
           style={styles.searchInput}
           value={search}
         />
         {search ? (
-          <Pressable accessibilityLabel="Clear search" hitSlop={8} onPress={() => setSearch('')} style={({ pressed }) => [styles.clearButton, pressed && styles.pressed]}>
+          <Pressable accessibilityLabel="Clear search" hitSlop={14} accessibilityRole="button" onPress={() => { setSearch(''); searchInputRef.current?.focus(); }} style={({ pressed }) => [styles.clearButton, pressed && styles.pressed]}>
             <X color={REFERENCE_THEME.textSecondary} size={13} strokeWidth={2.4} />
           </Pressable>
         ) : null}
@@ -158,7 +134,7 @@ export function ProfileRepositoryList({
         ItemSeparatorComponent={() => <View style={styles.separator} />}
         keyboardDismissMode="on-drag"
         keyboardShouldPersistTaps="handled"
-        keyExtractor={(repository) => repository.repo_id}
+        keyExtractor={(repository) => repository.id}
         ListEmptyComponent={emptyState}
         numColumns={2}
         onRefresh={userId ? () => void repositoriesQuery.refetch() : undefined}
@@ -172,18 +148,21 @@ export function ProfileRepositoryList({
               <View style={styles.copy}>
                 <Text numberOfLines={1} style={[styles.name, compact && styles.nameCompact]}>{item.name}</Text>
                 <Text numberOfLines={1} style={styles.owner}>{item.owner}</Text>
+                <Text numberOfLines={2} style={styles.summary}>
+                  {item.readmeSummary || item.description || README_SUMMARY_PENDING}
+                </Text>
                 <View style={styles.metrics}>
-                  <Metric icon={<Star color="#F5C54D" fill="#F5C54D" size={11} />} value={item.star_count} />
-                  <Metric icon={<GitFork color={REFERENCE_THEME.textTertiary} size={11} />} value={item.fork_count} />
-                  {type === 'likes' ? <Metric icon={<Heart color={REFERENCE_THEME.accentLight} size={11} />} value={item.likes_count} /> : null}
+                  <Metric icon={<Star color="#F5C54D" fill="#F5C54D" size={11} />} value={item.stats.stars} />
+                  <Metric icon={<GitFork color={REFERENCE_THEME.textTertiary} size={11} />} value={item.stats.forks} />
+                  {type === 'likes' ? <Metric icon={<Heart color={REFERENCE_THEME.accentLight} size={11} />} value={item.stats.likes} /> : null}
                 </View>
               </View>
             </View>
             <Pressable
-              accessibilityHint="Opens this repository on GitHub"
-              accessibilityLabel={`Open ${item.full_name}`}
+              accessibilityHint="Opens this repository in Weave"
+              accessibilityLabel={`Open ${item.fullName}`}
               accessibilityRole="link"
-              onPress={() => void Linking.openURL(item.url).catch(() => undefined)}
+              onPress={() => router.push(repositoryHref(item.id))}
               style={({ pressed }) => [StyleSheet.absoluteFill, pressed && styles.cardPressedOverlay]}
             />
           </View>
@@ -221,8 +200,8 @@ const styles = StyleSheet.create({
   emptyListContent: { flexGrow: 1 },
   rowColumns: { justifyContent: 'space-between' },
   separator: { height: 14 },
-  row: { width: '48.3%', minHeight: 144, borderRadius: 18, borderCurve: 'continuous', overflow: 'hidden', backgroundColor: REFERENCE_THEME.surface, borderWidth: StyleSheet.hairlineWidth, borderColor: REFERENCE_THEME.separator, boxShadow: '0 3px 12px rgba(0,0,0,0.18)' },
-  rowCompact: { minHeight: 134 },
+  row: { width: '48.3%', minHeight: 168, borderRadius: 18, borderCurve: 'continuous', overflow: 'hidden', backgroundColor: REFERENCE_THEME.surface, borderWidth: StyleSheet.hairlineWidth, borderColor: REFERENCE_THEME.separator, boxShadow: '0 3px 12px rgba(0,0,0,0.18)' },
+  rowCompact: { minHeight: 158 },
   cardContent: { flex: 1, paddingHorizontal: 13, paddingVertical: 12, gap: 10 },
   cardPressedOverlay: { backgroundColor: 'rgba(255,255,255,0.06)' },
   repoIcon: { width: 48, height: 48, flexShrink: 0, borderRadius: 14, alignItems: 'center', justifyContent: 'center', backgroundColor: REFERENCE_THEME.control },
@@ -231,6 +210,7 @@ const styles = StyleSheet.create({
   name: { color: REFERENCE_THEME.text, fontFamily: 'NataSans-SemiBold', fontSize: 15, lineHeight: 19 },
   nameCompact: { fontSize: 13, lineHeight: 17 },
   owner: { color: REFERENCE_THEME.textSecondary, fontFamily: 'NataSans-Regular', fontSize: 12, lineHeight: 16 },
+  summary: { minHeight: 30, marginTop: 2, color: REFERENCE_THEME.textSecondary, fontFamily: 'NataSans-Regular', fontSize: 10.5, lineHeight: 15 },
   metrics: { marginTop: 3, flexDirection: 'row', alignItems: 'center', gap: 12 },
   metric: { flexDirection: 'row', alignItems: 'center', gap: 4 },
   metricText: { color: REFERENCE_THEME.textTertiary, fontFamily: 'NataSans-Regular', fontSize: 10.5, fontVariant: ['tabular-nums'] },

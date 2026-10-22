@@ -20,8 +20,12 @@ export default function AuthInput({
       {icon === "eye" && <View className="mr-3"><EyeIcon /></View>}
       
       <TextInput
+        accessibilityLabel={placeholder}
         placeholder={placeholder}
-        placeholderTextColor="rgba(235,235,245,0.3)"
+        placeholderTextColor="#A6A6AE"
+        autoCapitalize={secureTextEntry ? "none" : undefined}
+        autoCorrect={secureTextEntry ? false : undefined}
+        autoComplete={secureTextEntry ? "new-password" : undefined}
         secureTextEntry={secureTextEntry}
         className="font-nata text-white text-[13px] outline-none flex-1 h-full"
         {...rest}

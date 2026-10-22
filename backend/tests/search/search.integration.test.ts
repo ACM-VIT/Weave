@@ -92,6 +92,15 @@ integration('isolated PostgreSQL search: hydration, people deduplication, List p
         VALUES (${id!}::uuid,${String(ids.indexOf(id!)+99000000)}::bigint,'owner',${`owner/${name}`},${name!},${`https://github.com/owner/${name}`},${status!})`;
       await sqlClient`INSERT INTO app.repo_content(repo_id,description,primary_language,content_hash) VALUES (${id!}::uuid,${id === repo2 ? 'Database utilities' : 'phase4needle image models'},'Python','search-integration')`;
     }
+    const digest = {
+      overview: 'README digest describing the image model workflow in detail.',
+      capabilities: ['Loads image models.', 'Runs image inference.'],
+      use_cases: ['Explore an image classification workflow.'], considerations: [],
+    };
+    await sqlClient`INSERT INTO app.repo_card_summaries(repo_id,content_version,model_version,prompt_version,format_version,summary,source,active)
+      VALUES (${repo}::uuid,1,'test-model','test-prompt','test-card-format','Short card summary.','generated',true)`;
+    await sqlClient`INSERT INTO app.repo_readme_summaries(generation_id,repo_id,content_version,content_hash,prompt_version,format_version,model_version,artifact,active)
+      VALUES (${crypto.randomUUID()}::uuid,${repo}::uuid,1,'search-integration','readme-digest-v3','readme-digest-json-v1','test-model',${JSON.stringify(digest)}::jsonb,true)`;
     await sqlClient`INSERT INTO app.board_collections(collection_id,user_id,name) VALUES
       (${ownCollection}::uuid,${viewer}::uuid,'phase4needle own'),(${otherCollection}::uuid,${other}::uuid,'phase4needle private collection')`;
     for (const [id,visibility] of [[publicBoard,'public'],[privateBoard,'private'],[unlistedBoard,'unlisted']]) {
@@ -185,6 +194,11 @@ integration('isolated PostgreSQL search: hydration, people deduplication, List p
     const hydrated = await persistence.hydrate(viewer,refs);
     assert.deepEqual(new Set(hydrated.map(v=>v.id)),new Set([repo,repo2]));
     assert.equal(hydrated.find(v=>v.id===repo)?.data.full_name,'owner/vision');
+    const hydratedRepository = hydrated.find(v=>v.id===repo)!.data;
+    assert.equal(hydratedRepository.summary,'Short card summary.');
+    assert.equal((hydratedRepository.readme_digest as {overview:string}).overview,digest.overview);
+    assert.equal(hydratedRepository.readme_md,null,'Search excludes the full README');
+
     assert.deepEqual((await persistence.lexical(request())).map(v=>v.id),[repo]);
     assert.equal((await persistence.lexical(request({filters:{languages:['Rust']}}))).length,0);
     assert.equal((await persistence.hydrate(viewer,refs,request({filters:{languages:['Rust']}}))).length,0);
@@ -193,6 +207,15 @@ integration('isolated PostgreSQL search: hydration, people deduplication, List p
     const service = new SearchService(persistence,async req=>({schema_version:2,search_id:req.search_id,embedding_version:'test',items:refs.map((ref,index)=>({repo_id:ref.id,score:0.99-index*.01}))}), Date.now, new RedisSearchSnapshotStore(redisClient));
     const response = await service.search(viewer,request({group:'repositories',query:`image understanding ${repo}`}));
     assert.deepEqual(response.items.map(v=>v.id),[repo2,repo], 'conceptual query survives without lexical words in repository name/description');
+    const cachedQuery=request({group:'repositories',query:`digest cache ${repo}`});
+    await service.search(viewer,cachedQuery);
+    const refreshedDigest={...digest,overview:'A refreshed README digest, distinct from the short card summary.'};
+    await sqlClient`UPDATE app.repo_readme_summaries SET artifact=${JSON.stringify(refreshedDigest)}::jsonb WHERE repo_id=${repo}::uuid`;
+    const fromOtherInstance=new SearchService(persistence,async()=>{throw new Error('Ranking must come from Redis');},Date.now,new RedisSearchSnapshotStore(redisClient));
+    const refreshed=(await fromOtherInstance.search(viewer,{...cachedQuery,search_id:crypto.randomUUID()})).items.find(item=>item.id===repo)!.data;
+    assert.equal(refreshed.summary,'Short card summary.');
+    assert.equal((refreshed.readme_digest as {overview:string}).overview,refreshedDigest.overview,'Cached Redis rankings rehydrate current README artifacts');
+
     const paged = request({group:'lists',limit:1});
     const listRefs = (await persistence.lists(viewer, paged)).sort((a, b) => a.id.localeCompare(b.id));
     const prefetched: SearchRef[][] = [];

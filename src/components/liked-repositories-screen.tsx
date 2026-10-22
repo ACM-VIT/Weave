@@ -1,34 +1,19 @@
 import { useEffect, useState } from 'react';
-import { ActivityIndicator, FlatList, Linking, Pressable, Text, View, useWindowDimensions } from 'react-native';
+import { ActivityIndicator, FlatList, Pressable, Text, View, useWindowDimensions } from 'react-native';
 import { ArrowLeft, FolderGit2, GitFork, Heart, Star } from 'lucide-react-native';
 import { router, useLocalSearchParams } from 'expo-router';
 import { apiV2 } from '@/api/client';
-import { FEEDBACK_ACTIONS } from '@/constants/feedbackActions';
-import { getActivityOutbox } from '@/services/activityOutboxClient';
-import { useAuth } from '@/store/AuthContext';
+import type { RepositoryApiPayload } from '@/api/repositories';
+import type { RepositoryDetail } from '@/models/repository';
 import { formatCompactCount } from '@/utils/format-count';
+import { repositoryHref } from '@/utils/repository-links';
+import { mapRepositoryList } from '@/utils/repository-mapper';
 import { getStorageItem } from '@/utils/storage';
-
-type LikedRepository = {
-  repo_id: string;
-  github_repo_url: string;
-  owner_id: string;
-  repo_name: string;
-  full_name: string;
-  description: string | null;
-  language_used: unknown;
-  topics: unknown;
-  likes_count: number | null;
-  star_count: number | null;
-  forks_count: number | null;
-};
 
 export default function LikedRepositoriesScreen() {
   const { width } = useWindowDimensions();
   const { username, userId } = useLocalSearchParams<{ username?: string; userId?: string }>();
-  const { user } = useAuth();
-  const activityOutbox = user?.user_id ? getActivityOutbox(user.user_id) : null;
-  const [repositories, setRepositories] = useState<LikedRepository[]>([]);
+  const [repositories, setRepositories] = useState<RepositoryDetail[]>([]);
   const [loading, setLoading] = useState(Boolean(userId));
   const [error, setError] = useState('');
 
@@ -43,14 +28,14 @@ export default function LikedRepositoriesScreen() {
     getStorageItem('access_token')
       .then((token) => {
         if (!token) throw new Error('Your session has expired.');
-        return apiV2<{ items: LikedRepository[] }>(
+        return apiV2<{ items: RepositoryApiPayload[] }>(
           `/users/${encodeURIComponent(userId)}/likes-given?limit=100&offset=0`,
           { signal: controller.signal },
           token,
         );
       })
       .then((data) => {
-        if (active) setRepositories(Array.isArray(data.items) ? data.items : []);
+        if (active) setRepositories(mapRepositoryList(Array.isArray(data.items) ? data.items : []));
       })
       .catch((caught) => {
         if (active && caught.name !== 'AbortError') {
@@ -67,25 +52,8 @@ export default function LikedRepositoriesScreen() {
     };
   }, [userId]);
 
-  const openRepository = async (repository: LikedRepository) => {
-    try {
-      await Linking.openURL(repository.github_repo_url);
-    } catch {
-      // Do not train on an open that the operating system rejected.
-      return;
-    }
-
-    if (!activityOutbox) return;
-    try {
-      await activityOutbox.enqueue({
-        repo_id: repository.repo_id,
-        action: FEEDBACK_ACTIONS.githubOpen,
-      });
-      const token = await getStorageItem('access_token');
-      if (token) await activityOutbox.flush(token);
-    } catch {
-      // A successfully persisted event remains queued when delivery is offline or interrupted.
-    }
+  const openRepository = (repository: RepositoryDetail) => {
+    router.push(repositoryHref(repository.id));
   };
 
   return (
@@ -95,7 +63,7 @@ export default function LikedRepositoriesScreen() {
         style={{ width: width >= 768 ? '68%' : '100%', maxWidth: 650 }}
         contentContainerStyle={{ flexGrow: 1, paddingHorizontal: '7%', paddingBottom: '10%' }}
         data={repositories}
-        keyExtractor={(item) => item.repo_id}
+        keyExtractor={(item) => item.id}
         ItemSeparatorComponent={() => <View style={{ height: 12 }} />}
         ListHeaderComponent={<View style={{ paddingTop: '8%', paddingBottom: '7%', gap: 18 }}>
           <View style={{ flexDirection: 'row', alignItems: 'center' }}>
@@ -119,8 +87,8 @@ export default function LikedRepositoriesScreen() {
         </View>}
         renderItem={({ item }) => <Pressable
           accessibilityRole="link"
-          accessibilityLabel={`Open ${item.full_name}`}
-          onPress={() => { void openRepository(item); }}
+          accessibilityLabel={`Open ${item.fullName}`}
+          onPress={() => openRepository(item)}
           style={({ pressed }) => ({
             minHeight: width < 360 ? 92 : 104,
             borderRadius: 20,
@@ -138,12 +106,12 @@ export default function LikedRepositoriesScreen() {
             <FolderGit2 size={width < 360 ? 20 : 24} color="#63E08A" />
           </View>
           <View style={{ flex: 1, minWidth: 0, gap: 4 }}>
-            <Text selectable numberOfLines={1} style={{ color: '#F7F7F8', fontFamily: 'NataSans-SemiBold', fontSize: width < 360 ? 14 : 16 }}>{item.repo_name}</Text>
-            <Text selectable numberOfLines={1} style={{ color: '#77767C', fontFamily: 'NataSans-Regular', fontSize: width < 360 ? 11 : 13 }}>{item.owner_id}</Text>
+            <Text selectable numberOfLines={1} style={{ color: '#F7F7F8', fontFamily: 'NataSans-SemiBold', fontSize: width < 360 ? 14 : 16 }}>{item.name}</Text>
+            <Text selectable numberOfLines={1} style={{ color: '#77767C', fontFamily: 'NataSans-Regular', fontSize: width < 360 ? 11 : 13 }}>{item.owner}</Text>
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 13 }}>
-              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}><Star size={12} color="#F5C54D" fill="#F5C54D" /><Text selectable style={{ color: '#8A898F', fontFamily: 'NataSans-Regular', fontSize: 11, fontVariant: ['tabular-nums'] }}>{formatCompactCount(item.star_count)}</Text></View>
-              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}><GitFork size={12} color="#8A898F" /><Text selectable style={{ color: '#8A898F', fontFamily: 'NataSans-Regular', fontSize: 11, fontVariant: ['tabular-nums'] }}>{formatCompactCount(item.forks_count)}</Text></View>
-              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}><Heart size={12} color="#63E08A" /><Text selectable style={{ color: '#8A898F', fontFamily: 'NataSans-Regular', fontSize: 11, fontVariant: ['tabular-nums'] }}>{formatCompactCount(item.likes_count)}</Text></View>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}><Star size={12} color="#F5C54D" fill="#F5C54D" /><Text selectable style={{ color: '#8A898F', fontFamily: 'NataSans-Regular', fontSize: 11, fontVariant: ['tabular-nums'] }}>{formatCompactCount(item.stats.stars)}</Text></View>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}><GitFork size={12} color="#8A898F" /><Text selectable style={{ color: '#8A898F', fontFamily: 'NataSans-Regular', fontSize: 11, fontVariant: ['tabular-nums'] }}>{formatCompactCount(item.stats.forks)}</Text></View>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}><Heart size={12} color="#63E08A" /><Text selectable style={{ color: '#8A898F', fontFamily: 'NataSans-Regular', fontSize: 11, fontVariant: ['tabular-nums'] }}>{formatCompactCount(item.stats.likes)}</Text></View>
             </View>
           </View>
         </Pressable>}

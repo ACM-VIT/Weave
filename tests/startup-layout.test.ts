@@ -73,8 +73,10 @@ function startup({
 
   const mocks: Record<string, unknown> = {
     '@/global.css': {},
+    'react-native-keyboard-controller': { KeyboardProvider: ({ children }: { children: React.ReactNode }) => children },
     'expo-router': {
       useSegments: () => segments,
+      usePathname: () => '/repository/test-repo',
       useLocalSearchParams: () => ({ code: 'synthetic-oauth-code' }),
       useRouter: () => router,
       Stack: () => {

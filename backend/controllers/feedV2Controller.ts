@@ -3,7 +3,10 @@ import type { Response } from 'express';
 import type { AuthRequest } from '../middlewares/authMiddleware.js';
 import { isValidUuid } from '../utils/validators.js';
 import { getApplicationRuntime } from '../runtime/applicationRuntime.js';
-import { FeedRequestInProgressError } from '../services/feedV2Service.js';
+import {
+  FeedRequestInProgressError,
+  PersonalizedFeedUnavailableError,
+} from '../services/feedV2Service.js';
 import { InvalidFeedCursorError, StaleFeedCursorError } from '../services/feedCursor.js';
 
 export async function getFeedV2(req: AuthRequest, res: Response): Promise<void> {
@@ -29,6 +32,16 @@ export async function getFeedV2(req: AuthRequest, res: Response): Promise<void> 
     if (error instanceof FeedRequestInProgressError) {
       res.setHeader('Retry-After', '1');
       res.status(409).json({ error: error.message });
+      return;
+    }
+    if (error instanceof PersonalizedFeedUnavailableError) {
+      console.error('[FeedV2Controller] Personalized feed unavailable:', error.cause ?? error);
+      res.setHeader('Retry-After', '3');
+      res.status(503).json({
+        error: error.message,
+        code: error.code,
+        retryable: true,
+      });
       return;
     }
     console.error('[FeedV2Controller] Failed:', error);

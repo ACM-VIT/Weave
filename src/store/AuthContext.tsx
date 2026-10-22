@@ -10,10 +10,6 @@ import {
   retireSessionIfCurrent,
   type AuthenticatedSession,
 } from '../api/session-transitions';
-import {
-  DEVELOPMENT_PREVIEW_ENABLED,
-  DEVELOPMENT_PREVIEW_USER,
-} from '../config/development-preview';
 import { resolveOnboardingCompleted } from '../utils/auth-routing';
 import {
   mergeSavedUserProfile,
@@ -56,10 +52,8 @@ const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const queryClient = useQueryClient();
-  const [user, setUser] = useState<User | null>(() => (
-    DEVELOPMENT_PREVIEW_ENABLED ? DEVELOPMENT_PREVIEW_USER : null
-  ));
-  const [isLoading, setIsLoading] = useState(!DEVELOPMENT_PREVIEW_ENABLED);
+  const [user, setUser] = useState<User | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
   const [startupError, setStartupError] = useState<string | null>(null);
   const startupController = useRef<AbortController | null>(null);
 
@@ -114,11 +108,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const loadSession = useCallback(async () => {
-    if (DEVELOPMENT_PREVIEW_ENABLED) {
-      setUser(DEVELOPMENT_PREVIEW_USER);
-      setIsLoading(false);
-      return;
-    }
     const sessionGeneration = authSessionLifecycle.currentGeneration();
     startupController.current?.abort();
     const controller = new AbortController();
@@ -185,7 +174,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [fetchUserProfile]);
 
   const checkOnboardingStatus = useCallback(async () => {
-    if (DEVELOPMENT_PREVIEW_ENABLED) return;
     const sessionGeneration = authSessionLifecycle.currentGeneration();
     const token = await getStorageItem('access_token');
     authSessionLifecycle.assertCurrent(sessionGeneration);
@@ -221,11 +209,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [fetchUserProfile, queryClient]);
 
   const signOut = useCallback(async () => {
-    if (DEVELOPMENT_PREVIEW_ENABLED) {
-      setUser(DEVELOPMENT_PREVIEW_USER);
-      setIsLoading(false);
-      return;
-    }
     startupController.current?.abort();
     startupController.current = null;
     setStartupError(null);

@@ -3,6 +3,7 @@ import type {
   InteractionBatchResultV2,
   QueuedActivity,
 } from '../api/activity';
+import { SessionChangedError } from '../api/session-lifecycle';
 import { applyActivityAcknowledgement, nextActivityBatch } from './activityQueue';
 
 const ACTIVITY_RETRY_MAX_MS = 60_000;
@@ -29,6 +30,10 @@ export type ActivityOutboxDependencies = ActivityPersistence & {
   send: (events: QueuedActivity[], token: string) => Promise<InteractionBatchResultV2 | undefined>;
   prepare: (input: ActivityInput) => QueuedActivity;
   now?: () => number;
+  session?: {
+    capture: () => number;
+    assertCurrent: (token: string, generation: number) => void;
+  };
 };
 
 type ActivityListener = (result: ActivityFlushResult) => void | Promise<void>;
@@ -134,9 +139,12 @@ export class DurableActivityOutbox {
     return this.events.length;
   }
 
-  flush(token: string): Promise<ActivityFlushResult> {
+  flush(token: string, generation = this.dependencies.session?.capture()): Promise<ActivityFlushResult> {
+    // Reject a different owner/session even when another flush is in flight.
+    try { this.assertSession(token, generation); }
+    catch (error) { return Promise.reject(error); }
     if (this.flushPromise) return this.flushPromise;
-    const operation = this.flushInternal(token);
+    const operation = this.flushInternal(token, generation);
     this.flushPromise = operation;
     void operation.finally(() => {
       if (this.flushPromise === operation) this.flushPromise = null;
@@ -144,9 +152,18 @@ export class DurableActivityOutbox {
     return operation;
   }
 
-  private async flushInternal(token: string): Promise<ActivityFlushResult> {
+  private assertSession(token: string, generation: number | undefined): void {
+    if (this.dependencies.session && generation !== undefined) {
+      this.dependencies.session.assertCurrent(token, generation);
+    }
+  }
+
+  private async flushInternal(token: string, generation: number | undefined): Promise<ActivityFlushResult> {
+    this.assertSession(token, generation);
     await this.restore();
+    this.assertSession(token, generation);
     await this.mutationTail.catch(() => undefined);
+    this.assertSession(token, generation);
     if (this.events.length === 0) {
       return { delivered: 0, invalidatedFeed: false, deferred: false };
     }
@@ -161,11 +178,14 @@ export class DurableActivityOutbox {
     let snapshot: QueuedActivity[];
     try {
       snapshot = await this.mutate(async () => {
+        this.assertSession(token, generation);
         await this.ensureDurable();
+        this.assertSession(token, generation);
         return [...this.events];
       });
       while (snapshot.length > 0) {
         const batch = nextActivityBatch(snapshot);
+        this.assertSession(token, generation);
         const result = await this.dependencies.send(batch, token);
         if (!result) throw new Error('The activity service did not acknowledge the batch.');
         this.lastFeedVersion = result.feed_version;
@@ -205,8 +225,10 @@ export class DurableActivityOutbox {
       this.retryDelayMs = 1_000;
       this.retryNotBefore = 0;
     } catch (error) {
-      this.retryNotBefore = now() + this.retryDelayMs;
-      this.retryDelayMs = Math.min(ACTIVITY_RETRY_MAX_MS, this.retryDelayMs * 2);
+      if (!(error instanceof SessionChangedError)) {
+        this.retryNotBefore = now() + this.retryDelayMs;
+        this.retryDelayMs = Math.min(ACTIVITY_RETRY_MAX_MS, this.retryDelayMs * 2);
+      }
       throw error;
     } finally {
       if (delivered > 0) {

@@ -17,7 +17,7 @@ import { fileURLToPath } from 'node:url';
 import { preflightOAuthContract } from './oauth-contract-preflight.mjs';
 
 const DEFAULT_BACKEND_URL = 'https://weave-backend.krishang.dev/api';
-const DEFAULT_ANDROID_ARCHITECTURES = 'arm64-v8a';
+const DEFAULT_ANDROID_ARCHITECTURES = 'armeabi-v7a,arm64-v8a';
 const ARTIFACT_NAME = 'Weave-v2.0.0-internal-QA.apk';
 const SCRIPT_DIRECTORY = path.dirname(fileURLToPath(import.meta.url));
 const REPOSITORY_ROOT = path.resolve(SCRIPT_DIRECTORY, '..');
@@ -42,8 +42,8 @@ Environment:
               common Homebrew/macOS JDK 17 locations.
   WEAVE_ARTIFACT_ANDROID_ARCHITECTURES
               Optional comma-separated Android ABIs. Defaults to
-              ${DEFAULT_ANDROID_ARCHITECTURES} for modern Android phones and a
-              substantially smaller APK. Supported values: armeabi-v7a,
+              ${DEFAULT_ANDROID_ARCHITECTURES} so QA covers both 32-bit and 64-bit
+              physical Android phones. Supported values: armeabi-v7a,
               arm64-v8a, x86, x86_64.
 
 Output:

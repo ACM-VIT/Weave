@@ -4,11 +4,20 @@ import { createServer } from 'node:http';
 import { MlV2Client } from '../../services/mlService.js';
 import { FeedGenerationService } from '../../services/feedGenerationService.js';
 
-import type { CreateServeInput, RepositoryProjection, StoredServe } from '../../contracts/feed.v2.js';
+import type {
+  CreateServeInput,
+  RecommendationEntry,
+  RepositoryProjection,
+  StoredServe,
+} from '../../contracts/feed.v2.js';
 import type { FeedPersistencePort } from '../../ports/feedPersistencePort.js';
 import type { FeedQueuePort, FeedReservation } from '../../redis/feedQueue.js';
 import { ReservationOwnedError } from '../../redis/feedQueue.js';
-import { FeedRequestInProgressError, FeedV2Service } from '../../services/feedV2Service.js';
+import {
+  FeedRequestInProgressError,
+  FeedV2Service,
+  PersonalizedFeedUnavailableError,
+} from '../../services/feedV2Service.js';
 
 const repo: RepositoryProjection = {
   repo_id: '00000000-0000-4000-8000-000000000001', full_name: 'owner/repo', description: null,
@@ -29,6 +38,7 @@ class FakePersistence implements FeedPersistencePort {
   missesBeforeServe = 0;
   fallbackCalls = 0;
   fallbackViewerId: string | undefined;
+  recentPersonalized: RecommendationEntry[] = [];
   async getFeedVersion() { return this.version; }
   async listExcludedRepositoryIds(_user: string, _session: string | undefined, _limit: number): Promise<string[]> { return []; }
   async listFollowedRepositoryIds() { return []; }
@@ -45,6 +55,7 @@ class FakePersistence implements FeedPersistencePort {
     this.fallbackViewerId = viewerUserId;
     return [repo];
   }
+  async getRecentPersonalizedEntries() { return this.recentPersonalized; }
   async createServe(input: CreateServeInput) {
     this.serve = {
       ...input, serve_id: '00000000-0000-4000-8000-000000000099', created_at: new Date(0).toISOString(),
@@ -64,6 +75,8 @@ class FakeQueue implements FeedQueuePort {
   async commit() { this.committed++; return true; }
   async release() { this.released++; return true; }
   async replace() {}
+  async renewGenerationLock() { return true; }
+  async publishGeneration() { return true; }
   async depth() { return 0; }
   async acquireGenerationLock() { return true; }
   async releaseGenerationLock() {}
@@ -125,16 +138,39 @@ test('v2 feed replaces a stale queued summary id with the current persisted proj
 test('v2 feed reuses only current-version personalized entries when Redis is unavailable', async () => {
   const persistence = new FakePersistence();
   const queue = new FakeQueue();
+  persistence.recentPersonalized = [{
+    repo_id: repo.repo_id,
+    score: 0.9,
+    source: 'semantic',
+    model_version: 'm1',
+    summary_id: null,
+    generation_id: '00000000-0000-4000-8000-000000000098',
+  }];
   queue.reserve = async () => { throw new Error('redis offline'); };
   const response = await new FeedV2Service(persistence, queue).getFeed(
     '00000000-0000-4000-8000-000000000030',
     { feed_request_id: '00000000-0000-4000-8000-000000000011',
       session_id: '00000000-0000-4000-8000-000000000020', limit: 10, cursor: null },
   );
-  assert.equal(response.source, 'fallback');
+  assert.equal(response.source, 'personalized');
   assert.equal(response.items[0].repo_id, repo.repo_id);
-  assert.equal(persistence.fallbackViewerId, '00000000-0000-4000-8000-000000000030');
+  assert.equal(persistence.fallbackCalls, 0);
   assert.equal(queue.committed, 0);
+});
+
+test('v2 feed fails closed instead of showing generic repositories', async () => {
+  const persistence = new FakePersistence();
+  const queue = new FakeQueue();
+  queue.reserve = async () => { throw new Error('redis offline'); };
+  await assert.rejects(
+    new FeedV2Service(persistence, queue).getFeed(
+      '00000000-0000-4000-8000-000000000030',
+      { feed_request_id: '00000000-0000-4000-8000-000000000017',
+        session_id: '00000000-0000-4000-8000-000000000020', limit: 10, cursor: null },
+    ),
+    PersonalizedFeedUnavailableError,
+  );
+  assert.equal(persistence.fallbackCalls, 0);
 });
 
 test('reservation ownership waits for and replays the durable serve', async () => {
@@ -157,7 +193,7 @@ test('reservation ownership waits for and replays the durable serve', async () =
   persistence.missesBeforeServe = 1;
   queue.reserve = async () => { throw new ReservationOwnedError(); };
 
-  const response = await new FeedV2Service(persistence, queue, undefined, true, 10, 0).getFeed(
+  const response = await new FeedV2Service(persistence, queue, undefined, false, 10, 0).getFeed(
     persistence.serve.user_id,
     { feed_request_id: persistence.serve.feed_request_id, session_id: persistence.serve.session_id, limit: 10, cursor: null },
   );
@@ -170,7 +206,7 @@ test('reservation ownership never falls back or creates a competing serve', asyn
   const queue = new FakeQueue();
   queue.reserve = async () => { throw new ReservationOwnedError(); };
   await assert.rejects(
-    new FeedV2Service(persistence, queue, undefined, true, 1, 0).getFeed(
+    new FeedV2Service(persistence, queue, undefined, false, 1, 0).getFeed(
       '00000000-0000-4000-8000-000000000030',
       { feed_request_id: '00000000-0000-4000-8000-000000000014',
         session_id: '00000000-0000-4000-8000-000000000020', limit: 10, cursor: null },
@@ -283,7 +319,7 @@ test('signed cursor consumes remaining queue pages and preserves global position
   });
   queue.depth = async () => available.length;
   const service = new FeedV2Service(
-    persistence, queue, undefined, true, 1_500, 25, 'unit-test-feed-cursor-secret',
+    persistence, queue, undefined, false, 1_500, 25, 'unit-test-feed-cursor-secret',
   );
   const userId = '00000000-0000-4000-8000-000000000030';
   const sessionId = '00000000-0000-4000-8000-000000000020';
@@ -310,7 +346,7 @@ test('feed cursor rejects tampering and stale feed versions', async () => {
   queue.reserve = async (_user, _version, requestId, _limit, token) => ({ requestId, token, items: remaining.splice(0, 1) });
   queue.depth = async () => 1;
   const service = new FeedV2Service(
-    persistence, queue, undefined, true, 1_500, 25, 'unit-test-feed-cursor-secret',
+    persistence, queue, undefined, false, 1_500, 25, 'unit-test-feed-cursor-secret',
   );
   const userId = '00000000-0000-4000-8000-000000000030';
   const sessionId = '00000000-0000-4000-8000-000000000020';
@@ -368,7 +404,7 @@ test('configured fallback also excludes viewed and current-session repositories'
   persistence.listExcludedRepositoryIds=async()=>[viewed];
   persistence.getTrendingFallback=async(_limit,excluded)=>{received=excluded;return [repo];};
   queue.reserve=async()=>{throw new Error('offline');};
-  const response=await new FeedV2Service(persistence,queue).getFeed('00000000-0000-4000-8000-000000000030',{
+  const response=await new FeedV2Service(persistence,queue,undefined,true).getFeed('00000000-0000-4000-8000-000000000030',{
     feed_request_id:'00000000-0000-4000-8000-000000000096',session_id:'00000000-0000-4000-8000-000000000095',limit:10,cursor:null,
   });
   assert.equal(response.source,'fallback');
@@ -462,4 +498,44 @@ test('validated empty ML success ends continuation without opening the circuit',
   } finally {
     await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
   }
+});
+
+for (const fallbackEnabled of [false, true]) {
+  test(`successful empty first-page generation does not replay history or fallback (${fallbackEnabled})`, async () => {
+    const persistence = new FakePersistence();
+    persistence.recentPersonalized = [{ repo_id: repo.repo_id, score: 1, source: 'semantic', model_version: 'old', summary_id: null }];
+    let historyReads = 0;
+    persistence.getRecentPersonalizedEntries = async () => { historyReads++; return persistence.recentPersonalized; };
+    const queue = new FakeQueue();
+    queue.reserve = async (_u, _v, requestId, _l, token) => ({ requestId, token, items: [] });
+    const service = new FeedV2Service(persistence, queue,
+      async () => ({ status: 'generated', feedVersion: 3n, count: 0 }), fallbackEnabled);
+    const request = { feed_request_id: '00000000-0000-4000-8000-000000000071',
+      session_id: '00000000-0000-4000-8000-000000000020', limit: 10, cursor: null };
+    const result = await service.getFeed('00000000-0000-4000-8000-000000000030', request);
+    assert.deepEqual(result.items, []);
+    assert.equal(result.next_cursor, null);
+    assert.equal(historyReads, 0);
+    assert.equal(persistence.fallbackCalls, 0);
+    assert.deepEqual(await service.getFeed('00000000-0000-4000-8000-000000000030', request), result);
+  });
+}
+
+test('fallback serves reuse only the freshly hydrated cards for the requesting viewer',async()=>{
+  const persistence=new FakePersistence();
+  const queue=new FakeQueue();
+  queue.reserve=async(_u,_v,requestId,_l,token)=>({requestId,token,items:[]});
+  let extraHydrations=0;
+  persistence.listActiveRepositories=async()=>{extraHydrations++;throw new Error('Duplicate fallback hydration');};
+  const service=new FeedV2Service(persistence,queue,undefined,true);
+  const viewer='00000000-0000-4000-8000-000000000030';
+  const result=await service.getFeed(viewer,{
+    feed_request_id:'00000000-0000-4000-8000-000000000090',
+    session_id:'00000000-0000-4000-8000-000000000020',limit:10,cursor:null,
+  });
+  assert.equal(result.source,'fallback');
+  assert.equal(persistence.fallbackViewerId,viewer);
+  assert.equal(persistence.fallbackCalls,1);
+  assert.equal(extraHydrations,0);
+  assert.equal(result.items[0].repo_id,repo.repo_id);
 });

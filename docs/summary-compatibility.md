@@ -43,7 +43,7 @@ Keep both fixture copies synchronized when changing this policy.
 1. Deploy compatible ML #92 first, retaining the existing migration, schema-audit,
    provider/encoder readiness, and ingestion-canary gates. Verify applied,
    duplicate and current delivery, including repair of a fingerprinted legacy
-   artifact during a provider outage. Deploy compatible backend #136 afterward.
+   artifact during a provider outage. Deploy the compatible backend validator in #136 or #143 afterward.
 2. Inspect affected `dead` `repo_index` rows and their `last_error` read-only.
    Confirm each payload still matches the canonical repository content version
    and hash. Do not reset unrelated terminal errors or bypass copy protection.

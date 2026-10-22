@@ -166,7 +166,9 @@ export class DataReconciliationService {
   async resetAbandonedClaims(leaseMs = resolveOutboxLeaseMs()): Promise<number> {
     const rows = await this.client`
       UPDATE telemetry.ml_outbox SET status='pending',claim_token=NULL,claimed_at=NULL,available_at=now()
-      WHERE status='claimed' AND claimed_at < now()-(${leaseMs}::text || ' milliseconds')::interval RETURNING outbox_id
+      WHERE status='claimed'
+        AND claimed_at < now()-(${leaseMs}::double precision * interval '1 millisecond')
+      RETURNING outbox_id
     `;
     return rows.length;
   }

@@ -1,4 +1,4 @@
-import React, { memo, useCallback, useMemo, useState } from 'react';
+import React, { memo, useCallback, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   FlatList,
@@ -255,6 +255,7 @@ export function ConnectionList({
   onFollowingCountChange,
 }: ConnectionListProps) {
   const { width } = useWindowDimensions();
+  const searchInputRef = useRef<TextInput>(null);
   const compact = width < 360;
   const { user } = useAuth();
   const queryClient = useQueryClient();
@@ -461,13 +462,14 @@ export function ConnectionList({
       <View style={[styles.searchBox, compact && styles.searchBoxCompact]}>
         <Search color={REFERENCE_THEME.textTertiary} size={18} strokeWidth={1.8} />
         <TextInput
+          ref={searchInputRef}
           accessibilityLabel={`Search ${type}`}
           accessibilityHint="Searches people loaded so far. More results load as you scroll."
           autoCapitalize="none"
           autoCorrect={false}
           onChangeText={setSearch}
           placeholder={`Search ${type}`}
-          placeholderTextColor={REFERENCE_THEME.textTertiary}
+          placeholderTextColor={REFERENCE_THEME.textSecondary}
           returnKeyType="search"
           style={styles.searchInput}
           value={search}
@@ -475,8 +477,8 @@ export function ConnectionList({
         {search ? (
           <Pressable
             accessibilityLabel="Clear search"
-            hitSlop={8}
-            onPress={() => setSearch('')}
+            hitSlop={14}
+            accessibilityRole="button" onPress={() => { setSearch(''); searchInputRef.current?.focus(); }}
             style={({ pressed }) => [styles.clearButton, pressed && styles.pressed]}
           >
             <X color={REFERENCE_THEME.textSecondary} size={13} strokeWidth={2.4} />

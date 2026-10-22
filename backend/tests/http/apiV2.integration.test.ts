@@ -21,6 +21,8 @@ const ingestionDuplicateProfileId = '00000000-0000-4000-8000-000000000209';
 const renamedIngestionProfileId = '00000000-0000-4000-8000-000000000210';
 const recycledHandleProfileId = '00000000-0000-4000-8000-000000000211';
 
+const fixtureReadme = '# HTTP Repo\n\nComplete README content.\n' + 'Full source documentation. '.repeat(40_000);
+
 async function seed(): Promise<void> {
   await sqlClient`
     TRUNCATE app.social_profiles,app.users,app.repos,app.trending_snapshots,
@@ -55,13 +57,42 @@ async function seed(): Promise<void> {
     VALUES (${repoId}::uuid,202,9001,'owner/http-repo','owner','http-repo','https://github.com/owner/http-repo','active')
   `;
   await sqlClient`
-    INSERT INTO app.repo_content (repo_id,content_hash,description,languages)
-    VALUES (${repoId}::uuid,'http-test','repo','[]'::jsonb)
+    INSERT INTO app.repo_content (
+      repo_id,content_hash,description,readme,readme_source_path,
+      readme_default_branch,readme_base_url,primary_language,languages
+    ) VALUES (
+      ${repoId}::uuid,'http-test','repo',${fixtureReadme},
+      'docs/README.md','main','https://raw.githubusercontent.com/owner/http-repo/refs/heads/main/docs/',
+      'TypeScript','["TypeScript","SQL"]'::jsonb
+    )
   `;
   await sqlClient`INSERT INTO app.repo_engagement (repo_id) VALUES (${repoId}::uuid)`;
   await sqlClient`
+    INSERT INTO app.repo_stat_snapshots (
+      repo_id,star_count,fork_count,open_issues_count,observed_at
+    ) VALUES (${repoId}::uuid,12,3,2,now())
+  `;
+  const [topic] = await sqlClient`
+    INSERT INTO app.topics(slug,display_name) VALUES('phase-two','Phase Two')
+    ON CONFLICT(slug) DO UPDATE SET display_name=EXCLUDED.display_name
+    RETURNING topic_id
+  `;
+  await sqlClient`
+    INSERT INTO app.repo_topics(repo_id,topic_id)
+    VALUES(${repoId}::uuid,${String(topic.topic_id)}::bigint)
+  `;
+  await sqlClient`
+    INSERT INTO app.repo_card_summaries(
+      repo_id,content_version,prompt_version,model_version,format_version,
+      summary,highlights,source,active
+    ) VALUES(
+      ${repoId}::uuid,1,'repo-card-summary-v1','http-summary-v1','repo-card-summary-json-v1',
+      'Concise generated repository summary.','["Internal navigation"]'::jsonb,'generated',true
+    )
+  `;
+  await sqlClient`
     INSERT INTO app.trending_snapshots (snapshot_id,period,source,computed_at,complete,active,activated_at)
-    VALUES ('00000000-0000-4000-8000-000000000204','test','http',now(),true,true,now())
+    VALUES ('00000000-0000-4000-8000-000000000204','daily','http',now(),true,true,now())
   `;
   await sqlClient`
     INSERT INTO app.trending_snapshot_items (snapshot_id,position,repo_id)
@@ -108,6 +139,11 @@ integration('registered v2 HTTP paths complete controlled integration flows', as
   const base = `http://127.0.0.1:${address.port}`;
   const token = jwt.sign({ userId, email: 'test@example.com' }, process.env.JWT_SECRET!);
   const authHeaders = { authorization: `Bearer ${token}`, 'content-type': 'application/json' };
+  // Recommendation fixtures belong to this isolated HTTP test, never the live catalogue.
+  const seedRecommendation = async () => getApplicationRuntime().queue.replace(
+    userId, await feedPersistence.getFeedVersion(userId),
+    [{repo_id:repoId,score:1,source:'semantic',model_version:'http-test-model',summary_id:null}],600,
+  );
   try {
     const codec = new FeedCursorCodec(process.env.JWT_SECRET);
     for (const [cursor, expectedCode] of [
@@ -131,6 +167,13 @@ integration('registered v2 HTTP paths complete controlled integration flows', as
     });
     assert.equal(spoofHandle.status, 400);
 
+    const unavailable = await fetch(`${base}/api/v2/feed`, {
+      method:'POST',headers:authHeaders,body:JSON.stringify({
+        feed_request_id:crypto.randomUUID(),session_id:sessionId,limit:10,cursor:null,
+      }),
+    });
+    assert.equal(unavailable.status,503,'Missing ML generations must not invent personalized recommendations');
+    await seedRecommendation();
     const feedRequestId = crypto.randomUUID();
     const feed = await fetch(`${base}/api/v2/feed`, {
       method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json', 'x-request-id': 'http-integration' },
@@ -147,14 +190,33 @@ integration('registered v2 HTTP paths complete controlled integration flows', as
           owner_user_id: string | null;
           owner_profile_id: string | null;
           viewer_follows_owner: boolean;
+          summary_prompt_version: string | null;
+          readme_source_path: string | null;
+          readme_base_url: string | null;
         };
       }>;
     };
-    assert.equal(served.source, 'fallback');
+    assert.equal(served.source, 'personalized');
     assert.deepEqual(served.items.map((item) => item.repo_id), [repoId]);
     assert.equal(served.items[0].repository.owner_user_id, ownerUserId);
     assert.equal(served.items[0].repository.owner_profile_id, ownerProfileId);
     assert.equal(served.items[0].repository.viewer_follows_owner, false);
+    assert.equal(served.items[0].repository.summary_prompt_version, 'repo-card-summary-v1');
+    assert.equal(served.items[0].repository.readme_source_path, 'docs/README.md');
+    assert.equal(
+      served.items[0].repository.readme_base_url,
+      'https://raw.githubusercontent.com/owner/http-repo/refs/heads/main/docs/',
+    );
+    await sqlClient`
+      UPDATE telemetry.feed_serve_items SET summary_id=NULL
+      WHERE serve_id=${served.serve_id}::uuid
+    `;
+    const replayWithLegacyMissingSummary = await feedPersistence.getServeByRequest(userId, feedRequestId);
+    assert.match(replayWithLegacyMissingSummary?.items[0].summary_id ?? '', /^[0-9a-f-]{36}$/);
+    assert.equal(
+      replayWithLegacyMissingSummary?.items[0].repository.summary,
+      'Concise generated repository summary.',
+    );
 
     const interaction = await fetch(`${base}/api/v2/interactions/batch`, {
       method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
@@ -166,6 +228,134 @@ integration('registered v2 HTTP paths complete controlled integration flows', as
     });
     assert.equal(interaction.status, 202);
     assert.equal(Number((await sqlClient`SELECT count(*) AS count FROM telemetry.ml_outbox`)[0].count), 1);
+
+    const unauthenticatedDetail = await fetch(`${base}/api/v2/repositories/${repoId}`);
+    assert.equal(unauthenticatedDetail.status, 401);
+    const repositoryDetail = await fetch(`${base}/api/v2/repositories/${repoId}`, { headers: authHeaders });
+    assert.equal(repositoryDetail.status, 200);
+    const repositoryDetailData = (await repositoryDetail.json()) as {
+      data: {
+        repo_id: string;
+        github_id: string;
+        full_name: string;
+        owner_user_id: string | null;
+        owner_profile_id: string | null;
+        owner_display_name: string | null;
+        description: string | null;
+        summary: string | null;
+        summary_highlights: string[];
+        summary_prompt_version: string | null;
+        summary_format_version: string | null;
+        summary_source: string | null;
+        readme_md: string | null;
+        readme_source_path: string | null;
+        readme_default_branch: string | null;
+        readme_base_url: string | null;
+        languages: string[];
+        topics: string[];
+        star_count: number;
+        fork_count: number;
+        open_issues_count: number;
+        viewer_reaction: 'like' | 'dislike' | null;
+        viewer_saved: boolean;
+        selected_list_ids: string[];
+      };
+    };
+    assert.equal(repositoryDetailData.data.repo_id, repoId);
+    assert.equal(repositoryDetailData.data.github_id, '202');
+    assert.equal(repositoryDetailData.data.full_name, 'owner/http-repo');
+    assert.equal(repositoryDetailData.data.owner_user_id, ownerUserId);
+    assert.equal(repositoryDetailData.data.owner_profile_id, ownerProfileId);
+    assert.equal(repositoryDetailData.data.owner_display_name, 'owner');
+    assert.equal(repositoryDetailData.data.description, 'repo');
+    assert.equal(repositoryDetailData.data.summary, 'Concise generated repository summary.');
+    assert.deepEqual(repositoryDetailData.data.summary_highlights, ['Internal navigation']);
+    assert.equal(repositoryDetailData.data.summary_prompt_version, 'repo-card-summary-v1');
+    assert.equal(repositoryDetailData.data.summary_format_version, 'repo-card-summary-json-v1');
+    assert.equal(repositoryDetailData.data.summary_source, 'generated');
+    assert.equal(repositoryDetailData.data.readme_md, fixtureReadme, 'Detail retains the entire million-character document');
+    assert.equal(repositoryDetailData.data.readme_source_path, 'docs/README.md');
+    assert.equal(repositoryDetailData.data.readme_default_branch, 'main');
+    assert.equal(
+      repositoryDetailData.data.readme_base_url,
+      'https://raw.githubusercontent.com/owner/http-repo/refs/heads/main/docs/',
+    );
+    assert.deepEqual(repositoryDetailData.data.languages, ['TypeScript', 'SQL']);
+    assert.deepEqual(repositoryDetailData.data.topics, ['phase-two']);
+    assert.equal(repositoryDetailData.data.star_count, 12);
+    assert.equal(repositoryDetailData.data.fork_count, 3);
+    assert.equal(repositoryDetailData.data.open_issues_count, 2);
+    assert.equal(repositoryDetailData.data.viewer_reaction, 'like');
+    assert.equal(repositoryDetailData.data.viewer_saved, false);
+    assert.deepEqual(repositoryDetailData.data.selected_list_ids, []);
+
+    type ViewerAwareRepositoryListItem = {
+      repo_id: string;
+      summary: string | null;
+      summary_prompt_version: string | null;
+      summary_source: string | null;
+      readme_source_path: string | null;
+      readme_default_branch: string | null;
+      readme_base_url: string | null;
+      languages: string[];
+      topics: string[];
+      viewer_reaction: 'like' | 'dislike' | null;
+      viewer_saved: boolean;
+      selected_list_ids: string[];
+    };
+    const exploreRepositories = await fetch(
+      `${base}/api/v2/repositories?limit=25&offset=0`,
+      { headers: authHeaders },
+    );
+    assert.equal(exploreRepositories.status, 200);
+    const exploreItem = ((await exploreRepositories.json()) as {
+      data: { items: ViewerAwareRepositoryListItem[] };
+    }).data.items[0];
+    assert.equal(exploreItem.repo_id, repoId);
+    assert.equal(exploreItem.summary, 'Concise generated repository summary.');
+    assert.equal('readme_md' in exploreItem, false, 'Card lists fetch full README only through detail');
+    assert.ok(Buffer.byteLength(JSON.stringify(exploreItem)) < 20_000, 'Card size stays bounded by metadata despite a million-character README');
+    assert.equal(exploreItem.summary_prompt_version, 'repo-card-summary-v1');
+    assert.equal(exploreItem.summary_source, 'generated');
+    assert.equal(exploreItem.readme_source_path, 'docs/README.md');
+    assert.equal(exploreItem.readme_default_branch, 'main');
+    assert.equal(exploreItem.readme_base_url, 'https://raw.githubusercontent.com/owner/http-repo/refs/heads/main/docs/');
+    assert.deepEqual(exploreItem.languages, ['TypeScript', 'SQL']);
+    assert.deepEqual(exploreItem.topics, ['phase-two']);
+    assert.equal(exploreItem.viewer_reaction, 'like');
+    assert.equal(exploreItem.viewer_saved, false);
+    assert.deepEqual(exploreItem.selected_list_ids, []);
+
+    const trendingRepositories = await fetch(
+      `${base}/api/v2/repositories/trending?period=daily`,
+      { headers: authHeaders },
+    );
+    assert.equal(trendingRepositories.status, 200);
+    const trendingItem = ((await trendingRepositories.json()) as {
+      data: { items: ViewerAwareRepositoryListItem[] };
+    }).data.items[0];
+    assert.equal(trendingItem.repo_id, repoId);
+    assert.equal(trendingItem.summary, 'Concise generated repository summary.');
+    assert.equal('readme_md' in trendingItem, false, 'Trending cards load full README only on detail');
+    assert.equal(trendingItem.summary_prompt_version, 'repo-card-summary-v1');
+    assert.equal(trendingItem.readme_source_path, 'docs/README.md');
+    assert.deepEqual(trendingItem.languages, ['TypeScript', 'SQL']);
+    assert.deepEqual(trendingItem.topics, ['phase-two']);
+    assert.equal(trendingItem.viewer_reaction, 'like');
+    assert.equal(trendingItem.viewer_saved, false);
+    assert.deepEqual(trendingItem.selected_list_ids, []);
+    const trendingEtag=trendingRepositories.headers.get('etag')!;
+    const unchangedTrending=await fetch(`${base}/api/v2/repositories/trending?period=daily`,{
+      headers:{...authHeaders,'if-none-match':trendingEtag,'cache-control':'max-age=0'},
+    });
+    assert.equal(unchangedTrending.status,304);
+    const anotherTrendingViewer=await fetch(`${base}/api/v2/repositories/trending?period=daily`,{
+      headers:{authorization:`Bearer ${jwt.sign({userId:ownerUserId},process.env.JWT_SECRET!)}`,'if-none-match':trendingEtag},
+    });
+    assert.equal(anotherTrendingViewer.status,200,'Viewer state must participate in conditional response validation');
+    const anotherTrendingItem=((await anotherTrendingViewer.json()) as {data:{items:ViewerAwareRepositoryListItem[]}}).data.items[0];
+    assert.equal(anotherTrendingItem.viewer_reaction,null,'The shared public cache must never leak another viewer reaction');
+    assert.equal('readme_md' in anotherTrendingItem,false);
 
     const feedVersionBeforeFollow = BigInt((await sqlClient`
       SELECT feed_version FROM app.user_feed_state WHERE user_id=${userId}::uuid
@@ -247,6 +437,7 @@ integration('registered v2 HTTP paths complete controlled integration flows', as
     );
     assert.equal(unknownFollow.status, 404);
 
+    await seedRecommendation();
     const followedFeed = await fetch(`${base}/api/v2/feed`, {
       method: 'POST', headers: authHeaders,
       body: JSON.stringify({
@@ -263,10 +454,10 @@ integration('registered v2 HTTP paths complete controlled integration flows', as
         };
       }>;
     };
-    assert.deepEqual(followedItems.items, [], 'a followed repository already shown or engaged with stays excluded');
-    const [followedProjection] = await feedPersistence.listActiveRepositories([repoId], userId);
-    assert.equal(followedProjection.owner_user_id, ownerUserId);
-    assert.equal(followedProjection.viewer_follows_owner, true);
+    // This fixture explicitly publishes a queue entry; generation exclusions are
+    // exercised by the generation/database suites, not bypassed here via fallback.
+    assert.equal(followedItems.items[0].repository.owner_user_id, ownerUserId);
+    assert.equal(followedItems.items[0].repository.viewer_follows_owner, true);
     assert.deepEqual(await feedPersistence.listFollowedRepositoryIds(userId, 10), [repoId]);
 
     const unfollow = await fetch(`${base}/api/v2/users/${ownerUserId}/follow`, {
@@ -374,14 +565,26 @@ integration('registered v2 HTTP paths complete controlled integration flows', as
       headers: { authorization: `Bearer ${token}` },
     });
     assert.equal(likesGiven.status, 200);
-    const likedItems = (await likesGiven.json()) as { data: { items: Array<{ repo_id: string; repo_name: string }> } };
+    const likedItems = (await likesGiven.json()) as {
+      data: { items: Array<ViewerAwareRepositoryListItem & { repo_name: string }> };
+    };
     assert.deepEqual(likedItems.data.items.map((item) => item.repo_id), [repoId]);
     assert.equal(likedItems.data.items[0].repo_name, 'http-repo');
+    assert.equal(likedItems.data.items[0].viewer_reaction, 'like');
+    assert.equal(likedItems.data.items[0].viewer_saved, false);
+    assert.deepEqual(likedItems.data.items[0].selected_list_ids, []);
+    assert.equal(likedItems.data.items[0].summary, 'Concise generated repository summary.');
+    assert.equal('readme_md' in likedItems.data.items[0], false, 'Card lists fetch full README only through detail');
+    assert.ok(Buffer.byteLength(JSON.stringify(likedItems.data.items[0])) < 20_000, 'Card size stays bounded by metadata despite a million-character README');
 
     const me = await fetch(`${base}/api/v2/users/me`, { headers: authHeaders });
     assert.equal(me.status, 200);
     assert.equal(((await me.json()) as { data: { user_id: string } }).data.user_id, userId);
 
+    const completedProfile = await fetch(`${base}/api/v2/users/me`, {
+      method:'PATCH',headers:authHeaders,body:JSON.stringify({full_name:'HTTP Test User',date_of_birth:'2000-01-01'}),
+    });
+    assert.equal(completedProfile.status,200);
     const onboard = await fetch(`${base}/api/v2/onboarding`, {
       method: 'PUT', headers: authHeaders,
       body: JSON.stringify({
@@ -434,14 +637,42 @@ integration('registered v2 HTTP paths complete controlled integration flows', as
     const collectionId = collectionData.collection_id;
     assert.equal(collectionData.icon, '🔬');
     assert.equal(collectionData.color, '#5E5CE6');
+    const collectionSaveEvent = {
+      event_id: crypto.randomUUID(), schema_version: 2, session_id: sessionId, serve_id: served.serve_id,
+      repo_id: repoId, position: 0, event_type: 'save', dwell_ms: null,
+      client_occurred_at: new Date().toISOString(), context: { client: 'http-integration' },
+    };
     const collectionSave = await fetch(`${base}/api/v2/collections/save`, {
       method: 'POST', headers: authHeaders,
-      body: JSON.stringify({ repositoryId: repoId, collectionIds: [collectionId] }),
+      body: JSON.stringify({
+        repositoryId: repoId,
+        collectionIds: [collectionId],
+        boardIds: [],
+        event: collectionSaveEvent,
+      }),
     });
     assert.equal(collectionSave.status, 200);
     const collectionSaveData = (await collectionSave.json()) as { data: { saved: boolean; collection_ids: string[] } };
     assert.equal(collectionSaveData.data.saved, true);
     assert.deepEqual(collectionSaveData.data.collection_ids, [collectionId]);
+    const duplicateCollectionSave = await fetch(`${base}/api/v2/collections/save`, {
+      method: 'POST', headers: authHeaders,
+      body: JSON.stringify({
+        repositoryId: repoId,
+        collectionIds: [collectionId],
+        boardIds: [],
+        event: collectionSaveEvent,
+      }),
+    });
+    assert.equal(duplicateCollectionSave.status, 200);
+    assert.equal(Number((await sqlClient`
+      SELECT count(*) AS count FROM telemetry.interaction_events
+      WHERE event_id=${collectionSaveEvent.event_id}::uuid
+    `)[0].count), 1, 'a retried List save records feedback exactly once');
+    assert.equal(Number((await sqlClient`
+      SELECT count(*) AS count FROM telemetry.ml_outbox
+      WHERE idempotency_key=${`feedback:${collectionSaveEvent.event_id}`}
+    `)[0].count), 1);
     const collectionsForRepo = await fetch(`${base}/api/v2/collections?repository_id=${repoId}`, { headers: authHeaders });
     assert.equal(collectionsForRepo.status, 200);
     const collectionItems = (await collectionsForRepo.json()) as { data: { items: Array<{ collection_id: string; repo_count: number; selected: boolean }> } };
@@ -454,13 +685,81 @@ integration('registered v2 HTTP paths complete controlled integration flows', as
     );
     assert.equal(collectionRepos.status, 200);
     const collectionRepoItems = (await collectionRepos.json()) as {
-      data: { items: Array<{ repo_id: string; full_name: string }> };
+      data: { items: Array<ViewerAwareRepositoryListItem & { full_name: string }> };
     };
     assert.equal(collectionRepoItems.data.items[0].repo_id, repoId);
     assert.equal(collectionRepoItems.data.items[0].full_name, 'owner/http-repo');
+    assert.equal(collectionRepoItems.data.items[0].viewer_reaction, 'like');
+    assert.equal(collectionRepoItems.data.items[0].viewer_saved, true);
+    assert.deepEqual(collectionRepoItems.data.items[0].selected_list_ids, [`collection:${collectionId}`]);
+    assert.equal(collectionRepoItems.data.items[0].summary, 'Concise generated repository summary.');
+    assert.equal('readme_md' in collectionRepoItems.data.items[0], false, 'Card lists fetch full README only through detail');
+    assert.ok(Buffer.byteLength(JSON.stringify(collectionRepoItems.data.items[0])) < 20_000, 'Card size stays bounded by metadata despite a million-character README');
+    const secondCollection = await fetch(`${base}/api/v2/collections`, {
+      method: 'POST', headers: authHeaders, body: JSON.stringify({ name: 'Read next' }),
+    });
+    assert.equal(secondCollection.status, 201);
+    const secondCollectionId = ((await secondCollection.json()) as {
+      data: { collection_id: string };
+    }).data.collection_id;
+    const multiListSave = await fetch(`${base}/api/v2/collections/save`, {
+      method: 'POST', headers: authHeaders,
+      body: JSON.stringify({
+        repositoryId: repoId,
+        collectionIds: [collectionId, secondCollectionId],
+        boardIds: [],
+        event: { ...collectionSaveEvent, event_id: crypto.randomUUID() },
+      }),
+    });
+    assert.equal(multiListSave.status, 200);
+    const multiListData = (await multiListSave.json()) as {
+      data: { selected_list_ids: string[]; saved: boolean; save_state_changed: boolean };
+    };
+    assert.deepEqual(multiListData.data.selected_list_ids, [
+      `collection:${collectionId}`,
+      `collection:${secondCollectionId}`,
+    ]);
+    assert.equal(multiListData.data.saved, true);
+    assert.equal(multiListData.data.save_state_changed, false);
+
+    const selectedDetail = await fetch(`${base}/api/v2/repositories/${repoId}`, { headers: authHeaders });
+    assert.equal(selectedDetail.status, 200);
+    const selectedDetailData = ((await selectedDetail.json()) as {
+      data: { selected_list_ids: string[]; viewer_saved: boolean };
+    }).data;
+    assert.deepEqual(
+      [...selectedDetailData.selected_list_ids].sort(),
+      [`collection:${collectionId}`, `collection:${secondCollectionId}`].sort(),
+    );
+    assert.equal(selectedDetailData.viewer_saved, true);
+
+    const deleteFirstList = await fetch(`${base}/api/v2/collections/${collectionId}`, {
+      method: 'DELETE', headers: authHeaders,
+    });
+    assert.equal(deleteFirstList.status, 204);
+    assert.equal(Number((await sqlClient`
+      SELECT count(*) AS count FROM app.saves
+      WHERE user_id=${userId}::uuid AND repo_id=${repoId}::uuid
+    `)[0].count), 1, 'deleting one of two Lists keeps the repository saved');
+
+    const deleteFinalList = await fetch(`${base}/api/v2/collections/${secondCollectionId}`, {
+      method: 'DELETE', headers: authHeaders,
+    });
+    assert.equal(deleteFinalList.status, 204);
+    assert.equal(Number((await sqlClient`
+      SELECT count(*) AS count FROM app.saves
+      WHERE user_id=${userId}::uuid AND repo_id=${repoId}::uuid
+    `)[0].count), 0, 'deleting the final List clears the saved union');
+    assert.equal(Number((await sqlClient`
+      SELECT saves_count FROM app.repo_engagement WHERE repo_id=${repoId}::uuid
+    `)[0].saves_count), 0);
+    assert.equal(Number((await sqlClient`
+      SELECT saved_repos_count FROM app.user_stats WHERE user_id=${userId}::uuid
+    `)[0].saved_repos_count), 0);
+
     const board = await fetch(`${base}/api/v2/boards`, {
       method: 'POST', headers: authHeaders,
-      body: JSON.stringify({ name: 'Read later', visibility: 'private', collection_id: collectionId }),
+      body: JSON.stringify({ name: 'Read later', visibility: 'private' }),
     });
     assert.equal(board.status, 201);
     const boardId = ((await board.json()) as { data: { board_id: string } }).data.board_id;
@@ -492,15 +791,160 @@ integration('registered v2 HTTP paths complete controlled integration flows', as
     assert.equal(Number((await sqlClient`
       SELECT count(*) AS count FROM telemetry.ml_outbox WHERE idempotency_key=${`feedback:${saveEvent.event_id}`}
     `)[0].count), 1);
+    const boardsForRepo = await fetch(`${base}/api/v2/boards?repository_id=${repoId}`, {
+      headers: authHeaders,
+    });
+    assert.equal(boardsForRepo.status, 200);
+    const boardListItems = ((await boardsForRepo.json()) as {
+      data: { items: Array<{ board_id: string; selected: boolean }> };
+    }).data.items;
+    assert.equal(boardListItems[0].board_id, boardId);
+    assert.equal(boardListItems[0].selected, true);
     const boardRepos = await fetch(`${base}/api/v2/boards/${boardId}/repositories`, { headers: authHeaders });
     assert.equal(boardRepos.status, 200);
-    assert.equal(((await boardRepos.json()) as { data: { items: unknown[] } }).data.items.length, 1);
+    const boardRepoItems = ((await boardRepos.json()) as {
+      data: { items: ViewerAwareRepositoryListItem[] };
+    }).data.items;
+    assert.equal(boardRepoItems.length, 1);
+    assert.equal(boardRepoItems[0].viewer_reaction, 'like');
+    assert.equal(boardRepoItems[0].viewer_saved, true);
+    assert.deepEqual(boardRepoItems[0].selected_list_ids, [`legacy-board:${boardId}`]);
+    assert.equal(boardRepoItems[0].summary, 'Concise generated repository summary.');
+    assert.equal('readme_md' in boardRepoItems[0], false, 'Card lists fetch full README only through detail');
+    assert.ok(Buffer.byteLength(JSON.stringify(boardRepoItems[0])) < 20_000, 'Card size stays bounded by metadata despite a million-character README');
     const savedRepos = await fetch(`${base}/api/v2/repositories/saved`, { headers: authHeaders });
     assert.equal(savedRepos.status, 200);
-    assert.deepEqual(
-      ((await savedRepos.json()) as { data: { items: Array<{ repo_id: string }> } }).data.items.map((item) => item.repo_id),
-      [repoId],
+    const savedRepoItems = ((await savedRepos.json()) as {
+      data: { items: ViewerAwareRepositoryListItem[] };
+    }).data.items;
+    assert.deepEqual(savedRepoItems.map((item) => item.repo_id), [repoId]);
+    assert.equal(savedRepoItems[0].viewer_reaction, 'like');
+    assert.equal(savedRepoItems[0].viewer_saved, true);
+    assert.deepEqual(savedRepoItems[0].selected_list_ids, [`legacy-board:${boardId}`]);
+    assert.equal(savedRepoItems[0].summary, 'Concise generated repository summary.');
+    assert.equal('readme_md' in savedRepoItems[0], false, 'Card lists fetch full README only through detail');
+    assert.ok(Buffer.byteLength(JSON.stringify(savedRepoItems[0])) < 20_000, 'Card size stays bounded by metadata despite a million-character README');
+
+    const mixedCollection = await fetch(`${base}/api/v2/collections`, {
+      method: 'POST', headers: authHeaders, body: JSON.stringify({ name: 'Mixed membership' }),
+    });
+    assert.equal(mixedCollection.status, 201);
+    const mixedCollectionId = ((await mixedCollection.json()) as {
+      data: { collection_id: string };
+    }).data.collection_id;
+    const mixedSaveEvent = { ...saveEvent, event_id: crypto.randomUUID() };
+    const mixedSave = await fetch(`${base}/api/v2/collections/save`, {
+      method: 'POST', headers: authHeaders,
+      body: JSON.stringify({
+        repositoryId: repoId,
+        collectionIds: [mixedCollectionId],
+        boardIds: [boardId],
+        event: mixedSaveEvent,
+      }),
+    });
+    assert.equal(mixedSave.status, 200);
+    const mixedSaveData = ((await mixedSave.json()) as {
+      data: { selected_list_ids: string[]; saved: boolean; save_state_changed: boolean };
+    }).data;
+    assert.deepEqual(mixedSaveData.selected_list_ids, [
+      `collection:${mixedCollectionId}`,
+      `legacy-board:${boardId}`,
+    ]);
+    assert.equal(mixedSaveData.saved, true);
+    assert.equal(mixedSaveData.save_state_changed, false);
+    assert.equal(Number((await sqlClient`
+      SELECT count(*) AS count FROM telemetry.interaction_events
+      WHERE event_id=${mixedSaveEvent.event_id}::uuid
+    `)[0].count), 0, 'moving an already-saved repository does not duplicate save feedback');
+
+    const versionBeforeLegacySave=await feedPersistence.getFeedVersion(userId);
+    const legacySave=await fetch(`${base}/api/v2/collections/save`,{
+      method:'POST',headers:authHeaders,body:JSON.stringify({repositoryId:repoId,collectionIds:[]}),
+    });
+    assert.equal(legacySave.status,200);
+    const legacySaved=(await legacySave.json() as {data:{board_ids:string[];saved:boolean;save_state_changed:boolean}}).data;
+    assert.deepEqual(legacySaved.board_ids,[boardId]);assert.equal(legacySaved.saved,true);
+    assert.equal(legacySaved.save_state_changed,false);
+    assert.equal(await feedPersistence.getFeedVersion(userId),versionBeforeLegacySave,'No-op saved state must not invalidate pagination');
+    const invalidBoardIds=await fetch(`${base}/api/v2/collections/save`,{
+      method:'POST',headers:authHeaders,body:JSON.stringify({repositoryId:repoId,collectionIds:[],boardIds:null}),
+    });
+    assert.equal(invalidBoardIds.status,400,'Only omission preserves existing Boards; malformed values are rejected');
+
+    const keepBoardEvent = { ...saveEvent, event_id: crypto.randomUUID() };
+    const keepBoardOnly = await fetch(`${base}/api/v2/collections/save`, {
+      method: 'POST', headers: authHeaders,
+      body: JSON.stringify({
+        repositoryId: repoId,
+        collectionIds: [],
+        boardIds: [boardId],
+        event: keepBoardEvent,
+      }),
+    });
+    assert.equal(keepBoardOnly.status, 200);
+    const keepBoardOnlyData = ((await keepBoardOnly.json()) as {
+      data: { saved: boolean; save_state_changed: boolean };
+    }).data;
+    assert.equal(keepBoardOnlyData.saved, true);
+    assert.equal(keepBoardOnlyData.save_state_changed, false);
+
+    const unsaveEvent = {
+      ...saveEvent,
+      event_id: crypto.randomUUID(),
+      event_type: 'unsave',
+    };
+    const removeFinalMembership = await fetch(`${base}/api/v2/collections/save`, {
+      method: 'POST', headers: authHeaders,
+      body: JSON.stringify({
+        repositoryId: repoId,
+        collectionIds: [],
+        boardIds: [],
+        event: unsaveEvent,
+      }),
+    });
+    assert.equal(removeFinalMembership.status, 200);
+    const removeFinalMembershipData = ((await removeFinalMembership.json()) as {
+      data: { saved: boolean; save_state_changed: boolean };
+    }).data;
+    assert.equal(removeFinalMembershipData.saved, false);
+    assert.equal(removeFinalMembershipData.save_state_changed, true);
+    const duplicateFinalRemoval = await fetch(`${base}/api/v2/collections/save`, {
+      method: 'POST', headers: authHeaders,
+      body: JSON.stringify({
+        repositoryId: repoId,
+        collectionIds: [],
+        boardIds: [],
+        event: unsaveEvent,
+      }),
+    });
+    assert.equal(duplicateFinalRemoval.status, 200);
+    assert.equal(Number((await sqlClient`
+      SELECT count(*) AS count FROM app.saves
+      WHERE user_id=${userId}::uuid AND repo_id=${repoId}::uuid
+    `)[0].count), 0, 'removing the final List membership clears saved state');
+    assert.equal(Number((await sqlClient`
+      SELECT count(*) AS count FROM telemetry.interaction_events
+      WHERE event_id=${unsaveEvent.event_id}::uuid
+    `)[0].count), 1, 'a retried final removal records unsave feedback exactly once');
+    assert.equal(Number((await sqlClient`
+      SELECT count(*) AS count FROM telemetry.ml_outbox
+      WHERE idempotency_key=${`feedback:${unsaveEvent.event_id}`}
+    `)[0].count), 1);
+
+    const secondSaveEvent = { ...saveEvent, event_id: crypto.randomUUID() };
+    const reAddBoardRepository = await fetch(
+      `${base}/api/v2/boards/${boardId}/repositories/${repoId}`,
+      { method: 'PUT', headers: authHeaders, body: JSON.stringify({ event: secondSaveEvent }) },
     );
+    assert.equal(reAddBoardRepository.status, 204);
+    const deleteBoard = await fetch(`${base}/api/v2/boards/${boardId}`, {
+      method: 'DELETE', headers: authHeaders,
+    });
+    assert.equal(deleteBoard.status, 204);
+    assert.equal(Number((await sqlClient`
+      SELECT count(*) AS count FROM app.saves
+      WHERE user_id=${userId}::uuid AND repo_id=${repoId}::uuid
+    `)[0].count), 0, 'deleting a board recomputes saved state for its repositories');
 
     const legacy = await fetch(`${base}/api/users/id/${userId}`, { headers: authHeaders });
     assert.equal(legacy.status, 404);
@@ -533,6 +977,9 @@ integration('registered v2 HTTP paths complete controlled integration flows', as
         {
           github_id: '303', owner_github_id: '9003', full_name: 'new-owner/ingested', owner: 'new-owner', name: 'ingested',
           url: 'https://github.com/new-owner/ingested', description: 'ingested', languages: [], topics: [],
+          readme: '# Canonical README\n\n![Preview](./media/preview.png)',
+          readme_source_path: 'docs/README.md', readme_default_branch: 'main',
+          readme_base_url: 'https://raw.githubusercontent.com/new-owner/ingested/refs/heads/main/docs/',
           star_count: 1, fork_count: 0, observed_at: new Date().toISOString(),
         },
         {
@@ -549,6 +996,17 @@ integration('registered v2 HTTP paths complete controlled integration flows', as
     assert.match(ingested.mappings[0].repo_id, /^[0-9a-f-]{36}$/);
     assert.equal(ingested.mappings[1].github_id, '304');
     assert.match(ingested.mappings[1].repo_id, /^[0-9a-f-]{36}$/);
+    const ingestedContent = (await sqlClient`
+      SELECT readme,readme_source_path,readme_default_branch,readme_base_url
+      FROM app.repo_content WHERE repo_id=${ingested.mappings[0].repo_id}::uuid
+    `)[0];
+    assert.equal(String(ingestedContent.readme), '# Canonical README\n\n![Preview](./media/preview.png)');
+    assert.equal(String(ingestedContent.readme_source_path), 'docs/README.md');
+    assert.equal(String(ingestedContent.readme_default_branch), 'main');
+    assert.equal(
+      String(ingestedContent.readme_base_url),
+      'https://raw.githubusercontent.com/new-owner/ingested/refs/heads/main/docs/',
+    );
     assert.equal(Number((await sqlClient`
       SELECT count(*) AS count FROM app.social_profiles
       WHERE provider='github' AND provider_subject='9003' AND lower(handle)='new-owner'

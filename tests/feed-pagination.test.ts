@@ -343,3 +343,63 @@ test('replacement pagination does not copy its growing staged ID history', async
     assert.ok(copiedIds <= count, `60 replacement pages recopied ${copiedIds} prior IDs`);
   } finally { Object.defineProperty(Set.prototype, Symbol.iterator, descriptor); }
 });
+
+for (const duringRequest of [false, true]) {
+  test(`catalogue continuation keeps its cursor after interaction invalidation (${duringRequest ? 'in flight' : 'before request'})`, async () => {
+    const loaded = Array.from({ length: 6 }, (_, index) => ({
+      ...page(Array.from({ length: 10 }, (_, n) => `catalogue-${index * 10 + n}`), '0', `discovery:${(index + 1) * 10}`),
+      mode: 'discovery' as const,
+    }));
+    const calls: (string | null)[] = [];
+    const controller = new FeedPaginationController(async cursor => {
+      calls.push(cursor);
+      if (duringRequest) { controller.markStale(); controller.markStale('8'); }
+      if (cursor === null) return { ...page(['personalized-card'], '8'), mode: 'personalized' };
+      return { ...page(['catalogue-60'], '0', 'discovery:70'), mode: 'discovery' };
+    }, loaded);
+    if (!duringRequest) { controller.markStale(); controller.markStale('8'); }
+    const next = await controller.load('discovery:60');
+    assert.deepEqual(calls, ['discovery:60']);
+    assert.equal(next.mode, 'discovery');
+    assert.deepEqual(next.items.map(item => item.repo_id), ['catalogue-60']);
+    assert.equal(next.nextCursor, 'discovery:70');
+  });
+}
+
+test('catalogue errors never enter personalized stale-cursor recovery', async () => {
+  const calls: (string | null)[] = [];
+  const controller = new FeedPaginationController(async cursor => {
+    calls.push(cursor); throw stale();
+  }, [{ ...page(['catalogue-0'], '0', 'discovery:10'), mode: 'discovery' }]);
+  await assert.rejects(controller.load('discovery:10'));
+  assert.deepEqual(calls, ['discovery:10']);
+});
+
+for (const invalidation of ['acknowledged', 'cursor-rejected'] as const) {
+  test(`personalized ${invalidation} continuation cannot append catalogue cards`, async () => {
+    const loaded=[{...page(['personalized-1']),mode:'personalized' as const}];
+    let available=false;
+    const calls:(string|null)[]=[];
+    const controller=new FeedPaginationController(async cursor=>{
+      calls.push(cursor);
+      if (cursor!==null) throw stale();
+      return available ? {...page(['personalized-2'],'2'),mode:'personalized'}
+        : {...page(['catalogue-1'],'0','discovery:10'),mode:'discovery'};
+    },loaded,()=>loaded);
+    if(invalidation==='acknowledged') controller.markStale('2');
+    await assert.rejects(controller.load('personalized-next'),{code:'PERSONALIZED_FEED_UNAVAILABLE'});
+    assert.deepEqual(loaded[0].items.map(item=>item.repo_id),['personalized-1']);
+    available=true;
+    assert.equal((await controller.load('personalized-next')).mode,'personalized');
+    controller.reset(); available=false;
+    assert.equal((await controller.load(null)).mode,'discovery','Deliberate refresh may change the source');
+  });
+}
+
+test('an explicit multi-page refresh may replace catalogue pages with personalized pages',async()=>{
+  const loaded=[{...page(['catalogue-old'],'0','discovery:10'),mode:'discovery' as const}];
+  const signal=new AbortController().signal;
+  const controller=new FeedPaginationController(async cursor=>({...page([cursor?'personalized-2':'personalized-1'],'2',cursor?null:'next'),mode:'personalized'}),loaded,()=>loaded);
+  assert.equal((await controller.load(null,signal)).mode,'personalized');
+  assert.equal((await controller.load('next',signal)).mode,'personalized');
+});

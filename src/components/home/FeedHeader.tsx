@@ -8,7 +8,7 @@ import { REFERENCE_THEME } from '@/constants/theme';
 
 const WEAVE_LOGO = require('../../../assets/images/logo/weavelogo.png');
 
-export function FeedHeader({ pageWidth, onRefresh, refreshing = false }: { pageWidth: number; onRefresh?: () => void; refreshing?: boolean }) {
+export function FeedHeader({ pageWidth, discovery = false, onRefresh, refreshing = false }: { pageWidth: number; discovery?: boolean; onRefresh?: () => void; refreshing?: boolean }) {
   const insets = useSafeAreaInsets();
   const compact = pageWidth < 360;
   const outerGutter = pageWidth < 330 ? 10 : 14;
@@ -62,6 +62,8 @@ export function FeedHeader({ pageWidth, onRefresh, refreshing = false }: { pageW
             Wea<Text style={styles.brandAccent}>v</Text>e
           </Text>
         </View>
+        {discovery ? <Text accessibilityLabel="Recently updated repositories. Not personalized recommendations."
+          style={styles.sourceLabel}>Recently updated{'\n'}Not personalized</Text> : null}
         {onRefresh && <Pressable accessibilityRole="button" accessibilityLabel="Refresh recommendations"
           disabled={refreshing} onPress={onRefresh} style={styles.refresh}>
           {refreshing ? <ActivityIndicator color={REFERENCE_THEME.accent} /> : <RefreshCw size={22} color={REFERENCE_THEME.text} />}
@@ -86,9 +88,12 @@ const styles = StyleSheet.create({
     top: 0,
   },
   topBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 8,
     position: 'absolute',
     top: 0,
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
   },
   refresh: { minWidth: 44, minHeight: 44, alignItems: 'center', justifyContent: 'center' },
   brandRow: {
@@ -109,6 +114,14 @@ const styles = StyleSheet.create({
   brandCompact: {
     fontSize: 26,
     lineHeight: 32,
+  },
+  sourceLabel: {
+    color: REFERENCE_THEME.textSecondary,
+    fontFamily: 'NataSans-Regular',
+    fontSize: 11,
+    lineHeight: 15,
+    flexShrink: 1,
+    textAlign: 'right',
   },
   brandAccent: {
     color: '#63E08A',

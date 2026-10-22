@@ -11,9 +11,11 @@ repository refresh jobs to the authenticated ML v2 endpoints.
   to add a worker process.
 - Keep `ML_FEEDBACK_OUTBOX=true` and `DB_SCHEMA_V2_WRITES=true`.
 - Set `ML_DELIVERY_TIMEOUT_MS=30000`; health/recommendation reads retain the
-  shorter `ML_TIMEOUT_MS=5000` bound.
-- Repository indexing uses `ML_REPOSITORY_INDEX_TIMEOUT_MS=240000` by default.
-  Keep `OUTBOX_LEASE_MS` at least 60000 ms above that timeout (default 300000 ms).
+  shorter `ML_TIMEOUT_MS=5000` bound. Repository summary generation and
+  embedding use `ML_REPOSITORY_INDEX_TIMEOUT_MS=240000`.
+- Set `OUTBOX_LEASE_MS=300000`. Startup/claiming fails closed if the lease is
+  less than 60 seconds longer than the repository-index timeout. Abandoned-claim
+  reconciliation reads the same value, so any override remains consistent.
 - Keep `ML_V2_RECOMMENDATIONS=true`; production readiness must remain red until
   the ingestion canary returns a non-empty set of canonical backend `repo_id`
   UUIDs.
@@ -47,11 +49,11 @@ node dist/worker.js --role=outbox
 ```
 
 The script passes `--role=outbox`; an explicitly supplied `WORKER_ROLE` must
-match. Each run defaults to one delivery, claimed immediately before its HTTP
-request. The default database lease is 300 seconds; repository indexing has a
-240-second request bound, leaving at least 60 seconds for persistence/recovery.
-Jobs do not wait in a claimed batch behind an earlier request. After a crash,
-reconciliation can reclaim a job once its configured lease expires.
+match. Each run claims one row immediately before delivery, so the configured
+database lease never expires behind an older queued request. The systemd unit
+gives the container 300 seconds after `SIGTERM` (plus 30 seconds of supervisor
+margin), which exceeds the 240-second repository-index request bound and lets
+the single active row finish before shutdown.
 `SIGTERM` completes the active run and closes Redis/PostgreSQL connections.
 The outbox unit gives Docker 300 seconds to stop and systemd 330 seconds,
 covering the default 240-second index request and cleanup. When increasing
@@ -134,3 +136,51 @@ rewrites historical rows and preserves each repository's current
 `content_version`. The idempotency key includes the campaign ID, so rerunning
 the same command is safe: completed batches report as `already_queued`. Use a
 new campaign ID only for an intentional new complete reindex.
+
+## Previously purged repository-index checkpoints
+
+The retention fix preserves the last delivered index row going forward. It cannot
+recreate checkpoints deleted by an older worker. A pending `repo_refresh` without
+a delivered `repo_index` remains intentionally unclaimable. This is separate
+from dead-job replay and invalid-summary repair. Do not bypass that ordering gate
+or manufacture a delivered row.
+
+After the compatible ML/backend rollout and schema audit, inspect this read-only
+report on the authorized target:
+
+```sql
+SELECT repo.repo_id, repo.full_name, content.content_version, content.content_hash
+FROM app.repos repo JOIN app.repo_content content USING (repo_id)
+WHERE repo.status = 'active'
+  AND EXISTS (SELECT 1 FROM telemetry.ml_outbox refresh
+    WHERE refresh.aggregate_id = repo.repo_id AND refresh.job_type = 'repo_refresh'
+      AND refresh.status = 'pending')
+  AND NOT EXISTS (SELECT 1 FROM telemetry.ml_outbox checkpoint
+    WHERE checkpoint.aggregate_id = repo.repo_id AND checkpoint.job_type = 'repo_index'
+      AND checkpoint.status = 'delivered')
+ORDER BY repo.repo_id;
+```
+
+For each reviewed canonical repository ID, run a fresh, explicitly scoped campaign
+from `backend/` (repeat `--repo-id` for a reviewed batch):
+
+```text
+npm run reindex:ml -- --campaign=checkpoint-recovery-YYYYMMDD --repo-id=<canonical-UUID>
+```
+
+Review the target collection, IDs, content/hash, `invalid`, `missing_content`,
+`would_queue` and `already_queued`. With separate execution authorization, repeat
+the exact command with `--execute`. Keep the same campaign ID for retries. The
+job uses current canonical content and the strict V2 projection; it neither
+replays an obsolete historical payload nor rewrites source content.
+
+Allow the real ML index delivery to complete successfully, then verify a new
+`repo_index` is delivered and the pending refresh becomes claimable. Failed or
+terminal jobs require explicit inspection, not a success relabel. The query above
+should no longer include recovered repositories. Retain the new checkpoint and
+historical artifact references. Stop the worker if verification fails; do not
+delete history or repeatedly create campaigns to hide a delivery error.
+
+This recovery is covered on disposable local PostgreSQL with a validated fixture
+ML response. It is not evidence of affected deployed data or a live ML/provider
+probe, and production execution still requires authorization.

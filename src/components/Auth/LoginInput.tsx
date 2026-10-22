@@ -13,8 +13,12 @@ export default function LoginInput({
   return (
     <View className="h-[60px] border-2 border-[rgba(255,255,255,0.14)] rounded-[12px] bg-[#1C1C1E] px-5 justify-center">
       <TextInput
+        accessibilityLabel={placeholder}
+        autoComplete={secureTextEntry ? "current-password" : undefined}
         placeholder={placeholder}
-        placeholderTextColor="rgba(235,235,245,0.3)"
+        placeholderTextColor="#A6A6AE"
+        autoCapitalize={secureTextEntry ? "none" : undefined}
+        autoCorrect={secureTextEntry ? false : undefined}
         secureTextEntry={secureTextEntry}
         className="text-white text-[14px] font-nata outline-none w-full h-full"
         {...rest}

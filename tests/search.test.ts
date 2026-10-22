@@ -3,6 +3,7 @@ import test from 'node:test';
 import { InfiniteQueryObserver, QueryClient } from '@tanstack/react-query';
 import { isSearchExpired, runSearchRequest, searchQueryOptions, SearchSessions, SearchRequestTiming } from '../src/api/search-query';
 import { mapExploreRepository, mapTrendingRepository } from '../src/api/explore-data';
+import { mapRepositoryDetail } from '../src/utils/repository-mapper';
 import { searchResultHref, SEARCH_GROUPS, type SearchPage } from '../src/models/search';
 
 const projection = {
@@ -11,7 +12,7 @@ const projection = {
   primary_language: 'Python', star_count: 120, fork_count: 20,
 };
 const page = (cursor: string | null = null): SearchPage => ({
-  items: [{ type: 'repository', id: projection.repo_id, data: mapExploreRepository(projection) }],
+  items: [{ type: 'repository', id: projection.repo_id, data: mapRepositoryDetail(projection)! }],
   next_cursor: cursor, mode: 'hybrid',
 });
 const tick = () => new Promise(resolve => setTimeout(resolve, 0));
@@ -36,16 +37,16 @@ test('returning to a search group offline reuses cached pages until explicitly r
 });
 
 test('Trending preserves backend ranking and rejects absent or malformed positions', () => {
-  const repo = mapTrendingRepository({ ...projection, position: 1, score: 0.8, features: { trend_velocity: 12 } })!;
+  const repo = mapTrendingRepository({ ...projection, position: 1, score: 0.8, features: { trend_velocity: 12 } }, 'daily', null)!;
   assert.equal(repo.trend?.rank, 2);
   assert.equal(repo.trend?.score, 0.8);
-  assert.equal(repo.trend?.velocity, 12);
-  assert.equal(repo.stars, '120');
-  assert.equal(repo.forks, '20');
-  assert.equal(repo.language, 'Python');
-  assert.equal(mapTrendingRepository(projection), null);
-  assert.equal(mapTrendingRepository({ ...projection, position: 'bad' }), null);
-  assert.equal(mapTrendingRepository({ ...projection, position: null }), null);
+  assert.equal(repo.trend?.features.trend_velocity, 12);
+  assert.equal(repo.stats.stars, 120);
+  assert.equal(repo.stats.forks, 20);
+  assert.equal(repo.primaryLanguage, 'Python');
+  assert.equal(mapTrendingRepository(projection, 'daily', null), null);
+  assert.equal(mapTrendingRepository({ ...projection, position: 'bad' }, 'daily', null), null);
+  assert.equal(mapTrendingRepository({ ...projection, position: null }, 'daily', null), null);
 });
 
 test('all result types route to existing internal entity routes', () => {
@@ -54,14 +55,14 @@ test('all result types route to existing internal entity routes', () => {
   });
   for (const [user_id, profile_id] of [['user-id', null], [null, 'profile-id']]) {
     assert.deepEqual(searchResultHref({ type: 'person', id: 'person', data: {
-      user_id, profile_id, username: 'dev', display_name: null, bio: null,
+      user_id, profile_id, username: 'dev', display_name: null, bio: null, github_handle: null, avatar_url: null,
     } }), { pathname: '/user/[username]', params: {
       username: 'dev', ...(user_id ? { userId: user_id } : { profileId: profile_id }),
     } });
   }
   for (const source of ['collection', 'legacy-board'] as const) {
     assert.deepEqual(searchResultHref({ type: 'list', id: 'list', data: {
-      id: 'list', name: 'Vision', description: null, repositoryCount: 2, source,
+      id: 'list', name: 'Vision', description: null, repositoryCount: 2, source, icon: null, color: null, nestedListCount: 0, selected: false, createdAt: null, updatedAt: null, lastUpdatedAt: null,
     } }), { pathname: '/board', params: {
       boardName: 'Vision', boardDescription: '',
       ...(source === 'collection' ? { collectionId: 'list', collectionType: 'collection' } : { boardId: 'list' }),

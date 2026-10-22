@@ -28,6 +28,8 @@ test('ingestion rejects optional values that would deterministically fail DB or 
     github_id: '123', owner_github_id: '456', full_name: 'owner/name', owner: 'owner', name: 'name',
     url: 'https://github.com/owner/name', observed_at: '2026-07-21T00:00:00.000Z',
     description: null, readme: null, primary_language: null,
+    readme_source_path: 'docs/README.md', readme_default_branch: 'main',
+    readme_base_url: 'https://raw.githubusercontent.com/owner/name/refs/heads/main/docs/',
     languages: ['TypeScript'], topics: ['recommendations'],
     star_count: 1, fork_count: 0, open_issues_count: 0,
     pushed_at: '2026-07-20T00:00:00+05:30', recent_commits: ['2026-07-19T00:00:00Z'],
@@ -41,6 +43,42 @@ test('ingestion rejects optional values that would deterministically fail DB or 
   assert.equal(isRepositoryUpsert({ ...valid, pushed_at: 'not-a-date' }), false);
   assert.equal(isRepositoryUpsert({ ...valid, description: 42 }), false);
   assert.equal(isRepositoryUpsert({ ...valid, readme: 'x'.repeat(1_000_001) }), false);
+  assert.equal(isRepositoryUpsert({ ...valid, readme_base_url: 'http://example.com/docs/' }), false);
+  assert.equal(isRepositoryUpsert({ ...valid, readme_base_url: 'https://example.com/docs/file' }), false);
+  assert.equal(isRepositoryUpsert({
+    ...valid,
+    readme_base_url: 'https://raw.githubusercontent.com.evil.example/owner/name/refs/heads/main/docs/',
+  }), false);
+  assert.equal(isRepositoryUpsert({
+    ...valid,
+    readme_base_url: 'https://user:secret@raw.githubusercontent.com/owner/name/refs/heads/main/docs/',
+  }), false);
+  assert.equal(isRepositoryUpsert({
+    ...valid,
+    readme_base_url: 'https://raw.githubusercontent.com/owner/name/refs/heads/main/docs/?token=secret',
+  }), false);
+  assert.equal(isRepositoryUpsert({ ...valid, readme_source_path: '/README.md' }), false);
+  assert.equal(isRepositoryUpsert({ ...valid, readme_source_path: 'docs\\README.md' }), false);
+  assert.equal(isRepositoryUpsert({ ...valid, readme_source_path: 'docs/../README.md' }), false);
+  assert.equal(isRepositoryUpsert({ ...valid, readme_default_branch: 'release\\v2' }), false);
+  assert.equal(isRepositoryUpsert({ ...valid, readme_default_branch: 'release/../main' }), false);
+  const sourcePathAtLimit = `docs/${'a'.repeat(1_016)}.md`;
+  const branchAtLimit = `release/${'a'.repeat(248)}`;
+  const basePrefix = 'https://raw.githubusercontent.com/o/r/refs/heads/main/';
+  const baseUrlAtLimit = `${basePrefix}${'a'.repeat(2_048 - basePrefix.length - 1)}/`;
+  assert.equal(sourcePathAtLimit.length, 1_024);
+  assert.equal(branchAtLimit.length, 256);
+  assert.equal(baseUrlAtLimit.length, 2_048);
+  assert.equal(isRepositoryUpsert({ ...valid, readme_source_path: sourcePathAtLimit }), true);
+  assert.equal(isRepositoryUpsert({ ...valid, readme_default_branch: branchAtLimit }), true);
+  assert.equal(isRepositoryUpsert({ ...valid, readme_base_url: baseUrlAtLimit }), true);
+  assert.equal(isRepositoryUpsert({ ...valid, readme_source_path: `${sourcePathAtLimit}x` }), false);
+  assert.equal(isRepositoryUpsert({ ...valid, readme_default_branch: `${branchAtLimit}x` }), false);
+  assert.equal(isRepositoryUpsert({
+    ...valid,
+    readme_base_url: `${basePrefix}${'a'.repeat(2_048 - basePrefix.length)}/`,
+  }), false);
+  assert.equal(isRepositoryUpsert({ ...valid, readme_source_path: '' }), false);
   assert.equal(isRepositoryUpsert({ ...valid, full_name: 'owner /name' }), false);
   assert.equal(isRepositoryUpsert({ ...valid, readme_source_path: 'docs/README.md',
     readme_default_branch: 'release/stable',

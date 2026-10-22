@@ -4,10 +4,13 @@ import { FolderGit2 } from 'lucide-react-native';
 import Svg, { Circle, Defs, LinearGradient, Path, Stop } from 'react-native-svg';
 
 import { APP_THEME, REFERENCE_THEME } from '@/constants/theme';
-import { Repo } from '../../types';
+import type { RepositoryDetail } from '@/models/repository';
+import { getAvatarColor } from '@/utils/avatar-color';
+import { formatCompactCount } from '@/utils/format-count';
+import { README_SUMMARY_PENDING } from '@/utils/readme';
 
 interface RepoCardProps {
-  repo: Repo;
+  repo: RepositoryDetail;
   onPress?: () => void;
   showMetrics?: boolean;
   variant?: 'default' | 'profile';
@@ -39,16 +42,16 @@ function ForkIcon(): React.JSX.Element {
   );
 }
 
-function GradientAvatar({ repo }: { repo: Repo }): React.JSX.Element {
-  const colors = repo.avatarGradient ?? [repo.avatarColor, repo.avatarColor];
+function GradientAvatar({ repo }: { repo: RepositoryDetail }): React.JSX.Element {
+  const color = getAvatarColor(repo.fullName);
 
   return (
     <View style={{ width: 20, height: 20 }}>
       <Svg width={20} height={20} viewBox="0 0 20 20">
         <Defs>
           <LinearGradient id={`avatar-${repo.id}`} x1="3" y1="2" x2="17" y2="18" gradientUnits="userSpaceOnUse">
-            <Stop offset="0" stopColor={colors[0]} />
-            <Stop offset="1" stopColor={colors[1]} />
+            <Stop offset="0" stopColor={color} />
+            <Stop offset="1" stopColor={APP_THEME.primary} />
           </LinearGradient>
         </Defs>
         <Circle cx={10} cy={10} r={10} fill={`url(#avatar-${repo.id})`} />
@@ -61,7 +64,7 @@ function GradientAvatar({ repo }: { repo: Repo }): React.JSX.Element {
           justifyContent: 'center',
         }}
       >
-        <Text style={{ color: '#FFFFFF', fontSize: 8, fontWeight: '700' }}>{repo.avatarInitial}</Text>
+        <Text style={{ color: '#FFFFFF', fontSize: 8, fontWeight: '700' }}>{repo.owner.slice(0, 2).toUpperCase()}</Text>
       </View>
     </View>
   );
@@ -74,11 +77,12 @@ export default function RepoCard({
   variant = 'default',
   compact = false,
 }: RepoCardProps): React.JSX.Element {
+  const cardSummary = repo.readmeSummary || repo.description || README_SUMMARY_PENDING;
   if (variant === 'profile') {
     return (
       <Pressable
         accessibilityHint="Opens this repository"
-        accessibilityLabel={`Open ${repo.name} by ${repo.author}`}
+        accessibilityLabel={`Open ${repo.name} by ${repo.owner}`}
         accessibilityRole="link"
         onPress={onPress}
         style={({ pressed }) => [
@@ -102,7 +106,7 @@ export default function RepoCard({
             >
               {repo.name}
             </Text>
-            {repo.description ? (
+            {cardSummary ? (
               <Text
                 numberOfLines={compact ? 2 : 3}
                 style={[
@@ -110,7 +114,7 @@ export default function RepoCard({
                   compact && styles.profileCardDescriptionCompact,
                 ]}
               >
-                {repo.description}
+                {cardSummary}
               </Text>
             ) : null}
           </View>
@@ -118,17 +122,17 @@ export default function RepoCard({
 
         <View style={styles.profileCardFooter}>
           <Text numberOfLines={1} style={styles.profileCardAuthor}>
-            {repo.author}
+            {repo.owner}
           </Text>
           {showMetrics ? (
             <View style={styles.profileCardMetrics}>
               <View style={styles.profileCardMetric}>
                 <StarIcon />
-                <Text style={styles.profileCardMetricText}>{repo.stars}</Text>
+                <Text style={styles.profileCardMetricText}>{formatCompactCount(repo.stats.stars)}</Text>
               </View>
               <View style={styles.profileCardMetric}>
                 <ForkIcon />
-                <Text style={styles.profileCardMetricText}>{repo.forks}</Text>
+                <Text style={styles.profileCardMetricText}>{formatCompactCount(repo.stats.forks)}</Text>
               </View>
             </View>
           ) : null}
@@ -140,7 +144,7 @@ export default function RepoCard({
   return (
     <Pressable
       accessibilityHint="Opens this repository"
-      accessibilityLabel={`Open ${repo.name} by ${repo.author}`}
+      accessibilityLabel={`Open ${repo.name} by ${repo.owner}`}
       accessibilityRole="link"
       onPress={onPress}
       style={{
@@ -161,6 +165,8 @@ export default function RepoCard({
         {repo.name}
       </Text>
       <Text
+        ellipsizeMode="tail"
+        numberOfLines={4}
         style={{
           color: 'rgba(235, 235, 245, 0.55)',
           fontSize: 11.5,
@@ -168,23 +174,23 @@ export default function RepoCard({
           marginTop: 5,
         }}
       >
-        {repo.description}
+        {cardSummary}
       </Text>
       {showMetrics ? (
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 11, marginTop: 8 }}>
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
             <StarIcon />
-            <Text style={{ color: 'rgba(235, 235, 245, 0.55)', fontSize: 11.5, fontWeight: '500' }}>{repo.stars}</Text>
+            <Text style={{ color: 'rgba(235, 235, 245, 0.55)', fontSize: 11.5, fontWeight: '500' }}>{formatCompactCount(repo.stats.stars)}</Text>
           </View>
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
             <ForkIcon />
-            <Text style={{ color: 'rgba(235, 235, 245, 0.55)', fontSize: 11.5, fontWeight: '500' }}>{repo.forks}</Text>
+            <Text style={{ color: 'rgba(235, 235, 245, 0.55)', fontSize: 11.5, fontWeight: '500' }}>{formatCompactCount(repo.stats.forks)}</Text>
           </View>
         </View>
       ) : null}
       <View style={{ flexDirection: 'row', alignItems: 'center', gap: 7, marginTop: 11 }}>
         <GradientAvatar repo={repo} />
-        <Text style={{ color: 'rgba(235, 235, 245, 0.6)', fontSize: 12, fontWeight: '500' }}>{repo.author}</Text>
+        <Text style={{ color: 'rgba(235, 235, 245, 0.6)', fontSize: 12, fontWeight: '500' }}>{repo.owner}</Text>
       </View>
     </Pressable>
   );

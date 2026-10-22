@@ -25,6 +25,7 @@ const requiredVariables = [
   'ML_FEEDBACK_OUTBOX',
   'ML_QDRANT_ONLY',
   'TRENDING_FALLBACK',
+  'TRENDING_INGESTION',
 ] as const;
 
 type DeploymentEnvironment = Readonly<Record<string, string | undefined>>;
@@ -165,6 +166,7 @@ export function validateDeploymentEnvironment(env: DeploymentEnvironment = proce
     'ML_V2_RECOMMENDATIONS',
     'ML_FEEDBACK_OUTBOX',
     'ML_QDRANT_ONLY',
+    'TRENDING_INGESTION',
   ] as const;
   const enabledFlagValues = new Set(['1', 'true', 'yes', 'on']);
   const disabledV2Flags = requiredV2Flags.filter(

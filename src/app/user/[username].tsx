@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { Alert, Linking } from 'react-native';
+import { Alert } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 
@@ -16,17 +16,15 @@ import {
   OtherUserProfile,
   type OtherUserProfileData,
 } from '@/components/other-user-profile';
-import {
-  DEVELOPMENT_PREVIEW_ENABLED,
-} from '@/config/development-preview';
-import { DEVELOPMENT_REPOSITORIES } from '@/data/development-repositories';
+import type { RepositoryDetail } from '@/models/repository';
 import { useAuth } from '@/store/AuthContext';
-import type { Repo } from '@/types';
 import {
   followStateQueryKey,
   getProfileFollowIdentity,
 } from '@/utils/follow-state';
 import { getStorageItem } from '@/utils/storage';
+import { repositoryHref } from '@/utils/repository-links';
+import { mapRepositoryList } from '@/utils/repository-mapper';
 
 type OtherUserRouteParams = {
   username?: string | string[];
@@ -55,24 +53,6 @@ function booleanParam(value: string | string[] | undefined) {
   return firstParam(value) === 'true';
 }
 
-function repositoryUrl(repository: Repo) {
-  return repository.url
-    || `https://github.com/${encodeURIComponent(repository.author)}/${encodeURIComponent(repository.name)}`;
-}
-
-const DEVELOPMENT_PINNED_REPOSITORIES: Repo[] = DEVELOPMENT_REPOSITORIES.slice(0, 3).map((repository) => ({
-  id: `other-profile:${repository.id}:${repository.title}`,
-  name: repository.title,
-  description: repository.description,
-  stars: repository.stats.stars,
-  forks: repository.stats.forks,
-  author: repository.owner,
-  avatarColor: '#23963F',
-  avatarInitial: repository.owner.slice(0, 2).toUpperCase(),
-  language: repository.techStack?.[0],
-  url: `https://github.com/${encodeURIComponent(repository.owner)}/${encodeURIComponent(repository.title)}`,
-}));
-
 export default function OtherUserProfileRoute() {
   const params = useLocalSearchParams<OtherUserRouteParams>();
   const { user, checkOnboardingStatus } = useAuth();
@@ -89,9 +69,7 @@ export default function OtherUserProfileRoute() {
 
   const profileQuery = useQuery({
     queryKey: ['public-user-profile', targetKind, targetId],
-    enabled: targetKind !== 'route'
-      && user?.isPreview !== true
-      && !DEVELOPMENT_PREVIEW_ENABLED,
+    enabled: targetKind !== 'route',
     queryFn: async ({ signal }) => {
       const token = await getStorageItem('access_token');
       if (!token) throw new Error('Your session has expired. Please sign in again.');
@@ -120,17 +98,7 @@ export default function OtherUserProfileRoute() {
       || fetchedProfile?.username?.trim()
       || fetchedProfile?.handle?.trim()
       || routeUsername;
-    const externalRepositories: Repo[] = (fetchedProfile?.repositories ?? []).map((repository) => ({
-      id: repository.repo_id,
-      name: repository.name,
-      description: repository.description ?? undefined,
-      stars: String(repository.star_count ?? 0),
-      forks: String(repository.fork_count ?? 0),
-      author: fetchedProfile?.handle ?? routeUsername,
-      avatarColor: '#23963F',
-      avatarInitial: (fetchedProfile?.handle ?? routeUsername).slice(0, 2).toUpperCase(),
-      url: repository.url,
-    }));
+    const externalRepositories = mapRepositoryList(fetchedProfile?.repositories ?? []);
     return {
       userId: fetchedUser?.user_id || fetchedProfile?.claimed_by_user_id || userId,
       profileId: fetchedProfile?.profile_id || profileId,
@@ -162,9 +130,7 @@ export default function OtherUserProfileRoute() {
           ?? countParam(params.following),
       },
       lists: [],
-      pinnedRepositories: DEVELOPMENT_PREVIEW_ENABLED
-        ? DEVELOPMENT_PINNED_REPOSITORIES
-        : externalRepositories,
+      pinnedRepositories: externalRepositories,
     };
   }, [
     params.followStateKnown,
@@ -234,7 +200,7 @@ export default function OtherUserProfileRoute() {
       },
     );
     void queryClient.invalidateQueries({ queryKey: ['connections'] });
-    void queryClient.invalidateQueries({ queryKey: ['feed'] });
+    void queryClient.invalidateQueries({ queryKey: ['feed'], refetchType: 'none' });
     void checkOnboardingStatus().catch(() => undefined);
   };
 
@@ -243,12 +209,8 @@ export default function OtherUserProfileRoute() {
     else router.replace('/(tabs)/home');
   };
 
-  const openRepository = async (repository: Repo) => {
-    try {
-      await Linking.openURL(repositoryUrl(repository));
-    } catch {
-      Alert.alert('Unable to open repository', 'Please try again in a moment.');
-    }
+  const openRepository = (repository: RepositoryDetail) => {
+    router.push(repositoryHref(repository.id));
   };
 
   return (
@@ -262,7 +224,7 @@ export default function OtherUserProfileRoute() {
         onFollowError={(error) => Alert.alert('Follow failed', error.message)}
         onFollowingChange={handleFollowingChange}
         onListPress={() => undefined}
-        onRepositoryPress={(repository) => void openRepository(repository)}
+        onRepositoryPress={openRepository}
         profile={profile}
       />
       <ConnectionSheet

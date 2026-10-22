@@ -17,6 +17,14 @@ import { FeedShadowService } from '../services/feedShadowService.js';
 import { validateProductionIntegrations } from '../config/runtimeConfig.js';
 import { applyMlReadinessGate } from './mlReadiness.js';
 import { applyOutboxReadinessGate } from './outboxReadiness.js';
+import { PersonaRepairService } from '../services/personaRepairService.js';
+import { PostgresRepositoryPersistence } from '../adapters/postgresRepositoryPersistence.js';
+import { TrendingIngestionWorker } from '../workers/trendingIngestionWorker.js';
+
+function positiveInterval(value: string | undefined, fallback: number): number {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 60_000 ? parsed : fallback;
+}
 
 function intervalFromEnvironment(
   name: string,
@@ -45,7 +53,14 @@ export class ApplicationRuntime {
     ? new MlV2Client()
     : null;
   readonly generation = this.ml && this.flags.ML_V2_RECOMMENDATIONS
-    ? new FeedGenerationService(this.persistence, this.queue, this.ml)
+    ? new FeedGenerationService(
+      this.persistence,
+      this.queue,
+      this.ml,
+      600,
+      15_000,
+      new PersonaRepairService(this.persistence, this.ml),
+    )
     : null;
   readonly shadow = this.ml ? new FeedShadowService(this.persistence, this.ml) : null;
   readonly outbox = new OutboxService();
@@ -55,7 +70,7 @@ export class ApplicationRuntime {
     this.generation
       ? (userId, limit, excluded, sessionId) => this.generation!.generate(userId, Math.max(45, limit), excluded, 'live', sessionId)
       : undefined,
-    this.flags.TRENDING_FALLBACK,
+    false,
     1_500,
     25,
     process.env.JWT_SECRET,
@@ -99,10 +114,18 @@ export class ApplicationRuntime {
         intervalFromEnvironment('COUNTER_RECONCILIATION_BATCH_SIZE', DEFAULT_COUNTER_BATCH_SIZE, 1, 1_000)));
       const retention = new RetentionWorker();
       this.supervisor.registerAdaptive('data-reconciliation', 1_000, 300_000, () => data.runOnce());
-      // Faster counter batches must not turn abandoned-outbox cleanup into a
-      // once-per-batch scan. Preserve its independent five-minute cadence.
+      // Faster counter batches must not turn abandoned-claim or superseded-job
+      // cleanup into once-per-batch scans. Preserve their five-minute cadence.
       this.supervisor.register('abandoned-outbox-claims', 300_000, () => data.resetAbandonedClaims());
       this.supervisor.register('retention', 86_400_000, () => retention.runOnce());
+      if (this.flags.TRENDING_INGESTION) {
+        const trending = new TrendingIngestionWorker(new PostgresRepositoryPersistence());
+        this.supervisor.register(
+          'github-trending-ingestion',
+          positiveInterval(process.env.TRENDING_INGESTION_INTERVAL_MS, 21_600_000),
+          () => trending.runOnce(),
+        );
+      }
     }
   }
 

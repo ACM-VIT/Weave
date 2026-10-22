@@ -1,0 +1,42 @@
+{
+  "fixture": "Intercepted local API responses, no live writes",
+  "checks": [
+    {
+      "viewport": {
+        "width": 320,
+        "height": 300
+      },
+      "githubBounds": {
+        "x": 27,
+        "y": 217,
+        "width": 266,
+        "height": 54
+      },
+      "scroll": {
+        "scrollable": true,
+        "top": 89,
+        "height": 244,
+        "content": 333
+      }
+    },
+    {
+      "viewport": {
+        "width": 320,
+        "height": 568
+      },
+      "githubBounds": {
+        "x": 27,
+        "y": 485,
+        "width": 266,
+        "height": 54
+      },
+      "scroll": {
+        "scrollable": false,
+        "top": 0,
+        "height": 333,
+        "content": 333
+      }
+    }
+  ],
+  "errors": []
+}

@@ -35,3 +35,13 @@ provide loading, empty, failure and retry states. Cancel superseded searches and
 restart expired pagination. Use accessible controls and the existing safe-area
 layout. Avoid decorative gradients, new font families and unrelated screen
 restyling in this feature.
+
+## Phase 5 usability ownership
+The existing dark identity and component tokens remain authoritative. Phase 5 adds no new palette or typography system. `src/components/keyboard/keyboard-layout.tsx` owns focus-aware form scrolling and measured keyboard avoidance; form fields remain the existing Auth primitives. See `UX-CONTRACT.md` and `docs/handoffs/phase-5-usability.md` for behavior and verification. No visual-token drift was introduced; the onboarding green button uses dark text for readable contrast.
+
+## Feed summary refinement
+The existing feed card, colours and type remain unchanged. README summary height follows remaining feed layout space; the preview reserves two lines before the existing pill action, now called “Read more”. The popup reuses the existing README presentation, with a distinct README SUMMARY heading for summarized content. Existing `REFERENCE_THEME` and component styles own all colours/type; no new token system is introduced.
+
+## Home service recovery
+
+When the recommendation API explicitly reports personalized feed unavailability, Home uses the existing canonical repository catalogue and keeps the same card layout. The fixed header adds a quiet, readable “Recently updated / Not personalized” source label. Catalogue pages never masquerade as recommendation serves. Real counts, viewer state, summaries and internal navigation continue to use the shared repository model.

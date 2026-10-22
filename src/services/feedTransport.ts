@@ -28,6 +28,7 @@ export async function requestFeedWithRetry<T>(
   send: (body: FeedRequest, signal?: AbortSignal) => Promise<T>,
   signal?: AbortSignal,
   wait = waitForFeedRetry,
+  retryUnavailable = true,
 ): Promise<T> {
   for (let attempt = 0; ; attempt++) {
     assertFeedRequestActive(signal);
@@ -41,7 +42,7 @@ export async function requestFeedWithRetry<T>(
       const retryable = failure.name !== 'AbortError' && failure.code !== 'SESSION_CHANGED'
         && (error instanceof TypeError || failure.status === 408 || failure.status === 409
           || failure.status === 425 || failure.status === 429 || (failure.status ?? 0) >= 500);
-      if (!retryable || attempt >= 2) throw error;
+      if ((!retryUnavailable && failure.code === 'PERSONALIZED_FEED_UNAVAILABLE') || !retryable || attempt >= 2) throw error;
       const header = failure.retryAfter;
       const seconds = header && /^\d+(?:\.\d+)?$/.test(header.trim()) ? Number(header) : NaN;
       const retryAt = header ? Date.parse(header) : NaN;

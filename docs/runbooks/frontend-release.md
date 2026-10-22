@@ -33,9 +33,10 @@ The script:
    `artifacts/Weave-v2.0.0-internal-QA.apk`.
 7. Prints the artifact's SHA-256 digest for handoff verification.
 
-The default APK contains the `arm64-v8a` ABI used by modern Android phones and
-is much smaller than the old four-architecture universal APK. Override this
-only when a tester needs a different ABI:
+The default APK contains both `armeabi-v7a` and `arm64-v8a` so internal QA can
+run on older 32-bit and current 64-bit Android phones. To build a smaller
+architecture-specific artifact, override this only when a tester needs a
+different ABI:
 
 ```sh
 WEAVE_ARTIFACT_ANDROID_ARCHITECTURES=x86_64 npm run build:android:artifact

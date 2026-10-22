@@ -50,8 +50,18 @@ async function fixture() {
   return { users, repos, event };
 }
 
+// Activity save events reconcile the durable union of List memberships.
+async function addMembership(userId: string, repoIds: string[]) {
+  const boardId = crypto.randomUUID();
+  await sqlClient`INSERT INTO app.boards(board_id,user_id,name,visibility)
+    VALUES(${boardId}::uuid,${userId}::uuid,'Batch fixture','private')`;
+  await sqlClient`INSERT INTO app.board_repos(board_id,repo_id,added_by)
+    SELECT ${boardId}::uuid,id,${userId}::uuid FROM unnest(${repoIds}::uuid[]) AS id`;
+}
+
 integration('mixed client-ordered transitions retain exact counters, feedback ordering and duplicate identity', async () => {
   const f = await fixture();
+  await addMembership(f.users[0], [f.repos[0]]);
   const events = ['like','dislike','undislike','save','unsave','save','impression','dwell','readme_open']
     .map(type => f.event(type as InteractionEventV2['event_type']));
   const result = await processInteractionBatchV2(f.users[0], events);
@@ -108,7 +118,10 @@ integration('invalid serve owner, repo or position rolls back the whole batch an
 });
 
 integration('overlapping batches serialize same-user feedback and shared repository counters without deadlock', async () => {
-  const f = await fixture(); const start = [f.event('like', 0), f.event('save', 1)];
+  const f = await fixture();
+  await addMembership(f.users[0], f.repos.slice(0, 2));
+  await addMembership(f.users[1], [f.repos[1]]);
+  const start = [f.event('like', 0), f.event('save', 1)];
   const duplicateResults = await Promise.all([processInteractionBatchV2(f.users[0], start), processInteractionBatchV2(f.users[0], start)]);
   assert.equal(duplicateResults.reduce((n, row) => n + row.accepted, 0), 2);
   await Promise.all([

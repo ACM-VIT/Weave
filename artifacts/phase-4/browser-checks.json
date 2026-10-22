@@ -1,0 +1,15 @@
+{
+  "results": [
+    "Trending is virtualized with visible real ranks and only daily data",
+    "Trending result opens the internal repository route",
+    "All shows repositories, People and Lists plus lexical fallback",
+    "Filter changes retain query; People and Lists open their internal routes",
+    "Empty state",
+    "Minimum query length",
+    "Offline and reconnect",
+    "Error and retry recovery",
+    "Clear cancels search and restores focus",
+    "320px narrow viewport"
+  ],
+  "errors": []
+}

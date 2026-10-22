@@ -1,17 +1,9 @@
-export function summarizeReadme(readmeText: string | null | undefined): string {
-  if (!readmeText) {
-    return "No README available.";
-  }
+export function summarizeDescription(description: string | null | undefined): string | null {
+  const normalized = description?.replace(/\s+/g, " ").trim();
+  if (!normalized) return null;
+  if (normalized.length <= 360) return normalized;
 
-  const cleanText = readmeText
-    .replace(/[#>*`~-]/g, "")
-    .replace(/\r/g, "")
-    .trim();
-
-  const paragraphs = cleanText
-    .split(/\n\s*\n/)
-    .map((paragraph) => paragraph.trim())
-    .filter((paragraph) => paragraph.length > 0);
-
-  return paragraphs.slice(0, 2).join("\n\n").substring(0, 1000);
+  const prefix = normalized.slice(0, 359);
+  const lastWordBoundary = prefix.lastIndexOf(" ");
+  return `${prefix.slice(0, lastWordBoundary >= 180 ? lastWordBoundary : 359).trimEnd()}…`;
 }

@@ -118,9 +118,6 @@ export function useOptimisticMutations(userId?: string) {
         queryClient.setQueryData(["savedRepos", userId], context.previousRepos);
       }
     },
-    onSuccess: async () => {
-      await queryClient.resetQueries({ queryKey: ["feed", userId], exact: true });
-    },
     onSettled: () => {
       // Invalidate both boards (their counts might have changed) and savedRepos
       queryClient.invalidateQueries({ queryKey: ["savedRepos", userId] });
