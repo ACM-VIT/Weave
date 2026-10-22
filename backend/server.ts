@@ -18,7 +18,7 @@ const server = app.listen(port, () => {
 async function shutdown(): Promise<void> {
   console.log('\nShutting down gracefully...');
   await new Promise<void>((resolve) => server.close(() => resolve()));
-  await runtime.supervisor.stop();
+  await runtime.stop();
   await Promise.allSettled([redisClient.quit(), sqlClient.end({ timeout: 5 })]);
   console.log('Server closed');
   process.exit(0);

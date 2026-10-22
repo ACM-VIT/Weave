@@ -20,7 +20,7 @@ runtime.start();
 console.log(`Backend worker running with role=${role}`);
 
 async function shutdown(): Promise<void> {
-  await runtime.supervisor.stop();
+  await runtime.stop();
   await Promise.allSettled([redisClient.quit(), sqlClient.end({ timeout: 5 })]);
   process.exit(0);
 }

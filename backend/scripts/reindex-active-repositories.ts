@@ -9,6 +9,7 @@ import type { RepositoryUpsert } from '../contracts/ingestion.v2.js';
 import type { MlRepositoryIndexJob } from '../contracts/ml.v2.js';
 import { buildMlRepositorySource } from '../services/mlRepositoryPayloadService.js';
 import { isRepositoryUpsert } from '../utils/ingestionValidation.js';
+import { notifyOutboxAfterCommit } from '../services/outboxWakeup.js';
 
 export interface ReindexOptions {
   campaignId: string;
@@ -228,6 +229,7 @@ export async function runReindex(options: ReindexOptions, databaseUrl: string): 
             else wouldQueue++;
           }
         }
+        if (queued) await notifyOutboxAfterCommit(tx);
         return {
           rows: rows.length,
           eligible, alreadyGenerated, skippedByScope, invalidArtifacts,

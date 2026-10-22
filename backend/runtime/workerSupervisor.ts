@@ -16,6 +16,7 @@ interface Task {
   idleIntervalMs?: number;
   run: () => Promise<unknown>;
   timer?: NodeJS.Timeout;
+  wakeRequested?: boolean;
   status: WorkerStatus;
 }
 
@@ -85,21 +86,34 @@ export class WorkerSupervisor {
     }
   }
 
-  private startAdaptive(task: Task): void {
-    const runAndSchedule = async (): Promise<void> => {
-      const result = await this.execute(task);
-      if (!this.started) return;
-      const delay = typeof result === 'number' && result > 0
-        ? task.activeIntervalMs!
-        : task.idleIntervalMs!;
-      const timer = setTimeout(
-        () => void runAndSchedule(),
-        delay,
-      ) as unknown as NodeJS.Timeout;
-      timer.unref();
-      task.timer = timer;
-    };
-    void runAndSchedule();
+  private scheduleAdaptive(task: Task, delay: number): void {
+    if (task.timer) clearTimeout(task.timer);
+    const timer = setTimeout(
+      () => void this.runAdaptive(task), delay,
+    ) as unknown as NodeJS.Timeout;
+    timer.unref();
+    task.timer = timer;
+  }
+
+  private async runAdaptive(task: Task): Promise<void> {
+    if (!this.started) return;
+    if (task.status.running) { task.wakeRequested = true; return; }
+    task.timer = undefined;
+    task.wakeRequested = false;
+    const result = await this.execute(task);
+    if (!this.started) return;
+    this.scheduleAdaptive(task, task.wakeRequested ? 0
+      : typeof result === 'number' && result > 0 ? task.activeIntervalMs! : task.idleIntervalMs!);
+  }
+
+  /** Coalesce hints, including those arriving while a run is in progress. */
+  wake(name: string): void {
+    if (!this.started) return;
+    const task = this.tasks.find((candidate) => candidate.name === name);
+    if (!task || task.activeIntervalMs === undefined) return;
+    if (task.wakeRequested) return;
+    task.wakeRequested = true;
+    if (!task.status.running) this.scheduleAdaptive(task, 0);
   }
 
   start(): void {
@@ -107,7 +121,7 @@ export class WorkerSupervisor {
     this.started = true;
     for (const task of this.tasks) {
       if (task.activeIntervalMs !== undefined) {
-        this.startAdaptive(task);
+        void this.runAdaptive(task);
         continue;
       }
       void this.execute(task);
@@ -125,9 +139,11 @@ export class WorkerSupervisor {
   async stop(): Promise<void> {
     this.started = false;
     for (const task of this.tasks) {
+      task.wakeRequested = false;
       if (!task.timer) continue;
       if (task.activeIntervalMs === undefined) clearInterval(task.timer);
       else clearTimeout(task.timer);
+      task.timer = undefined;
     }
     while (this.tasks.some((task) => task.status.running)) {
       await new Promise((resolve) => setTimeout(resolve, 20));

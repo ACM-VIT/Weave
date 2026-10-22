@@ -1,5 +1,6 @@
 import { sqlClient } from '../db/index.js';
 import { resolveOutboxLeaseMs } from './outboxService.js';
+import { notifyOutboxAfterCommit } from './outboxWakeup.js';
 
 export class DataReconciliationService {
   async reconcileCounters(): Promise<void> {
@@ -22,10 +23,13 @@ export class DataReconciliationService {
   }
 
   async resetAbandonedClaims(leaseMs = resolveOutboxLeaseMs()): Promise<number> {
-    const rows = await sqlClient`
-      UPDATE telemetry.ml_outbox SET status='pending',claim_token=NULL,claimed_at=NULL,available_at=now()
-      WHERE status='claimed' AND claimed_at < now()-(${leaseMs}::text || ' milliseconds')::interval RETURNING outbox_id
-    `;
-    return rows.length;
+    return sqlClient.begin(async (tx) => {
+      const rows = await tx`
+        UPDATE telemetry.ml_outbox SET status='pending',claim_token=NULL,claimed_at=NULL,available_at=now()
+        WHERE status='claimed' AND claimed_at < now()-(${leaseMs}::text || ' milliseconds')::interval RETURNING outbox_id
+      `;
+      if (rows.length) await notifyOutboxAfterCommit(tx);
+      return rows.length;
+    });
   }
 }

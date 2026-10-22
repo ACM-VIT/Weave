@@ -11,6 +11,7 @@ import { GITHUB_PERSONA_SKILL_IDS } from '../types/github.js';
 import { fetchGitHubPublicPersona } from './githubService.js';
 import { buildMlOnboardingJob, hasMlEmbeddingContext } from './mlOnboardingService.js';
 import { claimVerifiedGithubProfile } from './socialProfileService.js';
+import { notifyOutboxAfterCommit } from './outboxWakeup.js';
 
 const MAX_INTERESTS = 50;
 const MAX_TECH_STACK = 25;
@@ -282,6 +283,13 @@ class PostgresGitHubPersonaTransactionStore implements GitHubPersonaTransactionS
       displayName: update.fullName,
       avatarUrl: update.avatarUrl,
     });
+    // updateProfile is called only for plan.materialChange. Keep this after
+    // social-profile reconciliation's locks and never bump on a repair retry
+    // that reuses the existing profile version.
+    await this.tx`
+      INSERT INTO app.user_feed_state(user_id,feed_version) VALUES(${userId}::uuid,2)
+      ON CONFLICT(user_id) DO UPDATE SET feed_version=app.user_feed_state.feed_version+1,updated_at=now()
+    `;
     return BigInt(String(rows[0].profile_version));
   }
 
@@ -307,6 +315,7 @@ class PostgresGitHubPersonaTransactionStore implements GitHubPersonaTransactionS
       VALUES('onboard',${userId}::uuid,${`onboard:${userId}:${profileVersion}`},${JSON.stringify(job)}::jsonb)
       ON CONFLICT(idempotency_key) DO NOTHING RETURNING outbox_id
     `;
+    if (rows.length) await notifyOutboxAfterCommit(this.tx);
     return rows.length > 0;
   }
 }

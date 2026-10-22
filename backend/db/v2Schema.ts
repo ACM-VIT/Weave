@@ -447,7 +447,13 @@ export const mlOutbox = telemetrySchema.table('ml_outbox', {
   deliveredAt: timestamp('delivered_at', { withTimezone: true }),
   lastError: text('last_error'),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
-}, (table) => [index('ml_outbox_ready_idx').on(table.status, table.availableAt)]);
+}, (table) => [
+  index('ml_outbox_ready_idx').on(table.status, table.availableAt),
+  index('ml_outbox_onboarding_prewarm_ready_idx').on(table.availableAt, table.outboxId).where(sql`
+    ${table.jobType}='onboard' AND ${table.status}='delivered'
+    AND ${table.responsePayload} #>> '{backend_onboarding_prewarm,status}' IN ('pending','claimed')
+  `),
+]);
 
 export const generationAttempts = telemetrySchema.table('generation_attempts', {
   generationId: uuid('generation_id').primaryKey(),

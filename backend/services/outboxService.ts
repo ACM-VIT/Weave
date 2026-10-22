@@ -5,6 +5,7 @@ import { isAcceptedStoredSummary } from './storedRepositorySummary.js';
 import { sqlClient } from '../db/index.js';
 import type { MlRepositoryIndexResponse } from '../contracts/ml.v2.js';
 import { isObsoleteIdentityOnboardingJob } from './mlOnboardingService.js';
+import { notifyOutboxAfterCommit, PREWARM_WAKE_CHANNEL } from './outboxWakeup.js';
 
 export interface OutboxRow {
   outbox_id: string;
@@ -134,11 +135,36 @@ export class OutboxService {
       claim_token: String(row.claim_token), payload: row.payload as Record<string, unknown> }));
   }
 
-  async markDelivered(row: OutboxRow): Promise<void> {
-    await sqlClient`
-      UPDATE telemetry.ml_outbox SET status='delivered',delivered_at=now(),claim_token=NULL,claimed_at=NULL,last_error=NULL
-      WHERE outbox_id=${row.outbox_id}::uuid AND claim_token=${row.claim_token}::uuid
-    `;
+  async markDelivered(row: OutboxRow, schedulePrewarm = false): Promise<boolean> {
+    return sqlClient.begin(async (tx) => {
+      const delivered = await tx`
+        UPDATE telemetry.ml_outbox
+        SET status='delivered',delivered_at=now(),claim_token=NULL,claimed_at=NULL,last_error=NULL,
+          available_at=CASE WHEN job_type='onboard' AND ${schedulePrewarm} THEN now() ELSE available_at END,
+          response_payload=CASE WHEN job_type='onboard' AND ${schedulePrewarm} THEN
+            (CASE WHEN response_payload IS NULL THEN '{}'::jsonb
+              WHEN jsonb_typeof(response_payload)='object' THEN response_payload
+              ELSE jsonb_build_object('backend_original_response_payload',response_payload) END)
+            || jsonb_build_object(
+              'backend_onboarding_prewarm',jsonb_build_object(
+                'status','pending','profile_version',payload->'profile_version',
+                'feed_version',(SELECT feed_version::text FROM app.user_feed_state
+                  WHERE user_id=aggregate_id),
+                'attempts',0,'available_at',now(),'created_at',now(),
+                'delivery_available_at',available_at
+              )
+            ) ELSE response_payload END
+        WHERE outbox_id=${row.outbox_id}::uuid AND claim_token=${row.claim_token}::uuid
+          AND status='claimed'
+        RETURNING job_type
+      `;
+      // Delivery acknowledgement and durable scheduling commit together. Only
+      // backend-owned metadata is used, never fields supplied by an ML response.
+      if (schedulePrewarm && delivered[0]?.job_type === 'onboard') {
+        await tx`SELECT pg_notify(${PREWARM_WAKE_CHANNEL}, '')`;
+      }
+      return delivered.length === 1;
+    });
   }
 
   /**
@@ -310,11 +336,14 @@ export class OutboxService {
   }
 
   async replay(outboxId: string): Promise<boolean> {
-    const rows = await sqlClient`
-      UPDATE telemetry.ml_outbox SET status='pending',attempts=0,available_at=now(),claimed_at=NULL,claim_token=NULL,last_error=NULL
-      WHERE outbox_id=${outboxId}::uuid AND status='dead' RETURNING outbox_id
-    `;
-    return rows.length === 1;
+    return sqlClient.begin(async (tx) => {
+      const rows = await tx`
+        UPDATE telemetry.ml_outbox SET status='pending',attempts=0,available_at=now(),claimed_at=NULL,claim_token=NULL,last_error=NULL
+        WHERE outbox_id=${outboxId}::uuid AND status='dead' RETURNING outbox_id
+      `;
+      if (rows.length) await notifyOutboxAfterCommit(tx);
+      return rows.length === 1;
+    });
   }
 
   async supersedeObsoleteOnboarding(outboxId: string): Promise<boolean> {

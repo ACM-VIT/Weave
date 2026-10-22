@@ -1,6 +1,7 @@
 import { sqlClient } from '../db/index.js';
 import { buildMlOnboardingJob, hasMlEmbeddingContext } from './mlOnboardingService.js';
 import { claimVerifiedGithubProfile } from './socialProfileService.js';
+import { notifyOutboxAfterCommit } from './outboxWakeup.js';
 
 interface IdentityProfile {
   userId: string;
@@ -109,6 +110,7 @@ export async function ensureIdentityProfile(profile: IdentityProfile): Promise<v
         VALUES ('onboard',${profile.userId}::uuid,${`onboard:${profile.userId}:1`},${JSON.stringify(onboardingJob)}::jsonb)
         ON CONFLICT (idempotency_key) DO NOTHING
       `;
+      await notifyOutboxAfterCommit(tx);
     }
   });
 }

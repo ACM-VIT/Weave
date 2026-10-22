@@ -11,6 +11,7 @@ import { sqlClient } from '../db/index.js';
 import type postgres from 'postgres';
 import { buildMlFeedbackEvent } from './mlFeedbackPayloadService.js';
 import { setRepositorySaved } from './savedRepositoryService.js';
+import { notifyOutboxAfterCommit } from './outboxWakeup.js';
 
 export type ReactionState = 'like' | 'dislike' | null;
 
@@ -50,6 +51,10 @@ export async function processInteractionBatchV2InTransaction(
   userId = userId.toLowerCase();
   events = events.map(event => ({ ...event, event_id: event.event_id.toLowerCase(), repo_id: event.repo_id.toLowerCase(),
     session_id: event.session_id.toLowerCase(), serve_id: event.serve_id?.toLowerCase() ?? null }));
+  // Acquire the user FK lock before feed state, not later during event insert.
+  // Profile/persona key changes lock the user first and then invalidate feed;
+  // taking feed first here would deadlock with a promoted FOR UPDATE user lock.
+  await tx`SELECT user_id FROM app.users WHERE user_id=${userId}::uuid FOR KEY SHARE`;
   await tx`INSERT INTO app.user_feed_state (user_id) VALUES (${userId}::uuid) ON CONFLICT (user_id) DO NOTHING`;
   const states = await tx`SELECT feed_version,feedback_version FROM app.user_feed_state WHERE user_id=${userId}::uuid FOR UPDATE`;
   if (states.length === 0) throw new Error('User feed state is unavailable.');
@@ -188,6 +193,7 @@ export async function processInteractionBatchV2InTransaction(
       SELECT 'feedback',${userId}::uuid,'feedback:' || event_id::text,payload
       FROM jsonb_to_recordset(${JSON.stringify(feedback)}::jsonb) AS input(event_id uuid,payload jsonb)
       ON CONFLICT (idempotency_key) DO NOTHING`;
+    await notifyOutboxAfterCommit(tx);
   }
   if (invalidateFeed) feedVersion++;
   await tx`UPDATE app.user_feed_state SET feed_version=${feedVersion.toString()}::bigint,

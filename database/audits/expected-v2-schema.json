@@ -17,7 +17,8 @@
   "indexes": [
     "feed_serves_feed_request_id_key", "feed_serves_user_created_idx",
     "interaction_events_serve_repo_idx", "interaction_events_user_received_idx",
-    "ml_outbox_idempotency_key_key", "ml_outbox_ready_idx", "ml_outbox_feedback_predecessor_idx", "app_refresh_tokens_user_idx",
+    "ml_outbox_idempotency_key_key", "ml_outbox_ready_idx", "ml_outbox_feedback_predecessor_idx",
+    "ml_outbox_onboarding_prewarm_ready_idx", "app_refresh_tokens_user_idx",
     "app_comments_repo_idx", "app_comments_user_idx", "app_boards_user_idx",
     "app_board_collections_user_idx", "app_saves_user_idx", "app_repo_stats_latest_idx",
     "app_follows_following_idx", "app_follows_follower_idx",

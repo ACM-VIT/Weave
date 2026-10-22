@@ -16,6 +16,10 @@ import { FeedShadowService } from '../services/feedShadowService.js';
 import { validateProductionIntegrations } from '../config/runtimeConfig.js';
 import { applyMlReadinessGate } from './mlReadiness.js';
 import { applyOutboxReadinessGate } from './outboxReadiness.js';
+import { OnboardingPrewarmService } from '../services/onboardingPrewarmService.js';
+import { OnboardingPrewarmWorker } from '../workers/onboardingPrewarmWorker.js';
+import { OUTBOX_WAKE_CHANNEL, PREWARM_WAKE_CHANNEL } from '../services/outboxWakeup.js';
+import { PostgresWorkerWakeup } from './postgresWorkerWakeup.js';
 
 function intervalFromEnvironment(
   name: string,
@@ -60,6 +64,7 @@ export class ApplicationRuntime {
     process.env.JWT_SECRET,
   );
   readonly supervisor = new WorkerSupervisor();
+  private readonly wakeups: PostgresWorkerWakeup[] = [];
 
   constructor(readonly role: 'api' | 'outbox' | 'feed' | 'maintenance' | 'all' = 'api') {
     if ((role === 'outbox' || role === 'all') && this.flags.ML_FEEDBACK_OUTBOX && this.ml) {
@@ -67,13 +72,19 @@ export class ApplicationRuntime {
       const worker = new OutboxWorker(
         this.outbox,
         this.ml,
-        this.generation ? async (row) => {
-          if (row.job_type === 'onboard') await this.generation!.generate(row.aggregate_id, 45, [], 'prewarm');
-        } : undefined,
+        this.generation !== null,
       );
       const activeInterval = intervalFromEnvironment('OUTBOX_ACTIVE_INTERVAL_MS', 1_000, 100, 60_000);
       const idleInterval = intervalFromEnvironment('OUTBOX_IDLE_INTERVAL_MS', 30_000, 1_000, 300_000);
       this.supervisor.registerAdaptive('ml-outbox', activeInterval, idleInterval, () => worker.runOnce());
+      this.wakeups.push(new PostgresWorkerWakeup(OUTBOX_WAKE_CHANNEL, () => this.supervisor.wake('ml-outbox')));
+      if (this.generation) {
+        const prewarm = new OnboardingPrewarmWorker(new OnboardingPrewarmService(), this.generation);
+        this.supervisor.registerAdaptive('onboarding-prewarm', activeInterval, idleInterval, () => prewarm.runOnce());
+        this.wakeups.push(new PostgresWorkerWakeup(
+          PREWARM_WAKE_CHANNEL, () => this.supervisor.wake('onboarding-prewarm'),
+        ));
+      }
     }
     if ((role === 'feed' || role === 'all') && this.flags.FEED_RESERVATIONS) {
       const interval = intervalFromEnvironment(
@@ -107,6 +118,12 @@ export class ApplicationRuntime {
       throw new Error(`Invalid v2 feature configuration: ${this.featureErrors.join(' ')}`);
     }
     this.supervisor.start();
+    for (const wakeup of this.wakeups) wakeup.start();
+  }
+
+  async stop(): Promise<void> {
+    for (const wakeup of this.wakeups) wakeup.stop();
+    await this.supervisor.stop();
   }
 
   async health(): Promise<Record<string, unknown>> {

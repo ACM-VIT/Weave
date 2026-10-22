@@ -9,6 +9,11 @@ export type FeedGenerationOutcome =
   | { status: 'generated'; feedVersion: bigint; count: number }
   | { status: 'coalesced' | 'stale'; feedVersion: bigint };
 
+export interface FeedGenerationFence {
+  feedVersion: bigint;
+  isCurrent: () => Promise<boolean>;
+}
+
 export class FeedGenerationService {
   constructor(
     private readonly persistence: FeedPersistencePort,
@@ -24,11 +29,22 @@ export class FeedGenerationService {
     excludeRepoIds: string[] = [],
     mode: 'live' | 'prewarm' = 'live',
     sessionId?: string,
+    fence?: FeedGenerationFence,
   ): Promise<FeedGenerationOutcome> {
     const feedVersion = await this.persistence.getFeedVersion(userId);
     const token = crypto.randomUUID();
     const generationId = crypto.randomUUID();
     const started = Date.now();
+    const recordStale = async (count: number): Promise<FeedGenerationOutcome> => {
+      await this.persistence.recordGenerationAttempt?.({
+        generation_id: generationId, user_id: userId, feed_version: feedVersion, mode,
+        status: 'stale', latency_ms: Date.now() - started, result_count: count,
+      });
+      return { status: 'stale', feedVersion };
+    };
+    const isCurrent = async () => await this.persistence.getFeedVersion(userId) === feedVersion
+      && (!fence || (fence.feedVersion === feedVersion && await fence.isCurrent()));
+    if (fence && (fence.feedVersion !== feedVersion || !await fence.isCurrent())) return recordStale(0);
     if (!await this.queue.acquireGenerationLock(userId, feedVersion, token, this.lockTtlMs)) {
       await this.persistence.recordGenerationAttempt?.({
         generation_id: generationId, user_id: userId, feed_version: feedVersion, mode,
@@ -56,13 +72,7 @@ export class FeedGenerationService {
         social_repo_ids: socialRepoIds,
         context: { cold_start: false },
       });
-      if (await this.persistence.getFeedVersion(userId) !== feedVersion) {
-        await this.persistence.recordGenerationAttempt?.({
-          generation_id: generationId, user_id: userId, feed_version: feedVersion, mode,
-          status: 'stale', latency_ms: Date.now() - started, result_count: response.items.length,
-        });
-        return { status: 'stale', feedVersion };
-      }
+      if (!await isCurrent()) return await recordStale(response.items.length);
       const seen = new Set<string>();
       const items = response.items.filter(item => {
         if (excludedIds.has(item.repo_id) || seen.has(item.repo_id)) return false;
@@ -71,6 +81,9 @@ export class FeedGenerationService {
       const projections = await this.persistence.listActiveRepositoryIdentities(items.map((item) => item.repo_id));
       const summaries = new Map(projections.map((repo) => [repo.repo_id, repo.summary_id]));
       if (projections.length !== items.length) throw new Error('ML returned unknown or inactive repositories.');
+      // Prewarm must not publish for an obsolete onboarding profile/claim after
+      // the projection read. Live generation keeps its existing version checks.
+      if (fence && !await isCurrent()) return await recordStale(items.length);
       await this.queue.replace(
         userId,
         feedVersion,

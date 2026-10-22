@@ -15,6 +15,7 @@ import {
   repositoryContentHash,
 } from '../services/mlRepositoryPayloadService.js';
 import { reconcileGithubProfileForIngestion } from '../services/socialProfileService.js';
+import { notifyOutboxAfterCommit } from '../services/outboxWakeup.js';
 
 export class PostgresRepositoryPersistence implements RepositoryPersistencePort {
   async bulkUpsert(input: RepositoryUpsert[]): Promise<RepositoryUpsertResult[]> {
@@ -129,6 +130,7 @@ export class PostgresRepositoryPersistence implements RepositoryPersistencePort 
         }
         results.push({ github_id: repo.github_id, repo_id: repoId, content_version: version, changed });
       }
+      if (results.length) await notifyOutboxAfterCommit(tx);
       return results;
     });
   }
@@ -164,6 +166,7 @@ export class PostgresRepositoryPersistence implements RepositoryPersistencePort 
         UPDATE app.trending_snapshots SET complete=true,active=true,activated_at=now()
         WHERE snapshot_id=${input.snapshot_id}::uuid RETURNING activated_at
       `;
+      if (input.repositories.length) await notifyOutboxAfterCommit(tx);
       return { snapshot_id: input.snapshot_id, repository_count: input.repositories.length,
         activated_at: new Date(rows[0].activated_at as string).toISOString() };
     });
