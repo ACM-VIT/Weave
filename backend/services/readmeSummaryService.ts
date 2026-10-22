@@ -18,6 +18,25 @@ export async function enqueueReadmeSummary(
   `;
 }
 
+/** Same durable enqueue semantics for a bounded canonical ingestion stage. */
+export async function enqueueReadmeSummaryBatch(
+  tx: TransactionSql,
+  keys: Array<{ repo_id: string; content_version: number; content_hash: string }>,
+): Promise<void> {
+  if (keys.length === 0) return;
+  await tx`
+    INSERT INTO telemetry.readme_summary_jobs (repo_id,content_version,content_hash,prompt_version)
+    SELECT content.repo_id,content.content_version,content.content_hash,${README_SUMMARY_PROMPT_VERSION}
+    FROM jsonb_to_recordset(${JSON.stringify(keys)}::text::jsonb)
+      AS incoming(repo_id text,content_version integer,content_hash text)
+    JOIN app.repo_content content ON content.repo_id=incoming.repo_id::uuid
+      AND content.content_version=incoming.content_version AND content.content_hash=incoming.content_hash
+    WHERE char_length(btrim(COALESCE(content.readme,'')))>=200
+    ORDER BY content.repo_id
+    ON CONFLICT (repo_id,content_version,content_hash,prompt_version) DO NOTHING
+  `;
+}
+
 export interface ReadmeSummaryJob {
   job_id: string; generation_id: string; repo_id: string; content_version: number; content_hash: string;
   claim_token: string; attempts: number;
