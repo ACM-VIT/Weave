@@ -149,6 +149,28 @@ keys and scores are Redis-clock lease deadlines in milliseconds. Reserve/refill
 maintains the lease and commit/release removes membership. Reconciliation must
 reuse this index contract rather than introduce competing reservation tracking.
 
+Reconciliation reuses that index with a bounded legacy repair pass, even while
+indexed refill is disabled or writers are mixed. Each cycle performs exactly two
+SCAN calls: up to 16 reservation indexes (8 members each), plus up to 128 legacy
+feed keys. Metadata/TTL snapshots and repair are pipelined, with at most 256
+unique reservation candidates. SCAN COUNT is a hint: oversized replies are
+consumed over subsequent cycles at the same cursor with an offset, rather than
+retaining an unbounded pending array. As with SCAN itself, concurrent mutation
+can duplicate or omit observations; repeated passes repair missing tracking.
+This bounds processed work, not Redis's SCAN reply size or the number of cycles
+needed to revisit every key. It is not a guarantee of recovery before expiry.
+
+Queue writes and reservation transitions also maintain
+`feed:v2:version-index:<user_id>`, a sorted set of decimal version strings capped
+at 128 members by compatible writers. Eviction removes tracking only, never
+queue data; the bounded legacy pass repairs omitted versions. Each reconciled
+user gets one current-version lookup and one cleanup per cycle. Cleanup checks
+at most 128 indexed versions and deletes only exact queue keys strictly older
+than the captured version, preserving future versions and all reservation/lock
+data. It does not treat an absent index entry as proof that data is absent.
+No keyspace scan is performed per reservation or per user. These changes do not
+alter the default-off rollout gate or authorize enabling indexed refill.
+
 To roll back to legacy binaries, disable the gate on **all** compatible writers
 and let active indexed generations settle before starting old writers. Queue
 precomputation is expendable, but do not delete active reservation data. Feed

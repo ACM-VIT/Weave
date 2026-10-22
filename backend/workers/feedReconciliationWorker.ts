@@ -14,6 +14,7 @@ export class FeedReconciliationWorker {
     let committed = 0; let released = 0;
     const requestKey = (request: FeedServeRequest) => `${request.userId.toLowerCase()}:${request.requestId.toLowerCase()}`;
     const seen = new Set<string>();
+    const users = new Set<string>();
     const reservations = (await this.queue.scanReservations()).filter(reservation => {
       if (!Number.isFinite(reservation.ttlMs) || reservation.ttlMs < 0 || reservation.ttlMs > this.reconcileWithinMs
         || !isValidUuid(reservation.userId) || !isValidUuid(reservation.requestId) || !reservation.token) return false;
@@ -37,9 +38,13 @@ export class FeedReconciliationWorker {
         if (served) {
           if (await this.queue.commit(reservation.userId, reservation.version, reservation.requestId, reservation.token)) committed++;
         } else if (await this.queue.release(reservation.userId, reservation.version, reservation.requestId, reservation.token)) released++;
-        const current = await this.persistence.getFeedVersion(reservation.userId);
-        await this.queue.deleteStaleVersions(reservation.userId, current);
+        users.add(reservation.userId);
       }
+    }
+    // One version lookup/index cleanup per user, never one scan per reservation.
+    for (const userId of users) {
+      const current = await this.persistence.getFeedVersion(userId);
+      await this.queue.deleteStaleVersions(userId, current);
     }
     return { committed, released };
   }
