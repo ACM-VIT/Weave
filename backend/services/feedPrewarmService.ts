@@ -45,6 +45,19 @@ export class FeedPrewarmService {
     `;
   }
 
+  async nextRunInMs(): Promise<number | undefined> {
+    const rows = await this.client`
+      SELECT (extract(epoch FROM (min(CASE WHEN job.status='pending' THEN job.available_at
+        ELSE job.claimed_at+(${this.leaseMs}::text || ' milliseconds')::interval END)-now()))*1000)
+        ::double precision AS delay_ms
+      FROM telemetry.feed_prewarm_jobs job
+      JOIN app.users u ON u.user_id=job.user_id AND u.status='active' AND job.profile_version>=u.profile_version
+      JOIN app.user_feed_state state ON state.user_id=job.user_id
+      WHERE job.status IN ('pending','claimed')
+    `;
+    return rows[0]?.delay_ms == null ? undefined : Math.max(0, Math.ceil(Number(rows[0].delay_ms)));
+  }
+
   async retry(job: PrewarmJob): Promise<void> {
     const delayMs = Math.min(60_000, 1_000 * 2 ** Math.min(job.attempts, 6));
     await this.client`

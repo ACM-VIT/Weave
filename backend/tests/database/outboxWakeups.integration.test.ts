@@ -107,6 +107,8 @@ integration('delivery atomically coalesces durable prewarm by user/version and r
   assert.equal((await sqlClient`SELECT status FROM telemetry.ml_outbox WHERE outbox_id=${outboxId}::uuid`)[0].status, 'pending');
   await sqlClient`UPDATE telemetry.ml_outbox SET status='delivered' WHERE outbox_id=${outboxId}::uuid`;
   const queue = new FeedPrewarmService(); const first = (await queue.claim())!;
+  const leaseDelay = (await queue.nextRunInMs())!;
+  assert.ok(leaseDelay > 0 && leaseDelay <= 60_000, 'claimed jobs report their lease expiry');
   await queue.finish(first, { status: 'generated',feedVersion: 1n,count: 0 });
   await deliver(userId);
   assert.equal(await queue.claim(), null, 'repeat delivery must not redo a completed user/version');
@@ -141,6 +143,7 @@ integration('restarts recover expired claims, adopt current versions, retry fail
   const queue = new FeedPrewarmService(); const first = (await queue.claim())!;
   assert.equal(await new FeedPrewarmService().claim(), null);
   await sqlClient`UPDATE telemetry.feed_prewarm_jobs SET claimed_at=now()-interval '2 minutes' WHERE user_id=${userId}::uuid`;
+  assert.equal(await queue.nextRunInMs(), 0);
   await sqlClient`UPDATE app.user_feed_state SET feed_version=3 WHERE user_id=${userId}::uuid`;
   const recovered = (await new FeedPrewarmService().claim())!;
   assert.notEqual(recovered.claimToken, first.claimToken);
@@ -156,6 +159,7 @@ integration('restarts recover expired claims, adopt current versions, retry fail
   await sqlClient`UPDATE app.users SET status='deleted' WHERE user_id=${userId}::uuid`;
   await sqlClient`UPDATE telemetry.feed_prewarm_jobs SET available_at=now() WHERE user_id=${userId}::uuid`;
   assert.equal(await queue.claim(), null);
+  assert.equal(await queue.nextRunInMs(), undefined, 'disabled users must not schedule busy retries');
   await sqlClient`DELETE FROM app.users WHERE user_id=${userId}::uuid`;
   assert.equal((await sqlClient`SELECT 1 FROM telemetry.feed_prewarm_jobs WHERE user_id=${userId}::uuid`).length, 0);
 });
@@ -182,6 +186,41 @@ integration('delayed or failed prewarm cannot hold up unrelated outbox delivery'
     t.diagnostic(`Delivery completed in ${(performance.now()-started).toFixed(1)} ms while prewarm remained paused; no prewarm hook in the delivery lane.`);
   } finally { release.open(); await generating; }
   assert.equal((await sqlClient`SELECT status,last_error FROM telemetry.feed_prewarm_jobs WHERE user_id=${userId}::uuid`)[0].last_error, 'generation_failed');
+});
+
+integration('early notifications preserve coalesced and failed prewarm retry deadlines', async () => {
+  const supervisor = new WorkerSupervisor();
+  const listener = new WorkerWakeups(supervisor);
+  const attempts = new Map<string, number[]>();
+  const failing = new Set<string>();
+  const prewarm = new FeedPrewarmWorker(new FeedPrewarmService(), { generate: async userId => {
+    const starts = attempts.get(userId)!;
+    starts.push(performance.now());
+    if (starts.length === 1) {
+      if (failing.has(userId)) throw Object.assign(new Error('ML unavailable'), { code: 'ETIMEDOUT' });
+      return { status: 'coalesced', feedVersion: 1n };
+    }
+    return { status: 'generated', feedVersion: 1n, count: 0 };
+  } });
+  supervisor.registerAdaptive('feed-prewarm', 10, 60_000, () => prewarm.runOnce());
+  try {
+    await listener.start();
+    supervisor.start();
+    for (const fails of [false, true]) {
+      const userId = await user();
+      const starts: number[] = [];
+      attempts.set(userId, starts);
+      if (fails) failing.add(userId);
+      await deliver(userId);
+      await until(async () => (await sqlClient`
+        SELECT status FROM telemetry.feed_prewarm_jobs WHERE user_id=${userId}::uuid
+      `)[0]?.status === 'completed');
+      assert.equal(starts.length, 2);
+      assert.ok(starts[1]-starts[0] >= (fails ? 1_900 : 900), 'retry backoff must not be bypassed');
+      assert.ok(starts[1]-starts[0] < 5_000, 'an early notification must not impose the 60-second idle poll');
+    }
+    assert.equal(supervisor.snapshot()['feed-prewarm'].failures, 0);
+  } finally { await supervisor.stop(); await listener.stop(); }
 });
 
 integration('notifications wake idle workers and reconnect drains missed work without fallback polling', async t => {

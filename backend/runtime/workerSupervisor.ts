@@ -9,6 +9,12 @@ export interface WorkerStatus {
   last_error: string | null;
 }
 
+export interface AdaptiveWorkerReport {
+  processed: number;
+  /** Delay until durable work becomes eligible, including retries and expired claims. */
+  nextRunInMs?: number;
+}
+
 interface Task {
   name: string;
   intervalMs: number;
@@ -58,7 +64,7 @@ export class WorkerSupervisor {
     name: string,
     activeIntervalMs: number,
     idleIntervalMs: number,
-    run: () => Promise<number>,
+    run: () => Promise<number | AdaptiveWorkerReport>,
   ): void {
     if (activeIntervalMs <= 0 || idleIntervalMs < activeIntervalMs) {
       throw new Error('Adaptive worker intervals must be positive and idle must be at least active.');
@@ -105,10 +111,17 @@ export class WorkerSupervisor {
       if (task.loopRunning) return;
       task.loopRunning = true;
       try {
-        const result = await this.execute(task);
+        // Only registerAdaptive tasks enter this loop; execute returns undefined on failure.
+        const result = await this.execute(task) as number | AdaptiveWorkerReport | undefined;
         if (!this.started) return;
-        const delay = task.wakeRequested ? 0 : typeof result === 'number' && result > 0
-          ? task.activeIntervalMs! : task.idleIntervalMs!;
+        const processed = typeof result === 'number' ? result : result?.processed;
+        let delay = processed !== undefined && processed > 0 ? task.activeIntervalMs! : task.idleIntervalMs!;
+        if (typeof result === 'object' && Number.isFinite(result.nextRunInMs)) {
+          // An empty, early notification check must still revisit future durable work.
+          // Retain the active interval as a lower bound to avoid spinning on locked jobs.
+          delay = Math.min(delay, Math.max(task.activeIntervalMs!, result.nextRunInMs!));
+        }
+        if (task.wakeRequested) delay = 0;
         task.wakeRequested = false;
         const timer = setTimeout(() => void runAndSchedule(), delay) as unknown as NodeJS.Timeout;
         timer.unref();

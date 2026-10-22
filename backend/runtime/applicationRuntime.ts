@@ -14,6 +14,7 @@ import { DataReconciliationService, DEFAULT_COUNTER_BATCH_SIZE } from '../servic
 import { RetentionWorker } from '../workers/retentionWorker.js';
 import { WorkerSupervisor } from './workerSupervisor.js';
 import { WorkerWakeups } from './workerWakeups.js';
+import { workerErrorSummary } from './workerError.js';
 import { FeedPrewarmService } from '../services/feedPrewarmService.js';
 import { FeedPrewarmWorker } from '../workers/feedPrewarmWorker.js';
 import { getMlRuntimeConfig } from '../config/ml.js';
@@ -86,8 +87,8 @@ export class ApplicationRuntime {
       const wakeups = new WorkerWakeups(this.supervisor);
       this.supervisor.onStop(() => wakeups.stop());
       this.supervisor.registerAdaptive('outbox-notification-listener', 1_000, 30_000, async () => {
-        await wakeups.start().catch(() => {
-          console.error('[WorkerWakeups] Listener unavailable; fallback polling remains active.');
+        await wakeups.start().catch(error => {
+          console.error('[WorkerWakeups] Listener unavailable; fallback polling remains active:', workerErrorSummary(error));
         });
         return 0;
       });

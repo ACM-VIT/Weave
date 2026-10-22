@@ -32,6 +32,29 @@ test('adaptive worker rejects an idle interval shorter than its active interval'
   );
 });
 
+test('an early wake still checks the reported due time instead of the idle interval', async () => {
+  const supervisor = new WorkerSupervisor();
+  const dueAt = Date.now()+100;
+  let checkedEarly = false;
+  let processed = false;
+  supervisor.registerAdaptive('delayed', 5, 60_000, async () => {
+    if (Date.now() < dueAt) {
+      checkedEarly = true;
+      return { processed: 0, nextRunInMs: dueAt-Date.now() };
+    }
+    processed = true;
+    return { processed: 1 };
+  });
+  try {
+    supervisor.start();
+    supervisor.wake('delayed');
+    assert.equal(checkedEarly, true);
+    assert.equal(processed, false);
+    const deadline = Date.now()+2_000;
+    while (!processed) { assert.ok(Date.now()<deadline); await wait(5); }
+  } finally { await supervisor.stop(); }
+});
+
 test('wake hints coalesce during a run, interrupt idle polling and stop with the worker', async () => {
   const supervisor = new WorkerSupervisor();
   let release!: () => void;

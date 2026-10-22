@@ -291,9 +291,8 @@ Required production environment variables: `DATABASE_URL`, `SUPABASE_URL`, `SUPA
 The outbox launch script sets `--role=outbox` portably and fails startup when `ML_FEEDBACK_OUTBOX` is disabled. A hardened systemd template and install/acceptance procedure are in [the outbox worker runbook](../docs/runbooks/outbox-worker.md).
 
 Apply `0029_outbox_wakeups_prewarm` before starting the updated outbox worker.
-Migration `0028` is reserved by pending PR #162: reconcile both journals against
-the merge base and apply them in timestamp order before deployment. Do not apply
-0029 ahead of an unrecorded 0028; the migration runner uses chronological history.
+Migration `0028_counter_reconciliation_progress` is already in the journal.
+Apply migrations in journal order, with `0028` before `0029`.
 
 Outbox inserts and pending transitions emit payload-free PostgreSQL notifications
 only after commit. Notifications wake idle workers; they never acknowledge jobs.
@@ -301,6 +300,8 @@ The existing bounded idle poll (default 30 seconds) remains the recovery path
 when a signal is lost or the listener is unavailable. Reconnection subscribes
 again and immediately checks durable work. Wake hints coalesce into one pending
 run while a task is busy; delivery tasks never overlap within one process.
+Prewarm checks also report the next eligible job or expired claim, so an early
+notification cannot replace a scheduled retry with the full idle interval.
 
 LISTEN needs a direct or session-pool PostgreSQL connection. If `DATABASE_URL`
 uses transaction pooling, set `OUTBOX_LISTEN_DATABASE_URL` to a direct/session
