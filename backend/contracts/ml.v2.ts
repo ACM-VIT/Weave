@@ -135,6 +135,8 @@ export interface MlRepositoryRefreshJob {
 }
 
 export interface DeliveryResult {
+  /** Transport-only classification; never changes retry or acceptance policy. */
+  failure_kind?: 'timeout';
   accepted: boolean;
   retryable: boolean;
   status_code: number;
