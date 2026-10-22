@@ -33,7 +33,7 @@ export async function semanticSearch(request: SearchRequest, signal?: AbortSigna
     } catch (error) {
       outcome = signal?.aborted ? 'cancelled'
         : attemptSignal.aborted || (axios.isAxiosError(error) && error.code === 'ECONNABORTED') ? 'timeout'
-        : axios.isAxiosError(error) && error.response ? httpOutcome(error.response.status) : 'failure';
+        : axios.isAxiosError(error) && error.response && error.response.status >= 400 ? httpOutcome(error.response.status) : 'failure';
       throw error;
     } finally {
       span.finish(signal?.aborted ? 'cancelled' : attemptSignal.aborted ? 'timeout' : outcome);

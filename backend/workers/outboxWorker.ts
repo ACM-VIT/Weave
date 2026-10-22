@@ -47,7 +47,8 @@ export class OutboxWorker {
       const result = await span.run(async () => {
         try {
           const delivery = await this.deliver(row);
-          outcome = delivery.accepted ? 'success' : httpOutcome(delivery.status_code);
+          outcome = delivery.accepted ? 'success' : delivery.failure_kind === 'timeout' ? 'timeout'
+            : delivery.status_code >= 400 ? httpOutcome(delivery.status_code) : 'failure';
           return delivery;
         } finally { span.finish(outcome); }
       });

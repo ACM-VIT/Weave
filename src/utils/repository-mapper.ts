@@ -1,3 +1,4 @@
+import { recommendationSource } from '@/models/recommendation';
 import { parseReadmeDigest } from '@/models/readme-digest';
 import type { RepositoryApiPayload } from '@/api/repositories';
 import type { RepositoryDetail, RepositoryStats, RepositoryStatus } from '@/models/repository';
@@ -167,6 +168,8 @@ export function mapRepositoryDetail(
     viewerFollowsOwner: typeof payload.viewer_follows_owner === 'boolean'
       ? payload.viewer_follows_owner
       : null,
+    ...(payload.recommendation_source !== undefined
+      ? { recommendationSource: recommendationSource(payload.recommendation_source) } : {}),
     serveId: nullableText(payload.serve_id),
     feedPosition: Number.isInteger(payload.position) ? Number(payload.position) : null,
   };

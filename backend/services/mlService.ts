@@ -19,6 +19,8 @@ import { getMlRuntimeConfig, type MlRuntimeConfig } from '../config/ml.js';
 import { isValidUuid } from '../utils/validators.js';
 import { incrementMetric, observeMetric } from '../observability/metrics.js';
 
+class MlTransportTimeoutError extends Error {}
+
 type RecommendationFailureKind = 'dependency' | 'contract';
 type RecommendationCircuitState = 'closed' | 'open' | 'half-open';
 
@@ -315,6 +317,9 @@ export class MlV2Client implements RecommendationPort, OutboxTransportPort {
       }
       outcome = httpOutcome(response.status);
       return { status: response.status, body, retryAfterMs };
+    } catch (error) {
+      if (controller.signal.aborted) throw new MlTransportTimeoutError('ML transport deadline exceeded.', { cause: error });
+      throw error;
     } finally {
       clearTimeout(timer);
       span.finish(controller.signal.aborted ? 'timeout' : outcome);
@@ -414,7 +419,8 @@ export class MlV2Client implements RecommendationPort, OutboxTransportPort {
         ...(status >= 200 && status < 300 ? { response_body: body } : {}),
       };
     } catch (error) {
-      return { accepted: false, retryable: true, status_code: 0, detail: String(error) };
+      return { accepted: false, retryable: true, status_code: 0, detail: String(error),
+        ...(error instanceof MlTransportTimeoutError ? { failure_kind: 'timeout' as const } : {}) };
     }
   }
 
@@ -458,6 +464,7 @@ export class MlV2Client implements RecommendationPort, OutboxTransportPort {
         retryable: !(error instanceof MlRepositoryIndexContractError),
         status_code: 0,
         detail: String(error),
+        ...(error instanceof MlTransportTimeoutError ? { failure_kind: 'timeout' as const } : {}),
       };
     }
   }

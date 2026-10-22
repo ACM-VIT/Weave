@@ -601,6 +601,7 @@ test('ML transport turns timeout/network failures into retryable delivery result
     assert.equal(result.accepted, false);
     assert.equal(result.retryable, true);
     assert.equal(result.status_code, 0);
+    assert.equal(result.failure_kind, 'timeout');
   });
 });
 

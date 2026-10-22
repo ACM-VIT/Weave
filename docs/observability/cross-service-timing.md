@@ -87,3 +87,37 @@ roots cannot reconstruct the originating HTTP span after restart. Client first
 render/feed-ready instrumentation is also absent. Remote worker queue/model lock,
 encoding/Qdrant/ranking/serialization and late work must come from the paired ML
 change, not be inferred from transport latency. These gaps keep issue #134 open.
+
+
+## Separate worker processes
+
+The protected operations status response also exposes `worker_telemetry`. Each
+worker publishes only stage histograms and the bounded span ring into the existing
+private Redis, once every 15 seconds. There are 16 fixed slots across worker roles,
+with 60-second expiry, a maximum 256 KiB JSON snapshot per slot, and atomic
+process-token claim/refresh/release. The opaque per-start process UUID is snapshot
+metadata, never a metric label. No new listener, credential, setting, or service
+is introduced. A stopped/restarted process must not be treated as the same series.
+
+Redis calls have a one-second caller deadline. A timed-out publish/read retains
+its overlap guard until the underlying command actually settles, preventing an
+unbounded backlog. Telemetry failure cannot reject an outbox job. Fixed warning
+codes report unavailable Redis, slot exhaustion or an oversized snapshot; the
+protected response reports empty/unavailable/partial collection, occupied slots,
+capacity exhaustion and invalid-or-stale snapshot count. Expired slots disappear;
+empty collection is not proof that workers are healthy or idle. Snapshots older
+than 60 seconds or over five seconds in the future are rejected, so clock skew
+also produces explicit partial collection rather than trusted timestamps.
+
+Scrapes are snapshots, not additive events: repeated API polls may read the same
+worker snapshot. Deduplicate by process_id and captured_at_ms; calculate bucket,
+count and sum deltas only between distinct snapshots for the same process, then
+aggregate deltas across processes. Never add repeated snapshots or assume Redis
+contains durable fleet counters. Missing intervals, eviction/restart, capacity
+exhaustion and stale data mean incomplete collection and must be disclosed.
+
+Outbox delivery carries an optional timeout failure kind from an aborted ML
+transport, preserving its timeout histogram instead of collapsing status zero
+into generic failure. This metadata does not change acceptance/retry behavior.
+Rejected Axios redirects (redirect following remains disabled) record failure,
+not HTTP success. Focused regression fixture source is supplied without execution.
