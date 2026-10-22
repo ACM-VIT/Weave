@@ -36,6 +36,9 @@ export const receiveMlRecommendations = async (req: Request, res: Response): Pro
 };
 
 export const getFeedForMobile = async (req: AuthRequest, res: Response): Promise<void> => {
+  const controller = new AbortController();
+  const cancel = () => { if (!res.writableEnded) controller.abort(); };
+  res.once('close', cancel);
   try {
     const userId = req.user?.userId;
 
@@ -54,7 +57,8 @@ export const getFeedForMobile = async (req: AuthRequest, res: Response): Promise
         session_id: sessionHeader && isValidUuid(sessionHeader) ? sessionHeader : crypto.randomUUID(),
         limit: 10,
         cursor: null,
-      });
+      }, controller.signal);
+      if (controller.signal.aborted) return;
       const data = response.items.map((item) => ({
         ...item.repository,
         score: item.score,
@@ -85,7 +89,10 @@ export const getFeedForMobile = async (req: AuthRequest, res: Response): Promise
       data: feed
     });
   } catch (error) {
+    if (controller.signal.aborted) return;
     console.error('[FeedController] Failed to serve mobile feed:', error);
      res.status(500).json({ success: false, message: 'Internal server error.' });
+  } finally {
+    res.removeListener('close', cancel);
   }
 };
