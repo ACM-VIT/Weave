@@ -112,6 +112,7 @@ export class ApplicationRuntime {
   readonly supervisor = new WorkerSupervisor();
 
   constructor(readonly role: 'api' | 'outbox' | 'feed' | 'maintenance' | 'all' = 'api') {
+    this.supervisor.onStop(() => this.feed.stop());
     if ((role === 'outbox' || role === 'all') && this.flags.ML_FEEDBACK_OUTBOX && this.ml) {
       resolveOutboxLeaseMs();
       const worker = new OutboxWorker(

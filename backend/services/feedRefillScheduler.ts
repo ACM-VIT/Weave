@@ -10,8 +10,9 @@ interface RefillJob {
 export class FeedRefillScheduler {
   private readonly jobs = new Map<string, RefillJob>();
   private readonly pending: string[] = [];
-  private active = 0;
+  private readonly active = new Set<Promise<void>>();
   private scheduled = false;
+  private stopping = false;
 
   constructor(
     readonly lowWatermark: number,
@@ -27,6 +28,7 @@ export class FeedRefillScheduler {
   }
 
   schedule(userId: string, version: bigint, sessionId: string): void {
+    if (this.stopping) return;
     const key = JSON.stringify([userId, version.toString()]);
     if (this.jobs.has(key)) return;
     if (this.jobs.size >= this.capacity) {
@@ -41,21 +43,29 @@ export class FeedRefillScheduler {
     }
   }
 
+  async stop(): Promise<void> {
+    this.stopping = true;
+    for (const key of this.pending) this.jobs.delete(key);
+    this.pending.length = 0;
+    // These are actual generations, including lock release, not timed observers.
+    await Promise.allSettled(this.active);
+  }
+
   private drain(): void {
-    while (this.active < this.concurrency && this.pending.length > 0) {
+    while (!this.stopping && this.active.size < this.concurrency && this.pending.length > 0) {
       const key = this.pending.shift()!;
       const job = this.jobs.get(key)!;
-      this.active++;
       // Retain the key and worker slot until the actual generation settles.
       // A timeout/cancelled observer must not create overlapping background work.
-      void Promise.resolve().then(() => this.refill(job)).catch(error => {
+      const work: Promise<void> = Promise.resolve().then(async () => { await this.refill(job); }).catch(error => {
         incrementMetric('feed_v2_prefill_failures_total');
         console.error('[FeedRefillScheduler] Background refill failed:', error);
       }).finally(() => {
-        this.active--;
+        this.active.delete(work);
         this.jobs.delete(key);
         this.drain();
       });
+      this.active.add(work);
     }
   }
 }
