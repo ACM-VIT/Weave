@@ -177,6 +177,27 @@ test('actual import panel renders consent/error/revoke and ignores late account 
   assert.equal(await evaluate('window.fixture.manual'),1,'successful retry continues manually exactly once');
   assert.equal(requests.filter(row=>row.action==='revoke').length,cleanupBefore+2);
   assert.deepEqual(await evaluate('window.fixture.saved'),['A']);
+  // A refresh error from an earlier cleanup cannot acknowledge a later failed
+  // cleanup. The parent unmounts the panel as soon as manual navigation occurs.
+  await send('Page.navigate',{url:`http://127.0.0.1:${address.port}`});
+  await click('Preview public activity'); await until('document.body.innerText.includes("only-A-topic")');
+  await evaluate('window.fixture.unmountManual=true;window.fixture.mode="refresh-error"');
+  await click('Choose preferences myself');
+  await until('document.body.innerText.includes("Account refresh unavailable")');
+  await click('Show import option'); await click('Preview public activity');
+  await until('document.body.innerText.includes("only-A-topic")');
+  active.A=true;
+  await evaluate('window.fixture.mode="cleanup-error"'); await click('Choose preferences myself');
+  await until('document.body.innerText.includes("Preview cleanup unavailable")');
+  if(await evaluate(`Boolean(document.querySelector('[aria-label="Retry account refresh"]'))`)) {
+    await evaluate('window.fixture.mode="normal"'); await click('Retry account refresh');
+    await until('!document.body.innerText.includes("Refreshing account")');
+  }
+  assert.equal(await evaluate('Boolean(document.getElementById("manual-view"))'),false,'stale refresh cannot bypass the latest failed cleanup');
+  assert.equal(active.A,true);
+  await evaluate('window.fixture.mode="normal"'); await click('Retry closing preview');
+  await until('Boolean(document.getElementById("manual-view"))');
+  assert.equal(active.A,false);
   // Empty manual setup has no preview/acceptance to retire and must not invent
   // a network dependency or populate any choices.
   await send('Page.navigate',{url:`http://127.0.0.1:${address.port}`});
