@@ -1,6 +1,6 @@
 import crypto from 'node:crypto';
 import { setTimeout, clearTimeout } from 'node:timers';
-import { snapshotHistograms } from './metrics.js';
+import { snapshotHistograms, snapshotFeedbackDelivery } from './metrics.js';
 import { snapshotSpans } from './tracing.js';
 
 // Existing private Redis only. Fixed keys bound fleet storage even under churn.
@@ -24,6 +24,7 @@ interface Snapshot {
   captured_at_ms: number;
   stage_duration_ms: ReturnType<typeof snapshotHistograms>;
   trace_spans: ReturnType<typeof snapshotSpans>;
+  feedback_delivery?: ReturnType<typeof snapshotFeedbackDelivery>;
 }
 
 // Claim/refresh only our own slot; never overwrite another process's live data.
@@ -69,11 +70,27 @@ export function parseWorkerSnapshot(raw: string, now = Date.now()): Snapshot | n
   if (Buffer.byteLength(raw) > MAX_BYTES + 37 || !UUID.test(raw.slice(0, 36)) || raw[36] !== '\n') return null;
   try {
     const value: unknown = JSON.parse(raw.slice(37));
-    if (!record(value) || !keys(value, ['process_id', 'role', 'captured_at_ms', 'stage_duration_ms', 'trace_spans'])
+    if (!record(value) || !keys(value, ['process_id', 'role', 'captured_at_ms', 'stage_duration_ms', 'trace_spans',
+      ...(Object.hasOwn(value, 'feedback_delivery') ? ['feedback_delivery'] : [])])
       || value.process_id !== raw.slice(0, 36) || typeof value.role !== 'string' || !['outbox', 'feed', 'maintenance', 'all'].includes(String(value.role))
       || !nonnegative(value.captured_at_ms) || value.captured_at_ms > now + 5000 || value.captured_at_ms < now - TTL_SECONDS * 1000
       || !record(value.stage_duration_ms) || Object.keys(value.stage_duration_ms).length > 225
       || !Array.isArray(value.trace_spans) || value.trace_spans.length > 256) return null;
+    if (Object.hasOwn(value, 'feedback_delivery')) {
+      const feedback = value.feedback_delivery;
+      if (!record(feedback) || !keys(feedback, ['outbox_feedback_events_per_request', 'outbox_feedback_unacknowledged_total'])
+        || !nonnegative(feedback.outbox_feedback_unacknowledged_total) || !Number.isSafeInteger(feedback.outbox_feedback_unacknowledged_total)) return null;
+      const distribution = feedback.outbox_feedback_events_per_request;
+      if (!record(distribution) || !keys(distribution, ['count', 'p50', 'p95', 'p99', 'max'])
+        || !nonnegative(distribution.count) || !Number.isInteger(distribution.count) || distribution.count > 2048) return null;
+      let previous = 0;
+      for (const name of ['p50', 'p95', 'p99', 'max']) {
+        const sample = distribution[name];
+        if (!nonnegative(sample) || !Number.isInteger(sample) || sample < previous || sample > 100
+          || (distribution.count === 0 && sample !== 0)) return null;
+        previous = sample;
+      }
+    }
     for (const [label, histogram] of Object.entries(value.stage_duration_ms)) {
       const dimensions: unknown = JSON.parse(label);
       if (!record(dimensions) || !keys(dimensions, ['operation', 'stage', 'outcome'])
@@ -123,7 +140,7 @@ export class WorkerTelemetryPublisher {
   async publish(): Promise<void> {
     if (this.stopped || this.pending) return;
     const snapshot: Snapshot = { process_id: this.owner, role: this.role, captured_at_ms: Date.now(),
-      stage_duration_ms: snapshotHistograms(), trace_spans: snapshotSpans() };
+      stage_duration_ms: snapshotHistograms(), trace_spans: snapshotSpans(), feedback_delivery: snapshotFeedbackDelivery() };
     const payload = JSON.stringify(snapshot);
     if (Buffer.byteLength(payload) > MAX_BYTES) {
       if (this.previousStatus !== 'snapshot_too_large') console.warn('[WorkerTelemetry] snapshot_too_large');
