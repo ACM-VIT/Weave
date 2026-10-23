@@ -904,3 +904,17 @@ test('a negative preference winning at durable creation maps to a retryable feed
   }),FeedRequestInProgressError);
   assert.equal(queue.committed,0);assert.equal(queue.released,1);
 });
+
+
+test('capture-required cohorts retire plain queued entries but preserve pre-existing immutable replay', async () => {
+  const persistence=new FakePersistence(), queue=new FakeQueue();
+  const user='00000000-0000-4000-8000-000000000030';
+  const request={feed_request_id:'00000000-0000-4000-8000-000000000010',
+    session_id:'00000000-0000-4000-8000-000000000020',limit:10,cursor:null};
+  const required=new FeedV2Service(persistence,queue,undefined,false,1500,25,undefined,5000,undefined,()=>true);
+  await assert.rejects(required.getFeed(user,request),FeedRequestInProgressError);
+  assert.equal(persistence.serve,null,'uncaptured candidates must never become a new captured-cohort serve');
+  assert.equal(queue.committed,1,'retire the plain reservation so retry can request a captured generation');
+  const original=await new FeedV2Service(persistence,new FakeQueue()).getFeed(user,request);
+  assert.deepEqual(await required.getFeed(user,request),original,'capture activation cannot rewrite historical same-request replay');
+});

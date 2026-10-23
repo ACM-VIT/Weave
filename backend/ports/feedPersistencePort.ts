@@ -34,6 +34,10 @@ export class FeedPreferenceChangedError extends Error {
   constructor() { super('Current repository preferences changed; retry the feed request.'); }
 }
 
+export class FeedProvenanceUnavailableError extends Error {
+  constructor() { super('FEED_PROVENANCE_UNAVAILABLE'); }
+}
+
 export interface FeedPersistencePort {
   /** Current explicit negatives are independent of bounded exposure exclusions. */
   listPreferenceEligibleRepositoryIds(userId: string, repoIds: string[]): Promise<string[]>;

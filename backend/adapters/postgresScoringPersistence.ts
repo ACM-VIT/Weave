@@ -32,6 +32,17 @@ export class PostgresScoringPersistence implements ScoringPersistencePort {
     })();
   }
 
+  async recordWitness(userId: string, generationId: string, event: 'published' | 'stale'): Promise<boolean> {
+    try {
+      await this.verifyPermission();
+      const [row] = await this.writer`SELECT private_scoring.record_generation_witness(${userId}::uuid,${generationId}::uuid,${event}::text) AS accepted`;
+      return row?.accepted === true;
+    } catch (error) {
+      if (error instanceof ScoringPersistenceError) throw error;
+      throw new ScoringPersistenceError('unavailable');
+    }
+  }
+
   async persist(generation: ValidatedScoringGeneration, policy: CaptureRetentionPolicy): Promise<ScoringPersistenceResult> {
     // Materialize a bounded, validated immutable value before opening SQL work.
     const payload = generation.serializeForPersistence(policy);

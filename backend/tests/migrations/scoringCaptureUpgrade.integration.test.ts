@@ -27,8 +27,10 @@ integration('fresh scoring migration and pre-scoring upgrade preserve baseline r
     await run('scripts/schema-audit.ts');
     const journal = JSON.parse(readFileSync(path.resolve(backend,'../database/migrations/meta/_journal.json'),'utf8'));
     const entry = journal.entries.find((row: { tag: string })=>row.tag==='0042_private_scoring_provenance');
+    const serving = journal.entries.find((row: { tag: string })=>row.tag==='0043_feed_item_provenance');
+    assert.equal(serving.idx,46);
     assert.equal(entry.idx,45);
-    const previous = await admin`SELECT hash,created_at FROM drizzle.__drizzle_migrations WHERE created_at<>${entry.when} ORDER BY created_at`;
+    const previous = await admin`SELECT hash,created_at FROM drizzle.__drizzle_migrations WHERE created_at<${entry.when} ORDER BY created_at`;
     await admin`INSERT INTO auth.users(id) VALUES(${userId}::uuid)`;
     await admin`INSERT INTO app.users(user_id,username,status) VALUES(${userId}::uuid,${'capture_upgrade_'+userId.replaceAll('-','')},'active')`;
     seeded = true;
@@ -36,13 +38,15 @@ integration('fresh scoring migration and pre-scoring upgrade preserve baseline r
     // ledger: assertDisposableDatabase and the empty-database guard are required.
     await admin.begin(async tx=>{
       assert.equal(Number((await tx`SELECT count(*) FROM private_scoring.scoring_generations`)[0].count),0);
+      await tx.unsafe('DROP TABLE telemetry.feed_item_provenance');
       await tx.unsafe('DROP SCHEMA private_scoring CASCADE');
+      assert.equal((await tx`DELETE FROM drizzle.__drizzle_migrations WHERE created_at=${serving.when} RETURNING hash`).length,1);
       const removed=await tx`DELETE FROM drizzle.__drizzle_migrations WHERE created_at=${entry.when} RETURNING hash`;
       assert.equal(removed.length,1);
     });
     await run('scripts/migrate.ts');
     await run('scripts/schema-audit.ts');
-    assert.deepEqual(await admin`SELECT hash,created_at FROM drizzle.__drizzle_migrations WHERE created_at<>${entry.when} ORDER BY created_at`,previous,
+    assert.deepEqual(await admin`SELECT hash,created_at FROM drizzle.__drizzle_migrations WHERE created_at<${entry.when} ORDER BY created_at`,previous,
       'existing migration identities remain unchanged');
     assert.equal(Number((await admin`SELECT count(*) FROM app.users WHERE user_id=${userId}::uuid`)[0].count),1);
     const [functionRow]=await admin`SELECT prosecdef,proconfig,

@@ -10,7 +10,7 @@
       "user_stats", "user_topics", "users", "user_github_imports", "user_github_unlinks"
     ],
     "telemetry": [
-      "counter_reconciliation_progress", "feed_prewarm_jobs", "feed_serve_items", "feed_serves", "generation_attempts", "interaction_events",
+      "counter_reconciliation_progress", "feed_prewarm_jobs", "feed_serve_items", "feed_item_provenance", "feed_serves", "generation_attempts", "interaction_events",
       "ml_outbox", "readme_summary_jobs", "sessions", "user_repo_engagement"
     ],
     "private_scoring": ["scoring_generations", "scoring_inputs", "generation_witnesses"]
@@ -35,11 +35,12 @@
     "repo_readme_summaries_active_uidx", "readme_summary_jobs_pkey",
     "readme_summary_jobs_repo_id_content_version_content_hash_pr_key", "readme_summary_jobs_pending_idx",
     "repo_card_summaries_repo_active_idx", "repos_full_name_key",
-    "repos_github_id_key", "trending_one_active_period_uidx", "scoring_generations_expiry_idx"
+    "repos_github_id_key", "trending_one_active_period_uidx", "scoring_generations_expiry_idx", "feed_item_provenance_owner_created_idx", "feed_item_provenance_exposure_key"
   ],
   "functions": ["activate_repo_summary", "enforce_comment_parent_repo",
-    "private_scoring.persist_generation", "private_scoring.exact_keys", "private_scoring.finite_input", "private_scoring.reject_update"],
+    "private_scoring.record_generation_witness", "private_scoring.validate_feed_item_provenance", "private_scoring.persist_generation", "private_scoring.exact_keys", "private_scoring.finite_input", "private_scoring.reject_update"],
   "roles": ["ghsocial_backend", "ghsocial_scoring_writer", "ghsocial_scoring_exporter", "ghsocial_scoring_retention"],
-  "columns": ["app.user_github_unlinks.provider_identity_id",
+  "columns": ["app.user_github_unlinks.provider_identity_id", "telemetry.feed_item_provenance.exposure_id",
+    "telemetry.feed_item_provenance.generation_id", "telemetry.feed_item_provenance.record_digest",
     "private_scoring.scoring_inputs.input_bytes", "private_scoring.scoring_generations.context_bytes"]
 }
