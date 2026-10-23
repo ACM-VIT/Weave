@@ -3,12 +3,13 @@ import { OnboardingData } from '../api/onboarding';
 
 interface OnboardingContextType {
   data: Partial<OnboardingData>;
+  githubControlRevision: number;
   updateData: (updates: Partial<OnboardingData>) => void;
 }
 
 const OnboardingContext = createContext<OnboardingContextType | undefined>(undefined);
 
-export function OnboardingProvider({ children }: { children: React.ReactNode }) {
+export function OnboardingProvider({ children, githubControlRevision = 0 }: { children: React.ReactNode; githubControlRevision?: number }) {
   const [data, setData] = useState<Partial<OnboardingData>>({});
 
   const updateData = (updates: Partial<OnboardingData>) => {
@@ -16,7 +17,7 @@ export function OnboardingProvider({ children }: { children: React.ReactNode }) 
   };
 
   return (
-    <OnboardingContext.Provider value={{ data, updateData }}>
+    <OnboardingContext.Provider value={{ data, updateData, githubControlRevision }}>
       {children}
     </OnboardingContext.Provider>
   );

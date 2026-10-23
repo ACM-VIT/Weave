@@ -14,6 +14,7 @@ test('actual disconnect UI and client flow preserve owner, cancellation and pend
   const { build } = await import('esbuild');
   await build({ stdin: { resolveDir: process.cwd(), loader: 'tsx', contents: `
     import React,{useState}from'react';import{createRoot}from'react-dom/client';
+    import{SafeAreaProvider}from'react-native-safe-area-context';
     import{GitHubUnlinkPanel}from'./src/components/onboarding/GitHubUnlinkPanel';
     import OnboardingLayout from './src/app/onboarding/_layout';
     import{GithubUnlinkCallback}from'./src/components/onboarding/GithubUnlinkCallback';
@@ -22,8 +23,10 @@ test('actual disconnect UI and client flow preserve owner, cancellation and pend
     window.fixture={mode:new URLSearchParams(location.search).get('initial')||'none',owner:'A',saved:[],browserCalls:0,refreshes:0};
     function Fixture(){const[owner,setOwner]=useState('A'),[view,setView]=useState('panel'),[,rerender]=useState(0);window.fixture.rerender=()=>rerender(x=>x+1);window.fixture.onboarding=()=>{window.fixture.route='/onboarding/create-profile';setView('onboarding');};window.fixture.panel=()=>setView('panel');window.fixture.callback=async()=>{await saveGithubUnlinkProof(owner,'v'.repeat(64));setView('callback');};window.fixture.take=takeGithubUnlinkProof;window.fixture.switchAccount=()=>{authSessionLifecycle.retire(authSessionLifecycle.currentGeneration());window.fixture.owner='B';setOwner('B');};
       if(view==='onboarding')return <OnboardingLayout/>;if(view==='callback')return <GithubUnlinkCallback code='opaque-web-callback'/>;return <GitHubUnlinkPanel userId={owner} onSaved={async()=>{window.fixture.saved.push(owner);if(window.fixture.redirectOnRefresh)window.fixture.onboarding();else window.fixture.rerender();}}/>;}
-    createRoot(document.getElementById('panel-frame')).render(<React.StrictMode><Fixture/></React.StrictMode>);
+    createRoot(document.getElementById('panel-frame')).render(<React.StrictMode><SafeAreaProvider initialMetrics={{frame:{x:0,y:0,width:390,height:844},insets:{top:0,bottom:0,left:0,right:0}}}><Fixture/></SafeAreaProvider></React.StrictMode>);
   ` }, outfile: path.join(directory,'bundle.js'),bundle:true,platform:'browser',format:'iife',jsx:'automatic',
+    loader:{'.css':'empty'},
+    resolveExtensions:['.web.tsx','.tsx','.web.ts','.ts','.web.jsx','.jsx','.web.js','.js','.json'],
     alias:{'react-native':'react-native-web'},define:{'process.env.NODE_ENV':'"development"'},
     plugins:[{name:'explicit-platform-transport-boundaries',setup(builder){
       const stubs = {
@@ -160,10 +163,11 @@ test('actual disconnect UI and client flow preserve owner, cancellation and pend
   await send('Input.dispatchKeyEvent',{type:'keyDown',key:'Tab',code:'Tab',modifiers:8});
   await send('Input.dispatchKeyEvent',{type:'keyUp',key:'Tab',code:'Tab',modifiers:8});
   assert.equal(await evaluate('document.activeElement.getAttribute("aria-label")'),'Check disconnect status');
-  await send('Input.dispatchKeyEvent',{type:'keyDown',key:'Enter',code:'Enter'});
-  await send('Input.dispatchKeyEvent',{type:'keyUp',key:'Enter',code:'Enter'});
+  await send('Input.dispatchKeyEvent',{type:'keyDown',key:'Enter',code:'Enter',windowsVirtualKeyCode:13,nativeVirtualKeyCode:13,text:'\r',unmodifiedText:'\r'});
+  await send('Input.dispatchKeyEvent',{type:'keyUp',key:'Enter',code:'Enter',windowsVirtualKeyCode:13,nativeVirtualKeyCode:13});
   for(let attempt=0;requests.filter(row=>row.action==='status').length===statusBeforeKeyboard&&attempt<100;attempt++)await new Promise(resolve=>setTimeout(resolve,25));
-  assert.ok(requests.filter(row=>row.action==='status').length>statusBeforeKeyboard,'keyboard activation checks pending status');
+  assert.ok(requests.filter(row=>row.action==='status').length>statusBeforeKeyboard,
+    'keyboard activation checks pending status: '+await evaluate('document.activeElement.outerHTML'));
   // Manual step changes retain the same layout host and profile draft.
   for(const route of ['/onboarding/step1','/onboarding/step2','/onboarding/step3']) {
     await evaluate(`window.fixture.route=${JSON.stringify(route)};window.fixture.rerender()`);

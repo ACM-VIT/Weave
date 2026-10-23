@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { ActivityIndicator, Pressable, ScrollView, Text, View } from 'react-native';
 import { APP_THEME, Fonts, REFERENCE_THEME, Spacing } from '../../constants/theme';
 import { githubUnlinkApi, type GithubUnlinkResult } from '../../api/githubUnlink';
@@ -59,8 +60,9 @@ function UnlinkBody({ userId, onSaved, recoveryOnly = false, authorize = startGi
     {busy ? <ActivityIndicator accessibilityLabel="Verifying GitHub disconnect" color={APP_THEME.primary} /> : null}
     {error ? <Text accessibilityRole="alert" style={{ color: REFERENCE_THEME.text, fontFamily: Fonts.sans }}>{error}</Text> : null}
   </View>;
-  return recoveryOnly ? <ScrollView keyboardShouldPersistTaps="handled" style={{ flexGrow: 0, maxHeight: '45%' }}
+  return recoveryOnly ? <SafeAreaView edges={['top']} style={{ flexShrink: 1, maxHeight: '45%' }}>
+    <ScrollView keyboardShouldPersistTaps="handled" style={{ flexGrow: 0 }}
     contentContainerStyle={{ paddingHorizontal: Spacing.four, maxWidth: 450, width: '100%', alignSelf: 'center' }}>
     {content}
-  </ScrollView> : content;
+  </ScrollView></SafeAreaView> : content;
 }
