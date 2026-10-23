@@ -1,4 +1,5 @@
 import React from "react";
+import { ONBOARDING_SKILLS, ONBOARDING_INTERESTS } from "../../backend/contracts/onboardingTaxonomy";
 import FrontendSVG from "@/assets/images/onboarding/frontend.svg";
 import BackendSVG from "@/assets/images/onboarding/backend.svg";
 import AiMlSVG from "@/assets/images/onboarding/ai_ml.svg";
@@ -75,15 +76,11 @@ export const getTechIcon = (name: string): React.JSX.Element => {
   return <DefaultTechSVG width={16} height={16} />;
 };
 
-export const SKILL_CATEGORIES: SkillCategory[] = [
-  { id: "web", title: "Web / Frontend Frameworks", icon: <FrontendSVG width={24} height={24} />, order: 1 },
-  { id: "backend", title: "Backend / APIs", icon: <BackendSVG width={24} height={24} />, order: 2 },
-  { id: "data", title: "Data Engineering & AI/ML Pipelines", icon: <AiMlSVG width={24} height={24} />, order: 3 },
-  { id: "devops", title: "DevOps, Infrastructure & Security", icon: <DevopsSVG width={24} height={24} />, order: 4 },
-  { id: "databases", title: "Databases & Storage", icon: <DatabaseSVG width={24} height={24} />, order: 5 },
-  { id: "mobile", title: "Mobile & Cross-Platform Applications", icon: <MobileSVG width={24} height={24} />, order: 6 },
-  { id: "systems", title: "Systems & Embedded Programming", icon: <SystemsSVG width={24} height={24} />, order: 7 },
-];
+const SKILL_ICONS = [FrontendSVG, BackendSVG, AiMlSVG, DevopsSVG, DatabaseSVG, MobileSVG, SystemsSVG];
+export const SKILL_CATEGORIES: SkillCategory[] = ONBOARDING_SKILLS.map((category, index) => {
+  const Icon = SKILL_ICONS[index];
+  return { ...category, order: index + 1, icon: <Icon width={24} height={24} /> };
+});
 
 export const SUGGESTED_TECHS: TechStack[] = [
   "React",
@@ -99,26 +96,9 @@ export const SUGGESTED_TECHS: TechStack[] = [
   "AWS",
 ].map(name => ({ id: name.toLowerCase().replace(/\s+/g, '-'), name, icon: getTechIcon(name) }));
 
-const RAW_INTERESTS = [
-  { categoryId: "web", keywords: ["react", "vue", "angular", "svelte", "nextjs", "nuxt", "frontend", "ui", "component", "tailwind", "css", "html", "browser", "dom"] },
-  { categoryId: "backend", keywords: ["express", "django", "flask", "fastapi", "spring", "asp.net", "rails", "backend", "rest", "graphql", "api", "microservice", "server", "middleware", "rpc", "grpc"] },
-  { categoryId: "data", keywords: ["tensorflow", "pytorch", "keras", "scikit-learn", "pandas", "numpy", "spark", "hadoop", "airflow", "kafka", "machine learning", "deep learning", "neural network", "data pipeline", "etl", "llm", "rag", "vector database", "model"] },
-  { categoryId: "devops", keywords: ["docker", "kubernetes", "terraform", "ansible", "jenkins", "github actions", "ci/cd", "aws", "gcp", "azure", "cloud", "infrastructure", "security", "authentication", "oauth", "deployment", "container"] },
-  { categoryId: "databases", keywords: ["mysql", "postgresql", "mongodb", "redis", "cassandra", "elasticsearch", "database", "sql", "nosql", "orm", "storage", "cache"] },
-  { categoryId: "mobile", keywords: ["react native", "flutter", "swift", "kotlin", "android", "ios", "mobile", "app", "cross-platform", "xamarin", "ionic"] },
-  { categoryId: "systems", keywords: ["rust", "c++", "c", "go", "assembly", "embedded", "os", "kernel", "system", "performance", "memory management", "compiler", "webassembly", "wasm"] }
-];
-
-export const INTEREST_CATEGORIES: InterestCategory[] = SKILL_CATEGORIES.map(category => {
-  const raw = RAW_INTERESTS.find(r => r.categoryId === category.id);
-  const interests: Interest[] = (raw?.keywords || []).map(keyword => ({
-    id: keyword,
-    name: keyword, // keep as is or format? The UI currently just renders keyword directly
-    icon: getTechIcon(keyword)
-  }));
-  return {
-    id: category.id,
-    title: category.title,
-    interests
-  };
-});
+export const INTEREST_CATEGORIES: InterestCategory[] = SKILL_CATEGORIES.map(category => ({
+  id: category.id,
+  title: category.title,
+  interests: (ONBOARDING_INTERESTS.find(entry => entry.id === category.id)?.interests ?? [])
+    .map(interest => ({ ...interest, icon: getTechIcon(interest.name) })),
+}));

@@ -41,6 +41,13 @@ test('identity-only onboarding is deferred and can be classified as obsolete', (
   } as unknown as Record<string, unknown>), false);
 });
 
+test('legacy UI skill IDs become canonical semantic names in every ML job', () => {
+  const job = buildMlOnboardingJob('00000000-0000-4000-8000-000000000001', 2, {
+    username: 'Tarun', skills: ['data', 'systems'],
+  });
+  assert.deepEqual(job.profile.skills, ['Data Engineering & AI/ML Pipelines', 'Systems & Embedded Programming']);
+});
+
 test('ML onboarding normalizes blank optional identity strings to null', () => {
   const job = buildMlOnboardingJob(
     '00000000-0000-4000-8000-000000000001',

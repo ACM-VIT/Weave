@@ -49,6 +49,7 @@ export const appUsers = appSchema.table('users', {
   interests: jsonb('interests').$type<string[]>().notNull().default([]),
   skills: jsonb('skills').$type<string[]>().notNull().default([]),
   techStack: jsonb('tech_stack').$type<string[]>().notNull().default([]),
+  onboardingTaxonomy: jsonb('onboarding_taxonomy').$type<Record<string, unknown>>().notNull().default({}),
   onboardingCompleted: boolean('onboarding_completed').notNull().default(false),
   status: text('status').notNull().default('active'),
   profileVersion: bigint('profile_version', { mode: 'bigint' }).notNull().default(1n),
@@ -60,6 +61,7 @@ export const appUsers = appSchema.table('users', {
     .on(table.githubId)
     .where(sql`${table.githubIdentityVerifiedAt} IS NOT NULL AND ${table.githubId} IS NOT NULL`),
   check('app_users_status_check', sql`${table.status} IN ('active','suspended','deleted')`),
+  check('app_users_onboarding_taxonomy_object', sql`jsonb_typeof(${table.onboardingTaxonomy})='object' AND octet_length(${table.onboardingTaxonomy}::text)<=32768`),
 ]);
 
 export const userStats = appSchema.table('user_stats', {
