@@ -4,8 +4,8 @@ import { APP_THEME, Fonts, REFERENCE_THEME, Spacing } from '../../constants/them
 import { githubImportApi, type GitHubImportApi, type GitHubImportPreview, type GitHubImportStatus, type ImportIdentityDraft } from '../../api/githubImport';
 
 type State = { owner: string; status: GitHubImportStatus | null; preview: GitHubImportPreview | null;
-  busy: string | null; error: string; declined: boolean };
-const empty = (owner: string): State => ({ owner, status: null, preview: null, busy: null, error: '', declined: false });
+  busy: string | null; error: string; declined: boolean; refreshNeeded: boolean; cleanupNeeded: boolean };
+const empty = (owner: string): State => ({ owner, status: null, preview: null, busy: null, error: '', declined: false, refreshNeeded: false, cleanupNeeded: false });
 
 type Props = { userId: string; identityDraft?: ImportIdentityDraft; onSaved: () => Promise<unknown>; onManual?: () => void; api?: GitHubImportApi };
 export function GitHubImportPanel(props: Props) {
@@ -26,7 +26,7 @@ function GitHubImportPanelBody({ userId, identityDraft, onSaved, onManual, api =
     const operation = ++sequence.current;
     const controller = new AbortController();
     alive.current = true;
-    api.status(controller.signal).then(status => {
+    api.status(controller.signal, userId).then(status => {
       if (!controller.signal.aborted && alive.current && sequence.current === operation) setState({ ...empty(actor), status });
     }).catch(error => {
       if (!controller.signal.aborted && alive.current && sequence.current === operation) setState({ ...empty(actor), error: error instanceof Error ? error.message : 'Unable to load GitHub preferences. Retry below.' });
@@ -45,32 +45,39 @@ function GitHubImportPanelBody({ userId, identityDraft, onSaved, onManual, api =
     finally { if (isCurrent()) update(actor, { busy: null }); }
   };
   const preview = () => run('Reading public activity', async (signal, isCurrent) => {
-    const result = await api.preview(signal);
+    const result = await api.preview(signal, userId);
     if (isCurrent()) update(userId, { preview: result, declined: false });
   });
   const accept = () => run('Saving preferences', async (signal, isCurrent) => {
     if (!current.preview || Date.parse(current.preview.expires_at) <= Date.now()) throw new Error('This preview expired. Read public activity again.');
-    if (identityDraft) await api.saveIdentity(identityDraft, signal);
+    if (identityDraft) await api.saveIdentity(identityDraft, signal, userId);
     if (!isCurrent()) return;
-    await api.accept(current.preview.snapshot_id, signal);
+    await api.accept(current.preview.snapshot_id, signal, userId);
     if (!isCurrent()) return;
-    update(userId, { preview: null, status: { linked: true, active: true, provenance: { collected_at: current.preview.collected_at } } });
+    update(userId, { preview: null, status: { linked: true, active: true, provenance: { collected_at: current.preview.collected_at } }, refreshNeeded: true });
     await onSaved();
+    if (isCurrent()) update(userId, { refreshNeeded: false });
   });
   const revoke = () => run('Removing imported preferences', async (signal, isCurrent) => {
-    await api.revoke(signal);
+    await api.revoke(signal, userId);
     if (!isCurrent()) return;
-    update(userId, { preview: null, status: { linked: current.status?.linked ?? true, active: false, provenance: {} }, declined: true });
+    update(userId, { preview: null, status: { linked: current.status?.linked ?? true, active: false, provenance: {} }, declined: true, refreshNeeded: true, cleanupNeeded: false });
     await onSaved();
+    if (isCurrent()) update(userId, { refreshNeeded: false });
+  });
+  const closePreview = () => run('Closing preview', async (signal, isCurrent) => {
+    await api.revoke(signal, userId);
+    if (!isCurrent()) return;
+    update(userId, { cleanupNeeded: false, refreshNeeded: true });
+    await onSaved();
+    if (isCurrent()) update(userId, { refreshNeeded: false });
   });
   const decline = () => {
+    const shouldClose = Boolean(current.preview || current.busy === 'Reading public activity' || current.cleanupNeeded);
     request.current?.abort(); sequence.current++;
-    if (current.preview || current.busy === 'Reading public activity') {
-      void run('Closing preview', async (signal, isCurrent) => {
-        await api.revoke(signal);
-        if (isCurrent()) { update(userId, { preview: null, declined: true }); onManual?.(); }
-      });
-    } else { update(userId, { preview: null, busy: null, declined: true, error: '' }); onManual?.(); }
+    update(userId, { preview: null, busy: null, declined: true, error: '', cleanupNeeded: shouldClose });
+    onManual?.();
+    if (shouldClose) void closePreview();
   };
   const hasSuggestions = current.preview && Object.values(current.preview.suggestions).some(values => values.length > 0);
   return <View style={{ gap: Spacing.two, paddingVertical: Spacing.three, width: '100%' }}>
@@ -82,6 +89,10 @@ function GitHubImportPanelBody({ userId, identityDraft, onSaved, onManual, api =
       <ActivityIndicator color={APP_THEME.primary} /><Text style={{ fontFamily: Fonts.sans, color: REFERENCE_THEME.textStrong }}>{current.busy}…</Text>
     </View> : null}
     {current.error ? <Text accessibilityRole="alert" style={{ fontFamily: Fonts.sans, color: REFERENCE_THEME.text, fontSize: 14, lineHeight: 21 }}>{current.error}</Text> : null}
+    {current.cleanupNeeded ? <ImportButton label="Retry closing preview" onPress={() => void closePreview()} disabled={Boolean(current.busy)} /> : null}
+    {current.refreshNeeded ? <ImportButton label="Retry account refresh" onPress={() => void run('Refreshing account', async (_signal, isCurrent) => {
+      await onSaved(); if (isCurrent()) update(userId, { refreshNeeded: false });
+    })} disabled={Boolean(current.busy)} /> : null}
     {current.status?.active ? <>
       <Text style={{ fontFamily: Fonts.sans, color: REFERENCE_THEME.textStrong, lineHeight: 21 }}>Imported {current.status.provenance.collected_at ? new Date(current.status.provenance.collected_at).toLocaleDateString() : 'from public GitHub activity'}. Recommendation updates are prepared asynchronously.</Text>
       <Text style={{ fontFamily: Fonts.sans, color: REFERENCE_THEME.textStrong, lineHeight: 21 }}>Revoke removes unchanged imported fields and keeps later manual edits. It does not disconnect your GitHub login.</Text>
@@ -98,7 +109,7 @@ function GitHubImportPanelBody({ userId, identityDraft, onSaved, onManual, api =
     </> : current.status?.linked && !current.declined ? <ImportButton label="Preview public activity" onPress={() => void preview()} primary disabled={Boolean(current.busy)} />
       : current.status && !current.status.linked ? <Text style={{ fontFamily: Fonts.sans, color: REFERENCE_THEME.textStrong, lineHeight: 21 }}>A verified GitHub login is needed to import activity. You can choose preferences manually.</Text> : null}
     {!current.status && !current.busy ? <ImportButton label="Retry preferences status" onPress={() => void run('Loading preferences', async (signal, isCurrent) => {
-      const status = await api.status(signal); if (isCurrent()) update(userId, { status });
+      const status = await api.status(signal, userId); if (isCurrent()) update(userId, { status });
     })} /> : null}
     {!current.status?.active ? <ImportButton label={current.declined ? 'Show import option' : 'Choose preferences myself'} onPress={() => {
       if (current.declined) update(userId, { declined: false }); else decline();

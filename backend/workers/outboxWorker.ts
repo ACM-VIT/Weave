@@ -50,6 +50,9 @@ export class OutboxWorker {
 
   /** A caller must already own immediate transport capacity for this claim. */
   async deliverClaimed(row: OutboxRow): Promise<DeliveryResult> {
+    if (row.job_type === 'onboard' && !await this.outbox.prepareOnboardingDelivery(row)) {
+      return { accepted: false, retryable: false, status_code: 0, detail: 'Onboarding context is no longer current.' };
+    }
     // A retry gets a fresh root: no durable enqueue trace is stored today.
     const span = startSpan(row.job_type, 'outbox_delivery', true);
     observeStage(row.job_type, 'outbox_age', 'success', Date.now() - Date.parse(row.created_at));

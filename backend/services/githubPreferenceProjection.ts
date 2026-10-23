@@ -12,11 +12,13 @@ export function importedPreferences(snapshot: GitHubActivitySnapshot): Preferenc
 }
 export function mergeImportedPreferences(baseline: Preferences, inferred: Preferences): Preferences {
   const result = structuredClone(baseline);
-  const topics = new Set(fields.flatMap(field => baseline[field].map(normalizeOnboardingTopic)));
+  const topicFor = (field: typeof fields[number], value: string) => normalizeOnboardingTopic(
+    field === 'skills' ? canonicalSkillNames([value])[0] : value);
+  const topics = new Set(fields.flatMap(field => baseline[field].map(value => topicFor(field, value))));
   for (const field of fields) {
-    const known = new Set(result[field].map(normalizeOnboardingTopic));
+    const known = new Set(result[field].map(value => topicFor(field, value)));
     for (const value of inferred[field]) {
-      const topic = normalizeOnboardingTopic(value);
+      const topic = topicFor(field, value);
       if (known.has(topic) || result[field].length >= 50 || (!topics.has(topic) && topics.size >= 100)) continue;
       result[field].push(value); known.add(topic); topics.add(topic);
     }

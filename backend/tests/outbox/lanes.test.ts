@@ -19,6 +19,7 @@ function fixture(items: OutboxRow[], feedback?: (batch: MlFeedbackBatch) => Prom
   const delivered: string[] = []; const failed: Array<{ row: OutboxRow; retryable: boolean; delay?: number }> = [];
   const claims: Array<{ limit: number; options: OutboxClaimOptions }> = [];
   const outbox = {
+    prepareOnboardingDelivery: async () => true,
     claim: async (limit: number, _lease: unknown, options: OutboxClaimOptions) => {
       claims.push({ limit, options });
       const found = items.filter(item => options.jobTypes?.includes(item.job_type)

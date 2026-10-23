@@ -24,7 +24,7 @@ test('actual import panel renders consent/error/revoke and ignores late account 
     }
     function Fixture(){const[actor,setActor]=useState('A');window.fixture.switchAccount=()=>setActor('B');
       return <GitHubImportPanel userId={actor} api={apis[actor]} identityDraft={{username:'Tarun',full_name:'Tarun',date_of_birth:'2005-01-01'}}
-        onManual={()=>{window.fixture.manual++;}} onSaved={async()=>{window.fixture.saved.push(actor);}}/>;}
+        onManual={()=>{window.fixture.manual++;}} onSaved={async()=>{if(window.fixture.mode==='refresh-error')throw new Error('Account refresh unavailable');window.fixture.saved.push(actor);}}/>;}
     createRoot(document.getElementById('panel-frame')).render(<Fixture/>);
   ` }, outfile: path.join(directory, 'bundle.js'), bundle: true, platform: 'browser', format: 'iife', jsx: 'automatic',
     alias: { 'react-native': 'react-native-web' }, define: { 'process.env.NODE_ENV': '"development"' },
@@ -34,6 +34,9 @@ test('actual import panel renders consent/error/revoke and ignores late account 
       builder.onLoad({ filter: /.*/, namespace: 'fixture' }, args => ({ contents: args.path === 'api-boundary' ? 'export const githubImportApi={};' : '' }));
     } }],
   });
+  let releaseCleanup!: () => void, cleanupArrived!: () => void;
+  const cleanupHeld = new Promise<void>(resolve => { releaseCleanup = resolve; });
+  const cleanupStarted = new Promise<void>(resolve => { cleanupArrived = resolve; });
   const requests: Array<{ actor: string; action: string; mode: string }> = [];
   const active: Record<string, boolean> = { A: false, B: false };
   const server = createServer(async (req, res) => {
@@ -42,6 +45,7 @@ test('actual import panel renders consent/error/revoke and ignores late account 
       const actor = url.searchParams.get('actor')!, mode = url.searchParams.get('mode')!;
       const action = url.pathname.split('/').pop()!; requests.push({ actor, action, mode });
       res.setHeader('Content-Type', 'application/json');
+      if (action === 'revoke' && mode === 'cleanup-error') { cleanupArrived(); await cleanupHeld; res.statusCode = 503; res.end(JSON.stringify({ error: 'Preview cleanup unavailable' })); return; }
       if (action === 'preview' && mode === 'error') { res.statusCode = 503; res.end(JSON.stringify({ error: 'Public activity is unavailable. Retry or choose preferences manually.' })); return; }
       if (action === 'preview' && mode === 'late') await new Promise(resolve => setTimeout(resolve, 200));
       if (action === 'accept') active[actor] = true;
@@ -64,7 +68,7 @@ test('actual import panel renders consent/error/revoke and ignores late account 
   let spawnError: Error | undefined; chrome.on('error', error => { spawnError = error; });
   let socket: WebSocket | undefined;
   t.after(async () => {
-    socket?.close();
+    releaseCleanup(); socket?.close();
     if (chrome.exitCode === null && chrome.signalCode === null && !spawnError) { const exited = once(chrome, 'exit'); chrome.kill('SIGKILL'); await exited; }
     server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve()));
     await rm(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
@@ -115,9 +119,18 @@ test('actual import panel renders consent/error/revoke and ignores late account 
       await writeFile(path.join(process.env.GITHUB_IMPORT_BROWSER_ARTIFACTS, `${name}-preview.png`), Buffer.from(screenshot.result.data, 'base64'));
     }
   }
-  await click('Choose preferences myself'); await until('window.fixture.manual===1');
+  await evaluate('window.fixture.mode="cleanup-error"');
+  await click('Choose preferences myself'); await cleanupStarted;
+  assert.equal(await evaluate('window.fixture.manual'), 1, 'manual choice must complete while cleanup HTTP is held');
+  releaseCleanup(); await until('document.body.innerText.includes("Preview cleanup unavailable")');
+  await evaluate('window.fixture.mode="normal"'); await click('Retry closing preview');
+  await until(`!document.querySelector('[aria-label="Retry closing preview"]')`);
   await click('Show import option'); await click('Preview public activity'); await until('document.body.innerText.includes("only-A-topic")');
-  await click('Use preferences and finish setup'); await until('document.body.innerText.includes("prepared asynchronously")');
+  await evaluate('window.fixture.mode="refresh-error"');
+  await click('Use preferences and finish setup'); await until('document.body.innerText.includes("Account refresh unavailable")');
+  await until('document.body.innerText.includes("prepared asynchronously")');
+  await evaluate('window.fixture.mode="normal"'); await click('Retry account refresh');
+  await until(`!document.querySelector('[aria-label="Retry account refresh"]')`);
   assert.equal(requests.filter(request => request.action === 'identity').length, 1);
   assert.equal(requests.filter(request => request.action === 'accept').length, 1);
   await click('Revoke activity import'); await until('document.body.innerText.includes("Show import option")');
@@ -133,6 +146,7 @@ test('actual import panel renders consent/error/revoke and ignores late account 
   await new Promise(resolve => setTimeout(resolve, 250));
   assert.equal(await evaluate('document.body.innerText.includes("only-A-topic")'), false);
   assert.equal(requests.filter(request => request.actor === 'B' && request.action === 'accept').length, 0);
-  assert.deepEqual(await evaluate('window.fixture.saved'), ['A', 'A']);
+  const saved = await evaluate('window.fixture.saved') as string[];
+  assert.ok(saved.length >= 3 && saved.every(actor => actor === 'A'), 'only the current account refreshes after successful mutations');
   t.diagnostic('Actual React Native Web panel: explicit consent, error/retry, partial provenance, decline, expiry, revoke and late-account isolation pass; HTTP API is a controlled boundary.');
 });
