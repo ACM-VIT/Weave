@@ -40,7 +40,11 @@ integration('new serves use one item insert for 1, 24 and 50 cards without follo
     console.log('SERVE_MEASURE '+JSON.stringify({count,statements:queries.length,ms:Math.round(performance.now()-start)}));
     assert.equal(queries.filter(query=>/INSERT INTO telemetry.feed_serve_items/i.test(query)).length,1);
     assert.equal(queries.filter(query=>/SELECT[\s\S]*FROM telemetry.feed_serves/i.test(query)).length,0);
-    assert.ok(queries.length<=5,`new serve took ${queries.length} statements`);
+    // Four bounded statements serialize current preferences with activity:
+    // user lock, feed initialization, feed lock, and candidate eligibility read.
+    assert.equal(queries.filter(query=>/FROM app.user_feed_state[\s\S]*FOR UPDATE/i.test(query)).length,1);
+    assert.equal(queries.filter(query=>/negative\.reaction='dislike'/i.test(query)).length,1);
+    assert.ok(queries.length<=9,`new serve took ${queries.length} statements`);
     assert.equal(created.items.length,count);
     assert.deepEqual(created.items.map(item=>item.repo_id),f.repos);
     assert.equal(created.created_at,new Date(created.created_at).toISOString());

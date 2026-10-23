@@ -47,10 +47,10 @@ test('real current preferences reject old dislikes beyond 500 history without af
       await sql`INSERT INTO auth.users(id) VALUES(${id}::uuid)`;
       await sql`INSERT INTO app.users(user_id,username,status) VALUES(${id}::uuid,${'negative_'+id.replaceAll('-','')},'active')`;
     }
-    const input=repos.map((repo,index) => ({repo_id:repo,github_id:String(5000000000+index),
+    const repositoryRows=repos.map((repo,index) => ({repo_id:repo,github_id:String(5000000000+index),
       full_name:'negative/'+repo,owner:'negative',name:repo,url:'https://github.com/negative/'+repo,status:'active'}));
     await sql`INSERT INTO app.repos(repo_id,github_id,full_name,owner,name,url,status)
-      SELECT repo_id,github_id,full_name,owner,name,url,status FROM jsonb_to_recordset(${JSON.stringify(input)}::jsonb)
+      SELECT repo_id,github_id,full_name,owner,name,url,status FROM jsonb_to_recordset(${JSON.stringify(repositoryRows)}::jsonb)
       AS row(repo_id uuid,github_id bigint,full_name text,owner text,name text,url text,status text)`;
     await sql`INSERT INTO app.reactions(user_id,repo_id,reaction)
       SELECT ${viewer!}::uuid,repo,'dislike' FROM unnest(${repos.slice(0,501)}::uuid[]) AS row(repo)`;
@@ -64,14 +64,48 @@ test('real current preferences reject old dislikes beyond 500 history without af
     assert.deepEqual(new Set(await loadNegativePreferenceEligibleIds(reader,other!,[oldest,allowed])),new Set([oldest,allowed]));
     await sql`DELETE FROM app.reactions WHERE user_id=${viewer!}::uuid AND repo_id=${oldest}::uuid`;
     assert.ok((await loadNegativePreferenceEligibleIds(reader,viewer!,[oldest,allowed])).includes(oldest),'Inverse state becomes eligible without changing historical events.');
-    await sql`UPDATE app.repos SET status='blocked' WHERE repo_id=${allowed}::uuid`;
+    const persistence=new PostgresFeedPersistence();
+    assert.deepEqual(new Set(await persistence.listPreferenceEligibleRepositoryIds(viewer!,[oldest,allowed])),new Set([oldest,allowed]));
+    const {processInteractionBatchV2InTransaction,processInteractionBatchV2}=await import('../../services/activityV2Service.js');
+    const {FeedPreferenceChangedError}=await import('../../ports/feedPersistencePort.js');
+    const [repository]=await persistence.listActiveRepositories([allowed],viewer!);
+    const session=randomUUID();
+    const input={feed_request_id:randomUUID(),user_id:viewer!,session_id:session,feed_version:1n,
+      generation_id:null,source:'personalized' as const,model_version:'test',next_cursor:null,
+      items:[{repo_id:allowed,position:0,score:999,source:'semantic',model_version:'test',summary_id:null,repository:repository!}]};
+    const historical=await persistence.createServe(input);
+    const event={schema_version:2 as const,event_id:randomUUID(),session_id:session,serve_id:historical.serve_id,
+      repo_id:allowed,position:0,event_type:'dislike' as const,dwell_ms:null,client_occurred_at:new Date().toISOString(),context:{}};
+    let release!:()=>void, locked!:()=>void;
+    const held=new Promise<void>(resolve=>{release=resolve;});const acquired=new Promise<void>(resolve=>{locked=resolve;});
+    const writer=sql.begin(async tx=>{
+      await tx`SET LOCAL lock_timeout='3s'`;
+      await processInteractionBatchV2InTransaction(tx,viewer!,[event]);locked();await held;
+    });
+    await acquired;
+    let settled=false;
+    const fresh={...input,feed_request_id:randomUUID()};
+    const creating=persistence.createServe(fresh).finally(()=>{settled=true;});
+    const rejected=assert.rejects(creating,FeedPreferenceChangedError);
+    try {await new Promise(resolve=>setTimeout(resolve,100));assert.equal(settled,false,'New serve must wait for the actual activity transaction.');}
+    finally {release();await writer;}
+    await rejected;
+    assert.equal(await persistence.getServeByRequest(viewer!,fresh.feed_request_id),null,'Rejected new serve rolls back its header.');
+    assert.equal((await persistence.createServe(input)).serve_id,historical.serve_id,'Same-request historical replay survives the dislike.');
+    assert.deepEqual(await persistence.listPreferenceEligibleRepositoryIds(viewer!,[allowed]),[]);
+    const duplicate=await processInteractionBatchV2(viewer!,[event]);assert.equal(duplicate.duplicates,1);
+    const inverse={...event,event_id:randomUUID(),event_type:'undislike' as const};
+    assert.equal((await processInteractionBatchV2(viewer!,[inverse])).accepted,1);
+    assert.deepEqual(await persistence.listPreferenceEligibleRepositoryIds(viewer!,[allowed]),[allowed]);
+    assert.equal((await persistence.createServe(fresh)).items[0]?.repo_id,allowed);
+    await sql`UPDATE app.repos SET status='blocked'  WHERE repo_id=${allowed}::uuid`;
     assert.deepEqual(await loadNegativePreferenceEligibleIds(reader,viewer!,[allowed]),[]);
     await sql`UPDATE app.users SET status='suspended' WHERE user_id=${viewer!}::uuid`;
     assert.deepEqual(await loadNegativePreferenceEligibleIds(reader,viewer!,[oldest]),[]);
   } finally {
     try {
-      await sql`DELETE FROM app.repos WHERE repo_id=ANY(${repos}::uuid[])`;
       await sql`DELETE FROM app.users WHERE user_id=ANY(${users}::uuid[])`;
+      await sql`DELETE FROM app.repos WHERE repo_id=ANY(${repos}::uuid[])`;
       await sql`DELETE FROM auth.users WHERE id=ANY(${users}::uuid[])`;
     } finally {await sql.end({timeout:1});}
   }
