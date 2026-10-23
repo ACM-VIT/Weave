@@ -110,6 +110,95 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /** CapturedRecommendationItem */
+        CapturedRecommendationItem: {
+            /** Raw Heavy Score */
+            raw_heavy_score: number;
+            /**
+             * Repo Id
+             * Format: uuid
+             */
+            repo_id: string;
+            /** Retrieval Scores */
+            retrieval_scores?: {
+                [key: string]: number;
+            };
+            /** Score */
+            score: number;
+            scored_input: components["schemas"]["ScoredPacket"];
+            /** Source */
+            source: string;
+        };
+        /** CapturedRecommendationResponse */
+        CapturedRecommendationResponse: {
+            context_status: components["schemas"]["RecommendationContextStatus"];
+            /** Embedding Version */
+            embedding_version: string;
+            /** Embedding Versions */
+            embedding_versions: string[];
+            /** Fallback Code */
+            fallback_code: null;
+            /** Fallback Reason */
+            fallback_reason: null;
+            /** Feed Version */
+            feed_version: string;
+            /**
+             * Generation Id
+             * Format: uuid
+             */
+            generation_id: string;
+            /**
+             * Heavy Ranker Selected
+             * @constant
+             */
+            heavy_ranker_selected: true;
+            /** Items */
+            items: components["schemas"]["CapturedRecommendationItem"][];
+            /** Model Version */
+            model_version: string;
+            /**
+             * Ranker Applied
+             * @constant
+             */
+            ranker_applied: true;
+            /**
+             * Retrieval Mode
+             * @enum {string}
+             */
+            retrieval_mode: "personalized" | "cold_start_profile";
+            /**
+             * Schema Version
+             * @constant
+             */
+            schema_version: 2;
+            scoring_capture: components["schemas"]["CapturedScoringStatus"];
+            scoring_context: components["schemas"]["ScoringContext"];
+            /** Scoring Metadata Complete */
+            scoring_metadata_complete: boolean;
+            /**
+             * Served Ranker
+             * @constant
+             */
+            served_ranker: "heavy";
+            /**
+             * User Id
+             * Format: uuid
+             */
+            user_id: string;
+        };
+        /** CapturedScoringStatus */
+        CapturedScoringStatus: {
+            /**
+             * Schema Version
+             * @constant
+             */
+            schema_version: 1;
+            /**
+             * Status
+             * @constant
+             */
+            status: "captured";
+        };
         /**
          * CardSummaryArtifact
          * @description Versioned summary artifact returned to the canonical backend.
@@ -130,6 +219,19 @@ export interface components {
             source: "generated" | "description_fallback";
             /** Summary */
             summary: string;
+        };
+        /** EmptyScoringStatus */
+        EmptyScoringStatus: {
+            /**
+             * Schema Version
+             * @constant
+             */
+            schema_version: 1;
+            /**
+             * Status
+             * @constant
+             */
+            status: "not_scored_empty";
         };
         /** FeedbackBatch */
         FeedbackBatch: {
@@ -291,7 +393,7 @@ export interface components {
             /** Exclude Repo Ids */
             exclude_repo_ids?: string[];
             /** Feed Version */
-            feed_version: number;
+            feed_version: number | string;
             /**
              * Generation Id
              * Format: uuid
@@ -304,6 +406,7 @@ export interface components {
              * @constant
              */
             schema_version: 2;
+            scoring_capture?: components["schemas"]["ScoringCaptureRequest"] | null;
             /** Social Candidates */
             social_candidates?: components["schemas"]["SocialCandidate"][];
             /** Social Repo Ids */
@@ -313,7 +416,13 @@ export interface components {
              * Format: uuid
              */
             user_id: string;
-        };
+        } & ({
+            feed_version: number;
+            scoring_capture?: null;
+        } | {
+            feed_version: string;
+            scoring_capture: components["schemas"]["ScoringCaptureRequest"];
+        });
         /** RecommendationResponse */
         RecommendationResponse: {
             context_status: components["schemas"]["RecommendationContextStatus"];
@@ -581,6 +690,21 @@ export interface components {
              */
             search_id: string;
         };
+        /** RepositorySnapshot */
+        RepositorySnapshot: {
+            /** Content Hash */
+            content_hash: string;
+            /** Content Version */
+            content_version: string;
+            /** Embedding Version Index */
+            embedding_version_index: number;
+            /** Feature Version */
+            feature_version: string;
+            /** Repo Id */
+            repo_id: string;
+            /** Source Hash */
+            source_hash: string;
+        };
         /** RepositorySource */
         RepositorySource: {
             /** Content Hash */
@@ -728,6 +852,83 @@ export interface components {
              */
             retryable: false;
         };
+        /** ScoredPacket */
+        ScoredPacket: {
+            /** Binding Sha256 */
+            binding_sha256: string;
+            /** Input Base64 */
+            input_base64: string;
+            snapshot: components["schemas"]["RepositorySnapshot"];
+        };
+        /** ScoringCaptureRequest */
+        ScoringCaptureRequest: {
+            /**
+             * Encoding
+             * @constant
+             */
+            encoding: "float32-le-v1";
+            /**
+             * Schema Version
+             * @constant
+             */
+            schema_version: 1;
+        };
+        /** ScoringContext */
+        ScoringContext: {
+            /** Code Commit */
+            code_commit: string;
+            /**
+             * Dimensions
+             * @default 778
+             * @constant
+             */
+            dimensions?: 778;
+            /** Embedding Model */
+            embedding_model: string;
+            /** Embedding Revision */
+            embedding_revision: string;
+            /**
+             * Encoding
+             * @default float32-le-v1
+             * @constant
+             */
+            encoding?: "float32-le-v1";
+            /** Feature Order Sha256 */
+            feature_order_sha256: string;
+            /**
+             * Feature Spec Version
+             * @constant
+             */
+            feature_spec_version: "v2";
+            /** Feed Version */
+            feed_version: string;
+            /** Feedback State Revision */
+            feedback_state_revision: string;
+            /** Feedback Version */
+            feedback_version: string;
+            /** Generation Id */
+            generation_id: string;
+            /** Manifest Sha256 */
+            manifest_sha256: string;
+            /** Model Sha256 */
+            model_sha256: string;
+            /** Model Version */
+            model_version: string;
+            /** Profile Version */
+            profile_version: string;
+            /** Repository Embedding Versions */
+            repository_embedding_versions: string[];
+            /** Scaler Sha256 */
+            scaler_sha256: string;
+            /** Scored At */
+            scored_at: string;
+            /** User Embedding Version */
+            user_embedding_version: string | null;
+            /** User Id */
+            user_id: string;
+            /** User Vector Sha256 */
+            user_vector_sha256: string;
+        };
         /** SocialCandidate */
         SocialCandidate: {
             /** Owner Github Id */
@@ -746,6 +947,51 @@ export interface components {
             source_score: number;
             /** Support */
             support: number;
+        };
+        /** UnscoredEmptyRecommendationResponse */
+        UnscoredEmptyRecommendationResponse: {
+            context_status: components["schemas"]["RecommendationContextStatus"];
+            /** Embedding Version */
+            embedding_version: string;
+            /** Embedding Versions */
+            embedding_versions: string[];
+            /** Fallback Code */
+            fallback_code: null;
+            /** Fallback Reason */
+            fallback_reason: null;
+            /** Feed Version */
+            feed_version: string;
+            /**
+             * Generation Id
+             * Format: uuid
+             */
+            generation_id: string;
+            /** Heavy Ranker Selected */
+            heavy_ranker_selected: boolean;
+            /** Items */
+            items: components["schemas"]["RecommendationItem"][];
+            /** Model Version */
+            model_version: string;
+            /** Ranker Applied */
+            ranker_applied: boolean;
+            /** Retrieval Mode */
+            retrieval_mode: string;
+            /**
+             * Schema Version
+             * @constant
+             */
+            schema_version: 2;
+            scoring_capture: components["schemas"]["EmptyScoringStatus"];
+            /**
+             * Served Ranker
+             * @enum {string}
+             */
+            served_ranker: "heavy" | "hybrid";
+            /**
+             * User Id
+             * Format: uuid
+             */
+            user_id: string;
         };
     };
     responses: never;
@@ -792,7 +1038,10 @@ export interface operations {
     generate_recommendations_api_v2_recommendations_generate_post: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                /** @description Additional scoped capability required when scoring_capture is provided. Ordinary requests require only the internal service credential. */
+                "x-scoring-capture-capability"?: string;
+            };
             path?: never;
             cookie?: never;
         };
@@ -808,7 +1057,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["RecommendationResponse"];
+                    "application/json": components["schemas"]["RecommendationResponse"] | components["schemas"]["CapturedRecommendationResponse"] | components["schemas"]["UnscoredEmptyRecommendationResponse"];
                 };
             };
             /** @description Request validation failed */

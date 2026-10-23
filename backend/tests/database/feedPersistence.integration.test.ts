@@ -229,7 +229,7 @@ integration('real feed recovery followed by late ML publication serves only unse
     assert.deepEqual(input.exclude_repo_ids, []);
     modelStarted(); await model;
     return { schema_version: 2, generation_id: input.generation_id, user_id: input.user_id,
-      feed_version: input.feed_version, model_version: 'late-test', embedding_version: 'test',
+      feed_version: Number(input.feed_version), model_version: 'late-test', embedding_version: 'test',
       embedding_versions: ['test'], served_ranker: 'hybrid', heavy_ranker_selected: false, ranker_applied: false,
       fallback_code: null, fallback_reason: null, retrieval_mode: 'hybrid',
       context_status: { cold_start_applied: false, locale: 'not_provided' },

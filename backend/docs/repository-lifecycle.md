@@ -46,3 +46,9 @@ content-hash stability, outbox identity, real disposable PostgreSQL status-only
 persistence, and Node/Python HTTP routes with actual local Qdrant lifecycle CAS
 and selection. Encoder and distributed lease boundaries in the HTTP fixture are
 local deterministic stand-ins; production/distributed behavior is not claimed.
+
+The refreshed provider pin also includes upstream ML #170's negotiated scoring
+capture request variants and exact decimal feed revision input. Those are existing
+provider features, not lifecycle activation. The vendored schema/client preserves
+them verbatim. Three existing bounded feed-test response fixtures now emit their
+numeric response revision explicitly; the generated response contract is unchanged.

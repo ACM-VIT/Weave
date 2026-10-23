@@ -1,6 +1,196 @@
 {
   "components": {
     "schemas": {
+      "CapturedRecommendationItem": {
+        "additionalProperties": false,
+        "properties": {
+          "raw_heavy_score": {
+            "title": "Raw Heavy Score",
+            "type": "number"
+          },
+          "repo_id": {
+            "format": "uuid",
+            "title": "Repo Id",
+            "type": "string"
+          },
+          "retrieval_scores": {
+            "maxProperties": 16,
+            "patternProperties": {
+              "^[a-z_]+$": {
+                "type": "number"
+              }
+            },
+            "propertyNames": {
+              "maxLength": 32,
+              "minLength": 1
+            },
+            "title": "Retrieval Scores",
+            "type": "object"
+          },
+          "score": {
+            "title": "Score",
+            "type": "number"
+          },
+          "scored_input": {
+            "$ref": "#/components/schemas/ScoredPacket"
+          },
+          "source": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Source",
+            "type": "string"
+          }
+        },
+        "required": [
+          "repo_id",
+          "score",
+          "source",
+          "raw_heavy_score",
+          "scored_input"
+        ],
+        "title": "CapturedRecommendationItem",
+        "type": "object"
+      },
+      "CapturedRecommendationResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "context_status": {
+            "$ref": "#/components/schemas/RecommendationContextStatus"
+          },
+          "embedding_version": {
+            "maxLength": 1048,
+            "minLength": 1,
+            "title": "Embedding Version",
+            "type": "string"
+          },
+          "embedding_versions": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Embedding Versions",
+            "type": "array"
+          },
+          "fallback_code": {
+            "title": "Fallback Code",
+            "type": "null"
+          },
+          "fallback_reason": {
+            "title": "Fallback Reason",
+            "type": "null"
+          },
+          "feed_version": {
+            "pattern": "^[1-9][0-9]{0,18}$",
+            "title": "Feed Version",
+            "type": "string"
+          },
+          "generation_id": {
+            "format": "uuid",
+            "title": "Generation Id",
+            "type": "string"
+          },
+          "heavy_ranker_selected": {
+            "const": true,
+            "title": "Heavy Ranker Selected",
+            "type": "boolean"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/CapturedRecommendationItem"
+            },
+            "maxItems": 150,
+            "minItems": 1,
+            "title": "Items",
+            "type": "array"
+          },
+          "model_version": {
+            "maxLength": 512,
+            "minLength": 1,
+            "title": "Model Version",
+            "type": "string"
+          },
+          "ranker_applied": {
+            "const": true,
+            "title": "Ranker Applied",
+            "type": "boolean"
+          },
+          "retrieval_mode": {
+            "enum": [
+              "personalized",
+              "cold_start_profile"
+            ],
+            "title": "Retrieval Mode",
+            "type": "string"
+          },
+          "schema_version": {
+            "const": 2,
+            "title": "Schema Version",
+            "type": "integer"
+          },
+          "scoring_capture": {
+            "$ref": "#/components/schemas/CapturedScoringStatus"
+          },
+          "scoring_context": {
+            "$ref": "#/components/schemas/ScoringContext"
+          },
+          "scoring_metadata_complete": {
+            "title": "Scoring Metadata Complete",
+            "type": "boolean"
+          },
+          "served_ranker": {
+            "const": "heavy",
+            "title": "Served Ranker",
+            "type": "string"
+          },
+          "user_id": {
+            "format": "uuid",
+            "title": "User Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "schema_version",
+          "generation_id",
+          "user_id",
+          "feed_version",
+          "model_version",
+          "embedding_version",
+          "embedding_versions",
+          "served_ranker",
+          "heavy_ranker_selected",
+          "ranker_applied",
+          "fallback_code",
+          "fallback_reason",
+          "retrieval_mode",
+          "context_status",
+          "items",
+          "scoring_capture",
+          "scoring_context",
+          "scoring_metadata_complete"
+        ],
+        "title": "CapturedRecommendationResponse",
+        "type": "object"
+      },
+      "CapturedScoringStatus": {
+        "additionalProperties": false,
+        "properties": {
+          "schema_version": {
+            "const": 1,
+            "title": "Schema Version",
+            "type": "integer"
+          },
+          "status": {
+            "const": "captured",
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "schema_version",
+          "status"
+        ],
+        "title": "CapturedScoringStatus",
+        "type": "object"
+      },
       "CardSummaryArtifact": {
         "additionalProperties": false,
         "description": "Versioned summary artifact returned to the canonical backend.",
@@ -56,6 +246,27 @@
           "source"
         ],
         "title": "CardSummaryArtifact",
+        "type": "object"
+      },
+      "EmptyScoringStatus": {
+        "additionalProperties": false,
+        "properties": {
+          "schema_version": {
+            "const": 1,
+            "title": "Schema Version",
+            "type": "integer"
+          },
+          "status": {
+            "const": "not_scored_empty",
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "schema_version",
+          "status"
+        ],
+        "title": "EmptyScoringStatus",
         "type": "object"
       },
       "FeedbackBatch": {
@@ -475,6 +686,43 @@
       },
       "RecommendationRequest": {
         "additionalProperties": false,
+        "oneOf": [
+          {
+            "properties": {
+              "feed_version": {
+                "maximum": 9007199254740991.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              "scoring_capture": {
+                "type": "null"
+              }
+            },
+            "required": [
+              "feed_version"
+            ]
+          },
+          {
+            "properties": {
+              "feed_version": {
+                "maxLength": 19,
+                "minLength": 1,
+                "not": {
+                  "pattern": "[^0-9]"
+                },
+                "pattern": "^(?:[1-9][0-9]{0,17}|[1-8][0-9]{18}|9[0-1][0-9]{17}|92[0-1][0-9]{16}|922[0-2][0-9]{15}|9223[0-2][0-9]{14}|92233[0-6][0-9]{13}|922337[0-1][0-9]{12}|92233720[0-2][0-9]{10}|922337203[0-5][0-9]{9}|9223372036[0-7][0-9]{8}|92233720368[0-4][0-9]{7}|922337203685[0-3][0-9]{6}|9223372036854[0-6][0-9]{5}|92233720368547[0-6][0-9]{4}|922337203685477[0-4][0-9]{3}|9223372036854775[0-7][0-9]{2}|922337203685477580[0-6]|9223372036854775807)$",
+                "type": "string"
+              },
+              "scoring_capture": {
+                "$ref": "#/components/schemas/ScoringCaptureRequest"
+              }
+            },
+            "required": [
+              "feed_version",
+              "scoring_capture"
+            ]
+          }
+        ],
         "properties": {
           "context": {
             "$ref": "#/components/schemas/RecommendationContext"
@@ -489,9 +737,19 @@
             "type": "array"
           },
           "feed_version": {
-            "minimum": 1.0,
-            "title": "Feed Version",
-            "type": "integer"
+            "anyOf": [
+              {
+                "maximum": 9007199254740991.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "maxLength": 19,
+                "pattern": "^(?:[1-9][0-9]{0,17}|[1-8][0-9]{18}|9[0-1][0-9]{17}|92[0-1][0-9]{16}|922[0-2][0-9]{15}|9223[0-2][0-9]{14}|92233[0-6][0-9]{13}|922337[0-1][0-9]{12}|92233720[0-2][0-9]{10}|922337203[0-5][0-9]{9}|9223372036[0-7][0-9]{8}|92233720368[0-4][0-9]{7}|922337203685[0-3][0-9]{6}|9223372036854[0-6][0-9]{5}|92233720368547[0-6][0-9]{4}|922337203685477[0-4][0-9]{3}|9223372036854775[0-7][0-9]{2}|922337203685477580[0-6]|9223372036854775807)$",
+                "type": "string"
+              }
+            ],
+            "title": "Feed Version"
           },
           "generation_id": {
             "format": "uuid",
@@ -508,6 +766,16 @@
             "const": 2,
             "title": "Schema Version",
             "type": "integer"
+          },
+          "scoring_capture": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ScoringCaptureRequest"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "social_candidates": {
             "items": {
@@ -1249,6 +1517,52 @@
         "title": "RepositorySearchResponse",
         "type": "object"
       },
+      "RepositorySnapshot": {
+        "additionalProperties": false,
+        "properties": {
+          "content_hash": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Content Hash",
+            "type": "string"
+          },
+          "content_version": {
+            "pattern": "^(0|[1-9][0-9]{0,18})$",
+            "title": "Content Version",
+            "type": "string"
+          },
+          "embedding_version_index": {
+            "maximum": 7.0,
+            "minimum": 0.0,
+            "title": "Embedding Version Index",
+            "type": "integer"
+          },
+          "feature_version": {
+            "pattern": "^(0|[1-9][0-9]{0,18})$",
+            "title": "Feature Version",
+            "type": "string"
+          },
+          "repo_id": {
+            "title": "Repo Id",
+            "type": "string"
+          },
+          "source_hash": {
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Source Hash",
+            "type": "string"
+          }
+        },
+        "required": [
+          "repo_id",
+          "content_version",
+          "feature_version",
+          "content_hash",
+          "source_hash",
+          "embedding_version_index"
+        ],
+        "title": "RepositorySnapshot",
+        "type": "object"
+      },
       "RepositorySource": {
         "additionalProperties": false,
         "properties": {
@@ -1767,6 +2081,203 @@
         "title": "RequestValidationResponse",
         "type": "object"
       },
+      "ScoredPacket": {
+        "additionalProperties": false,
+        "properties": {
+          "binding_sha256": {
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Binding Sha256",
+            "type": "string"
+          },
+          "input_base64": {
+            "maxLength": 4152,
+            "minLength": 4152,
+            "title": "Input Base64",
+            "type": "string"
+          },
+          "snapshot": {
+            "$ref": "#/components/schemas/RepositorySnapshot"
+          }
+        },
+        "required": [
+          "snapshot",
+          "input_base64",
+          "binding_sha256"
+        ],
+        "title": "ScoredPacket",
+        "type": "object"
+      },
+      "ScoringCaptureRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "encoding": {
+            "const": "float32-le-v1",
+            "title": "Encoding",
+            "type": "string"
+          },
+          "schema_version": {
+            "const": 1,
+            "title": "Schema Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "schema_version",
+          "encoding"
+        ],
+        "title": "ScoringCaptureRequest",
+        "type": "object"
+      },
+      "ScoringContext": {
+        "additionalProperties": false,
+        "properties": {
+          "code_commit": {
+            "pattern": "^[a-f0-9]{40}$",
+            "title": "Code Commit",
+            "type": "string"
+          },
+          "dimensions": {
+            "const": 778,
+            "default": 778,
+            "title": "Dimensions",
+            "type": "integer"
+          },
+          "embedding_model": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Embedding Model",
+            "type": "string"
+          },
+          "embedding_revision": {
+            "pattern": "^[a-f0-9]{40}$",
+            "title": "Embedding Revision",
+            "type": "string"
+          },
+          "encoding": {
+            "const": "float32-le-v1",
+            "default": "float32-le-v1",
+            "title": "Encoding",
+            "type": "string"
+          },
+          "feature_order_sha256": {
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Feature Order Sha256",
+            "type": "string"
+          },
+          "feature_spec_version": {
+            "const": "v2",
+            "title": "Feature Spec Version",
+            "type": "string"
+          },
+          "feed_version": {
+            "pattern": "^(0|[1-9][0-9]{0,18})$",
+            "title": "Feed Version",
+            "type": "string"
+          },
+          "feedback_state_revision": {
+            "pattern": "^(0|[1-9][0-9]{0,18})$",
+            "title": "Feedback State Revision",
+            "type": "string"
+          },
+          "feedback_version": {
+            "pattern": "^(0|[1-9][0-9]{0,18})$",
+            "title": "Feedback Version",
+            "type": "string"
+          },
+          "generation_id": {
+            "title": "Generation Id",
+            "type": "string"
+          },
+          "manifest_sha256": {
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Manifest Sha256",
+            "type": "string"
+          },
+          "model_sha256": {
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Model Sha256",
+            "type": "string"
+          },
+          "model_version": {
+            "maxLength": 512,
+            "minLength": 1,
+            "title": "Model Version",
+            "type": "string"
+          },
+          "profile_version": {
+            "pattern": "^(0|[1-9][0-9]{0,18})$",
+            "title": "Profile Version",
+            "type": "string"
+          },
+          "repository_embedding_versions": {
+            "items": {
+              "maxLength": 128,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 8,
+            "minItems": 1,
+            "title": "Repository Embedding Versions",
+            "type": "array"
+          },
+          "scaler_sha256": {
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Scaler Sha256",
+            "type": "string"
+          },
+          "scored_at": {
+            "maxLength": 40,
+            "minLength": 1,
+            "title": "Scored At",
+            "type": "string"
+          },
+          "user_embedding_version": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "User Embedding Version"
+          },
+          "user_id": {
+            "title": "User Id",
+            "type": "string"
+          },
+          "user_vector_sha256": {
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "User Vector Sha256",
+            "type": "string"
+          }
+        },
+        "required": [
+          "user_id",
+          "generation_id",
+          "scored_at",
+          "feed_version",
+          "profile_version",
+          "feedback_version",
+          "feedback_state_revision",
+          "embedding_model",
+          "embedding_revision",
+          "user_embedding_version",
+          "repository_embedding_versions",
+          "user_vector_sha256",
+          "model_version",
+          "model_sha256",
+          "scaler_sha256",
+          "manifest_sha256",
+          "feature_spec_version",
+          "feature_order_sha256",
+          "code_commit"
+        ],
+        "title": "ScoringContext",
+        "type": "object"
+      },
       "SocialCandidate": {
         "additionalProperties": false,
         "properties": {
@@ -1815,12 +2326,124 @@
         ],
         "title": "SocialCandidate",
         "type": "object"
+      },
+      "UnscoredEmptyRecommendationResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "context_status": {
+            "$ref": "#/components/schemas/RecommendationContextStatus"
+          },
+          "embedding_version": {
+            "maxLength": 1048,
+            "minLength": 1,
+            "title": "Embedding Version",
+            "type": "string"
+          },
+          "embedding_versions": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Embedding Versions",
+            "type": "array"
+          },
+          "fallback_code": {
+            "title": "Fallback Code",
+            "type": "null"
+          },
+          "fallback_reason": {
+            "title": "Fallback Reason",
+            "type": "null"
+          },
+          "feed_version": {
+            "pattern": "^[1-9][0-9]{0,18}$",
+            "title": "Feed Version",
+            "type": "string"
+          },
+          "generation_id": {
+            "format": "uuid",
+            "title": "Generation Id",
+            "type": "string"
+          },
+          "heavy_ranker_selected": {
+            "title": "Heavy Ranker Selected",
+            "type": "boolean"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/RecommendationItem"
+            },
+            "maxItems": 0,
+            "title": "Items",
+            "type": "array"
+          },
+          "model_version": {
+            "maxLength": 512,
+            "minLength": 1,
+            "title": "Model Version",
+            "type": "string"
+          },
+          "ranker_applied": {
+            "title": "Ranker Applied",
+            "type": "boolean"
+          },
+          "retrieval_mode": {
+            "title": "Retrieval Mode",
+            "type": "string"
+          },
+          "schema_version": {
+            "const": 2,
+            "title": "Schema Version",
+            "type": "integer"
+          },
+          "scoring_capture": {
+            "$ref": "#/components/schemas/EmptyScoringStatus"
+          },
+          "served_ranker": {
+            "enum": [
+              "heavy",
+              "hybrid"
+            ],
+            "title": "Served Ranker",
+            "type": "string"
+          },
+          "user_id": {
+            "format": "uuid",
+            "title": "User Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "schema_version",
+          "generation_id",
+          "user_id",
+          "feed_version",
+          "model_version",
+          "embedding_version",
+          "embedding_versions",
+          "served_ranker",
+          "heavy_ranker_selected",
+          "ranker_applied",
+          "fallback_code",
+          "fallback_reason",
+          "retrieval_mode",
+          "context_status",
+          "items",
+          "scoring_capture"
+        ],
+        "title": "UnscoredEmptyRecommendationResponse",
+        "type": "object"
       }
     },
     "securitySchemes": {
       "InternalSecret": {
         "in": "header",
         "name": "x-internal-secret",
+        "type": "apiKey"
+      },
+      "ScoringCaptureCapability": {
+        "description": "Required in addition to InternalSecret only for explicitly negotiated scoring_capture requests.",
+        "in": "header",
+        "name": "x-scoring-capture-capability",
         "type": "apiKey"
       }
     }
@@ -1884,6 +2507,20 @@
     "/api/v2/recommendations/generate": {
       "post": {
         "operationId": "generate_recommendations_api_v2_recommendations_generate_post",
+        "parameters": [
+          {
+            "description": "Additional scoped capability required when scoring_capture is provided. Ordinary requests require only the internal service credential.",
+            "in": "header",
+            "name": "x-scoring-capture-capability",
+            "required": false,
+            "schema": {
+              "maxLength": 64,
+              "minLength": 64,
+              "pattern": "^[a-f0-9]{64}$",
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -1899,7 +2536,18 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/RecommendationResponse"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/RecommendationResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/CapturedRecommendationResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/UnscoredEmptyRecommendationResponse"
+                    }
+                  ],
+                  "title": "Response Generate Recommendations Api V2 Recommendations Generate Post"
                 }
               }
             },
@@ -1924,7 +2572,16 @@
         "summary": "Generate Recommendations",
         "tags": [
           "v2"
-        ]
+        ],
+        "x-scoring-capture-security": {
+          "required_when": "scoring_capture is provided",
+          "security": [
+            {
+              "InternalSecret": [],
+              "ScoringCaptureCapability": []
+            }
+          ]
+        }
       }
     },
     "/api/v2/repositories/embed": {

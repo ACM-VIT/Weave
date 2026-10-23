@@ -700,7 +700,7 @@ for (const publishBeforeRecoveryCommit of [false, true]) {
       assert.deepEqual(input.exclude_repo_ids, [], 'the running generation predates recovery delivery');
       await modelGate;
       return { schema_version: 2, generation_id: input.generation_id, user_id: input.user_id,
-        feed_version: input.feed_version, model_version: 'new', embedding_version: 'test',
+        feed_version: Number(input.feed_version), model_version: 'new', embedding_version: 'test',
         embedding_versions: ['test'], served_ranker: 'hybrid', heavy_ranker_selected: false, ranker_applied: false,
         fallback_code: null, fallback_reason: null, retrieval_mode: 'hybrid',
         context_status: { cold_start_applied: false, locale: 'not_provided' },
