@@ -18,10 +18,10 @@ function Fixture() {
     useEffect(() => { (window as any).showRepositorySheet = setSheet; }, []);
     const options = profileSectionQueries('fixture-viewer', loaders);
     const boardQuery = useQuery(options.boards), collectionQuery = useQuery(options.collections);
-    return <View style={{ height: 600, width: 390, backgroundColor: '#000' }}>
+    return <><button onClick={() => setSheet(current => !current)}>Fixture: toggle saved repositories</button><View style={{ height: 600, width: '100%', maxWidth: 390, backgroundColor: '#000' }}>
    <View style={{ flex: 1, display: sheet ? 'none' : 'flex' }}><ProfileContentLists viewer="fixture-viewer" header={<View style={{ height: 100 }}><Text>Profile Lists</Text></View>} compact horizontalPadding={24} maxWidth={600} paddingTop={10} paddingBottom={20} boards={boardQuery} collections={collectionQuery} pinned={{ data: [], isPending: false, isError: false, refetch: () => { } }} openList={() => { }}/></View>
    <View style={{ flex: 1, display: sheet ? 'flex' : 'none' }}><ProfileRepositoryList active={sheet} type="saved" userId="fixture-viewer"/></View>
- </View>;
+ </View></>;
 }
 createRoot(document.getElementById('root')!).render(<QueryClientProvider client={queryClient}><Fixture /></QueryClientProvider>);
 const wait = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
@@ -32,7 +32,7 @@ async function until(fn: () => boolean) { for (let n = 0; n < 80; n++) {
         return;
     await wait(100);
 } throw new Error('Browser fixture timed out'); }
-function output(status: string, data: any) { const el = document.createElement('pre'); el.id = 'profile-check-result'; el.dataset.status = status; el.textContent = JSON.stringify(data); document.body.append(el); }
+function output(status: string, data: any) { const el = document.createElement('pre'); el.id = 'profile-check-result'; el.style.whiteSpace = 'pre-wrap'; el.style.overflowWrap = 'anywhere'; el.style.maxWidth = '390px'; el.dataset.status = status; el.textContent = JSON.stringify(data); document.body.append(el); }
 async function run() {
     const list = () => document.querySelector('[data-testid="profile-lists"]') as HTMLElement;
     const sheet = () => document.querySelector('[data-testid="profile-stat-repositories"]') as HTMLElement;
@@ -78,6 +78,7 @@ async function run() {
         await wait(300);
     }
     assert(!!document.querySelector('[aria-label="Open weave/Repo 136"]'), 'Final saved repository was unreachable');
+    assert(JSON.stringify((window as any).repositoryCursors) === JSON.stringify([null, 'fixture-40', 'fixture-40', 'fixture-80', 'fixture-120']), 'The UI did not preserve the opaque continuation across retry');
     const savedRows = sheet().querySelectorAll('[aria-label^="Open weave/Repo "]').length;
     assert(savedRows < 100, `Saved grid was not bounded: ${savedRows}`);
     (window as any).showRepositorySheet(false);
@@ -86,6 +87,6 @@ async function run() {
     const scrollAfterSheet = list().scrollTop;
     release([]);
     await wait(200);
-    output('passed', { firstReadyMs, initialListRows: boardRows, totalLists: 10000, renderedSavedRows: savedRows, totalSaved: 137, offsets: (window as any).repositoryRequests, scrollBefore, scrollAfterSheet, scrollAfter: list().scrollTop });
+    output('passed', { firstReadyMs, initialListRows: boardRows, totalLists: 10000, renderedSavedRows: savedRows, totalSaved: 137, offsets: (window as any).repositoryRequests, cursors: (window as any).repositoryCursors, scrollBefore, scrollAfterSheet, scrollAfter: list().scrollTop });
 }
 setTimeout(() => run().catch(error => output('failed', { message: String(error), requests: (window as any).repositoryRequests, dom: document.body.innerText.slice(0, 1200) })), 100);

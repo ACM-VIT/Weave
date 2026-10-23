@@ -64,7 +64,7 @@ export function getNextConnectionOffset(
 }
 
 export function mergeConnectionPages<T extends ConnectionIdentity>(
-  pages: readonly ConnectionPage<T>[],
+  pages: readonly { items: T[] }[],
 ): T[] {
   const seen = new Set<string>();
   const merged: T[] = [];

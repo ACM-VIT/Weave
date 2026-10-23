@@ -7,7 +7,7 @@ import {
   getNextExploreOffset,
   mergeExplorePages,
 } from '../src/api/explore-data';
-import { mergeProfileRepositoryPages, nextProfileRepositoryOffset, PROFILE_REPOSITORY_PAGE_SIZE, settleProfileContent } from '../src/api/profile-data';
+import { mergeProfileRepositoryPages, PROFILE_REPOSITORY_PAGE_SIZE, settleProfileContent } from '../src/api/profile-data';
 import { profileContentInvalidationFilters, profileRepositoryQuery, profileSectionQueries } from '../src/api/profile-section-queries';
 import { mapLegacyBoardList } from '../src/models/list';
 import type { RepositoryDetail } from '../src/models/repository';
@@ -122,16 +122,17 @@ test('profile Lists become ready independently and repository sheets fetch only 
   } finally { unsubscribe.forEach(stop => stop()); client.clear(); }
 });
 
-test('profile repository pages pass 100 items, preserve rows on page failure, retry and stop on a short page', async () => {
+test('profile repository cursors preserve rows on page failure, retry and stop on server exhaustion', async () => {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: Infinity } } });
   const items = Array.from({ length: 137 }, (_, index) => repo(`repo-${index}`));
-  const offsets: number[] = [];
+  const cursors: (string | null)[] = [];
   let failNext = false;
-  const options = profileRepositoryQuery('alice', 'saved', true, async offset => {
-    offsets.push(offset);
+  const options = profileRepositoryQuery('alice', 'saved', true, async cursor => {
+    cursors.push(cursor);
+    const offset = cursor ? Number(cursor.replace('after-', '')) : 0;
     if (failNext) { failNext = false; throw new Error('page failed'); }
     const page = items.slice(offset, offset+PROFILE_REPOSITORY_PAGE_SIZE);
-    return { items: page, nextOffset: nextProfileRepositoryOffset(offset, page.length) };
+    return { items: page, nextCursor: offset + page.length < items.length ? `after-${offset+page.length}` : undefined };
   });
   const observer = new InfiniteQueryObserver(client, options);
   const unsubscribe = observer.subscribe(() => {});
@@ -143,11 +144,10 @@ test('profile repository pages pass 100 items, preserve rows on page failure, re
     assert.equal(observer.getCurrentResult().data?.pages[0].items.length, 40);
     await observer.fetchNextPage();
     while (observer.getCurrentResult().hasNextPage) await observer.fetchNextPage();
-    assert.deepEqual(offsets, [0, 40, 40, 80, 120]);
+    assert.deepEqual(cursors, [null, 'after-40', 'after-40', 'after-80', 'after-120']);
     const pages = observer.getCurrentResult().data!.pages;
     assert.equal(mergeProfileRepositoryPages(pages).length, 137);
-    assert.equal(mergeProfileRepositoryPages([...pages, pages[0]]).length, 137, 'overlapping offset pages cannot duplicate rows');
-    assert.equal(nextProfileRepositoryOffset(10_000, PROFILE_REPOSITORY_PAGE_SIZE), undefined, 'respect the current server paging boundary');
+    assert.equal(mergeProfileRepositoryPages([...pages, pages[0]]).length, 137, 'overlapping cursor pages cannot duplicate rows');
   } finally { unsubscribe(); client.clear(); }
 });
 

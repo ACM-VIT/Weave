@@ -138,3 +138,22 @@ test('unfollow settlement removes inactive own-Following membership after initia
  assert.equal(client.getQueryData(followKey),false);
  await f.close();
 });
+
+test('follow settlement refreshes cursor connection caches without touching unrelated lists', async () => {
+  const client = new QueryClient({defaultOptions:{queries:{retry:false,staleTime:Infinity,gcTime:Infinity}}});
+  const keys = [
+    ['connections','alice','following','keyset-v1'],
+    ['connections','target','followers','keyset-v1'],
+    ['connections','unrelated','followers','keyset-v1'],
+  ];
+  const reads = [0,0,0];
+  const observers = keys.map((queryKey,index) => new QueryObserver(client,{queryKey,
+    queryFn:async()=>{reads[index]++;return {pages:[{items:[],has_more:false,next_cursor:null}],pageParams:[null]};}}));
+  const stops = observers.map(observer => observer.subscribe(()=>{}));
+  try {
+    await Promise.all(observers.map(observer => observer.refetch()));
+    const before = [...reads];
+    await settleFollowCache(client,'alice',{userId:'target'},true,authSessionLifecycle.currentGeneration());
+    assert.deepEqual(reads,[before[0]+1,before[1]+1,before[2]]);
+  } finally { stops.forEach(stop=>stop());client.clear(); }
+});

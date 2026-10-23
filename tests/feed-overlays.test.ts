@@ -103,7 +103,7 @@ function feed(ids: string[], reducedMotion = false) {
       saveRepositoryToCollections: () => saveRepository(),
     },
     '../../api/comments': {
-      getCommentsByRepo: async (id: string) => { requests.push(`comments:${id}`); return { items: [], nextOffset: undefined }; },
+      getCommentsKeysetPage: async (id: string) => { requests.push(`comments:${id}`); return { items: [], has_more: false, next_cursor: null }; },
       getCommentAuthor: async () => { requests.push('author'); return {}; },
       createComment: () => postComment(),
     },

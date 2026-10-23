@@ -26,7 +26,7 @@ import Svg, { Defs, LinearGradient, Rect, Stop } from 'react-native-svg';
 import {
   createComment,
   getCommentAuthor,
-  getCommentsByRepo,
+  getCommentsKeysetPage,
   type CommentAuthor,
   type CommentRecord,
 } from '../../api/comments';
@@ -48,7 +48,7 @@ type CommentSubmission = {
   generation: number;
   repoId: string;
   userId: string;
-  queryKey: readonly ['comments', string | undefined, string];
+  queryKey: readonly ['comments', string | undefined, string, 'keyset-v1'];
   localKey: readonly ['comments-local', string | undefined, string];
   scopeId: string;
   previousCount: number;
@@ -152,7 +152,7 @@ export function CommentSheet({
   const insets = useSafeAreaInsets();
   const { user } = useAuth();
   const queryClient = useQueryClient();
-  const queryKey = useMemo(() => ['comments', user?.user_id, repoId] as const, [user?.user_id, repoId]);
+  const queryKey = useMemo(() => ['comments', user?.user_id, repoId, 'keyset-v1'] as const, [user?.user_id, repoId]);
   const localKey = useMemo(() => ['comments-local', user?.user_id, repoId] as const, [user?.user_id, repoId]);
   const sessionGeneration = authSessionLifecycle.currentGeneration();
   const scopeId = JSON.stringify([localKey, sessionGeneration]);
@@ -190,9 +190,9 @@ export function CommentSheet({
 
   const commentsQuery = useInfiniteQuery({
     queryKey,
-    queryFn: ({ pageParam, signal }) => getCommentsByRepo(repoId, pageParam, signal),
-    initialPageParam: 0,
-    getNextPageParam: page => page.nextOffset,
+    queryFn: ({ pageParam, signal }) => getCommentsKeysetPage(repoId, pageParam, signal),
+    initialPageParam: null as string | null,
+    getNextPageParam: page => page.next_cursor ?? undefined,
     enabled: isVisible && Boolean(user?.user_id) && repoId.trim().length > 0,
     staleTime: 30_000,
   });

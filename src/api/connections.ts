@@ -1,3 +1,4 @@
+import { requestKeysetItems, type KeysetPage, type KeysetPageOptions } from './keyset-pagination';
 import { apiV2, apiV2Raw } from './client';
 
 export type ConnectionType = 'followers' | 'following';
@@ -54,4 +55,15 @@ export async function setUserFollowing(
     { method: following ? 'PUT' : 'DELETE' },
     token,
   );
+}
+
+export type ConnectionKeysetPage = KeysetPage<ConnectionUser>;
+
+export async function getUserConnectionsPage(
+  userId: string, type: ConnectionType, token: string,
+  options: KeysetPageOptions & { signal?: AbortSignal } = {},
+): Promise<ConnectionKeysetPage> {
+  return requestKeysetItems<ConnectionUser>(`/users/${encodeURIComponent(userId)}/${type}`,
+    { ...options, limit: options.limit ?? CONNECTION_PAGE_SIZE },
+    path => apiV2<unknown>(path, { signal: options.signal }, token));
 }

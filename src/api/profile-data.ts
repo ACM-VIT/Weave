@@ -8,18 +8,10 @@ import {
 import type { RepositoryDetail } from '../models/repository';
 
 export const PROFILE_REPOSITORY_PAGE_SIZE = 40;
-// The existing offset API rejects offsets above this value; cursor support is #122.
-const MAX_PROFILE_REPOSITORY_OFFSET = 10_000;
-
 export type ProfileRepositoryPage = {
   items: RepositoryDetail[];
-  nextOffset?: number;
+  nextCursor?: string;
 };
-
-export function nextProfileRepositoryOffset(offset: number, count: number): number | undefined {
-  const next = offset + count;
-  return count === PROFILE_REPOSITORY_PAGE_SIZE && next <= MAX_PROFILE_REPOSITORY_OFFSET ? next : undefined;
-}
 
 export function mergeProfileRepositoryPages(pages: ProfileRepositoryPage[]): RepositoryDetail[] {
   const byId = new Map<string, RepositoryDetail>();

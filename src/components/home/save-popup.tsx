@@ -44,7 +44,7 @@ import {
   type ListDto,
 } from '@/api/lists';
 import { prepareQueuedActivity, toInteractionEventV2 } from '@/api/activity';
-import { profileContentInvalidationFilters } from '@/api/profile-section-queries';
+import { profileContentInvalidationFilters, profileRepositoryInvalidationFilters } from '@/api/profile-section-queries';
 import { repositoryDetailQueryKey } from '@/api/repositories';
 import type { FeedPage } from '@/api/feed';
 import type { RepositoryDetail } from '@/models/repository';
@@ -410,10 +410,7 @@ export function SavePopup({
           queryKey: ['savedRepos', viewerUserId],
           exact: true,
         }),
-        queryClient.invalidateQueries({
-          queryKey: ['profile-stat-repositories', 'saved', viewerUserId],
-          exact: true,
-        }),
+        queryClient.invalidateQueries(profileRepositoryInvalidationFilters(viewerUserId, 'saved')),
         queryClient.invalidateQueries(profileContentInvalidationFilters(viewerUserId)),
         ...changedLists.map((list) => queryClient.invalidateQueries({
           queryKey: listRepositoryQueryKey(

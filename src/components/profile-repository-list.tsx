@@ -14,14 +14,13 @@ import { useInfiniteQuery } from '@tanstack/react-query';
 import { FolderGit2, GitFork, Heart, RotateCcw, Search, Star, X } from 'lucide-react-native';
 
 import { apiV2 } from '@/api/client';
-import { mergeProfileRepositoryPages, nextProfileRepositoryOffset, PROFILE_REPOSITORY_PAGE_SIZE, type ProfileRepositoryPage } from '@/api/profile-data';
+import { mergeProfileRepositoryPages, type ProfileRepositoryPage } from '@/api/profile-data';
 import { profileRepositoryQuery } from '@/api/profile-section-queries';
-import type { RepositoryApiPayload } from '@/api/repositories';
+import { requestProfileRepositoryPage } from '@/api/profile-repository-pages';
 import { REFERENCE_THEME } from '@/constants/theme';
 import { formatCompactCount } from '@/utils/format-count';
 import { README_SUMMARY_PENDING } from '@/utils/readme';
 import { repositoryHref } from '@/utils/repository-links';
-import { mapRepositoryList } from '@/utils/repository-mapper';
 import { getStorageItem } from '@/utils/storage';
 
 export type ProfileRepositoryType = 'likes' | 'saved';
@@ -29,18 +28,14 @@ export type ProfileRepositoryType = 'likes' | 'saved';
 async function loadRepositories(
   type: ProfileRepositoryType,
   userId: string,
-  offset: number,
+  cursor: string | null,
   signal?: AbortSignal,
 ): Promise<ProfileRepositoryPage> {
   const token = await getStorageItem('access_token');
   signal?.throwIfAborted();
   if (!token) throw new Error('Your session has expired. Please sign in again.');
-  const path = type === 'likes'
-    ? `/users/${encodeURIComponent(userId)}/likes-given?limit=${PROFILE_REPOSITORY_PAGE_SIZE}&offset=${offset}`
-    : `/repositories/saved?limit=${PROFILE_REPOSITORY_PAGE_SIZE}&offset=${offset}`;
-  const data = await apiV2<{ items: RepositoryApiPayload[] }>(path, { signal }, token);
-  const rawItems = Array.isArray(data.items) ? data.items : [];
-  return { items: mapRepositoryList(rawItems), nextOffset: nextProfileRepositoryOffset(offset, rawItems.length) };
+  return requestProfileRepositoryPage(type, userId, cursor,
+    path => apiV2<unknown>(path, { signal }, token));
 }
 
 export function ProfileRepositoryList({
@@ -62,7 +57,7 @@ export function ProfileRepositoryList({
   const search = searchState.key === searchKey ? searchState.value : '';
   const setSearch = (value: string) => setSearchState({ key: searchKey, value });
   const repositoriesQuery = useInfiniteQuery(profileRepositoryQuery(
-    userId, type, active, (offset, signal) => loadRepositories(type, userId!, offset, signal),
+    userId, type, active, (cursor, signal) => loadRepositories(type, userId!, cursor, signal),
   ));
   const filteredRepositories = useMemo(() => {
     const repositories = mergeProfileRepositoryPages(repositoriesQuery.data?.pages ?? []);
