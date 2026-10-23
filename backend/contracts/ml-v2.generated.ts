@@ -177,6 +177,8 @@ export interface components {
         FeedbackResponse: {
             /** Accepted */
             accepted: number;
+            /** Acknowledged Event Ids */
+            acknowledged_event_ids: string[];
             /** Duplicates */
             duplicates: number;
             /**

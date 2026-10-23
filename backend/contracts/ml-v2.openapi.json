@@ -167,6 +167,17 @@
             "title": "Accepted",
             "type": "integer"
           },
+          "acknowledged_event_ids": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "maxItems": 100,
+            "minItems": 1,
+            "title": "Acknowledged Event Ids",
+            "type": "array",
+            "uniqueItems": true
+          },
           "duplicates": {
             "maximum": 100.0,
             "minimum": 0.0,
@@ -182,7 +193,8 @@
         "required": [
           "accepted",
           "duplicates",
-          "durable"
+          "durable",
+          "acknowledged_event_ids"
         ],
         "title": "FeedbackResponse",
         "type": "object"
