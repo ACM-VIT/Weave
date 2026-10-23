@@ -1,0 +1,43 @@
+name: Verify observed repository lineage
+on:
+  pull_request:
+    paths: ['backend/**', 'database/**', '.github/workflows/repository-lineage.yml']
+  push:
+    branches: [dev, main, master]
+    paths: ['backend/**', 'database/**', '.github/workflows/repository-lineage.yml']
+permissions:
+  contents: read
+jobs:
+  sql:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: weave_repository_lineage_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready --health-interval 5s
+          --health-timeout 5s --health-retries 10
+    env:
+      NODE_ENV: test
+      DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/weave_repository_lineage_test
+      BOOTSTRAP_SUPABASE_AUTH_STUB: '1'
+      RUN_REPOSITORY_LINEAGE_INTEGRATION: '1'
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+      - run: npm ci
+      - run: npm run build && npm run typecheck:test && npm run ml:check
+      - run: npm run migrate && npm run schema:audit
+      - run: node --import tsx --test tests/ingestion/repositoryLineage.test.ts

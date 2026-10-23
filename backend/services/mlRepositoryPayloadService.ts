@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import { canonicalGithubRepositoryId, LINEAGE_FIELDS } from './repositoryLineage.js';
 
 import type { RepositoryUpsert } from '../contracts/ingestion.v2.js';
 import type { MlRepositoryFeaturePatch, MlRepositorySource } from '../contracts/ml.v2.js';
@@ -35,7 +36,7 @@ export function repositoryContentHash(repository: RepositoryUpsert): string {
     ...buildMlRepositorySource(repository, 'pending'),
   } as Record<string, unknown>;
   for (const key of [
-    'content_hash', 'star_count', 'fork_count', 'open_issues_count', 'pushed_days_ago',
+    'lineage_observed_at', 'content_hash', 'star_count', 'fork_count', 'open_issues_count', 'pushed_days_ago',
     'delta_3d', 'delta_7d', 'delta_30d', 'mentionable_users_count', 'readme_length',
     'updated_at', 'pushed_at',
     'discovery_category', 'discovery_band',
@@ -59,7 +60,9 @@ export function buildMlRepositorySource(
 ): MlRepositorySource {
   const canonical = normalizeCanonicalRepositoryReadme(repository);
   return {
-    github_id: canonical.github_id,
+    github_id: canonicalGithubRepositoryId(canonical.github_id),
+    owner_github_id: canonicalGithubRepositoryId(canonical.owner_github_id),
+    ...Object.fromEntries(LINEAGE_FIELDS.filter(key => canonical[key]!=null).map(key => [key,canonical[key]])),
     full_name: canonical.full_name,
     url: canonical.url,
     description: canonical.description ?? '',

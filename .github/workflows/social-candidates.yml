@@ -18,6 +18,8 @@ jobs:
             integration_test: tests/feed/socialNeighborhoodProjection.test.ts
           - database: weave_social_candidates_test
             integration_test: tests/database/socialCandidates.integration.test.ts
+          - database: weave_social_board_index_test
+            integration_test: tests/database/boardSamplingIndex.integration.test.ts
     services:
       postgres:
         image: postgres:16-alpine
@@ -35,6 +37,7 @@ jobs:
       BOOTSTRAP_SUPABASE_AUTH_STUB: '1'
       RUN_PUBLIC_SOCIAL_NEIGHBORHOODS_INTEGRATION: '1'
       RUN_SOCIAL_CANDIDATES_INTEGRATION: '1'
+      RUN_SOCIAL_BOARD_INDEX_INTEGRATION: '1'
     defaults:
       run:
         working-directory: backend

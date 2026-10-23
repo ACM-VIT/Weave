@@ -62,6 +62,7 @@ test('repository-index projection emits only the strict ML v2 source keys', () =
     'languages',
     'mentionable_users_count',
     'open_issues_count',
+    'owner_github_id',
     'primary_language',
     'pushed_at',
     'pushed_days_ago',
@@ -90,7 +91,7 @@ test('repository-index projection emits only the strict ML v2 source keys', () =
   assert.equal(projected.readme_default_branch, 'main');
   assert.equal(projected.readme_base_url, 'https://raw.githubusercontent.com/weave/repository/refs/heads/main/docs/');
   assert.equal(Object.hasOwn(projected, 'github_node_id'), false);
-  assert.equal(Object.hasOwn(projected, 'owner_github_id'), false);
+  assert.equal(projected.owner_github_id, ingestionRecord.owner_github_id);
   assert.equal(Object.hasOwn(projected, 'owner'), false);
   assert.equal(Object.hasOwn(projected, 'name'), false);
   assert.equal(Object.hasOwn(projected, 'observed_at'), false);
@@ -193,4 +194,21 @@ test('refresh identity merges only complete equivalent patches at the same featu
   assert.notEqual(key, repositoryRefreshIdempotencyKey('different-repository', 100, patch, 1));
   assert.notEqual(key, repositoryRefreshIdempotencyKey('repository-id', 100, { ...patch, star_count: 43 }, 1));
   assert.notEqual(key, repositoryRefreshIdempotencyKey('repository-id', 100, { ...patch, delta_7d: undefined }, 1));
+});
+
+test('index identity includes canonical owner and observed fork family; observation-only polls do not reindex',()=>{
+  const source={...ingestionRecord,owner_github_id:'000987654321',is_fork:true,
+    fork_parent_github_id:'222',fork_family_github_id:'333',lineage_source:'github-graphql-repository' as const,
+    lineage_observed_at:'2026-07-21T09:00:00.000001Z'};
+  const projected=buildMlRepositorySource(source,'sha');
+  assert.equal(projected.owner_github_id,'987654321');
+  assert.equal(projected.fork_family_github_id,'333');
+  assert.equal(projected.lineage_observed_at,source.lineage_observed_at);
+  assert.equal(repositoryContentHash(source),repositoryContentHash({...source,lineage_observed_at:'2026-07-22T09:00:00Z'}));
+  assert.notEqual(repositoryContentHash(source),repositoryContentHash({...source,fork_family_github_id:'444'}));
+  assert.notEqual(repositoryContentHash(source),repositoryContentHash({...source,owner_github_id:'555'}));
+  assert.equal(repositoryContentHash(ingestionRecord),repositoryContentHash({...ingestionRecord,is_fork:null,
+    fork_parent_github_id:null,fork_family_github_id:null,lineage_source:null,lineage_observed_at:null}));
+  assert.equal(Object.hasOwn(buildMlRepositoryFeaturePatch(source),'fork_family_github_id'),false,
+    'Existing feature-refresh contract cannot carry index-only lineage.');
 });

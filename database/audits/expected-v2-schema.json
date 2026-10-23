@@ -27,7 +27,7 @@
     "app_reactions_repo_idx", "app_saves_repo_idx", "telemetry_user_repo_engagement_repo_idx",
     "app_repos_owner_github_id_idx",
     "app_reactions_user_recent_like_idx", "app_reactions_repo_public_like_idx",
-    "app_board_repos_repository_idx", "app_repo_topics_topic_idx", "app_repos_owner_active_recent_idx",
+    "app_board_repos_repository_idx", "app_board_repos_recent_idx", "app_repo_topics_topic_idx", "app_repos_owner_active_recent_idx",
     "app_collection_repos_repo_idx", "app_collection_repos_added_idx",
     "repo_card_summaries_one_active_uidx", "repo_card_summaries_revisioned_uidx",
     "repo_readme_summaries_pkey", "repo_readme_summaries_generation_id_key",

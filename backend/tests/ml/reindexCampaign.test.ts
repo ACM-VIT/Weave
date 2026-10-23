@@ -26,6 +26,8 @@ test('campaign reindex preserves canonical identity/version and builds a fresh s
     repo_id: '00000000-0000-4000-8000-000000000001',
     github_id: '123',
     owner_github_id: '456',
+    is_fork: true,fork_parent_github_id:'19',fork_family_github_id:'20',
+    lineage_source:'github-rest-repository',lineage_observed_at:'2026-07-21T09:00:00.000001Z',
     full_name: 'owner/repository',
     url: 'https://github.com/owner/repository',
     description: null,
@@ -46,6 +48,10 @@ test('campaign reindex preserves canonical identity/version and builds a fresh s
   }, '00000000-0000-4000-8000-000000000002');
   assert.ok(job);
   assert.equal(job.content_version, 7);
+  assert.equal(job.repository.owner_github_id,'456');
+  assert.equal(job.repository.is_fork,true);
+  assert.equal(job.repository.fork_family_github_id,'20');
+  assert.equal(job.repository.lineage_observed_at,'2026-07-21T09:00:00.000001Z');
   assert.equal(job.repository.content_hash, 'canonical-content-hash');
   assert.equal(job.repository.readme_source_path, 'docs/README.md');
   assert.equal(job.repository.readme_default_branch, 'main');

@@ -1,3 +1,4 @@
+import { validateRepositoryLineage, type RepositoryLineage } from '../services/repositoryLineage.js';
 import type { RepositoryUpsert } from '../contracts/ingestion.v2.js';
 
 const POSTGRES_INTEGER_MAX = 2_147_483_647;
@@ -53,6 +54,7 @@ export function isRepositoryUpsert(value: unknown): value is RepositoryUpsert {
   const item = value as Record<string, unknown>;
   if (typeof item.github_id !== 'string' || !/^[0-9]{1,32}$/.test(item.github_id)) return false;
   if (typeof item.owner_github_id !== 'string' || !/^[0-9]{1,32}$/.test(item.owner_github_id)) return false;
+  try { validateRepositoryLineage(item as RepositoryLineage,item.github_id); } catch { return false; }
   const githubId = BigInt(item.github_id);
   const ownerGithubId = BigInt(item.owner_github_id);
   return githubId > 0n && githubId <= POSTGRES_BIGINT_MAX

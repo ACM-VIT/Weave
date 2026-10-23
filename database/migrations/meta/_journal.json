@@ -289,6 +289,20 @@
       "breakpoints": true
     },
     {
+      "idx": 41,
+      "version": "7",
+      "when": 1793577600000,
+      "tag": "0038_repository_lineage",
+      "breakpoints": true
+    },
+    {
+      "idx": 42,
+      "version": "7",
+      "when": 1793664000000,
+      "tag": "0039_social_board_sampling_index",
+      "breakpoints": true
+    },
+    {
       "idx": 43,
       "version": "7",
       "when": 1793750400000,

@@ -328,3 +328,14 @@ test('set-based ingestion preserves versions, owner reconciliation, rollback and
     await sqlClient.end({ timeout: 1 });
   }
 });
+
+test('internal ingestion rejects ambiguous or invented lineage provenance',()=>{
+  const repository=batchRepository('77299');
+  const observed={...repository,is_fork:true,fork_parent_github_id:'2',fork_family_github_id:'3',
+    lineage_source:'github-graphql-repository',lineage_observed_at:'2026-10-21T00:00:00.000001Z'};
+  assert.equal(isRepositoryUpsert(observed),true);
+  for(const invalid of [{...observed,is_fork:'false'},{...observed,lineage_source:'owner/name'},
+    {...observed,lineage_observed_at:undefined},{...observed,lineage_observed_at:'2026-10-21T00:00:00'},
+    {...observed,fork_family_github_id:'77299'},{...observed,fork_parent_github_id:'02'},
+    {...observed,is_fork:null},{...observed,is_fork:false}])assert.equal(isRepositoryUpsert(invalid),false);
+});
