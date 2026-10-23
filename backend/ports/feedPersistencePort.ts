@@ -34,6 +34,10 @@ export class FeedPreferenceChangedError extends Error {
   constructor() { super('Current repository preferences changed; retry the feed request.'); }
 }
 
+export class FeedProvenanceDependencyError extends Error {
+  constructor() { super('FEED_PROVENANCE_DEPENDENCY_UNAVAILABLE'); }
+}
+
 export class FeedProvenanceUnavailableError extends Error {
   constructor() { super('FEED_PROVENANCE_UNAVAILABLE'); }
 }

@@ -503,7 +503,12 @@ export class FeedV2Service {
         if (queueAvailable) await this.queue.commit(userId, version, request.feed_request_id, token);
         return responseFromServe(replayAfterFailure);
       }
-      if (queueAvailable) await this.queue.release(userId, version, request.feed_request_id, token);
+      if (queueAvailable && error instanceof FeedProvenanceUnavailableError) {
+        // SQL proved this unserved reservation cannot be used (expired,
+        // revoked, purged or mismatched private references). Retire only our
+        // token-owned batch so retry can generate; never invent a seen event.
+        await this.queue.commit(userId, version, request.feed_request_id, token);
+      } else if (queueAvailable) await this.queue.release(userId, version, request.feed_request_id, token);
       if (error instanceof FeedServeOverlapError) throw new FeedRequestInProgressError();
       if (error instanceof FeedPreferenceChangedError || error instanceof FeedProvenanceUnavailableError) throw new FeedRequestInProgressError();
       throw error;

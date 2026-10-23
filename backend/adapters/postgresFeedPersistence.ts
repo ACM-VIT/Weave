@@ -1,4 +1,4 @@
-import { FeedProvenanceUnavailableError } from '../ports/feedPersistencePort.js';
+import { FeedProvenanceUnavailableError, FeedProvenanceDependencyError } from '../ports/feedPersistencePort.js';
 import { loadSocialNeighborhoodRows } from '../services/socialNeighborhoodProjection.js';
 import { projectSocialCandidates, type SocialCandidateProjection } from '../services/socialCandidateProjection.js';
 import { readmeSummaryProjection } from '../services/readmeSummaryService.js';
@@ -491,9 +491,15 @@ export class PostgresFeedPersistence implements FeedPersistencePort, FeedReconci
 
   async createServe(input: CreateServeInput): Promise<StoredServe> {
     if (input.items.length > 100) throw new Error('A feed serve cannot contain more than 100 items.');
-    for (const item of input.items) if (item.scoring_reference
-      && (item.scoring_reference.repo_id !== item.repo_id || item.scoring_reference.generation_id !== item.generation_id)) {
-      throw new FeedProvenanceUnavailableError();
+    for (const item of input.items) if (item.scoring_reference) {
+      const reference=item.scoring_reference;
+      if (typeof reference!=='object' || Array.isArray(reference)
+        || Object.keys(reference).sort().join(',')!=='generation_id,record_digest,repo_id'
+        || reference.repo_id!==item.repo_id || reference.generation_id!==item.generation_id
+        || typeof reference.generation_id!=='string' || reference.generation_id.length!==36
+        || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(reference.generation_id)
+        || typeof reference.record_digest!=='string' || reference.record_digest.length!==64
+        || !/^[0-9a-f]{64}$/.test(reference.record_digest)) throw new FeedProvenanceUnavailableError();
     }
     const created = await sqlClient.begin(async (tx) => {
       // Match activity/profile lock order: user, then feed state. Current
@@ -552,7 +558,8 @@ export class PostgresFeedPersistence implements FeedPersistencePort, FeedReconci
       }
       return {serve_id:String(header.serve_id),created_at:header.created_at,provenance};
     }).catch(error => {
-      if (error?.code === 'P0001' && error.message === 'FEED_PROVENANCE_INVALID') throw new FeedProvenanceUnavailableError();
+      if (error?.code === 'P0001' && ['FEED_PROVENANCE_INVALID','SCORING_CAPTURE_EXPIRED'].includes(error.message)) throw new FeedProvenanceUnavailableError();
+      if (error?.code === '58000' && error.message === 'FEED_PROVENANCE_UNAVAILABLE') throw new FeedProvenanceDependencyError();
       throw error;
     });
     if (!created || input.items.some(item => item.summary_id !== item.repository.summary_id)) {

@@ -9,7 +9,7 @@ import { PostgresFeedPersistence } from '../../adapters/postgresFeedPersistence.
 import { PostgresScoringPersistence } from '../../adapters/postgresScoringPersistence.js';
 import { RedisFeedQueue } from '../../redis/feedQueue.js';
 import { FeedGenerationService } from '../../services/feedGenerationService.js';
-import { FeedV2Service } from '../../services/feedV2Service.js';
+import { FeedV2Service, FeedRequestInProgressError } from '../../services/feedV2Service.js';
 import type { ScoringPersistencePort } from '../../ports/scoringPersistencePort.js';
 import type { RecommendationPort } from '../../ports/recommendationPort.js';
 import type { ScoringCaptureConfig } from '../../config/scoringCapture.js';
@@ -131,6 +131,60 @@ integration('real SQL precedes Redis publication and mixed generation provenance
       assert.deepEqual((await sql`SELECT input_bytes FROM private_scoring.scoring_inputs WHERE generation_id=${generation}::uuid`)[0].input_bytes,
         Buffer.from(golden.packet.input_base64,'base64'));
       assert.equal(Number((await sql`SELECT count(*) FROM private_scoring.generation_witnesses WHERE generation_id=${generation}::uuid AND event_type='published'`)[0].count),1);
+    }
+    // A transient database lock failure inside reference validation is not a
+    // permanent invalid packet: release the same queue entry for a later retry.
+    selected=0;await service().generate(user,1);const temporarilyBlocked=generations.at(-1)!;
+    let held!:()=>void,releaseHeld!:()=>void;
+    const heldReady=new Promise<void>(resolve=>held=resolve),continueHeld=new Promise<void>(resolve=>releaseHeld=resolve);
+    const holding=sql.begin(async tx=>{
+      await tx`SELECT generation_id FROM private_scoring.scoring_generations WHERE generation_id=${temporarilyBlocked}::uuid FOR UPDATE`;
+      held();await continueHeld;
+    });
+    await heldReady;
+    const blockedRequest={feed_request_id:crypto.randomUUID(),session_id:crypto.randomUUID(),limit:1,cursor:null};
+    try {
+      await sql.unsafe("ALTER FUNCTION private_scoring.validate_feed_item_provenance() SET lock_timeout='100ms'");
+      await assert.rejects(feed.getFeed(user,blockedRequest));
+      assert.equal(await queue.depth(user,feedVersion),1,'temporary SQL failure must preserve the unserved reference');
+    } finally {
+      releaseHeld();await holding;
+      await sql.unsafe('ALTER FUNCTION private_scoring.validate_feed_item_provenance() RESET lock_timeout');
+    }
+    const afterTemporary=await feed.getFeed(user,blockedRequest);
+    assert.equal(afterTemporary.items[0].generation_id,temporarilyBlocked,'retry uses the original valid capture without rescoring');
+    // A permanent private-reference failure must retire only the unserved
+    // reservation, then let a fresh request regenerate. No impression/seen
+    // state may be invented for a valid neighbour in the rejected batch.
+    for(const failure of ['revoked','expired','purged'] as const) {
+      selected=0;await service().generate(user,1);const invalidGeneration=generations.at(-1)!;
+      selected=1;await service().generate(user,1);
+      if(failure==='revoked')await sql`INSERT INTO private_scoring.generation_witnesses(generation_id,event_type) VALUES(${invalidGeneration}::uuid,'revoked')`;
+      else if(failure==='purged')await sql`DELETE FROM private_scoring.scoring_generations WHERE generation_id=${invalidGeneration}::uuid`;
+      else await sql.begin(async tx=>{
+        await tx.unsafe('SET LOCAL session_replication_role=replica');
+        await tx`UPDATE private_scoring.scoring_generations SET created_at=created_at-interval '31 days',expires_at=expires_at-interval '31 days'
+          WHERE generation_id=${invalidGeneration}::uuid`;
+      });
+      const recovering=new FeedV2Service(persistence,queue,(owner,limit,excluded,session)=>service().generate(owner,limit,excluded,'live',session),
+        false,1500,25,'fixture-cursor-secret',5000,undefined,()=>true);
+      const rejectedRequest={feed_request_id:crypto.randomUUID(),session_id:crypto.randomUUID(),limit:2,cursor:null};
+      await assert.rejects(recovering.getFeed(user,rejectedRequest),FeedRequestInProgressError);
+      const remaining=await queue.depth(user,feedVersion);
+      assert.equal(await persistence.getServeByRequest(user,rejectedRequest.feed_request_id),null);
+      assert.equal(Number((await sql`SELECT count(*) FROM telemetry.user_repo_engagement WHERE user_id=${user}::uuid`)[0].count),0,
+        'unshown cards must not become impressions/seen exclusions');
+      const retryRequest={...rejectedRequest,feed_request_id:crypto.randomUUID(),limit:1};
+      const retry=await recovering.getFeed(user,retryRequest).then(value=>({value}),error=>({error}));
+      assert.equal(remaining,0,failure+' references must not be released back to the queue');
+      assert.ok('value' in retry,failure+' must allow the next request to regenerate rather than repeat409');
+      if('value' in retry){
+        assert.equal(retry.value.items[0].repo_id,repos[1]);
+        assert.notEqual(retry.value.items[0].generation_id,invalidGeneration);
+        assert.deepEqual(await recovering.getFeed(user,retryRequest),retry.value);
+      }
+      assert.deepEqual((await feed.getFeed(user,request)).items.map(item=>item.exposure_id),delivered.items.map(item=>item.exposure_id),
+        'permanent queue retirement cannot rewrite an earlier immutable serve');
     }
   } finally {
     const keys=await redis.keys(`*${user}*`);if(keys.length)await redis.del(...keys);redis.disconnect();
