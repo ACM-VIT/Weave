@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawn } from 'node:child_process';
-import { once } from 'node:events';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import test from 'node:test';
+import { stopFixtureProcess } from './fixtureProcess.js';
 import { MlV2Client } from '../../services/mlService.js';
 import type { MlFeedbackBatch, MlRepositoryIndexJob, MlRequest } from '../../contracts/ml.v2.js';
 
@@ -20,13 +20,9 @@ test('real Node client and Python HTTP routes share the pinned V2 contract', { s
     "import runpy; runpy.run_path('tests/fixtures/ml_contract_server.py', run_name='__main__')"], {
     cwd: mlRoot, env: { ...process.env, APP_ENV: 'development',
       QDRANT_URL: 'http://127.0.0.1:9', REDIS_URL: 'redis://127.0.0.1:9', INTERNAL_API_SECRET: 'local-contract-secret' },
-    stdio: ['ignore', 'pipe', 'pipe'],
+    stdio: ['ignore', 'pipe', 'inherit'],
   });
-  t.after(async () => {
-    if (child.exitCode === null && child.signalCode === null) {
-      const exited = once(child, 'exit'); child.kill('SIGTERM'); await exited;
-    }
-  });
+  t.after(() => stopFixtureProcess(child));
   const port = await new Promise<string>((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error('Contract fixture did not bind in time.')), 15_000);
     let output = '';
