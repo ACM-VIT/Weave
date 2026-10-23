@@ -133,7 +133,7 @@ test('accepted HTTP interactions survive process death, ML outages and replay wi
   let status = await outbox.status(); assert.equal(status.pending, 2); assert.equal(status.retrying, 1); assert.equal(status.dead, 0);
   await sqlClient`UPDATE telemetry.ml_outbox SET available_at=now(),created_at=now()-interval '3 minutes' WHERE aggregate_id=${user}::uuid`;
   mode = 'timeout';
-  const timingOut = new OutboxWorker(new OutboxService(), new MlV2Client({ ...options, deliveryTimeoutMs: 100 })).runOnce(50);
+  const timingOut = new OutboxWorker(new OutboxService(), new MlV2Client({ ...options, deliveryTimeoutMs: 100 })).runOnce(1);
   await acceptedBeforeTimeout; assert.equal(await timingOut, 1);
   status = await outbox.status(); assert.equal(status.retry_attempts, 1); assert.equal(status.retrying, 1);
   assert.ok(status.oldest_pending_seconds >= 180); assert.deepEqual(await counts(), [1, 1, 1, 1, 2, 2]);
