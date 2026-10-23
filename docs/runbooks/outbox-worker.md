@@ -10,11 +10,15 @@ repository refresh jobs to the authenticated ML v2 endpoints.
 - Reuse the API process's existing `INTERNAL_API_SECRET`; do not rotate it just
   to add a worker process.
 - Keep `ML_FEEDBACK_OUTBOX=true` and `DB_SCHEMA_V2_WRITES=true`.
-- Set `ML_DELIVERY_TIMEOUT_MS=30000`; health/recommendation reads retain the
-  shorter `ML_TIMEOUT_MS=5000` bound. Repository summary generation and
-  embedding use `ML_REPOSITORY_INDEX_TIMEOUT_MS=240000`.
+- Review the proposed [per-operation budgets](cross-service-deadlines.md) against
+  the authorized environment before rollout. The template separates the 5-second
+  foreground observer from a 15-second recommendation transport, 35-second
+  onboarding transport and 50-second refresh transport. Feedback retains
+  `ML_DELIVERY_TIMEOUT_MS=30000`; indexing retains
+  `ML_REPOSITORY_INDEX_TIMEOUT_MS=240000`. Existing explicit legacy settings
+  remain effective until the new operation knobs are configured.
 - Set `OUTBOX_LEASE_MS=300000`. Startup/claiming fails closed if the lease is
-  less than 60 seconds longer than the repository-index timeout. Abandoned-claim
+  less than 60 seconds longer than **any** durable ML operation timeout. Abandoned-claim
   reconciliation reads the same value, so any override remains consistent.
 - Keep `ML_V2_RECOMMENDATIONS=true`; production readiness must remain red until
   the ingestion canary returns a non-empty set of canonical backend `repo_id`
@@ -57,7 +61,7 @@ the single active row finish before shutdown.
 `SIGTERM` completes the active run and closes Redis/PostgreSQL connections.
 The outbox unit gives Docker 300 seconds to stop and systemd 330 seconds,
 covering the default 240-second index request and cleanup. When increasing
-`ML_REPOSITORY_INDEX_TIMEOUT_MS`, increase Docker's `ExecStop --time` to at least
+any durable ML timeout, increase Docker's `ExecStop --time` to at least
 the request timeout in seconds plus 60, and `TimeoutStopSec` to at least another
 30 seconds beyond that. For a 600000 ms index timeout, use 660 and 690 seconds.
 Avoid `SIGKILL`, which can leave the current row claimed until reconciliation

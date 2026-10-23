@@ -73,12 +73,12 @@ class FakeQueue implements FeedQueuePort {
   async refill(_u: string, _v: bigint, requestId: string, _l: number, token: string): Promise<FeedReservation> {
     return this.reserve(_u, _v, requestId, _l, token);
   }
-  async commit() { this.committed++; return true; }
-  async release() { this.released++; return true; }
+  async commit(_u: string, _v: bigint, _requestId: string, _token: string) { this.committed++; return true; }
+  async release(_u: string, _v: bigint, _requestId: string, _token: string) { this.released++; return true; }
   async replace() {}
   async renewGenerationLock() { return true; }
   async hasPublishedGeneration() { return false; }
-  async publishGeneration() { return true; }
+  async publishGeneration(_u: string, _v: bigint, _token: string, _entries: RecommendationEntry[], _ttl: number) { return true; }
   async depth() { return 0; }
   async acquireGenerationLock() { return true; }
   async releaseGenerationLock() {}
@@ -557,6 +557,240 @@ test('fallback serves reuse only the freshly hydrated cards for the requesting v
   assert.equal(result.items[0].repo_id,repo.repo_id);
 });
 
+test('foreground budget expires while one real generation continues, coalesces retries, and drains', async () => {
+  const { snapshotMetrics } = await import('../../observability/metrics.js');
+  const metricKey = 'feed_v2_generation_after_wait_total:[["outcome","generated"]]';
+  const before = (snapshotMetrics().counters as Record<string, number>)[metricKey] ?? 0;
+  const persistence = new FakePersistence();
+  const queue = new FakeQueue();
+  queue.reserve = async (_u, _v, requestId, _limit, token) => ({ requestId, token, items: [] });
+  let ready = false;
+  queue.refill = async (_u, _v, requestId, _limit, token) => ({ requestId, token,
+    items: ready ? [{ repo_id: repo.repo_id, score: 1, source: 'semantic', model_version: 'm1', summary_id: null }] : [],
+  });
+  let finish!: () => void;
+  const dependency = new Promise<void>(resolve => { finish = resolve; });
+  let calls = 0;
+  const service = new FeedV2Service(persistence, queue, async () => {
+    calls++;
+    await dependency;
+    ready = true;
+    return { status: 'generated', feedVersion: 3n, count: 1 };
+  }, true, 1500, 1, 'test-secret', 5);
+  const request = { feed_request_id: 'request-0', session_id: 'session', limit: 10, cursor: null };
+  try {
+    for (let index = 0; index < 12; index++) {
+      const response = await service.getFeed('viewer', { ...request, feed_request_id: `request-${index}` });
+      assert.equal(response.source, 'fallback');
+    }
+    assert.equal(calls, 1, 'observer expiry cannot launch another generation');
+    // Inspect bounded ownership, not implementation-specific timer counts.
+    const records = (service as unknown as { generations: Map<string, { observers: Set<unknown> }> }).generations;
+    assert.equal(records.size, 1);
+    assert.equal([...records.values()][0].observers.size, 0, 'expired observers must not accumulate on stuck work');
+    let drained = false;
+    const stop = service.stop().then(() => { drained = true; });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(drained, false, 'shutdown owns actual work after every observer returned');
+    finish();
+    await stop;
+    assert.equal(ready, true);
+    assert.equal(records.size, 0);
+    assert.equal((snapshotMetrics().counters as Record<string, number>)[metricKey] - before, 1,
+      'late work is counted once per actual generation, not once per expired observer');
+  } finally { finish(); await service.stop(); }
+});
+
+test('background generation admission stays bounded after foreground callers time out', async () => {
+  const persistence = new FakePersistence();
+  persistence.getServeByRequest = async () => null;
+  const queue = new FakeQueue();
+  queue.reserve = async (_u, _v, requestId, _limit, token) => ({ requestId, token, items: [] });
+  let finish!: () => void;
+  const dependency = new Promise<void>(resolve => { finish = resolve; });
+  let calls = 0;
+  const service = new FeedV2Service(persistence, queue, async () => {
+    calls++; await dependency; return { status: 'generated', feedVersion: 3n, count: 0 };
+  }, false, 1500, 1, 'test-secret', 2);
+  try {
+    const results = await Promise.allSettled(Array.from({ length: 129 }, (_unused, index) => service.getFeed(`viewer-${index}`, {
+      feed_request_id: `request-${index}`, session_id: 'session', limit: 10, cursor: null,
+    })));
+    assert.ok(results.every(result => result.status === 'rejected' && result.reason instanceof PersonalizedFeedUnavailableError));
+    assert.equal(calls, 128, 'the unobserved generation must retain its admission slot');
+  } finally { finish(); await service.stop(); }
+});
+
+test('continuation generation wait expiry remains retryable and never falls back', async () => {
+  const persistence = new FakePersistence();
+  const queue = new FakeQueue();
+  let finish!: () => void;
+  const dependency = new Promise<void>(resolve => { finish = resolve; });
+  const service = new FeedV2Service(persistence, queue, async () => {
+    await dependency; return { status: 'generated', feedVersion: 3n, count: 0 };
+  }, true, 1500, 1, 'test-secret', 2);
+  const request = { feed_request_id: 'first-page', session_id: 'session', limit: 10, cursor: null };
+  try {
+    const first = await service.getFeed('viewer', request);
+    assert.ok(first.next_cursor);
+    queue.reserve = async (_u, _v, requestId, _limit, token) => ({ requestId, token, items: [] });
+    await assert.rejects(service.getFeed('viewer', { ...request, feed_request_id: 'continuation', cursor: first.next_cursor }),
+      FeedRequestInProgressError);
+    assert.equal(persistence.fallbackCalls, 0);
+    assert.equal(persistence.serve?.feed_request_id, request.feed_request_id);
+    assert.ok(queue.released > 0);
+  } finally { finish(); await service.stop(); }
+});
+
+for (const publishBeforeRecoveryCommit of [false, true]) {
+  test(`durable recovery cannot repeat after a late generation publishes (${publishBeforeRecoveryCommit ? 'publication races recovery commit' : 'publication follows recovery'})`, async () => {
+    const recoveredId = repo.repo_id;
+    const freshId = '00000000-0000-4000-8000-000000000002';
+    const recoveryEntry = { repo_id: recoveredId, score: 1, source: 'semantic', model_version: 'old', summary_id: null };
+    const serves = new Map<string, StoredServe>();
+    const persistence = new FakePersistence();
+    persistence.recentPersonalized = [recoveryEntry];
+    persistence.getServeByRequest = async (_user, requestId) => serves.get(requestId!) ?? null;
+    Object.assign(persistence, { listServedRepositoryIds: async (user: string, session: string, ids: string[]) => {
+      const candidates = new Set(ids);
+      return [...serves.values()].filter(serve => serve.user_id === user && serve.session_id === session)
+        .flatMap(serve => serve.items.map(item => item.repo_id)).filter(id => candidates.has(id));
+    } });
+    let recoveryStarted!: () => void;
+    const recovering = new Promise<void>(resolve => { recoveryStarted = resolve; });
+    let commitRecovery!: () => void;
+    const recoveryGate = new Promise<void>(resolve => { commitRecovery = resolve; });
+    const createServe = persistence.createServe.bind(persistence);
+    persistence.createServe = async input => {
+      if (input.feed_request_id === 'recovery') {
+        recoveryStarted();
+        if (publishBeforeRecoveryCommit) await recoveryGate;
+      }
+      const stored = await createServe(input);
+      serves.set(input.feed_request_id, stored);
+      return stored;
+    };
+    const queued: RecommendationEntry[] = [];
+    const reservations = new Map<string, RecommendationEntry[]>();
+    const queue = new FakeQueue();
+    queue.reserve = async (_u, _v, requestId, limit, token) => {
+      if (!reservations.has(token)) reservations.set(token, queued.splice(0, limit));
+      return { requestId, token, items: reservations.get(token)!, remainingDepth: queued.length };
+    };
+    queue.refill = async (_u, _v, requestId, limit, token, discarded: string[] = []) => {
+      const held = reservations.get(token)!.filter(entry => !discarded.includes(entry.repo_id));
+      reservations.set(token, held);
+      held.push(...queued.splice(0, limit));
+      return { requestId, token, items: held, remainingDepth: queued.length };
+    };
+    queue.commit = async (_u, _v, _requestId, token) => { queue.committed++; return reservations.delete(token); };
+    queue.release = async (_u, _v, _requestId, token) => {
+      const held = reservations.get(token);
+      if (!held) return false;
+      queued.unshift(...held); return reservations.delete(token);
+    };
+    let published!: () => void;
+    const publication = new Promise<void>(resolve => { published = resolve; });
+    queue.publishGeneration = async (_u, _v, _token, entries) => {
+      queued.splice(0, queued.length, ...entries); published(); return true;
+    };
+    let finishModel!: () => void;
+    const modelGate = new Promise<void>(resolve => { finishModel = resolve; });
+    const generation = new FeedGenerationService(persistence, queue, { async generate(input) {
+      assert.deepEqual(input.exclude_repo_ids, [], 'the running generation predates recovery delivery');
+      await modelGate;
+      return { schema_version: 2, generation_id: input.generation_id, user_id: input.user_id,
+        feed_version: input.feed_version, model_version: 'new', embedding_version: 'test',
+        embedding_versions: ['test'], served_ranker: 'hybrid', heavy_ranker_selected: false, ranker_applied: false,
+        fallback_code: null, fallback_reason: null, retrieval_mode: 'hybrid',
+        context_status: { cold_start_applied: false, locale: 'not_provided' },
+        items: [recoveredId, freshId].map(repo_id => ({ repo_id, score: 1, source: 'semantic' })),
+      };
+    } });
+    const service = new FeedV2Service(persistence, queue,
+      (user, limit, excluded, session) => generation.generate(user, limit, excluded, 'live', session),
+      false, 1500, 1, 'test-secret', 5);
+    const request = { feed_request_id: 'recovery', session_id: 'session', limit: 1, cursor: null };
+    try {
+      const recoveringPage = service.getFeed('viewer', request);
+      await recovering;
+      if (publishBeforeRecoveryCommit) { finishModel(); await publication; commitRecovery(); }
+      const first = await recoveringPage;
+      assert.deepEqual(first.items.map(item => item.repo_id), [recoveredId]);
+      assert.ok(first.next_cursor);
+      finishModel(); await publication;
+      const next = await service.getFeed('viewer', { ...request, feed_request_id: 'continuation', cursor: first.next_cursor });
+      assert.deepEqual(next.items.map(item => item.repo_id), [freshId]);
+      assert.equal(next.items[0].position, 1, 'discarding duplicate queue entries must not advance the cursor');
+      assert.deepEqual(await service.getFeed('viewer', { ...request, feed_request_id: 'continuation', cursor: first.next_cursor }), next);
+      assert.equal(queue.committed, 2, 'discard/refill retains ownership until the fresh continuation commits');
+    } finally { finishModel(); commitRecovery(); await service.stop(); }
+  });
+}
+
+test('all-duplicate queue batches are retired with bounded work and never persist a false end', async () => {
+  const persistence = new FakePersistence();
+  Object.assign(persistence, { listServedRepositoryIds: async (_u: string, _s: string, ids: string[]) => ids });
+  const queue = new FakeQueue();
+  let refills = 0;
+  queue.refill = async (...args) => { refills++; return queue.reserve(...args); };
+  const service = new FeedV2Service(persistence, queue, undefined, false, 1500, 1, 'test-secret');
+  await assert.rejects(service.getFeed('viewer', { feed_request_id: 'duplicate-batches', session_id: 'session', limit: 1, cursor: null }),
+    FeedRequestInProgressError);
+  assert.equal(refills, 4);
+  assert.equal(queue.committed, 0, 'bounded filtering retains the same reservation ownership');
+  assert.equal(persistence.serve, null, 'filtered nonempty input is not evidence of exhaustion');
+});
+
+test('final durable delivery overlap stays retryable and releases only its reservation', async () => {
+  const { FeedServeOverlapError } = await import('../../ports/feedPersistencePort.js');
+  const persistence = new FakePersistence();
+  persistence.createServe = async () => { throw new FeedServeOverlapError(); };
+  const queue = new FakeQueue();
+  await assert.rejects(new FeedV2Service(persistence, queue).getFeed('viewer', {
+    feed_request_id: 'overlap', session_id: 'session', limit: 1, cursor: null,
+  }), FeedRequestInProgressError);
+  assert.equal(queue.committed, 0);
+  assert.equal(queue.released, 1);
+});
+
+test('losing reservation ownership during duplicate retirement waits for the durable same-ID serve', async () => {
+  const persistence = new FakePersistence();
+  const queue = new FakeQueue();
+  const request = { feed_request_id: 'same-id', session_id: 'session', limit: 1, cursor: null };
+  await persistence.createServe({ ...request, user_id: 'viewer', feed_version: 3n, generation_id: null,
+    source: 'personalized', model_version: 'test', next_cursor: null,
+    items: [{ repo_id: repo.repo_id, score: 1, source: 'semantic', model_version: 'test', summary_id: null,
+      position: 0, repository: repo }],
+  });
+  persistence.missesBeforeServe = 1;
+  Object.assign(persistence, { listServedRepositoryIds: async (_u: string, _s: string, ids: string[]) => ids });
+  queue.refill = async () => { throw new ReservationOwnedError(); };
+  const result = await new FeedV2Service(persistence, queue, undefined, false, 100, 1).getFeed('viewer', request);
+  assert.equal(result.serve_id, persistence.serve?.serve_id);
+  assert.equal(queue.committed, 0);
+});
+
+test('session membership compares UUID identities rather than their serialized case', async () => {
+  const persistence = new FakePersistence();
+  const delivered = 'aaaaaaaa-0000-4000-8000-000000000001';
+  Object.assign(persistence, { listServedRepositoryIds: async (_u: string, _s: string, ids: string[]) =>
+    ids.some(id => id.toLowerCase() === delivered) ? [delivered] : [],
+  });
+  const queue = new FakeQueue();
+  queue.reserve = async (_u, _v, requestId, _limit, token) => ({ requestId, token,
+    items: [{ repo_id: delivered.toUpperCase(), score: 1, source: 'semantic', model_version: 'test', summary_id: null }],
+  });
+  queue.refill = async (_u, _v, requestId, _limit, token, discarded: string[] = []) => {
+    assert.deepEqual(discarded, [delivered.toUpperCase()], 'Redis retires the exact stored representation');
+    return { requestId, token, items: [{ repo_id: repo.repo_id, score: 1, source: 'semantic', model_version: 'test', summary_id: null }] };
+  };
+  const page = await new FeedV2Service(persistence, queue).getFeed('viewer', {
+    feed_request_id: 'uuid-alias', session_id: 'session', limit: 1, cursor: null,
+  });
+  assert.deepEqual(page.items.map(item => item.repo_id), [repo.repo_id]);
+});
+
 for (const source of ['queued','durable','fallback'] as const) {
   test(`current dislikes exclude ${source} entries without creating a terminal empty serve`, async()=>{
     const persistence=new FakePersistence();const queue=new FakeQueue();
@@ -578,6 +812,54 @@ test('historical same-request replay bypasses current-negative eligibility reads
   const first=await service.getFeed('00000000-0000-4000-8000-000000000030',request);
   persistence.listPreferenceEligibleRepositoryIds=async()=>{throw new Error('Replay must not consult current preferences');};
   assert.deepEqual(await service.getFeed('00000000-0000-4000-8000-000000000030',request),first);
+});
+
+test('late empty generation is retained for the same request and session retry', async () => {
+  const persistence = new FakePersistence(); const queue = new FakeQueue();
+  queue.reserve = async (_u, _v, requestId, _l, token) => ({ requestId, token, items: [] });
+  queue.refill = queue.reserve;
+  let finish!: () => void; let calls = 0;
+  const held = new Promise<void>(resolve => { finish = resolve; });
+  const service = new FeedV2Service(persistence, queue, async () => {
+    calls++; await held; return { status: 'generated', feedVersion: 3n, count: 0 };
+  }, false, 100, 1, 'test', 5);
+  const request = { feed_request_id: 'late-empty', session_id: 'session', limit: 10, cursor: null };
+  try {
+    await assert.rejects(service.getFeed('viewer', request));
+    finish(); await new Promise(resolve => setImmediate(resolve));
+    const result = await service.getFeed('viewer', request);
+    assert.deepEqual(result.items, []); assert.equal(result.next_cursor, null);
+    assert.equal(calls, 1);
+  } finally { finish(); await service.stop(); }
+});
+
+test('an empty generation shared from another session remains retryable', async () => {
+  const persistence = new FakePersistence(); const queue = new FakeQueue();
+  queue.reserve = async (_u, _v, requestId, _l, token) => ({ requestId, token, items: [] });
+  queue.refill = queue.reserve;
+  let finish!: () => void; let calls = 0;
+  const held = new Promise<void>(resolve => { finish = resolve; });
+  const service = new FeedV2Service(persistence, queue, async () => {
+    calls++; if (calls === 1) await held;
+    return { status: 'generated', feedVersion: 3n, count: 0 };
+  }, false, 100, 1, 'test', 100);
+  const first = service.getFeed('viewer', {
+    feed_request_id: 'session-a-request', session_id: 'session-a', limit: 10, cursor: null,
+  });
+  const second = service.getFeed('viewer', {
+    feed_request_id: 'session-b-request', session_id: 'session-b', limit: 10, cursor: null,
+  });
+  try {
+    finish();
+    assert.deepEqual((await first).items, []);
+    await assert.rejects(second, FeedRequestInProgressError);
+    assert.equal(persistence.serve?.feed_request_id, 'session-a-request');
+    const retried = await service.getFeed('viewer', {
+      feed_request_id: 'session-b-request', session_id: 'session-b', limit: 10, cursor: null,
+    });
+    assert.deepEqual(retried.items, []);
+    assert.equal(calls, 2, 'the second session must generate against its own delivery history');
+  } finally { finish(); await service.stop(); }
 });
 
 test('a negative preference winning at durable creation maps to a retryable feed response',async()=>{

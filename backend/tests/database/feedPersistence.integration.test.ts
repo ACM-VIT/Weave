@@ -3,6 +3,7 @@ import crypto from 'node:crypto';
 import test from 'node:test';
 import { sqlClient } from '../../db/index.js';
 import { PostgresFeedPersistence } from '../../adapters/postgresFeedPersistence.js';
+import { FeedServeOverlapError } from '../../ports/feedPersistencePort.js';
 import type { CreateServeInput, RepositoryProjection } from '../../contracts/feed.v2.js';
 import { assertDisposableDatabase } from './disposableDatabase.js';
 const enabled = process.env.RUN_DATABASE_INTEGRATION === '1';
@@ -39,12 +40,12 @@ integration('new serves use one item insert for 1, 24 and 50 cards without follo
     try {created=await persistence.createServe(f.input);} finally {sqlClient.options.debug=previous;}
     console.log('SERVE_MEASURE '+JSON.stringify({count,statements:queries.length,ms:Math.round(performance.now()-start)}));
     assert.equal(queries.filter(query=>/INSERT INTO telemetry.feed_serve_items/i.test(query)).length,1);
-    assert.equal(queries.filter(query=>/SELECT[\s\S]*FROM telemetry.feed_serves/i.test(query)).length,0);
+    assert.equal(queries.filter(query=>/^\s*SELECT[\s\S]*FROM telemetry.feed_serves/i.test(query)).length,0);
     // Four bounded statements serialize current preferences with activity:
     // user lock, feed initialization, feed lock, and candidate eligibility read.
     assert.equal(queries.filter(query=>/FROM app.user_feed_state[\s\S]*FOR UPDATE/i.test(query)).length,1);
     assert.equal(queries.filter(query=>/negative\.reaction='dislike'/i.test(query)).length,1);
-    assert.ok(queries.length<=9,`new serve took ${queries.length} statements`);
+    assert.ok(queries.length<=10,`new serve took ${queries.length} statements`);
     assert.equal(created.items.length,count);
     assert.deepEqual(created.items.map(item=>item.repo_id),f.repos);
     assert.equal(created.created_at,new Date(created.created_at).toISOString());
@@ -133,4 +134,130 @@ integration('creation preserves a queued summary identity when the current hydra
   assert.equal(result.items[0].summary_id,queuedSummary);
   assert.equal(result.items[0].repository.summary,'Queued summary');
   assert.equal(result.items[0].repository.summary_id,queuedSummary);
+});
+
+integration('concurrent session deliveries serialize final overlap checks including UUID case aliases', async () => {
+  const f = await fixture(1);
+  const persistence = new PostgresFeedPersistence();
+  const competing = { ...f.input, feed_request_id: crypto.randomUUID(),
+    user_id: f.user.toUpperCase(), session_id: f.session.toUpperCase() };
+  const results = await Promise.allSettled([persistence.createServe(f.input), persistence.createServe(competing)]);
+  const winners = results.filter(result => result.status === 'fulfilled');
+  const losers = results.filter(result => result.status === 'rejected');
+  assert.equal(winners.length, 1);
+  assert.equal(losers.length, 1);
+  assert.ok(losers[0].reason instanceof FeedServeOverlapError);
+  const winning = winners[0].value;
+  const replayInput = winning.feed_request_id === f.input.feed_request_id ? f.input : competing;
+  assert.equal((await persistence.createServe(replayInput)).serve_id, winning.serve_id,
+    'the same request remains idempotent after another request loses the session race');
+  const rows = await sqlClient`SELECT count(*) FROM telemetry.feed_serve_items item
+    JOIN telemetry.feed_serves serve ON serve.serve_id=item.serve_id
+    WHERE serve.user_id=${f.user}::uuid AND serve.session_id=${f.session}::uuid AND item.repo_id=${f.repos[0]}::uuid`;
+  assert.equal(Number(rows[0].count), 1);
+  const otherSession = await persistence.createServe({ ...f.input, feed_request_id: crypto.randomUUID(), session_id: crypto.randomUUID() });
+  assert.equal(otherSession.items.length, 1, 'another browsing session retains its own delivery history');
+});
+
+integration('candidate membership finds older session deliveries beyond generation history limit', async () => {
+  const f = await fixture(503);
+  const persistence = new PostgresFeedPersistence();
+  for (let offset = 0; offset < 502; offset += 100) {
+    await persistence.createServe({ ...f.input, feed_request_id: crypto.randomUUID(),
+      items: f.input.items.slice(offset, Math.min(offset + 100, 502)).map((item, position) => ({ ...item, position })),
+    });
+  }
+  const boundedHistory = await persistence.listExcludedRepositoryIds(f.user, f.session, 500);
+  const omitted = f.repos.slice(0, 502).find(id => !boundedHistory.includes(id));
+  assert.ok(omitted);
+  assert.deepEqual(await persistence.listServedRepositoryIds(f.user, f.session, [omitted, f.repos[502]]), [omitted]);
+  assert.deepEqual(await persistence.listServedRepositoryIds(f.user, crypto.randomUUID(), [omitted]), []);
+  await assert.rejects(persistence.listServedRepositoryIds(f.user, f.session, f.repos), /bounded candidate/);
+});
+
+integration('durable recovery excludes the current session inside its candidate query', async () => {
+  const f = await fixture(2);
+  const persistence = new PostgresFeedPersistence();
+  await sqlClient`INSERT INTO app.repo_content(repo_id,content_hash,content_version)
+    SELECT repo_id,'recovery-fixture',1 FROM unnest(${f.repos}::uuid[]) AS candidate(repo_id)`;
+  await persistence.createServe(f.input);
+  const session = crypto.randomUUID();
+  await persistence.createServe({ ...f.input, session_id: session, feed_request_id: crypto.randomUUID(), items: [f.input.items[0]] });
+  const recovered = await persistence.getRecentPersonalizedEntries(f.user, 1n, 100, [], session);
+  assert.deepEqual(recovered.map(entry => entry.repo_id), [f.repos[1]]);
+});
+
+integration('UUID case aliases wait on the same session delivery lock', async () => {
+  const f = await fixture(1);
+  const persistence = new PostgresFeedPersistence();
+  let acquired!: () => void;
+  let unlock!: () => void;
+  const ready = new Promise<void>(resolve => { acquired = resolve; });
+  const hold = new Promise<void>(resolve => { unlock = resolve; });
+  const owner = sqlClient.begin(async tx => {
+    await tx`SELECT pg_advisory_xact_lock(hashtextextended('feed-serve:' || ${f.user}::uuid::text || ':' || ${f.session}::uuid::text,0))`;
+    acquired(); await hold;
+  });
+  await ready;
+  const creating = persistence.createServe({ ...f.input, user_id: f.user.toUpperCase(), session_id: f.session.toUpperCase() });
+  try {
+    const state = await Promise.race([creating.then(() => 'committed'), new Promise<string>(resolve => setTimeout(() => resolve('waiting'), 50))]);
+    assert.equal(state, 'waiting', 'UUID spelling must not bypass another session writer');
+  } finally { unlock(); await owner; await creating; }
+});
+
+integration('real feed recovery followed by late ML publication serves only unseen continuation candidates', {
+  skip: process.env.RUN_REDIS_INTEGRATION !== '1',
+}, async () => {
+  const { Redis } = await import('ioredis');
+  const { RedisFeedQueue } = await import('../../redis/feedQueue.js');
+  const { FeedGenerationService } = await import('../../services/feedGenerationService.js');
+  const { FeedV2Service } = await import('../../services/feedV2Service.js');
+  const f = await fixture(2);
+  const persistence = new PostgresFeedPersistence();
+  await sqlClient`INSERT INTO app.repo_content(repo_id,content_hash,content_version)
+    SELECT repo_id,'late-generation-fixture',1 FROM unnest(${f.repos}::uuid[]) AS candidate(repo_id)`;
+  await persistence.recordMlProfileDelivered(f.user, 1n);
+  await persistence.createServe({ ...f.input, items: [f.input.items[0]] });
+  const redis = new Redis(process.env.REDIS_TEST_URL!);
+  const queue = new RedisFeedQueue(redis, 30_000);
+  let modelStarted!: () => void;
+  const started = new Promise<void>(resolve => { modelStarted = resolve; });
+  let finishModel!: () => void;
+  const model = new Promise<void>(resolve => { finishModel = resolve; });
+  const generation = new FeedGenerationService(persistence, queue, { async generate(input) {
+    assert.deepEqual(input.exclude_repo_ids, []);
+    modelStarted(); await model;
+    return { schema_version: 2, generation_id: input.generation_id, user_id: input.user_id,
+      feed_version: input.feed_version, model_version: 'late-test', embedding_version: 'test',
+      embedding_versions: ['test'], served_ranker: 'hybrid', heavy_ranker_selected: false, ranker_applied: false,
+      fallback_code: null, fallback_reason: null, retrieval_mode: 'hybrid',
+      context_status: { cold_start_applied: false, locale: 'not_provided' },
+      items: f.repos.map(repo_id => ({ repo_id, score: 1, source: 'semantic' })),
+    };
+  } });
+  let generating: ReturnType<typeof generation.generate> | undefined;
+  const service = new FeedV2Service(persistence, queue, (user, _limit, excluded, session) => {
+    generating = generation.generate(user, 45, excluded, 'live', session); return generating;
+  }, false, 1500, 1, 'test-secret', 100);
+  const request = { feed_request_id: crypto.randomUUID(), session_id: crypto.randomUUID(), limit: 1, cursor: null };
+  try {
+    await redis.flushdb();
+    const pendingFirst = service.getFeed(f.user, request);
+    await started;
+    const first = await pendingFirst;
+    assert.deepEqual(first.items.map(item => item.repo_id), [f.repos[0]]);
+    assert.ok(first.next_cursor);
+    finishModel(); await generating;
+    const nextRequest = { ...request, feed_request_id: crypto.randomUUID(), cursor: first.next_cursor };
+    const next = await service.getFeed(f.user, nextRequest);
+    assert.deepEqual(next.items.map(item => item.repo_id), [f.repos[1]]);
+    assert.equal(next.items[0].position, 1);
+    assert.deepEqual(await service.getFeed(f.user, nextRequest), next);
+    const duplicates = await sqlClient`SELECT item.repo_id,count(*) FROM telemetry.feed_serve_items item
+      JOIN telemetry.feed_serves serve ON serve.serve_id=item.serve_id
+      WHERE serve.user_id=${f.user}::uuid AND serve.session_id=${request.session_id}::uuid
+      GROUP BY item.repo_id HAVING count(*)>1`;
+    assert.equal(duplicates.length, 0);
+  } finally { finishModel(); await service.stop(); await redis.flushdb(); await redis.quit(); }
 });

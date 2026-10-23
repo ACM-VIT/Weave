@@ -7,6 +7,7 @@ import type { FeedPersistencePort } from '../../ports/feedPersistencePort.js';
 import type { RecommendationPort } from '../../ports/recommendationPort.js';
 import type { FeedQueuePort } from '../../redis/feedQueue.js';
 import { FeedGenerationService } from '../../services/feedGenerationService.js';
+import { PersonaRepairService } from '../../services/personaRepairService.js';
 import { snapshotMetrics } from '../../observability/metrics.js';
 import { MlRecommendationError } from '../../services/mlService.js';
 
@@ -357,6 +358,89 @@ test('serve-only ambiguity does not falsely complete prewarm as ML success', asy
   assert.equal(recommendations.request, null);
 });
 
+test('persona repair retry retains one operation deadline and remains limited to one retry', async () => {
+  const queue = new GenerationQueue();
+  const deadlines: number[] = [];
+  let repairs = 0;
+  const recommendations: RecommendationPort = {
+    async generate(_input, work) {
+      deadlines.push(work!.deadline);
+      throw new MlRecommendationError('No persona', 503, 'persona_unavailable');
+    },
+  };
+  const service = new FeedGenerationService(new GenerationPersistence(), queue, recommendations, 600, 15000,
+    { repair: async () => { repairs++; return 1n; } }, undefined, false, { timeoutMs: 2000, repairTimeoutMs: 1 });
+  await assert.rejects(service.generate(userId), /No persona/);
+  assert.equal(repairs, 1);
+  assert.equal(deadlines.length, 2);
+  assert.equal(deadlines[0], deadlines[1], 'repair and retry must not reset the job budget');
+  assert.equal(queue.released, true);
+});
+
+test('exhausted generation budget prevents publication and new durable persona work', async () => {
+  const queue = new GenerationQueue();
+  let repairs = 0;
+  const recommendations: RecommendationPort = {
+    async generate() { throw new MlRecommendationError('No persona', 503, 'persona_unavailable'); },
+  };
+  const service = new FeedGenerationService(new GenerationPersistence(), queue, recommendations, 600, 15000,
+    { repair: async () => { repairs++; return 1n; } }, undefined, false, { timeoutMs: 20, repairTimeoutMs: 30 });
+  await assert.rejects(service.generate(userId), /operation budget exhausted/);
+  assert.equal(repairs, 0, 'do not start a durable repair that cannot fit its full transport budget');
+  assert.equal(queue.replaced, false);
+  assert.equal(queue.released, true);
+});
+
+test('a slow persona lookup cannot start delivery after the generation budget expires', async () => {
+  const persistence = new GenerationPersistence(); persistence.delivered = false;
+  let delivered = false;
+  const repair = new PersonaRepairService(Object.assign(persistence, {
+    getMlOnboardingJob: async () => {
+      await new Promise(resolve => setTimeout(resolve, 60));
+      return { profile_version: '1' } as never;
+    },
+    recordMlProfileDelivered: async () => true,
+  }), {
+    deliverOnboarding: async () => {
+      delivered = true;
+      return { accepted: true, retryable: false, status_code: 200 };
+    },
+  });
+  const service = new FeedGenerationService(
+    persistence, new GenerationQueue(), new CapturingRecommendations(), 600, 15_000,
+    repair, undefined, false, { timeoutMs: 1_050, repairTimeoutMs: 1 },
+  );
+  await assert.rejects(service.generate(userId), /operation budget exhausted/);
+  assert.equal(delivered, false, 'lookup latency must be charged before starting durable ML delivery');
+});
+
+test('a slow recommendation port keeps ownership until real completion but cannot publish after deadline', async () => {
+  const queue = new GenerationQueue();
+  const original = new CapturingRecommendations();
+  const recommendations: RecommendationPort = { async generate(input) {
+    await new Promise(resolve => setTimeout(resolve, 20)); return original.generate(input);
+  } };
+  const service = new FeedGenerationService(new GenerationPersistence(), queue, recommendations, 600, 15000,
+    undefined, undefined, false, { timeoutMs: 5, repairTimeoutMs: 1 });
+  await assert.rejects(service.generate(userId), /operation budget exhausted/);
+  assert.equal(queue.replaced, false);
+  assert.equal(queue.released, true);
+});
+
+test('publication already started finishes durable acknowledgement after budget expiry', async () => {
+  const persistence = new GenerationPersistence();
+  const queue = new GenerationQueue();
+  const publish = queue.publishGeneration.bind(queue);
+  queue.publishGeneration = async (...args) => {
+    await new Promise(resolve => setTimeout(resolve, 80));
+    return publish(...args);
+  };
+  const result = await new FeedGenerationService(persistence, queue, new CapturingRecommendations(), 600, 15000,
+    undefined, undefined, false, { timeoutMs: 50, repairTimeoutMs: 1 }).generate(userId);
+  assert.equal(result.status, 'generated');
+  assert.equal(persistence.published, true, 'late acknowledgement preserves the durable publication witness');
+  assert.equal(queue.released, true);
+});
 test('social projection is disabled by default and enabled evidence reaches only the authenticated ML request', async () => {
   const persistence = new GenerationPersistence();
   let lookups = 0;

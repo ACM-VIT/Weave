@@ -25,6 +25,11 @@ export interface FeedReconciliationPersistencePort {
 
 export interface FeedGenerationContext { feedVersion: bigint; profileVersion: bigint; delivered: boolean }
 
+/** A different request committed one of these session candidates first. */
+export class FeedServeOverlapError extends Error {
+  constructor() { super('Feed candidates were already delivered in this session.'); }
+}
+
 export class FeedPreferenceChangedError extends Error {
   constructor() { super('Current repository preferences changed; retry the feed request.'); }
 }
@@ -40,6 +45,8 @@ export interface FeedPersistencePort {
   markGenerationPublished?(userId: string, feedVersion: bigint): Promise<void>;
   getMlOnboardingJob?(userId: string): Promise<MlOnboardingJob | null>;
   listExcludedRepositoryIds(userId: string, sessionId: string | undefined, limit: number): Promise<string[]>;
+  /** Exact membership for a bounded candidate batch, without truncating session history. */
+  listServedRepositoryIds?(userId: string, sessionId: string, repoIds: string[]): Promise<string[]>;
   listSocialRepositoryCandidates?(userId: string, limit: number, excludeRepoIds?: string[]): Promise<SocialCandidateProjection[]>;
   listFollowedRepositoryIds(userId: string, limit: number): Promise<string[]>;
   getServeByRequest(userId: string, feedRequestId: string): Promise<StoredServe | null>;
@@ -57,6 +64,7 @@ export interface FeedPersistencePort {
     feedVersion: bigint,
     limit: number,
     excludeRepoIds: string[],
+    sessionId?: string,
   ): Promise<RecommendationEntry[]>;
   hasServe?(userId: string, feedRequestId: string): Promise<boolean>;
   recordGenerationAttempt?(input: {

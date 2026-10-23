@@ -279,12 +279,18 @@ export class MlV2Client implements RecommendationPort, OutboxTransportPort {
     try {
       const response = await fetch(`${this.config.baseUrl}${path}`, {
         method: 'POST',
+        redirect: 'error',
         headers: {
           'content-type': 'application/json',
           'x-internal-secret': this.config.internalSecret,
           'x-request-id': crypto.randomUUID(),
           traceparent: span.traceparent,
           'idempotency-key': idempotencyKey,
+          // Relative duration only: ML creates its own monotonic deadline and
+          // old deployments safely ignore the optional read-only header.
+          ...(path === '/api/v2/recommendations/generate' ? {
+            'x-request-timeout-ms': String(Math.max(1, Math.floor(timeoutMs - Math.min(1_000, timeoutMs / 10)))),
+          } : {}),
         },
         body: JSON.stringify(payload),
         signal: controller.signal,
@@ -329,7 +335,11 @@ export class MlV2Client implements RecommendationPort, OutboxTransportPort {
     }
   }
 
-  async generate(input: MlRecommendationRequest): Promise<MlRecommendationResponse> {
+  async generate(input: MlRecommendationRequest, work?: { deadline: number }): Promise<MlRecommendationResponse> {
+    const remaining = work ? Math.floor(work.deadline - performance.now()) : Infinity;
+    if (remaining <= 0 || (work && !Number.isFinite(work.deadline))) {
+      throw new MlTransportTimeoutError('ML generation budget exhausted before transport.');
+    }
     if (this.circuitState === 'open' && this.now() - this.circuitOpenedAt >= this.circuitOpenMs) {
       this.transitionCircuit('half-open', 'cooldown');
     }
@@ -342,12 +352,14 @@ export class MlV2Client implements RecommendationPort, OutboxTransportPort {
     if (probe) this.probeInFlight = true;
     const epoch = this.circuitEpoch;
     const started = this.now();
+    const localBudgetLimited = remaining < (this.config.generationTimeoutMs ?? this.config.timeoutMs);
     let outcome = 'success';
     try {
       const { status, body, retryAfterMs } = await this.request(
         '/api/v2/recommendations/generate',
         input,
         input.generation_id,
+        Math.min(this.config.generationTimeoutMs ?? this.config.timeoutMs, remaining),
       );
       if (status < 200 || status >= 300) {
         const detail = responseDetail(body);
@@ -406,6 +418,12 @@ export class MlV2Client implements RecommendationPort, OutboxTransportPort {
       }
       return value;
     } catch (error) {
+      if (localBudgetLimited && error instanceof MlTransportTimeoutError) {
+        outcome = 'job_deadline';
+        // A locally shortened observer says nothing about provider health.
+        // Half-open admission is released in finally without changing state.
+        throw error;
+      }
       outcome = error instanceof MlRecommendationError ? (error.kind === 'service_unavailable' ? 'dependency' : 'contract') : 'dependency';
       if (epoch === this.circuitEpoch) {
         if (outcome === 'dependency') this.consecutiveGenerateFailures++;
@@ -425,13 +443,14 @@ export class MlV2Client implements RecommendationPort, OutboxTransportPort {
     }
   }
 
-  private async deliver<Path extends MlDeliveryPath>(path: Path, payload: MlRequest<NoInfer<Path>>, idempotencyKey: string): Promise<DeliveryResult> {
+  private async deliver<Path extends MlDeliveryPath>(path: Path, payload: MlRequest<NoInfer<Path>>, idempotencyKey: string,
+    timeoutMs = this.config.deliveryTimeoutMs ?? this.config.timeoutMs): Promise<DeliveryResult> {
     try {
       const { status, body, retryAfterMs } = await this.request(
         path,
         payload,
         idempotencyKey,
-        this.config.deliveryTimeoutMs ?? this.config.timeoutMs,
+        timeoutMs,
         'optional-json',
       );
       return {
@@ -456,7 +475,8 @@ export class MlV2Client implements RecommendationPort, OutboxTransportPort {
   }
 
   deliverOnboarding(job: MlOnboardingJob): Promise<DeliveryResult> {
-    return this.deliver('/api/v2/users/onboard', { schema_version: 2, ...job }, job.job_id);
+    return this.deliver('/api/v2/users/onboard', { schema_version: 2, ...job }, job.job_id,
+      this.config.onboardingTimeoutMs ?? this.config.deliveryTimeoutMs ?? this.config.timeoutMs);
   }
 
   async deliverRepositoryIndex(job: MlRepositoryIndexJob): Promise<DeliveryResult<MlRepositoryIndexResponse>> {
@@ -496,7 +516,8 @@ export class MlV2Client implements RecommendationPort, OutboxTransportPort {
   }
 
   deliverRepositoryRefresh(job: MlRepositoryRefreshJob): Promise<DeliveryResult> {
-    return this.deliver('/api/v2/repositories/refresh', { schema_version: 2, ...job }, job.job_id);
+    return this.deliver('/api/v2/repositories/refresh', { schema_version: 2, ...job }, job.job_id,
+      this.config.repositoryRefreshTimeoutMs ?? this.config.deliveryTimeoutMs ?? this.config.timeoutMs);
   }
 
   async health(): Promise<{ healthy: boolean; status: number; body: unknown }> {
@@ -506,6 +527,7 @@ export class MlV2Client implements RecommendationPort, OutboxTransportPort {
     const timer = setTimeout(() => controller.abort(), this.config.timeoutMs);
     try {
       const response = await fetch(`${this.config.baseUrl}/api/v2/health`, {
+        redirect: 'error',
         headers: {
           'x-internal-secret': this.config.internalSecret,
           'x-request-id': crypto.randomUUID(),

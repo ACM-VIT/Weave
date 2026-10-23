@@ -513,7 +513,10 @@ export const feedServes = telemetrySchema.table('feed_serves', {
   nextCursor: text('next_cursor'),
   status: text('status').notNull().default('prepared'),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
-}, (table) => [index('feed_serves_user_created_idx').on(table.userId, table.createdAt)]);
+}, (table) => [
+  index('feed_serves_user_created_idx').on(table.userId, table.createdAt),
+  index('feed_serves_user_session_idx').on(table.userId, table.sessionId),
+]);
 
 export const feedServeItems = telemetrySchema.table('feed_serve_items', {
   serveId: uuid('serve_id').notNull().references(() => feedServes.serveId, { onDelete: 'cascade' }),

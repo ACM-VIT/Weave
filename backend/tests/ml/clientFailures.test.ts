@@ -841,6 +841,78 @@ test('stage histograms retain cumulative buckets and distinguish outcome familie
   assert.equal(after[rejectedKey].count - (beforeRejected?.count ?? 0), 1);
 });
 
+test('job-budget timeouts do not open the shared recommendation circuit', async context => {
+  let slow = true;
+  context.mock.method(globalThis, 'fetch', async (_url: unknown, options: RequestInit) => {
+    if (!slow) return Response.json(validRecommendation);
+    return new Promise<Response>((_resolve, reject) => {
+      options.signal!.addEventListener('abort', () => reject(options.signal!.reason), { once: true });
+    });
+  });
+  const client = new MlV2Client({ ...recommendationConfig, generationTimeoutMs: 1000 },
+    { failureThreshold: 1, openMs: 30000 });
+  for (let attempt = 0; attempt < 6; attempt++) {
+    await assert.rejects(client.generate(recommendationInput, { deadline: performance.now() + 10 }), /deadline/);
+  }
+  slow = false;
+  assert.deepEqual((await client.generate(recommendationInput)).items, []);
+});
+
+test('recommendation transport uses its operation timeout and propagates a relative budget with margin', async () => {
+  await withServer((request, response) => {
+    const budget = Number(request.headers['x-request-timeout-ms']);
+    assert.ok(budget > 0 && budget < 200);
+    setTimeout(() => response.end(JSON.stringify(validRecommendation)), 20);
+  }, async url => {
+    const client = new MlV2Client({ ...recommendationConfig, baseUrl: url, timeoutMs: 1, generationTimeoutMs: 200 });
+    await client.generate(recommendationInput);
+  });
+});
+
+test('remaining operation budget clips recommendation transport and expired work never reaches ML', async context => {
+  const { performance } = await import('node:perf_hooks');
+  let calls = 0;
+  context.mock.method(globalThis, 'fetch', async (_url: unknown, options: RequestInit) => {
+    calls++;
+    const budget = Number((options.headers as Record<string, string>)['x-request-timeout-ms']);
+    assert.ok(budget > 0 && budget <= 20);
+    return new Promise<Response>((_resolve, reject) => {
+      options.signal!.addEventListener('abort', () => reject(options.signal!.reason), { once: true });
+    });
+  });
+  const client = new MlV2Client({ ...recommendationConfig, generationTimeoutMs: 1000 });
+  await assert.rejects(client.generate(recommendationInput, { deadline: performance.now() + 20 }), /transport deadline exceeded/);
+  await assert.rejects(client.generate(recommendationInput, { deadline: performance.now() - 1 }), /before transport/);
+  assert.equal(calls, 1);
+});
+
+test('repository refresh gets its own durable timeout without a read-only cancellation header', async () => {
+  await withServer((request, response) => {
+    assert.equal(request.headers['x-request-timeout-ms'], undefined);
+    setTimeout(() => { response.writeHead(200); response.end('{}'); }, 20);
+  }, async url => {
+    const result = await new MlV2Client({ ...recommendationConfig, baseUrl: url,
+      deliveryTimeoutMs: 1, repositoryRefreshTimeoutMs: 200,
+    }).deliverRepositoryRefresh({ job_id: repositoryJob.job_id, repo_id: repositoryJob.repo_id,
+      feature_version: 1, features: { star_count: 1 } });
+    assert.equal(result.accepted, true);
+  });
+});
+
+test('ML transport refuses credential-bearing redirects for writes and health', async () => {
+  let redirectedCalls = 0;
+  await withServer((_request, response) => { redirectedCalls++; response.end('{}'); }, async target => {
+    await withServer((_request, response) => {
+      response.writeHead(307, { location: target }); response.end();
+    }, async source => {
+      const client = new MlV2Client({ ...recommendationConfig, baseUrl: source });
+      const result = await client.deliverFeedback(feedback);
+      assert.equal(result.accepted, false);
+      await assert.rejects(client.health(), /fetch failed/);
+    });
+  });
+  assert.equal(redirectedCalls, 0, 'internal credentials and durable work must not reach another origin');
+});
 
 test('recommendation client validates every generated provenance field', async t => {
   let body: Record<string, unknown> = { ...validRecommendation };

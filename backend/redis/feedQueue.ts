@@ -43,7 +43,8 @@ export class ReservationOwnedError extends Error {
 
 export interface FeedQueuePort {
   reserve(userId: string, version: bigint, requestId: string, limit: number, token: string): Promise<FeedReservation>;
-  refill(userId: string, version: bigint, requestId: string, limit: number, token: string): Promise<FeedReservation>;
+  /** Retire only candidates with durable delivery witnesses while keeping ownership. */
+  refill(userId: string, version: bigint, requestId: string, limit: number, token: string, discardRepoIds?: string[]): Promise<FeedReservation>;
   commit(userId: string, version: bigint, requestId: string, token: string): Promise<boolean>;
   release(userId: string, version: bigint, requestId: string, token: string): Promise<boolean>;
   replace(userId: string, version: bigint, items: RecommendationEntry[], ttlSeconds: number): Promise<void>;
@@ -122,7 +123,10 @@ export class RedisFeedQueue implements FeedQueuePort {
     )) === 1;
   }
 
-  async refill(userId: string, version: bigint, requestId: string, limit: number, token: string): Promise<FeedReservation> {
+  async refill(userId: string, version: bigint, requestId: string, limit: number, token: string, discardRepoIds: string[] = []): Promise<FeedReservation> {
+    if (discardRepoIds.length > 100 || discardRepoIds.some(id => !isValidUuid(id))) {
+      throw new Error('Reservation discard exceeds its bounded repository identities.');
+    }
     const [meta, items] = this.reservationKeys(userId, version, requestId);
     let result: [number, string[]];
     try {
@@ -130,7 +134,7 @@ export class RedisFeedQueue implements FeedQueuePort {
         REFILL_FEED_LUA,
         5,
         this.queueKey(userId, version), meta, items, this.reservationIndexKey(userId, version), this.versionIndexKey(userId),
-        token, String(limit), String(this.reservationTtlMs), String(version),
+        token, String(limit), String(this.reservationTtlMs), JSON.stringify(discardRepoIds), String(version),
       ) as [number, string[]];
     } catch (error) {
       if (error instanceof Error && error.message.includes('RESERVATION_OWNED')) {

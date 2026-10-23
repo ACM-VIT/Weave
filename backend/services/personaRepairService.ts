@@ -1,5 +1,12 @@
+import { performance } from 'node:perf_hooks';
+
 import type { FeedPersistencePort } from '../ports/feedPersistencePort.js';
 import type { OutboxTransportPort } from '../ports/outboxTransportPort.js';
+
+export interface PersonaRepairBudget {
+  deadline: number;
+  minimumRemainingMs: number;
+}
 
 export class PersonaRepairError extends Error {
   constructor(message: string) {
@@ -14,13 +21,19 @@ export class PersonaRepairService {
     private readonly transport: Pick<OutboxTransportPort, 'deliverOnboarding'>,
   ) {}
 
-  async repair(userId: string): Promise<bigint> {
+  async repair(userId: string, budget?: PersonaRepairBudget): Promise<bigint> {
     if (!this.persistence.getMlOnboardingJob) {
       throw new PersonaRepairError('Persona repair persistence is unavailable.');
     }
     const job = await this.persistence.getMlOnboardingJob(userId);
     if (!job) {
       throw new PersonaRepairError('The completed user profile has no embedding context.');
+    }
+    // The lookup is part of the caller's operation budget. Recheck immediately
+    // before starting the non-cancellable delivery so a slow database read
+    // cannot launch fresh ML work after the generation deadline.
+    if (budget && budget.deadline - performance.now() <= budget.minimumRemainingMs) {
+      throw new PersonaRepairError('Feed generation operation budget exhausted before persona delivery.');
     }
     const result = await this.transport.deliverOnboarding(job);
     if (!result.accepted) {
