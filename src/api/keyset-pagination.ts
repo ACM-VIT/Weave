@@ -45,3 +45,14 @@ export function keysetPageQuery(options: KeysetPageOptions = {}): string {
   }
   return query;
 }
+
+/** Use server continuation metadata; a short/filtered page is not exhaustion. */
+export async function requestKeysetItems<T>(
+  path: string,
+  options: KeysetPageOptions,
+  send: (path: string) => Promise<unknown>,
+): Promise<KeysetPage<T>> {
+  const response = await send(`${path}?${keysetPageQuery(options)}`);
+  validateKeysetPageResponse(response);
+  return response as KeysetPage<T>;
+}

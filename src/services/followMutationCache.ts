@@ -68,7 +68,7 @@ export async function settleFollowCache(
   }
   await Promise.all([
     client.invalidateQueries({ queryKey: key, exact: true, refetchType: 'none' }),
-    client.invalidateQueries({ queryKey: ['connections', viewer, 'following'], exact: true }),
-    ...(target.userId ? [client.invalidateQueries({ queryKey: ['connections', target.userId, 'followers'], exact: true })] : []),
+    client.invalidateQueries({ queryKey: ['connections', viewer, 'following'], exact: false }),
+    ...(target.userId ? [client.invalidateQueries({ queryKey: ['connections', target.userId, 'followers'], exact: false })] : []),
   ]);
 }

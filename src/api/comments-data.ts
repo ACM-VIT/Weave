@@ -1,3 +1,4 @@
+import { requestKeysetItems, type KeysetPage } from './keyset-pagination';
 export const COMMENTS_PAGE_SIZE = 25;
 
 export interface CommentsPage {
@@ -70,7 +71,7 @@ export function normalizeCommentsPage(items: unknown[], offset: number): Comment
   };
 }
 
-export function mergeCommentPages(pages: readonly CommentsPage[], local: readonly CommentRecord[] = []): CommentRecord[] {
+export function mergeCommentPages(pages: readonly { items: CommentRecord[] }[], local: readonly CommentRecord[] = []): CommentRecord[] {
   const byId = new Map<string, CommentRecord>();
   for (const comment of [...pages.flatMap(page => page.items), ...local]) {
     if (!byId.has(comment.comment_id)) byId.set(comment.comment_id, comment);
@@ -100,4 +101,13 @@ export function commentAuthorOptions(viewer: string | undefined, authorId: strin
     staleTime: 5 * 60_000,
     retry: false as const,
   };
+}
+
+export async function requestCommentsKeysetPage(
+  repoId: string, cursor: string | null, send: (path: string) => Promise<unknown>,
+): Promise<KeysetPage<CommentRecord>> {
+  if (!repoId.trim()) return { items: [], has_more: false, next_cursor: null };
+  const page = await requestKeysetItems<unknown>(`/repositories/${encodeURIComponent(repoId.trim())}/comments`,
+    { limit: COMMENTS_PAGE_SIZE, cursor: cursor ?? undefined }, send);
+  return { ...page, items: page.items.map(normalizeComment).filter((item): item is CommentRecord => item !== null) };
 }

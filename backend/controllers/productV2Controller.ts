@@ -369,23 +369,34 @@ export async function removeFollow(req: AuthRequest, res: Response): Promise<voi
 
 async function followList(req: AuthRequest, res: Response, direction: 'followers' | 'following'): Promise<void> {
   const viewer = userId(req, res); if (!viewer) return;
-  const target = idParam(req, res, 'userId'); const page = paging(req); if (!target) return;
+  const target = idParam(req, res, 'userId'); if (!target) return;
+  const keyset = productPaging(req, res, { endpoint: direction, viewer, resource: target, selection: null,
+    sort: direction === 'following' ? 'created-desc,kind-asc,id-asc' : 'created-desc,id-asc' });
+  if (keyset === undefined) return;
+  const page = paging(req);
   if (!page) return sendError(res, 400, 'limit must be 1-100 and offset must be 0-10000.');
   const rows = direction === 'followers'
     ? await sqlClient`
         SELECT u.user_id,NULL::uuid AS profile_id,u.username,u.full_name,u.avatar_url,f.created_at,
+          to_char(f.created_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS __page_timestamp,
+          to_char(f.created_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS __page_secondary,
           EXISTS(SELECT 1 FROM app.follows viewer_follow
             WHERE viewer_follow.follower_id=${viewer}::uuid
               AND viewer_follow.following_id=u.user_id) AS viewer_follows_user,
           false AS viewer_follows_profile
         FROM app.follows f JOIN app.users u ON u.user_id=f.follower_id
         WHERE f.following_id=${target}::uuid AND u.status='active'
-        ORDER BY f.created_at DESC LIMIT ${page.limit} OFFSET ${page.offset}
+          AND (${keyset?.after?.timestamp ?? null}::text IS NULL
+            OR f.created_at < ${keyset?.after?.timestamp ?? null}::text::timestamptz
+            OR (f.created_at = ${keyset?.after?.timestamp ?? null}::text::timestamptz
+              AND u.user_id > ${keyset?.after?.id ?? null}::uuid))
+        ORDER BY f.created_at DESC,u.user_id ASC
+        LIMIT ${keyset ? keyset.limit + 1 : page.limit} OFFSET ${page.offset}
       `
     : await sqlClient`
         WITH followed_profiles AS (
           SELECT u.user_id,NULL::uuid AS profile_id,u.username,u.full_name,u.avatar_url,
-            follow.created_at,
+            follow.created_at,0 AS __page_kind,u.user_id AS __page_id,
             EXISTS(SELECT 1 FROM app.follows viewer_follow
               WHERE viewer_follow.follower_id=${viewer}::uuid
                 AND viewer_follow.following_id=u.user_id) AS viewer_follows_user,
@@ -396,6 +407,7 @@ async function followList(req: AuthRequest, res: Response, direction: 'followers
           UNION ALL
           SELECT NULL::uuid AS user_id,profile.profile_id,profile.handle AS username,
             profile.display_name AS full_name,profile.avatar_url,follow.created_at,
+            1 AS __page_kind,profile.profile_id AS __page_id,
             false AS viewer_follows_user,
             EXISTS(SELECT 1 FROM app.social_profile_follows viewer_follow
               WHERE viewer_follow.follower_id=${viewer}::uuid
@@ -406,11 +418,19 @@ async function followList(req: AuthRequest, res: Response, direction: 'followers
             AND profile.status='active'
             AND profile.claimed_by_user_id IS NULL
         )
-        SELECT * FROM followed_profiles
-        ORDER BY created_at DESC
-        LIMIT ${page.limit} OFFSET ${page.offset}
+        SELECT *,to_char(created_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS __page_timestamp,
+          to_char(created_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS __page_secondary
+        FROM followed_profiles
+        WHERE (${keyset?.after?.timestamp ?? null}::text IS NULL
+          OR created_at < ${keyset?.after?.timestamp ?? null}::text::timestamptz
+          OR (created_at = ${keyset?.after?.timestamp ?? null}::text::timestamptz
+            AND (__page_kind > ${keyset?.after?.kind ?? null}::int
+              OR (__page_kind = ${keyset?.after?.kind ?? null}::int AND __page_id > ${keyset?.after?.id ?? null}::uuid))))
+        ORDER BY created_at DESC,__page_kind ASC,__page_id ASC
+        LIMIT ${keyset ? keyset.limit + 1 : page.limit} OFFSET ${page.offset}
       `;
-  sendSuccess(res, 200, { items: rows, ...page });
+  const result = productPageResult(rows, keyset, direction === 'followers' ? 'user_id' : '__page_id');
+  sendSuccess(res, 200, keyset ? result : { ...result, ...page });
 }
 export const listFollowers = (req: AuthRequest, res: Response) => followList(req, res, 'followers');
 export const listFollowing = (req: AuthRequest, res: Response) => followList(req, res, 'following');
@@ -418,11 +438,28 @@ export const listFollowing = (req: AuthRequest, res: Response) => followList(req
 // Optional summary/README metadata is read through JSON until migration 0025 is deployed.
 // Missing provenance excludes legacy text so it can never appear as a concise Summary.
 export async function listLikesGiven(req: AuthRequest, res: Response): Promise<void> {
-  const viewer = userId(req, res); const target = idParam(req, res, 'userId'); const page = paging(req);
+  const viewer = userId(req, res); const target = idParam(req, res, 'userId');
   if (!viewer || !target) return;
+  const keyset = productPaging(req, res, { endpoint: 'likes', viewer, resource: target, selection: null,
+    sort: 'updated-desc,id-asc' });
+  if (keyset === undefined) return;
+  const page = paging(req);
   if (!page) return sendError(res, 400, 'limit must be 1-100 and offset must be 0-10000.');
   const rows = await sqlClient`
-    SELECT r.repo_id,r.github_id,r.owner_github_id,r.url AS github_repo_url,
+    WITH selected_reactions AS MATERIALIZED (
+      SELECT reaction.repo_id,reaction.updated_at
+      FROM app.reactions reaction JOIN app.repos r USING(repo_id)
+      JOIN app.repo_content content USING(repo_id) JOIN app.repo_engagement engagement USING(repo_id)
+      WHERE reaction.user_id=${target}::uuid AND reaction.reaction='like' AND r.status='active'
+        AND (${keyset?.after?.timestamp ?? null}::text IS NULL
+          OR reaction.updated_at < ${keyset?.after?.timestamp ?? null}::text::timestamptz
+          OR (reaction.updated_at = ${keyset?.after?.timestamp ?? null}::text::timestamptz
+            AND r.repo_id > ${keyset?.after?.id ?? null}::uuid))
+      ORDER BY reaction.updated_at DESC,r.repo_id ASC
+      LIMIT ${keyset ? keyset.limit + 1 : page.limit} OFFSET ${page.offset}
+    )
+    SELECT to_char(reaction.updated_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS __page_timestamp,
+      to_char(reaction.updated_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS __page_secondary,r.repo_id,r.github_id,r.owner_github_id,r.url AS github_repo_url,
       r.owner AS owner_id,r.name AS repo_name,r.full_name,r.owner,r.name,r.url,r.status,
       r.created_at,r.updated_at,c.description,c.languages AS language_used,
       c.primary_language,c.languages,${sqlClient.unsafe(readmeSummaryProjection('r','c'))},to_jsonb(c)->>'readme_source_path' AS readme_source_path,
@@ -449,7 +486,7 @@ export async function listLikesGiven(req: AuthRequest, res: Response): Promise<v
         FROM app.board_repos membership JOIN app.boards board USING(board_id)
         WHERE membership.repo_id=r.repo_id AND board.user_id=${viewer}::uuid
       ) selection),'[]'::json) AS selected_list_ids
-    FROM app.reactions reaction JOIN app.repos r USING(repo_id)
+    FROM selected_reactions reaction JOIN app.repos r USING(repo_id)
     JOIN app.repo_content c USING(repo_id) JOIN app.repo_engagement e USING(repo_id)
     LEFT JOIN LATERAL (SELECT star_count,fork_count,open_issues_count,observed_at FROM app.repo_stat_snapshots snapshot
       WHERE snapshot.repo_id=r.repo_id ORDER BY observed_at DESC LIMIT 1) s ON true
@@ -464,10 +501,10 @@ export async function listLikesGiven(req: AuthRequest, res: Response): Promise<v
       ON viewer_reaction.repo_id=r.repo_id AND viewer_reaction.user_id=${viewer}::uuid
     LEFT JOIN app.saves viewer_save
       ON viewer_save.repo_id=r.repo_id AND viewer_save.user_id=${viewer}::uuid
-    WHERE reaction.user_id=${target}::uuid AND reaction.reaction='like' AND r.status='active'
-    ORDER BY reaction.updated_at DESC,r.repo_id ASC LIMIT ${page.limit} OFFSET ${page.offset}
+    ORDER BY reaction.updated_at DESC,r.repo_id ASC
   `;
-  sendSuccess(res, 200, { items: rows, ...page });
+  const result = productPageResult(rows, keyset, 'repo_id');
+  sendSuccess(res, 200, keyset ? result : { ...result, ...page });
 }
 
 const repoProjection = `r.repo_id,r.github_id,r.full_name,r.owner,r.name,r.url,c.description,c.primary_language,c.languages,c.content_version,
@@ -571,9 +608,28 @@ export async function getRepositoryShare(req: AuthRequest, res: Response): Promi
 export { listTrending } from './trendingController.js';
 
 export async function listSaved(req: AuthRequest, res: Response): Promise<void> {
-  const id = userId(req, res); const page = paging(req); if (!id) return;
+  const id = userId(req, res); if (!id) return;
+  const keyset = productPaging(req, res, { endpoint: 'saves', viewer: id, resource: id, selection: null,
+    sort: 'created-desc,id-asc' });
+  if (keyset === undefined) return;
+  const page = paging(req);
   if (!page) return sendError(res, 400, 'Invalid pagination.');
-  const rows = await sqlClient`SELECT s.created_at,s.created_at AS saved_at,r.repo_id,r.github_id,r.owner_github_id,
+  const rows = await sqlClient`
+    WITH selected_saves AS MATERIALIZED (
+      SELECT s.repo_id,s.created_at
+      FROM app.saves s JOIN app.repos r USING(repo_id)
+      JOIN app.repo_content content USING(repo_id) JOIN app.repo_engagement engagement USING(repo_id)
+      WHERE s.user_id=${id}::uuid AND r.status='active'
+        AND (${keyset?.after?.timestamp ?? null}::text IS NULL
+          OR s.created_at < ${keyset?.after?.timestamp ?? null}::text::timestamptz
+          OR (s.created_at = ${keyset?.after?.timestamp ?? null}::text::timestamptz
+            AND r.repo_id > ${keyset?.after?.id ?? null}::uuid))
+      ORDER BY s.created_at DESC,r.repo_id ASC
+      LIMIT ${keyset ? keyset.limit + 1 : page.limit} OFFSET ${page.offset}
+    )
+    SELECT
+    to_char(s.created_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS __page_timestamp,
+    to_char(s.created_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS __page_secondary,s.created_at,s.created_at AS saved_at,r.repo_id,r.github_id,r.owner_github_id,
     r.full_name,r.owner,r.name,r.url,r.status,r.created_at AS repository_created_at,r.updated_at,
     c.description,c.primary_language,c.languages,${sqlClient.unsafe(readmeSummaryProjection('r','c'))},to_jsonb(c)->>'readme_source_path' AS readme_source_path,
     to_jsonb(c)->>'readme_default_branch' AS readme_default_branch,to_jsonb(c)->>'readme_base_url' AS readme_base_url,c.content_version,
@@ -597,7 +653,7 @@ export async function listSaved(req: AuthRequest, res: Response): Promise<void> 
       FROM app.board_repos membership JOIN app.boards board USING(board_id)
       WHERE membership.repo_id=r.repo_id AND board.user_id=${id}::uuid
     ) selection),'[]'::json) AS selected_list_ids
-    FROM app.saves s JOIN app.repos r USING(repo_id) JOIN app.repo_content c USING(repo_id)
+    FROM selected_saves s JOIN app.repos r USING(repo_id) JOIN app.repo_content c USING(repo_id)
     JOIN app.repo_engagement e USING(repo_id)
     LEFT JOIN LATERAL (SELECT star_count,fork_count,open_issues_count,observed_at FROM app.repo_stat_snapshots x
       WHERE x.repo_id=r.repo_id ORDER BY observed_at DESC LIMIT 1) stat ON true
@@ -609,17 +665,30 @@ export async function listSaved(req: AuthRequest, res: Response): Promise<void> 
         AND to_jsonb(x)->>'source' IN ('generated','description_fallback') ORDER BY created_at DESC LIMIT 1) summary ON true
     LEFT JOIN app.reactions viewer_reaction
       ON viewer_reaction.repo_id=r.repo_id AND viewer_reaction.user_id=${id}::uuid
-    WHERE s.user_id=${id}::uuid AND r.status='active' ORDER BY s.created_at DESC,r.repo_id ASC LIMIT ${page.limit} OFFSET ${page.offset}`;
-  sendSuccess(res, 200, { items: rows, ...page });
+    ORDER BY s.created_at DESC,r.repo_id ASC`;
+  const result = productPageResult(rows, keyset, 'repo_id');
+  sendSuccess(res, 200, keyset ? result : { ...result, ...page });
 }
 
 export async function listComments(req: AuthRequest, res: Response): Promise<void> {
-  const repo = idParam(req, res, 'repoId'); const page = paging(req); if (!repo) return;
+  const viewer = userId(req, res); const repo = idParam(req, res, 'repoId'); if (!viewer || !repo) return;
+  const keyset = productPaging(req, res, { endpoint: 'comments', viewer, resource: repo, selection: null,
+    sort: 'created-asc,id-asc' });
+  if (keyset === undefined) return;
+  const page = paging(req);
   if (!page) return sendError(res, 400, 'Invalid pagination.');
-  const rows = await sqlClient`SELECT c.comment_id,c.repo_id,c.parent_comment_id,c.body,c.created_at,c.updated_at,
+  const rows = await sqlClient`SELECT
+    to_char(c.created_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS __page_timestamp,
+    to_char(c.created_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS __page_secondary,c.comment_id,c.repo_id,c.parent_comment_id,c.body,c.created_at,c.updated_at,
     u.user_id,u.username,u.full_name,u.avatar_url FROM app.comments c JOIN app.users u USING(user_id)
-    WHERE c.repo_id=${repo}::uuid AND u.status='active' ORDER BY c.created_at ASC LIMIT ${page.limit} OFFSET ${page.offset}`;
-  sendSuccess(res, 200, { items: rows, ...page });
+    WHERE c.repo_id=${repo}::uuid AND u.status='active'
+      AND (${keyset?.after?.timestamp ?? null}::text IS NULL
+        OR c.created_at > ${keyset?.after?.timestamp ?? null}::text::timestamptz
+        OR (c.created_at = ${keyset?.after?.timestamp ?? null}::text::timestamptz
+          AND c.comment_id > ${keyset?.after?.id ?? null}::uuid))
+    ORDER BY c.created_at ASC,c.comment_id ASC LIMIT ${keyset ? keyset.limit + 1 : page.limit} OFFSET ${page.offset}`;
+  const result = productPageResult(rows, keyset, 'comment_id');
+  sendSuccess(res, 200, keyset ? result : { ...result, ...page });
 }
 
 export async function createComment(req: AuthRequest, res: Response): Promise<void> {

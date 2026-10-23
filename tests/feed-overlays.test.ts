@@ -32,6 +32,7 @@ function feed(ids: string[], reducedMotion = false) {
   const requests: string[] = [];
   const events: any[] = [];
   const closeAnimations: ((result: { finished: boolean }) => void)[] = [];
+  let loadComments: (cursor: string | null) => Promise<any> = async () => ({items:[],has_more:false,next_cursor:null});
   let postComment: () => Promise<any> = async () => { throw new Error('Unexpected post'); };
   let saveRepository: () => Promise<any> = async () => { throw new Error('Unexpected save'); };
   let createCollection: () => Promise<any> = async () => { throw new Error('Unexpected create'); };
@@ -103,7 +104,7 @@ function feed(ids: string[], reducedMotion = false) {
       saveRepositoryToCollections: () => saveRepository(),
     },
     '../../api/comments': {
-      getCommentsByRepo: async (id: string) => { requests.push(`comments:${id}`); return { items: [], nextOffset: undefined }; },
+      getCommentsKeysetPage: async (id: string, cursor: string | null) => { requests.push(`comments:${id}`); return loadComments(cursor); },
       getCommentAuthor: async () => { requests.push('author'); return {}; },
       createComment: () => postComment(),
     },
@@ -144,6 +145,18 @@ function feed(ids: string[], reducedMotion = false) {
     setHeight(value:number) {shareHeight=value;},
     get githubActionScrollable() {return this.button('Open on GitHub').findAllByType('Text').length>0
       && root.root.findAllByType('ScrollView').some(scroll=>scroll.findAllByType('Pressable').some(node=>node.props.accessibilityLabel==='Open on GitHub'));},
+    setCommentPages(value: (cursor: string | null) => Promise<any>) { loadComments = value; },
+    get loadedCommentIds() {
+      return root.root.findAllByType('Modal').find(node => node.props.visible)!.findAllByType('FlatList')[0].props.data.map((item:any)=>item.comment_id);
+    },
+    async pressCommentFooter() {
+      await act(async()=>{
+        const footer=root.root.findAllByType('Modal').find(node=>node.props.visible)!.findAllByType('FlatList')[0].props.ListFooterComponent;
+        const button=React.Children.toArray(footer.props.children).find((child:any)=>child?.type==='Pressable') as React.ReactElement<any>;
+        button.props.onPress();
+        await new Promise(resolve=>setTimeout(resolve,0));
+      });
+    },
     setPost(value: () => Promise<any>) { postComment = value; },
     setSave(value: () => Promise<any>) {
       saveRepository = value;
@@ -444,4 +457,35 @@ test('final unsave from stale empty selection refreshes known List contents with
  const stop=observer.subscribe(()=>{}); await observer.refetch(); const before=reads;
  try {await app.mountStandaloneSave('00000000-0000-4000-8000-000000000011');await app.press('Save repository to selected Lists');assert.equal(reads,before+1);}
  finally{stop();await app.unmount();}
+});
+
+
+test('comment footer restarts a rejected cursor while retaining loaded rows until fresh pages finish', async()=>{
+  const app=feed(['00000000-0000-4000-8000-000000000001']);
+  const cursors:(string|null)[]=[];
+  let expired=false;
+  let release!:()=>void;
+  const held=new Promise<void>(resolve=>{release=resolve;});
+  const comment=(id:string)=>({comment_id:id,user_id:'viewer',repo_id:'00000000-0000-4000-8000-000000000001',parent_comment_id:null,comment:id,created_at:null,author:{user_id:'viewer',username:'viewer'}});
+  app.setCommentPages(async cursor=>{
+    cursors.push(cursor);
+    if(cursor==='old-tail') throw Object.assign(new Error('Invalid cursor'),{status:400});
+    if(cursor===null) return {items:[comment(expired?'fresh-one':'old-one')],has_more:true,next_cursor:expired?'new-next':'old-next'};
+    if(cursor==='new-next'){await held;return {items:[comment('fresh-two')],has_more:false,next_cursor:null};}
+    return {items:[comment('old-two')],has_more:true,next_cursor:'old-tail'};
+  });
+  await app.mount();
+  try {
+    await app.open(0,'onCommentPress');
+    await app.pressCommentFooter();
+    assert.deepEqual(app.loadedCommentIds,['old-one','old-two']);
+    expired=true;
+    await app.pressCommentFooter();
+    assert.deepEqual(app.loadedCommentIds,['old-one','old-two']);
+    await app.pressCommentFooter();
+    assert.deepEqual(cursors,[null,'old-next','old-tail',null,'new-next']);
+    assert.deepEqual(app.loadedCommentIds,['old-one','old-two'],'keep the previous pages during restart');
+    await act(async()=>{release();await new Promise(resolve=>setTimeout(resolve,0));});
+    assert.deepEqual(app.loadedCommentIds,['fresh-one','fresh-two']);
+  } finally {release();await app.unmount();}
 });

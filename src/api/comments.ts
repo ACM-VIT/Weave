@@ -1,7 +1,7 @@
 import { apiV2 } from './client';
 import { getStorageItem } from '../utils/storage';
 
-import { normalizeComment, requestCommentsPage, type CommentAuthor, type CommentRecord, type CommentsPage } from './comments-data';
+import { normalizeComment, requestCommentsPage, requestCommentsKeysetPage, type CommentAuthor, type CommentRecord, type CommentsPage } from './comments-data';
 export type { CommentAuthor, CommentRecord, CommentsPage } from './comments-data';
 
 export interface CreateCommentInput {
@@ -67,4 +67,11 @@ export async function getCommentAuthor(
     full_name: typeof data.full_name === 'string' ? data.full_name : null,
     avatar_url: typeof data.avatar_url === 'string' ? data.avatar_url : null,
   };
+}
+
+export async function getCommentsKeysetPage(repoId: string, cursor: string | null, signal?: AbortSignal) {
+  const token = await getStorageItem('access_token');
+  signal?.throwIfAborted();
+  if (!token) throw new Error('Your session has expired.');
+  return requestCommentsKeysetPage(repoId, cursor, path => apiV2<unknown>(path, { signal }, token));
 }

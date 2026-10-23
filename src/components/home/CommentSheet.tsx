@@ -1,3 +1,4 @@
+import { retryKeysetQuery } from '@/services/keysetQueryRecovery';
 import { useReducedMotion } from 'react-native-reanimated';
 import { KeyboardSurface } from '@/components/keyboard/keyboard-layout';
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
@@ -26,7 +27,7 @@ import Svg, { Defs, LinearGradient, Rect, Stop } from 'react-native-svg';
 import {
   createComment,
   getCommentAuthor,
-  getCommentsByRepo,
+  getCommentsKeysetPage,
   type CommentAuthor,
   type CommentRecord,
 } from '../../api/comments';
@@ -48,7 +49,7 @@ type CommentSubmission = {
   generation: number;
   repoId: string;
   userId: string;
-  queryKey: readonly ['comments', string | undefined, string];
+  queryKey: readonly ['comments', string | undefined, string, 'keyset-v1'];
   localKey: readonly ['comments-local', string | undefined, string];
   scopeId: string;
   previousCount: number;
@@ -152,7 +153,7 @@ export function CommentSheet({
   const insets = useSafeAreaInsets();
   const { user } = useAuth();
   const queryClient = useQueryClient();
-  const queryKey = useMemo(() => ['comments', user?.user_id, repoId] as const, [user?.user_id, repoId]);
+  const queryKey = useMemo(() => ['comments', user?.user_id, repoId, 'keyset-v1'] as const, [user?.user_id, repoId]);
   const localKey = useMemo(() => ['comments-local', user?.user_id, repoId] as const, [user?.user_id, repoId]);
   const sessionGeneration = authSessionLifecycle.currentGeneration();
   const scopeId = JSON.stringify([localKey, sessionGeneration]);
@@ -190,9 +191,9 @@ export function CommentSheet({
 
   const commentsQuery = useInfiniteQuery({
     queryKey,
-    queryFn: ({ pageParam, signal }) => getCommentsByRepo(repoId, pageParam, signal),
-    initialPageParam: 0,
-    getNextPageParam: page => page.nextOffset,
+    queryFn: ({ pageParam, signal }) => getCommentsKeysetPage(repoId, pageParam, signal),
+    initialPageParam: null as string | null,
+    getNextPageParam: page => page.next_cursor ?? undefined,
     enabled: isVisible && Boolean(user?.user_id) && repoId.trim().length > 0,
     staleTime: 30_000,
   });
@@ -536,17 +537,17 @@ export function CommentSheet({
               keyboardShouldPersistTaps="handled"
               keyExtractor={(item) => item.comment_id}
               ListEmptyComponent={emptyState}
-              ListFooterComponent={commentsQuery.hasNextPage || commentsQuery.isFetchNextPageError ? (
+              ListFooterComponent={commentsQuery.hasNextPage || commentsQuery.isError ? (
                 <View style={{ alignItems: 'center', paddingVertical: 12 }}>
-                  {commentsQuery.isFetchNextPageError ? <Text style={styles.stateText}>More comments could not load.</Text> : null}
+                  {commentsQuery.isError ? <Text style={styles.stateText}>More comments could not load.</Text> : null}
                   <Pressable
                     accessibilityRole="button"
-                    disabled={commentsQuery.isFetchingNextPage}
-                    onPress={() => { void commentsQuery.fetchNextPage(); }}
+                    disabled={commentsQuery.isFetching}
+                    onPress={() => { void (commentsQuery.isError ? retryKeysetQuery(commentsQuery) : commentsQuery.fetchNextPage({ cancelRefetch: false })); }}
                     style={styles.retryButton}
                   >
-                    {commentsQuery.isFetchingNextPage ? <ActivityIndicator color={REFERENCE_THEME.accent} size="small" />
-                      : <Text style={styles.retryText}>{commentsQuery.isFetchNextPageError ? 'Try again' : 'Load more comments'}</Text>}
+                    {commentsQuery.isFetching ? <ActivityIndicator color={REFERENCE_THEME.accent} size="small" />
+                      : <Text style={styles.retryText}>{commentsQuery.isError ? 'Try again' : 'Load more comments'}</Text>}
                   </Pressable>
                 </View>
               ) : null}

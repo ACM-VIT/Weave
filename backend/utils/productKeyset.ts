@@ -2,13 +2,13 @@ import crypto from 'node:crypto';
 import { isValidUuid } from './validators.js';
 
 export type ProductPageScope = {
-  endpoint: 'profile-repositories' | 'collections' | 'boards' | 'collection-repositories' | 'board-repositories';
+  endpoint: 'profile-repositories' | 'collections' | 'boards' | 'collection-repositories' | 'board-repositories' | 'followers' | 'following' | 'likes' | 'saves' | 'comments';
   viewer: string;
   resource: string;
   selection: string | null;
   sort: string;
 };
-type Position = { timestamp: string; secondary: string; id: string };
+type Position = { timestamp: string; secondary: string; id: string; kind?: 0 | 1 };
 export type ProductPage = { scope: ProductPageScope; limit: number; after: Position | null };
 const timestampPattern = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$/;
 const invalid = () => Object.assign(new Error('Invalid keyset pagination parameters or cursor.'), { statusCode: 400 });
@@ -54,6 +54,8 @@ export function readProductPage(query: Record<string, unknown>, scope: ProductPa
       || Object.entries(scope).some(([key, value]) => payload.scope[key] !== value)
       || !validTimestamp(payload.position?.timestamp) || !validTimestamp(payload.position?.secondary)
       || typeof payload.position?.id !== 'string' || !isValidUuid(payload.position.id)) throw invalid();
+    if (scope.endpoint === 'following'
+      && payload.position.kind !== 0 && payload.position.kind !== 1) throw invalid();
     page.after = payload.position;
     return page;
   } catch { throw invalid(); }
@@ -66,13 +68,17 @@ export function productPageResult(rows: Record<string, unknown>[], page: Product
   let nextCursor: string | null = null;
   if (hasMore && page) {
     const last = selected[selected.length - 1]!;
-    const position = { timestamp: last.__page_timestamp, secondary: last.__page_secondary, id: last[idField] };
+    const position = { timestamp: last.__page_timestamp, secondary: last.__page_secondary, id: last[idField],
+      ...(page.scope.endpoint === 'following' ? { kind: last.__page_kind } : {}) };
+    if (page.scope.endpoint === 'following' && position.kind !== 0 && position.kind !== 1) {
+      throw new Error('Invalid following identity kind returned by database.');
+    }
     if (!validTimestamp(position.timestamp) || !validTimestamp(position.secondary) || typeof position.id !== 'string' || !isValidUuid(position.id)) {
       throw new Error('Invalid product pagination position returned by database.');
     }
     const body = Buffer.from(JSON.stringify({ version: 1, scope: page.scope, position })).toString('base64url');
     nextCursor = `${body}.${signature(body).toString('base64url')}`;
   }
-  const items = selected.map(({ __page_timestamp, __page_secondary, ...row }) => row);
+  const items = selected.map(({ __page_timestamp, __page_secondary, __page_id, __page_kind, ...row }) => row);
   return page ? { items, next_cursor: nextCursor, has_more: hasMore } : { items };
 }

@@ -30,14 +30,19 @@ export function profileRepositoryQuery(
   viewer: string | undefined,
   type: 'likes' | 'saved',
   active: boolean,
-  load: (offset: number, signal: AbortSignal) => Promise<ProfileRepositoryPage>,
+  load: (cursor: string | null, signal: AbortSignal) => Promise<ProfileRepositoryPage>,
 ) {
   return {
-    queryKey: ['profile-stat-repositories', type, viewer] as const,
+    queryKey: ['profile-stat-repositories', type, viewer, 'keyset-v1'] as const,
     enabled: Boolean(viewer) && active,
     staleTime: 30_000,
-    initialPageParam: 0,
-    queryFn: ({ pageParam, signal }: { pageParam: number; signal: AbortSignal }) => load(pageParam, signal),
-    getNextPageParam: (last: ProfileRepositoryPage) => last.nextOffset,
+    initialPageParam: null as string | null,
+    queryFn: ({ pageParam, signal }: { pageParam: string | null; signal: AbortSignal }) => load(pageParam, signal),
+    getNextPageParam: (last: ProfileRepositoryPage) => last.nextCursor,
   };
+}
+
+/** Prefix includes paging revisions while remaining scoped to this viewer/type. */
+export function profileRepositoryInvalidationFilters(viewer: string | undefined, type: 'likes' | 'saved') {
+  return { queryKey: ['profile-stat-repositories', type, viewer] as const, exact: false };
 }

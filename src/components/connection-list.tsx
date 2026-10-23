@@ -1,3 +1,4 @@
+import { retryKeysetQuery } from '@/services/keysetQueryRecovery';
 import React, { memo, useCallback, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
@@ -27,9 +28,8 @@ import {
 
 import {
   CONNECTION_PAGE_SIZE,
-  MAX_CONNECTION_OFFSET,
-  getUserConnections,
-  type ConnectionPage,
+  getUserConnectionsPage,
+  type ConnectionKeysetPage,
   type ConnectionType,
   type ConnectionUser,
 } from '@/api/connections';
@@ -56,30 +56,25 @@ export type ConnectionListProps = {
 };
 
 function connectionQueryKey(userId: string | undefined, type: ConnectionType) {
-  return ['connections', userId, type] as const;
+  return ['connections', userId, type, 'keyset-v1'] as const;
 }
 
 async function loadConnections(
   userId: string,
   type: ConnectionType,
-  offset: number,
+  cursor: string | null,
   signal?: AbortSignal,
-): Promise<ConnectionPage> {
+): Promise<ConnectionKeysetPage> {
   const token = await getStorageItem('access_token');
   if (!token) throw new Error('Your session has expired. Please sign in again.');
-  return getUserConnections(userId, type, token, {
+  signal?.throwIfAborted();
+  return getUserConnectionsPage(userId, type, token, {
     limit: CONNECTION_PAGE_SIZE,
-    offset,
+    cursor: cursor ?? undefined,
     signal,
   });
 }
 
-function nextConnectionOffset(page: ConnectionPage): number | undefined {
-  const itemCount = Array.isArray(page.items) ? page.items.length : 0;
-  if (itemCount < page.limit) return undefined;
-  const nextOffset = page.offset + itemCount;
-  return nextOffset <= MAX_CONNECTION_OFFSET ? nextOffset : undefined;
-}
 
 function initials(person: ConnectionUser) {
   return (person.full_name || person.username)
@@ -273,8 +268,8 @@ export function ConnectionList({
     queryKey: connectionQueryKey(userId, type),
     queryFn: ({ pageParam, signal }) => loadConnections(userId!, type, pageParam, signal),
     enabled: active && Boolean(userId),
-    getNextPageParam: nextConnectionOffset,
-    initialPageParam: 0,
+    getNextPageParam: (page: ConnectionKeysetPage) => page.next_cursor ?? undefined,
+    initialPageParam: null as string | null,
     staleTime: QUERY_STALE_TIME,
   });
 
@@ -300,7 +295,7 @@ export function ConnectionList({
 
     if (viewerId) {
       const followingKey = connectionQueryKey(viewerId, 'following');
-      queryClient.setQueriesData<InfiniteData<ConnectionPage>>(
+      queryClient.setQueriesData<InfiniteData<ConnectionKeysetPage>>(
         { queryKey: ['connections'] },
         (current) => current ? {
           ...current,
@@ -316,7 +311,7 @@ export function ConnectionList({
         } : current,
       );
       if (sameAsViewerFollowing && !following) {
-        queryClient.setQueryData<InfiniteData<ConnectionPage>>(followingKey, (current) => (
+        queryClient.setQueryData<InfiniteData<ConnectionKeysetPage>>(followingKey, (current) => (
           current ? {
             ...current,
             pages: current.pages.map((page) => ({
@@ -418,19 +413,26 @@ export function ConnectionList({
   })();
 
   const handleEndReached = useCallback(() => {
-    if (peopleQuery.hasNextPage && !peopleQuery.isFetchingNextPage) {
+    if (peopleQuery.hasNextPage && !peopleQuery.isFetching && !peopleQuery.isError) {
       void peopleQuery.fetchNextPage();
     }
   }, [peopleQuery]);
 
-  const listFooter = peopleQuery.isFetchingNextPage
+  const listFooter = peopleQuery.isFetching
     ? (
       <View style={styles.listFooter}>
         <ActivityIndicator color={REFERENCE_THEME.accent} size="small" />
         <Text style={styles.listFooterText}>Loading more people...</Text>
       </View>
     )
-    : null;
+    : peopleQuery.isError ? (
+      <View style={styles.listFooter}>
+        <Text style={styles.listFooterText}>More people could not load. Your loaded people are still available.</Text>
+        <Pressable accessibilityRole="button" onPress={() => void retryKeysetQuery(peopleQuery)}>
+          <Text style={styles.retryText}>Try again</Text>
+        </Pressable>
+      </View>
+    ) : null;
 
   return (
     <View style={styles.root}>

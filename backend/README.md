@@ -681,72 +681,85 @@ its jobs; use a new campaign ID to retry a completed fallback after provider
 recovery. Roll back the application first if necessary and retain the additive
 summary columns/artifacts; do not delete canonical content or migration history.
 
-### Opt-in product keyset pages (Refs ACM-VIT/Weave#122)
+### Product keyset pagination
 
-The existing authenticated product GET endpoints support an additive `pagination=keyset`
-contract. Without that parameter they retain complete legacy responses, including the
-profile `repositories` and list `items` fields. Do not silently switch old clients to a
-bounded response: existing membership editors submit complete selection sets.
+Authenticated product GET endpoints accept additive `pagination=keyset` with an
+integer decimal `limit` from 1 to 100 (default 25). Start without `cursor`, then
+reuse the opaque `next_cursor` with the same endpoint, viewer, resource and
+selection. Do not send `offset`. Empty/malformed/oversized/tampered or wrong-scope
+cursors return 400; a cursor without the opt-in also returns 400.
 
-- `/profiles/:profileId`: page the `repositories` preview; other profile fields remain.
-- `/collections` and `/boards`: page owned lists. Optional `repository_id` is a UUID
-  that decorates each list with `selected`; it does not filter the list set.
-- `/collections/:collectionId/repositories` and `/boards/:boardId/repositories`:
-  page repository contents with their existing DTOs.
+| Endpoint | Items field | Fixed ordering |
+| --- | --- | --- |
+| `/profiles/:profileId` | `repositories` | repository updated timestamp DESC, repository ID DESC |
+| `/collections` | `items` | updated timestamp DESC, created timestamp DESC, collection ID DESC |
+| `/boards` | `items` | created timestamp DESC, board ID DESC |
+| `/collections/:collectionId/repositories` | `items` | added timestamp DESC, repository ID DESC |
+| `/boards/:boardId/repositories` | `items` | added timestamp DESC, repository ID DESC |
+| `/users/:userId/followers` | `items` | followed timestamp DESC, user ID ASC |
+| `/users/:userId/following` | `items` | followed timestamp DESC, identity kind ASC, identity ID ASC |
+| `/users/:userId/likes-given` | `items` | reaction updated timestamp DESC, repository ID ASC |
+| `/repositories/saved` | `items` | saved timestamp DESC, repository ID ASC |
+| `/repositories/:repoId/comments` | `items` | created timestamp ASC, comment ID ASC |
 
-Use `pagination=keyset&limit=25` for the first page, then append the returned opaque
-`cursor`. `limit` is an integer decimal string from 1 to 100 (default 25). Do not
-send `offset`; an empty, malformed, oversized, tampered or wrong-scope cursor is a
-400. A cursor without `pagination=keyset` is also a 400. Keep the same endpoint,
-viewer, resource and `repository_id` on subsequent pages. Page size may change.
-Responses add `next_cursor: string | null` and `has_more: boolean` at the data root
-(alongside `items`, or alongside profile `repositories`). An empty/final page has
-`next_cursor: null, has_more: false`. The extra look-ahead row is not returned.
+Responses add `next_cursor: string | null` and `has_more: boolean` at the data
+root, alongside the existing items field. Final/empty pages return null/false;
+one extra SQL row establishes continuation and is not returned. Keep server
+continuation even if client normalization removes rows; do not infer exhaustion
+from a short page. Profile metadata, full-set counters and selection flags keep
+their meanings. For owned lists, optional UUID `repository_id` decorates each list
+with `selected` rather than filtering the list set.
 
-Order is explicit and not client-configurable: profile repositories use
-`updated_at DESC, repo_id DESC`; collections use `updated_at DESC, created_at DESC,
-collection_id DESC`; boards use `created_at DESC, board_id DESC`; contents use
-`added_at DESC, repo_id DESC`. All ties use unique IDs. Cursors contain exact SQL
-UTC microsecond timestamps, not JavaScript's rounded millisecond dates. They are
-HMAC-SHA256 authenticated with the existing `JWT_SECRET`, domain-separated from
-feed cursors, and bound to endpoint, viewer, resource, selection and sort. Rotating
-that secret invalidates outstanding cursors; restart from the first page on 400.
-A cursor is a position, not an authorization grant. Ownership/public/unlisted
-visibility and active repositories are checked on every request, including in the
-contents query itself. Deleted cursor rows need not exist to continue.
+Cursors preserve exact PostgreSQL UTC microseconds through text binding, never
+JavaScript millisecond conversion. HMAC-SHA256 uses the existing `JWT_SECRET` with
+a product-specific domain, bound to endpoint, viewer, resource, selection and
+sort. A Following cursor also includes a user/profile kind discriminator: UUIDs
+from different identity tables can collide. Internal position fields are removed
+from returned items. Key rotation invalidates cursors; restart from page one on
+400. A position is not an authorization grant: ownership, list visibility, active
+repositories and active authors/profiles are checked on every page. Deleted
+boundary rows need not exist to continue.
 
-Counts (`repo_count`, `board_count`, profile statistics) retain full-set semantics,
-not page length. `last_updated_at` and `selected` also retain their meanings. No new
-portfolio total is inferred from a bounded preview. Existing search endpoints and
-query semantics are unchanged.
+These are live pages, not a database snapshot spanning requests. A stable dataset
+has deterministic, non-overlapping traversal. Inserts ahead of the cursor require
+refresh; inserts behind can appear later. Deletes and visibility changes remove
+entries. Editing a sort timestamp or removing/re-adding a relationship can move
+it across the cursor. Clients deduplicate displayed IDs and refresh after edits.
+Never use a partial page as a complete replacement membership selection.
 
-These are live keyset pages, not a cross-request database snapshot. Stable datasets
-have deterministic, non-overlapping pages. Newer inserts ahead of the cursor appear
-on refresh, not later pages; inserts behind it can appear later. Deletes/visibility
-changes remove entries. Updating a sort timestamp or removing/re-adding membership
-can move an entry across the cursor and cause a repeated or missed item. Clients
-should deduplicate by ID and refresh after edits; do not treat pages as a complete
-selection snapshot for replacement writes.
+The saved/liked queries select a bounded, eligible page before hydrating stats,
+summaries and viewer/list state, in the same SQL statement and snapshot. This
+keeps expensive hydration proportional to page size. Existing timestamp, owner,
+latest-stat and membership indexes were inspected; representative plans did not
+require a new index or migration for this change. Candidate scans still depend
+on portfolio size and selectivity; this is not a production latency guarantee.
 
-Rollout: deploy additive API first, then use explicit page functions in app #102;
-leave legacy complete-list readers and replacement-selection editors unchanged
-until their UX/state supports every selected membership. A client talking to an
-older backend must not treat missing page metadata as a valid bounded page. Roll
-back page consumers to legacy readers before removing backend support. No legacy
-field or OFFSET endpoint is removed by this slice.
+**Compatibility and rollout:** deploy the additive backend before the new app
+consumers. Existing complete readers for the original five portfolio/list APIs
+remain complete without the opt-in. Existing follow/like/save/comment OFFSET
+readers retain their previous bounded responses and parameter limits. No legacy
+field or reader is removed. Saved/liked profile sheets, connection lists and
+comments now use cursor pages with revisioned query keys; affected save/follow
+invalidations cover that revision while retaining viewer/type scope and leaving
+Home pages intact. Strict metadata checks reject an older server's unpaged
+response explicitly. Full membership editors retain complete legacy reads until
+they support paged selection state. Roll back app consumers before removing
+backend keyset support; no shared schema rollout is needed.
 
-Verification remains deferred to the authorized whole-app test phase: large/empty
-portfolios, equal timestamps including sub-millisecond differences, invalid and
-cross-viewer/resource/filter cursors, deep pages, concurrent inserts/updates,
-deleted boundary rows and visibility revocation. Also compare response bytes and
-first/middle/deep query plans against representative disposable fixtures. Existing
-indexes include `app_repo_stats_latest_idx (repo_id, observed_at DESC)`,
-`app_boards_user_idx (user_id, created_at DESC)`,
-`app_board_collections_user_idx (user_id, created_at DESC)`,
-`app_collection_repos_added_idx (collection_id, added_at DESC)`, the board membership
-primary key, and the owner-GitHub-ID index. No index or migration is added without
-representative plans. Follow/like/save/comment OFFSET conversion and app rollout
-remain outside this core-surface slice, so this change alone does not close #122.
+**Local verification:** `productKeyset.integration.test.ts` runs only with
+`RUN_PRODUCT_KEYSET_INTEGRATION=1`, a dedicated loopback database named
+`weave_keyset` and dedicated loopback Redis database 15. It truncates fixtures,
+so migrate disposable services first. It exercises ten endpoint families:
+10,050-row follower/like/save/comment/profile traversals, 10,051 mixed Following
+identities including a cross-table UUID collision, and 1,000-row owned lists and
+contents. It verifies ties, microseconds, deep pages beyond the legacy offset
+ceiling, legacy completeness, cursor binding, visibility revocation and
+concurrent insertion behavior. It captures response bytes and first/middle/deep
+`EXPLAIN (ANALYZE,BUFFERS)` of the actual HTTP queries. Existing registered HTTP
+coverage also checks empty pages, selection filters, tampering and private lists.
+The browser profile fixture verifies bounded rendered rows, retained cards on
+page failure, cursor-preserving retry and reaching the final saved repository.
+These checks do not establish native-device or production acceptance.
 
 ### Internal acquisition inventory
 
