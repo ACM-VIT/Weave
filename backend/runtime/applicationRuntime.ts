@@ -136,7 +136,7 @@ export class ApplicationRuntime {
     const retention=(role==='maintenance'||role==='all')?getScoringRetentionConfig():{enabled:false as const};
     // Validate the chosen cadence before allocating a pool. No deletion task or
     // default operational schedule exists while retention is disabled.
-    if(retention.enabled&&!process.env.SCORING_RETENTION_INTERVAL_MS)throw new Error('SCORING_RETENTION_INTERVAL_REQUIRED');
+    if(retention.enabled&&!process.env.SCORING_RETENTION_INTERVAL_MS?.trim())throw new Error('SCORING_RETENTION_INTERVAL_REQUIRED');
     const interval=retention.enabled?intervalFromEnvironment('SCORING_RETENTION_INTERVAL_MS',0,1000,86_400_000):0;
     this.privateScoringExport=role==='api'?createPrivateScoringExport(getScoringExportConfig()):null;
     this.privateScoringRetention=createPrivateScoringRetention(retention);
