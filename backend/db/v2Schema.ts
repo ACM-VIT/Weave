@@ -468,7 +468,8 @@ export const appBoardRepos = appSchema.table('board_repos', {
   addedBy: uuid('added_by').references(() => appUsers.userId, { onDelete: 'set null' }),
   addedAt: timestamp('added_at', { withTimezone: true }).notNull().defaultNow(),
 }, (table) => [primaryKey({ columns: [table.boardId, table.repoId] }),
-  index('app_board_repos_repository_idx').on(table.repoId, table.boardId)]);
+  index('app_board_repos_repository_idx').on(table.repoId, table.boardId),
+  index('app_board_repos_recent_idx').on(table.boardId, table.addedAt.desc(), table.repoId)]);
 
 export const trendingSnapshots = appSchema.table('trending_snapshots', {
   snapshotId: uuid('snapshot_id').primaryKey(),
