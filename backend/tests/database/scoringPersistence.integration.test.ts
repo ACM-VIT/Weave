@@ -50,6 +50,21 @@ integration('private scoring persistence enforces exact bytes, atomic retries, r
     await assert.rejects(privileged.persist(validated(), policy), (error: unknown) =>
       error instanceof ScoringPersistenceError && error.reason === 'permission');
 
+    // A separate URL must also be a separate least-privilege credential.
+    await admin.unsafe(`GRANT ghsocial_backend TO ${writerRole}`);
+    try {
+      await assert.rejects(new PostgresScoringPersistence(writer).persist(validated(),policy),
+        (error:unknown)=>error instanceof ScoringPersistenceError && error.reason==='permission');
+    } finally { await admin.unsafe(`REVOKE ghsocial_backend FROM ${writerRole}`); }
+    await admin.unsafe(`GRANT USAGE ON SCHEMA app TO ${writerRole}`);
+    await admin.unsafe(`GRANT SELECT(user_id) ON app.users TO ${writerRole}`);
+    try {
+      await assert.rejects(new PostgresScoringPersistence(writer).persist(validated(),policy),
+        (error:unknown)=>error instanceof ScoringPersistenceError && error.reason==='permission');
+    } finally {
+      await admin.unsafe(`REVOKE SELECT(user_id) ON app.users FROM ${writerRole}`);
+      await admin.unsafe(`REVOKE USAGE ON SCHEMA app FROM ${writerRole}`);
+    }
     const storage = new PostgresScoringPersistence(writer);
     const [first, retry] = await Promise.all([storage.persist(validated(), policy), storage.persist(validated(), policy)]);
     assert.deepEqual(first, retry, 'concurrent identical submissions reuse one immutable set and expiry');
@@ -128,6 +143,23 @@ integration('private scoring persistence enforces exact bytes, atomic retries, r
     await storage.persist(capture90,{...policy,retentionDays:90});
     const [retained90]=await admin`SELECT created_at,expires_at FROM private_scoring.scoring_generations WHERE generation_id=${context90.generation_id}::uuid`;
     assert.equal(new Date(retained90.expires_at).getTime()-new Date(retained90.created_at).getTime(),90*86_400_000);
+
+    // The real storage function must classify engine/resource faults separately
+    // from malformed caller packets, while stripping their original details.
+    const faultFunction='capture_fault_'+suffix;
+    await admin.unsafe(`CREATE FUNCTION private_scoring.${faultFunction}() RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN RAISE EXCEPTION USING ERRCODE='40P01',MESSAGE='private engine fault',DETAIL='PRIVATE fault detail'; END $$`);
+    await admin.unsafe(`CREATE TRIGGER capture_fault BEFORE INSERT ON private_scoring.scoring_generations
+      FOR EACH ROW EXECUTE FUNCTION private_scoring.${faultFunction}()`);
+    try {
+      await assert.rejects(storage.persist(validated(),policy),(error:unknown)=>{
+        assert.ok(error instanceof ScoringPersistenceError);assert.equal(error.reason,'unavailable');
+        assert.equal(error.cause,undefined);assert.doesNotMatch(String(error)+JSON.stringify(error),/PRIVATE|engine fault/);return true;
+      });
+    } finally {
+      await admin.unsafe('DROP TRIGGER capture_fault ON private_scoring.scoring_generations');
+      await admin.unsafe(`DROP FUNCTION private_scoring.${faultFunction}()`);
+    }
 
     // Inject an actual server error whose DETAIL contains the private binding
     // parameter. The public adapter error must retain neither it nor its cause.
