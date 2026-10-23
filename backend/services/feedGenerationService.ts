@@ -175,11 +175,14 @@ export class FeedGenerationService {
         if (excludedIds.has(item.repo_id) || seen.has(item.repo_id)) return false;
         seen.add(item.repo_id); return true;
       });
-      const projections = await this.persistence.listActiveRepositoryIdentities(items.map((item) => item.repo_id));
+      const eligible = new Set(await this.persistence.listPreferenceEligibleRepositoryIds(userId, items.map(item => item.repo_id)));
+      const preferenceItems = items.filter(item => eligible.has(item.repo_id));
+      if (items.length > 0 && preferenceItems.length === 0) return { status: 'capacity', feedVersion };
+      const projections = await this.persistence.listActiveRepositoryIdentities(preferenceItems.map((item) => item.repo_id));
       const summaries = new Map(projections.map((repo) => [repo.repo_id, repo.summary_id]));
       const activeRepoIds = new Set(projections.map((repo) => repo.repo_id));
-      const usableItems = items.filter((item) => activeRepoIds.has(item.repo_id));
-      const invalidCount = items.length - usableItems.length;
+      const usableItems = preferenceItems.filter((item) => activeRepoIds.has(item.repo_id));
+      const invalidCount = preferenceItems.length - usableItems.length;
       for (let index = 0; index < invalidCount; index++) {
         incrementMetric('feed_v2_invalid_repository_recommendations_total');
       }

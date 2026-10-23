@@ -14,6 +14,7 @@ const socialRepoId = '00000000-0000-4000-8000-000000000002';
 const otherRepoId = '00000000-0000-4000-8000-000000000003';
 
 class GenerationPersistence implements FeedPersistencePort {
+  async listPreferenceEligibleRepositoryIds(_userId: string, repoIds: string[]) { return repoIds; }
   profileVersion = 1n;
   delivered = true;
   served = false;
@@ -382,4 +383,24 @@ test('social projection failure releases generation without publishing an invent
   await assert.rejects(new FeedGenerationService(persistence, queue, ml, 600, 15000, undefined, undefined, true)
     .generate(userId), /social projection unavailable/);
   assert.equal(queue.released, true); assert.equal(queue.published, false); assert.equal(ml.request, null);
+});
+
+test('current explicit negatives filter every ML source independently of bounded exposure history', async () => {
+  const persistence=new GenerationPersistence();
+  let viewer: string | undefined;
+  persistence.listPreferenceEligibleRepositoryIds=async (user, ids) => {viewer=user;return ids.filter(id=>id!==socialRepoId);};
+  const queue=new GenerationQueue();
+  const result=await new FeedGenerationService(persistence,queue,new CapturingRecommendations()).generate(userId);
+  assert.equal(viewer,userId);
+  assert.deepEqual(queue.entries.map(item=>item.repo_id),[otherRepoId]);
+  assert.deepEqual(result,{status:'generated',feedVersion:1n,count:1});
+});
+
+test('an entirely preference-filtered ML batch remains retryable rather than publishing exhaustion', async () => {
+  const persistence=new GenerationPersistence();
+  persistence.listPreferenceEligibleRepositoryIds=async ()=>[];
+  const queue=new GenerationQueue();
+  const result=await new FeedGenerationService(persistence,queue,new CapturingRecommendations()).generate(userId);
+  assert.deepEqual(result,{status:'capacity',feedVersion:1n});
+  assert.equal(queue.published,false); assert.equal(queue.released,true);
 });

@@ -33,6 +33,7 @@ const repo: RepositoryProjection = {
 };
 
 class FakePersistence implements FeedPersistencePort {
+  async listPreferenceEligibleRepositoryIds(_userId: string, repoIds: string[]) { return repoIds; }
   serve: StoredServe | null = null;
   version = 3n;
   missesBeforeServe = 0;
@@ -554,4 +555,37 @@ test('fallback serves reuse only the freshly hydrated cards for the requesting v
   assert.equal(persistence.fallbackCalls,1);
   assert.equal(extraHydrations,0);
   assert.equal(result.items[0].repo_id,repo.repo_id);
+});
+
+for (const source of ['queued','durable','fallback'] as const) {
+  test(`current dislikes exclude ${source} entries without creating a terminal empty serve`, async()=>{
+    const persistence=new FakePersistence();const queue=new FakeQueue();
+    persistence.listPreferenceEligibleRepositoryIds=async()=>[];
+    if(source!=='queued')queue.reserve=async()=>{throw new Error('owned fixture Redis outage');};
+    if(source==='durable')persistence.recentPersonalized=[{repo_id:repo.repo_id,score:1,source:'semantic',model_version:'m1',summary_id:null}];
+    const service=new FeedV2Service(persistence,queue,undefined,source==='fallback');
+    await assert.rejects(service.getFeed('00000000-0000-4000-8000-000000000030',{
+      feed_request_id:'00000000-0000-4000-8000-000000000010',session_id:'00000000-0000-4000-8000-000000000020',limit:10,cursor:null,
+    }),FeedRequestInProgressError);
+    assert.equal(persistence.serve,null);
+  });
+}
+
+test('historical same-request replay bypasses current-negative eligibility reads',async()=>{
+  const persistence=new FakePersistence();const queue=new FakeQueue();
+  const service=new FeedV2Service(persistence,queue);
+  const request={feed_request_id:'00000000-0000-4000-8000-000000000010',session_id:'00000000-0000-4000-8000-000000000020',limit:10,cursor:null};
+  const first=await service.getFeed('00000000-0000-4000-8000-000000000030',request);
+  persistence.listPreferenceEligibleRepositoryIds=async()=>{throw new Error('Replay must not consult current preferences');};
+  assert.deepEqual(await service.getFeed('00000000-0000-4000-8000-000000000030',request),first);
+});
+
+test('a negative preference winning at durable creation maps to a retryable feed response',async()=>{
+  const {FeedPreferenceChangedError}=await import('../../ports/feedPersistencePort.js');
+  const persistence=new FakePersistence();const queue=new FakeQueue();
+  persistence.createServe=async()=>{throw new FeedPreferenceChangedError();};
+  await assert.rejects(new FeedV2Service(persistence,queue).getFeed('00000000-0000-4000-8000-000000000030',{
+    feed_request_id:'00000000-0000-4000-8000-000000000010',session_id:'00000000-0000-4000-8000-000000000020',limit:10,cursor:null,
+  }),FeedRequestInProgressError);
+  assert.equal(queue.committed,0);assert.equal(queue.released,1);
 });

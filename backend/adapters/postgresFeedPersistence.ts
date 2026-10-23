@@ -7,7 +7,8 @@ import type {
   StoredServe,
   StoredServeItem,
 } from '../contracts/feed.v2.js';
-import { MAX_FEED_SERVE_LOOKUP_BATCH } from '../ports/feedPersistencePort.js';
+import { loadNegativePreferenceEligibleIds } from '../services/negativePreferenceEligibility.js';
+import { FeedPreferenceChangedError, MAX_FEED_SERVE_LOOKUP_BATCH } from '../ports/feedPersistencePort.js';
 import type {
   FeedPersistencePort, FeedReconciliationPersistencePort, FeedServeRequest, RepositoryIdentityProjection,
 } from '../ports/feedPersistencePort.js';
@@ -57,6 +58,12 @@ function projection(row: Record<string, unknown>): RepositoryProjection {
 }
 
 export class PostgresFeedPersistence implements FeedPersistencePort, FeedReconciliationPersistencePort {
+  async listPreferenceEligibleRepositoryIds(userId: string, repoIds: string[]): Promise<string[]> {
+    return loadNegativePreferenceEligibleIds({
+      query: async (text, parameters) => [...await sqlClient.unsafe(text, [...parameters])],
+    }, userId, repoIds);
+  }
+
   async recordGenerationAttempt(input: Parameters<NonNullable<FeedPersistencePort['recordGenerationAttempt']>>[0]): Promise<void> {
     await sqlClient`
       INSERT INTO telemetry.generation_attempts (
@@ -449,6 +456,11 @@ export class PostgresFeedPersistence implements FeedPersistencePort, FeedReconci
   async createServe(input: CreateServeInput): Promise<StoredServe> {
     if (input.items.length > 100) throw new Error('A feed serve cannot contain more than 100 items.');
     const created = await sqlClient.begin(async (tx) => {
+      // Match activity/profile lock order: user, then feed state. Current
+      // reactions and new serves serialize; session duplicate fencing is separate.
+      await tx`SELECT user_id FROM app.users WHERE user_id=${input.user_id}::uuid FOR KEY SHARE`;
+      await tx`INSERT INTO app.user_feed_state(user_id) VALUES(${input.user_id}::uuid) ON CONFLICT DO NOTHING`;
+      await tx`SELECT user_id FROM app.user_feed_state WHERE user_id=${input.user_id}::uuid FOR UPDATE`;
       const headers = await tx`
         INSERT INTO telemetry.feed_serves (
           feed_request_id,user_id,session_id,feed_version,generation_id,source,model_version,next_cursor
@@ -459,6 +471,10 @@ export class PostgresFeedPersistence implements FeedPersistencePort, FeedReconci
       `;
       if (!headers.length) return null;
       const header = headers[0];
+      const eligible = new Set(await loadNegativePreferenceEligibleIds({
+        query: async (text, parameters) => [...await tx.unsafe(text, [...parameters])],
+      }, input.user_id, input.items.map(item => item.repo_id)));
+      if (input.items.some(item => !eligible.has(item.repo_id))) throw new FeedPreferenceChangedError();
       if (input.items.length) {
         const items = input.items.map(item => ({ position: item.position,repo_id: item.repo_id,score: item.score,
           source: item.source,model_version: item.model_version,summary_id: item.summary_id }));

@@ -1,3 +1,4 @@
+import { FeedPreferenceChangedError } from '../ports/feedPersistencePort.js';
 import crypto from 'node:crypto';
 
 import type { FeedRequestV2, FeedResponseV2, FeedSource, RecommendationEntry, RepositoryProjection } from '../contracts/feed.v2.js';
@@ -264,6 +265,21 @@ export class FeedV2Service {
       } else if (!generationCompleted) throw new PersonalizedFeedUnavailableError(generationError);
     }
 
+    // Includes queued, durable recovery and fallback entries. Never apply this
+    // to the immutable same-request replay returned above.
+    try {
+      const eligible = new Set(await this.persistence.listPreferenceEligibleRepositoryIds(userId, entries.map(entry => entry.repo_id)));
+      const allowed = entries.filter(entry => eligible.has(entry.repo_id));
+      if (entries.length > 0 && allowed.length === 0) {
+        if (queueAvailable) await this.queue.commit(userId, version, request.feed_request_id, token);
+        throw new FeedRequestInProgressError();
+      }
+      entries = allowed;
+    } catch (error) {
+      if (queueAvailable) await releaseReservation();
+      throw error;
+    }
+
     const missingRepoIds = [...new Set(entries.filter((entry) => {
       const repository = byId.get(entry.repo_id);
       return !repository || repository.summary_id !== entry.summary_id;
@@ -333,6 +349,7 @@ export class FeedV2Service {
         return responseFromServe(replayAfterFailure);
       }
       if (queueAvailable) await this.queue.release(userId, version, request.feed_request_id, token);
+      if (error instanceof FeedPreferenceChangedError) throw new FeedRequestInProgressError();
       throw error;
     }
   }
