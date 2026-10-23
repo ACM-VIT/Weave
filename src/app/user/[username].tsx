@@ -227,8 +227,8 @@ export default function OtherUserProfileRoute() {
       />
       <ConnectionSheet
         onClose={() => setConnectionType(null)}
-        onFollowingCountChange={() => {
-              }}
+        onFollowingCountChange={() => {}}
+        onRepositoryPress={(href) => router.push(href)}
         type={connectionType ?? 'followers'}
         userId={profile.userId}
         username={profile.username}

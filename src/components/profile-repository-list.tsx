@@ -10,8 +10,7 @@ import {
   View,
   useWindowDimensions,
 } from 'react-native';
-import { router } from 'expo-router';
-import { useInfiniteQuery } from '@tanstack/react-query';
+import { useInfiniteQuery, useQuery } from '@tanstack/react-query';
 import { FolderGit2, GitFork, Heart, RotateCcw, Search, Star, X } from 'lucide-react-native';
 
 import { apiV2 } from '@/api/client';
@@ -21,8 +20,13 @@ import { requestProfileRepositoryPage } from '@/api/profile-repository-pages';
 import { REFERENCE_THEME } from '@/constants/theme';
 import { formatCompactCount } from '@/utils/format-count';
 import { README_SUMMARY_PENDING } from '@/utils/readme';
-import { repositoryHref } from '@/utils/repository-links';
+import { repositoryHref, type RepositoryRouteHref } from '@/utils/repository-links';
 import { getStorageItem } from '@/utils/storage';
+import {
+  applyProfileLikeOverrides,
+  profileLikeOverridesQueryKey,
+  type ProfileLikeOverrides,
+} from '@/utils/profile-likes';
 
 export type ProfileRepositoryType = 'likes' | 'saved';
 
@@ -44,11 +48,13 @@ export function ProfileRepositoryList({
   contentPaddingBottom = 24,
   type,
   userId,
+  onRepositoryPress,
 }: {
   active?: boolean;
   contentPaddingBottom?: number;
   type: ProfileRepositoryType;
   userId?: string;
+  onRepositoryPress: (href: RepositoryRouteHref) => void;
 }) {
   const { width } = useWindowDimensions();
   const searchInputRef = useRef<TextInput>(null);
@@ -60,8 +66,18 @@ export function ProfileRepositoryList({
   const repositoriesQuery = useInfiniteQuery(profileRepositoryQuery(
     userId, type, active, (cursor, signal) => loadRepositories(type, userId!, cursor, signal),
   ));
+  const likeOverridesQuery = useQuery<ProfileLikeOverrides>({
+    queryKey: profileLikeOverridesQueryKey(userId),
+    enabled: false,
+    initialData: {},
+    queryFn: async () => ({}),
+    staleTime: Infinity,
+  });
   const filteredRepositories = useMemo(() => {
-    const repositories = mergeProfileRepositoryPages(repositoriesQuery.data?.pages ?? []);
+    const serverRepositories = mergeProfileRepositoryPages(repositoriesQuery.data?.pages ?? []);
+    const repositories = type === 'likes'
+      ? applyProfileLikeOverrides(serverRepositories, likeOverridesQuery.data)
+      : serverRepositories;
     const query = search.trim().toLocaleLowerCase();
     if (!query) return repositories;
     return repositories.filter((repository) =>
@@ -70,7 +86,7 @@ export function ProfileRepositoryList({
       || repository.description.toLocaleLowerCase().includes(query)
       || repository.readmeSummary?.toLocaleLowerCase().includes(query)
     );
-  }, [repositoriesQuery.data, search]);
+  }, [likeOverridesQuery.data, repositoriesQuery.data, search, type]);
 
   const emptyState = (() => {
     if (!userId) return <StateView message="This profile could not be identified." title="Profile unavailable" />;
@@ -179,7 +195,7 @@ export function ProfileRepositoryList({
               accessibilityHint="Opens this repository in Weave"
               accessibilityLabel={`Open ${item.fullName}`}
               accessibilityRole="link"
-              onPress={() => router.push(repositoryHref(item.id))}
+              onPress={() => onRepositoryPress(repositoryHref(item.id))}
               style={({ pressed }) => [StyleSheet.absoluteFill, pressed && styles.cardPressedOverlay]}
             />
           </View>

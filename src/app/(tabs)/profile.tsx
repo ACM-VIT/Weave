@@ -215,6 +215,7 @@ export default function ProfileScreen() {
         onFollowingCountChange={() => {
           void checkOnboardingStatus().catch(() => undefined)
         }}
+        onRepositoryPress={(href) => router.push(href)}
         type={statSheetType ?? "followers"}
         userId={user?.user_id}
         username={username}

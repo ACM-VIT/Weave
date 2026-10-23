@@ -13,6 +13,7 @@ export type ActivityFlushResult = {
   invalidatedFeed: boolean;
   deferred: boolean;
   feedVersion?: string;
+  acknowledgedActivities?: readonly QueuedActivity[];
 };
 
 type ActivityPersistence = {
@@ -51,6 +52,7 @@ export class DurableActivityOutbox {
   private feedResetGeneration = 0;
   private acknowledgedFeedResetGeneration = 0;
   private lastFeedVersion: string | undefined;
+  private retainedAcknowledgedActivities: QueuedActivity[] = [];
 
   constructor(private readonly dependencies: ActivityOutboxDependencies) {
     void this.restore().catch(() => undefined);
@@ -78,6 +80,7 @@ export class DurableActivityOutbox {
         invalidatedFeed: true,
         deferred: false,
         feedVersion: this.lastFeedVersion,
+        acknowledgedActivities: [...this.retainedAcknowledgedActivities],
       });
     }
     return () => this.listeners.delete(listener);
@@ -94,6 +97,7 @@ export class DurableActivityOutbox {
         this.acknowledgedFeedResetGeneration,
         generation,
       );
+      if (generation === this.feedResetGeneration) this.retainedAcknowledgedActivities = [];
     } catch {
       // A later subscriber receives the retained reset when this listener fails.
     }
@@ -118,8 +122,12 @@ export class DurableActivityOutbox {
     }
   }
 
-  async enqueue(input: ActivityInput): Promise<QueuedActivity> {
+  async enqueue(
+    input: ActivityInput,
+    onPrepared?: (event: QueuedActivity) => void,
+  ): Promise<QueuedActivity> {
     const event = this.dependencies.prepare(input);
+    onPrepared?.(event);
     await this.restore();
     await this.mutate(async () => {
       if (!this.queuedIds.has(event.event_id)) {
@@ -175,6 +183,7 @@ export class DurableActivityOutbox {
 
     let delivered = 0;
     let invalidatedFeed = false;
+    const acknowledgedActivities: QueuedActivity[] = [];
     let snapshot: QueuedActivity[];
     try {
       snapshot = await this.mutate(async () => {
@@ -196,6 +205,7 @@ export class DurableActivityOutbox {
         // Server-confirmed feed changes must notify/retain their reset even if local cleanup fails.
         delivered += confirmed.acknowledgedIds.size;
         invalidatedFeed ||= confirmed.invalidatesFeed;
+        acknowledgedActivities.push(...batch.filter((event) => confirmed.acknowledgedIds.has(event.event_id)));
 
         const acknowledgement = await this.mutate(async () => {
           const acknowledgement = applyActivityAcknowledgement(this.events, batch, result);
@@ -232,9 +242,16 @@ export class DurableActivityOutbox {
       throw error;
     } finally {
       if (delivered > 0) {
-        const outcome = { delivered, invalidatedFeed, deferred: false, feedVersion: this.lastFeedVersion };
+        const outcome = {
+          delivered,
+          invalidatedFeed,
+          deferred: false,
+          feedVersion: this.lastFeedVersion,
+          acknowledgedActivities,
+        };
         if (invalidatedFeed) {
           this.feedResetGeneration += 1;
+          this.retainedAcknowledgedActivities.push(...acknowledgedActivities);
           const generation = this.feedResetGeneration;
           await Promise.all(
             [...this.listeners].map((listener) => this.deliverFeedReset(listener, generation, outcome)),
@@ -245,6 +262,12 @@ export class DurableActivityOutbox {
       }
     }
 
-    return { delivered, invalidatedFeed, deferred: false, feedVersion: this.lastFeedVersion };
+    return {
+      delivered,
+      invalidatedFeed,
+      deferred: false,
+      feedVersion: this.lastFeedVersion,
+      acknowledgedActivities,
+    };
   }
 }
