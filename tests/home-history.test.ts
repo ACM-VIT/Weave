@@ -11,8 +11,8 @@ import type { FeedPage } from '../src/services/feedPagination';
 
 // Render the real Home hooks, mapper, pagination and query cache. Replace the
 // native list and expensive card body to inspect row mounts and scroll commands.
-for (const discovery of [false, true]) {
-  test(`actual Home eviction preserves visible row state, attribution and scroll (discovery=${discovery})`, async () => {
+for (const discovery of [false, true]) for (const backscroll of [false, true]) {
+  test(`actual Home eviction preserves visible row state, attribution and scroll (discovery=${discovery}, backscroll=${backscroll})`, async () => {
     (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
     const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: Infinity } } });
     const key = ['feed', 'viewer'];
@@ -25,6 +25,8 @@ for (const discovery of [false, true]) {
     const pages = Array.from({ length: 50 }, (_, index) => page(index * 10));
     client.setQueryData(key, { pages, pageParams: pages.map(value => value.requestCursor) });
     let list: any, calls = 0;
+    let resolveNext!: () => void;
+    const response = new Promise<void>(resolve => { resolveNext = resolve; });
     const scrolls: any[] = [], mounts = new Map<string, number>(), impressions: string[] = [];
     const FlatList = React.forwardRef((props: any, ref) => {
       list = props;
@@ -47,7 +49,7 @@ for (const discovery of [false, true]) {
       '@/components/home/RepositoryFeedItem': { RepositoryFeedItem: Card }, '@/components/home/FeedHeader': { FeedHeader: () => null },
       '@/constants/theme': { REFERENCE_THEME: {} }, 'expo-router': { router: { push() {} } },
       '../../utils/storage': { getItemAsync: async () => 'token' },
-      '@/api/home-feed': { fetchHomeFeed: async (_token: string, cursor: string | null) => { calls++; return page(Number(cursor)); } },
+      '@/api/home-feed': { fetchHomeFeed: async (_token: string, cursor: string | null) => { calls++; if (backscroll && cursor === '500') await response; return page(Number(cursor)); } },
       '@/store/AuthContext': { useAuth: () => ({ user: { user_id: 'viewer' }, checkOnboardingStatus: async () => {}, adjustLikesGivenCount() {}, settleLikesGivenCountAdjustments() {} }) },
       '@/services/activityOutboxClient': { getActivityOutbox: () => null },
       '@react-native-community/netinfo': { addEventListener: () => () => {} },
@@ -66,17 +68,38 @@ for (const discovery of [false, true]) {
       });
       assert.deepEqual(impressions, ['480']);
       await act(async () => { list.onEndReached(); await new Promise(resolve => setTimeout(resolve, 25)); });
+      let threatened: any;
+      if (backscroll) {
+        assert.equal(calls, 1);
+        assert.equal(list.data[0].repository.id, '0', 'the response is still deferred');
+        threatened = list.data[4];
+        await act(async () => {
+          // Card 4 is 40% visible; only card 5 qualifies for an impression.
+          list.onScroll({ nativeEvent: { contentOffset: { y: 4 * 800 + 480 } } });
+          list.onViewableItemsChanged({ viewableItems: [{ item: list.data[5], isViewable: true }] });
+        });
+        await act(async () => { resolveNext(); await new Promise(resolve => setTimeout(resolve, 25)); });
+      }
       const cached = client.getQueryData<InfiniteData<FeedPage>>(key)!;
       assert.equal(calls, 1);
       assert.equal(cached.pages.flatMap(value => value.items).length, 500);
       assert.equal(list.data.length, 500);
-      assert.equal(list.data[470].feedId, anchor.feedId);
-      assert.equal(mounts.get('480'), 1, 'visible card instance survives prefix eviction');
-      assert.deepEqual(impressions, ['480'], 'preserved per-row state must not emit another impression on eviction');
-      assert.deepEqual(scrolls.at(-1), { offset: 470 * 800 + 35, animated: false });
-      if (!discovery) {
-        assert.equal(list.data[470].repository.serveId, 'serve-480');
-        assert.equal(list.data[470].repository.feedPosition, 480);
+      if (backscroll) {
+        assert.equal(list.data[0].feedId, threatened.feedId, 'partly visible row must be pinned by the actual Home wiring');
+        assert.equal(list.data[1].repository.id, '5');
+        assert.equal(mounts.get('4'), 1);
+        assert.equal(mounts.get('5'), 1);
+        assert.deepEqual(impressions, ['480', '5'], 'retention pins do not relax impression visibility');
+        assert.deepEqual(scrolls.at(-1), { offset: 480, animated: false }, 'preserve both partial rows at the same screen coordinates');
+      } else {
+        assert.equal(list.data[470].feedId, anchor.feedId);
+        assert.equal(mounts.get('480'), 1, 'visible card instance survives prefix eviction');
+        assert.deepEqual(impressions, ['480'], 'preserved per-row state must not emit another impression on eviction');
+        assert.deepEqual(scrolls.at(-1), { offset: 470 * 800 + 35, animated: false });
+        if (!discovery) {
+          assert.equal(list.data[470].repository.serveId, 'serve-480');
+          assert.equal(list.data[470].repository.feedPosition, 480);
+        }
       }
       assert.equal(cached.pages.at(-1)!.nextCursor, '510');
       await act(async () => { await list.onRefresh(); await new Promise(resolve => setTimeout(resolve, 25)); });

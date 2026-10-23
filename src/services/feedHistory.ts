@@ -54,6 +54,14 @@ export function shareHomeFeedHistory(previous: unknown, next: unknown, visible: 
   return replaceEqualDeep(previous, retainHomeFeedHistory(next as History, visible));
 }
 
+/** Every row touching the viewport is retained, independent of impression thresholds. */
+export function feedViewportIds(items: readonly FeedItem[], offset: number, height: number): string[] {
+  if (!items.length || !Number.isFinite(offset) || !Number.isFinite(height) || height <= 0) return [];
+  const start = Math.min(items.length - 1, Math.floor(Math.max(0, offset) / height));
+  const end = Math.min(items.length, Math.ceil((Math.max(0, offset) + height) / height));
+  return items.slice(start, end).map(item => item.feedId);
+}
+
 /** Fixed-height cards preserve the visible identity and its fractional offset. */
 export function retainedFeedScrollOffset(previous: readonly FeedItem[], next: readonly FeedItem[],
   offset: number, height: number, visible: readonly string[]): number | undefined {

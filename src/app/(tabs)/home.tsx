@@ -24,7 +24,7 @@ import {
   type InfiniteData,
 } from '@tanstack/react-query';
 import * as SecureStore from '../../utils/storage';
-import { retainHomeFeedHistory, retainedFeedScrollOffset, shareHomeFeedHistory } from '@/services/feedHistory';
+import { feedViewportIds, retainHomeFeedHistory, retainedFeedScrollOffset, shareHomeFeedHistory } from '@/services/feedHistory';
 import type { FeedItem } from '@/utils/feed-items';
 import { markFeedFirstVisible } from '@/services/feedTiming';
 import { fetchHomeFeed } from '@/api/home-feed';
@@ -74,6 +74,7 @@ export default function HomeScreen() {
   const listRef = useRef<FlatList<{ feedId: string; repository: RepositoryData }> | null>(null);
   const committedViewerKey = useRef(feedQueryKey);
   const visibleIds = useRef<string[]>([]);
+  const retentionPins = useRef<string[]>([]);
   const scrollOffset = useRef(0);
   const committedItems = useRef<FeedItem[]>([]);
   const pagination = useMemo(() => {
@@ -124,7 +125,7 @@ export default function HomeScreen() {
   } = useInfiniteQuery({
     queryKey: feedQueryKey,
     queryFn: ({ pageParam, signal }) => pagination.controller.load(pageParam, signal),
-    structuralSharing: (previous, next) => shareHomeFeedHistory(previous, next, visibleIds.current),
+    structuralSharing: (previous, next) => shareHomeFeedHistory(previous, next, retentionPins.current),
     retry: false,
     staleTime: Infinity,
     refetchOnMount: false,
@@ -147,23 +148,25 @@ export default function HomeScreen() {
     if (committedViewerKey.current !== feedQueryKey) {
       committedViewerKey.current = feedQueryKey;
       visibleIds.current = [];
+      retentionPins.current = [];
       scrollOffset.current = 0;
       committedItems.current = [];
       listRef.current?.scrollToOffset({ offset: 0, animated: false });
     }
-    const bounded = data ? retainHomeFeedHistory(data, visibleIds.current) : undefined;
+    const bounded = data ? retainHomeFeedHistory(data, retentionPins.current) : undefined;
     if (bounded && bounded !== data) {
       queryClient.setQueryData(feedQueryKey, bounded);
       return;
     }
     pagination.controller.commitPages(data?.pages ?? []);
     const offset = retainedFeedScrollOffset(committedItems.current, feedItems,
-      scrollOffset.current, pageHeight, visibleIds.current);
+      scrollOffset.current, pageHeight, retentionPins.current);
     committedItems.current = feedItems;
     if (offset !== undefined) {
       scrollOffset.current = offset;
       listRef.current?.scrollToOffset({ offset, animated: false });
     }
+    retentionPins.current = feedViewportIds(feedItems, scrollOffset.current, pageHeight);
   }, [data, feedItems, pageHeight, feedQueryKey, pagination, queryClient]);
 
   const handleQueueActivity = useCallback((repository: RepositoryData, event: ActivityInput, flushNow?: boolean) => {
@@ -322,6 +325,7 @@ export default function HomeScreen() {
     await queryClient.cancelQueries({ queryKey: feedQueryKey, exact: true });
     pagination.reset();
     visibleIds.current = [];
+    retentionPins.current = [];
     scrollOffset.current = 0;
     committedItems.current = [];
     listRef.current?.scrollToOffset({ offset: 0, animated: false });
@@ -426,7 +430,10 @@ export default function HomeScreen() {
           initialNumToRender={4}
           maxToRenderPerBatch={4}
           removeClippedSubviews={false}
-          onScroll={event => { scrollOffset.current = Math.max(0, event.nativeEvent.contentOffset.y); }}
+          onScroll={event => {
+            scrollOffset.current = Math.max(0, event.nativeEvent.contentOffset.y);
+            retentionPins.current = feedViewportIds(committedItems.current, scrollOffset.current, pageHeight);
+          }}
           scrollEventThrottle={16}
           onViewableItemsChanged={onViewableItemsChanged}
           viewabilityConfig={VIEWABILITY_CONFIG}

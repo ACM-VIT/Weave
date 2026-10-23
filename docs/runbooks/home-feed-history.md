@@ -14,7 +14,7 @@ current bounded projection. The limit is a card count, not a fixed byte allowanc
 individual README/payload sizes and a transient in-flight response still vary.
 
 The newest cards are retained. If a response arrives after the viewer has scrolled
-back, currently visible cards are pinned within the same 500-card allowance; other
+back, all rows touching the viewport are pinned independently of the impression threshold within the same 500-card allowance; other
 old cards leave first. A visible pinned card may therefore temporarily sit before
 a gap in retained history. Paging remains forward-only. Its authoritative cursor
 continues after the newest fetched page, while a refetch begins from the first
