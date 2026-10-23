@@ -61,6 +61,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const pendingLikesGivenEvents = useRef(new Map<string, -1 | 1>());
   const likesGivenRevision = useRef(0);
   const profileReadSequence = useRef(0);
+  const appliedCountReadSequence = useRef(0);
 
   const fetchUserProfile = useCallback(async (
     token: string,
@@ -88,6 +89,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         : (await apiV2<{ completed: boolean }>('/onboarding/status', { signal }, token, requestPolicy)).completed;
       assertCurrent();
       const serverLikesGivenCount = Number(profile.likes_given_count);
+      // Failed or still-pending requests cannot supersede a successful count.
+      if (pendingLikesGivenEvents.current.size === 0
+        && likesRevisionAtStart === likesGivenRevision.current) {
+        appliedCountReadSequence.current = Math.max(appliedCountReadSequence.current, readSequence);
+      }
       setUser(current => ({
         ...profile,
         user_id: String(profile.user_id),
@@ -99,7 +105,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         likes_given_count: current && (
           pendingLikesGivenEvents.current.size > 0
           || likesRevisionAtStart !== likesGivenRevision.current
-          || readSequence !== profileReadSequence.current
+          || readSequence < appliedCountReadSequence.current
         ) ? current.likes_given_count
           : Math.max(0, Number.isFinite(serverLikesGivenCount) ? serverLikesGivenCount : 0),
       }));

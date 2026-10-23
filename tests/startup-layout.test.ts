@@ -324,6 +324,37 @@ test('a delayed profile read cannot consume a queued unlike or overwrite a later
   } finally { await app.unmount(); }
 });
 
+test('a newer failed read cannot block a successful count refresh after reactions settle', async () => {
+  const viewer = { user_id: 'alice', username: 'alice', onboarding_completed: true, likes_given_count: 10 };
+  const app = startup({ viewer });
+  await app.mount();
+  try {
+    await act(async () => { app.session.resolve('stored-token'); app.fonts.resolve(); });
+    await act(async () => {
+      app.auth.adjustLikesGivenCount('stale-like', 1);
+      app.auth.settleLikesGivenCountAdjustments(['stale-like']);
+    });
+    assert.equal(app.auth.user?.likes_given_count, 11);
+    const first = deferred<Viewer>();
+    const second = deferred<Viewer>();
+    let firstRead!: Promise<void>;
+    let secondRead!: Promise<void>;
+    app.setProfileRequest(first.promise);
+    await act(async () => { firstRead = app.auth.checkOnboardingStatus(); });
+    app.setProfileRequest(second.promise);
+    await act(async () => { secondRead = app.auth.checkOnboardingStatus(); });
+    // The first response succeeds while the newer request remains in flight.
+    await act(async () => { first.resolve(viewer); await firstRead; });
+    assert.equal(app.auth.user?.likes_given_count, 10);
+    await act(async () => {
+      const rejected = assert.rejects(secondRead, /offline/);
+      second.reject(new Error('offline'));
+      await rejected;
+    });
+    assert.equal(app.auth.user?.likes_given_count, 10);
+  } finally { await app.unmount(); }
+});
+
 test('accepted no-op likes do not fabricate count changes or retire another queued event', async () => {
   const viewer = { user_id: 'alice', username: 'alice', onboarding_completed: true, likes_given_count: 10 };
   const app = startup({ viewer });
