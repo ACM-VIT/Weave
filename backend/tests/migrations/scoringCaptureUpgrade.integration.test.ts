@@ -31,6 +31,8 @@ integration('fresh scoring migration and pre-scoring upgrade preserve baseline r
     const exporting = journal.entries.find((row: { tag: string })=>row.tag==='0044_private_scoring_exports');
     const impression = journal.entries.find((row: { tag: string })=>row.tag==='0045_original_impression_links');
     const lookup = journal.entries.find((row: { tag: string })=>row.tag==='0048_scoring_publication_lookup');
+    const retention = journal.entries.find((row: { tag: string })=>row.tag==='0049_scoring_retention_lock_bounds');
+    assert.equal(retention.idx,52);
     assert.equal(lookup.idx,51);
     assert.equal(impression.idx,48);
     assert.equal(exporting.idx,47);
@@ -45,6 +47,7 @@ integration('fresh scoring migration and pre-scoring upgrade preserve baseline r
     await admin.begin(async tx=>{
       assert.equal(Number((await tx`SELECT count(*) FROM private_scoring.scoring_generations`)[0].count),0);
       assert.equal((await tx`DELETE FROM drizzle.__drizzle_migrations WHERE created_at=${lookup.when} RETURNING hash`).length,1);
+      assert.equal((await tx`DELETE FROM drizzle.__drizzle_migrations WHERE created_at=${retention.when} RETURNING hash`).length,1);
       await tx.unsafe('DROP TABLE telemetry.feed_item_provenance');
       await tx.unsafe('DROP SCHEMA private_scoring CASCADE');
       await tx.unsafe('ALTER TABLE telemetry.interaction_events DROP COLUMN impression_event_id');

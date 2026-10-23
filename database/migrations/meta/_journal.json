@@ -364,6 +364,13 @@
       "when": 1794441600000,
       "tag": "0048_scoring_publication_lookup",
       "breakpoints": true
+    },
+    {
+      "idx": 52,
+      "version": "7",
+      "when": 1794528000000,
+      "tag": "0049_scoring_retention_lock_bounds",
+      "breakpoints": true
     }
   ]
 }
