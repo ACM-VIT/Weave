@@ -18,6 +18,7 @@ function GitHubImportPanelBody({ userId, identityDraft, onSaved, onManual, api =
   const alive = useRef(false);
   const sequence = useRef(0);
   const request = useRef<AbortController | null>(null);
+  const manualAfterCleanup = useRef(false);
   const current = state;
   const update = (_actor: string, values: Partial<State>) => { if (alive.current) setState(previous => ({ ...previous, ...values })); };
 
@@ -34,10 +35,10 @@ function GitHubImportPanelBody({ userId, identityDraft, onSaved, onManual, api =
     return () => { alive.current = false; controller.abort(); request.current?.abort(); };
   }, [api, userId]);
 
-  const run = async (label: string, work: (signal: AbortSignal, isCurrent: () => boolean) => Promise<void>, continueAfterUnmount = false) => {
+  const run = async (label: string, work: (signal: AbortSignal, isCurrent: () => boolean) => Promise<void>) => {
     request.current?.abort();
     const controller = new AbortController();
-    if (!continueAfterUnmount) request.current = controller;
+    request.current = controller;
     const actor = userId, operation = ++sequence.current;
     const isCurrent = () => !controller.signal.aborted && alive.current && sequence.current === operation;
     update(actor, { busy: label, error: '' });
@@ -66,21 +67,30 @@ function GitHubImportPanelBody({ userId, identityDraft, onSaved, onManual, api =
     await onSaved();
     if (isCurrent()) update(userId, { refreshNeeded: false });
   });
-  const closePreview = (continueAfterUnmount = false) => run('Closing preview', async (signal, isCurrent) => {
+  const continueManual = (isCurrent: () => boolean) => {
+    if (isCurrent() && manualAfterCleanup.current) {
+      manualAfterCleanup.current = false;
+      onManual?.();
+    }
+  };
+  const closePreview = () => run('Closing preview', async (signal, isCurrent) => {
     await api.revoke(signal, userId);
     if (!isCurrent()) return;
-    update(userId, { cleanupNeeded: false, refreshNeeded: true });
+    update(userId, { cleanupNeeded: false, refreshNeeded: true,
+      status: { linked: current.status?.linked ?? true, active: false, provenance: {} } });
     await onSaved();
     if (isCurrent()) update(userId, { refreshNeeded: false });
-  }, continueAfterUnmount);
+    continueManual(isCurrent);
+  });
   const decline = () => {
     const shouldClose = Boolean(current.preview || current.busy === 'Reading public activity' || current.cleanupNeeded);
     request.current?.abort(); sequence.current++;
     update(userId, { preview: null, busy: null, declined: true, error: '', cleanupNeeded: shouldClose });
-    onManual?.();
-    // A manual view transition must not cancel its owner-bound consent cleanup.
-    // The API still fences account changes; callbacks remain mounted-only.
-    if (shouldClose) void closePreview(true);
+    manualAfterCleanup.current = shouldClose;
+    // Keep this owner-bound cleanup/retry host mounted until the revoke and
+    // profile refresh settle. Leaving first would discard both failure states.
+    if (shouldClose) void closePreview();
+    else onManual?.();
   };
   const hasSuggestions = current.preview && Object.values(current.preview.suggestions).some(values => values.length > 0);
   return <View style={{ gap: Spacing.two, paddingVertical: Spacing.three, width: '100%' }}>
@@ -94,7 +104,7 @@ function GitHubImportPanelBody({ userId, identityDraft, onSaved, onManual, api =
     {current.error ? <Text accessibilityRole="alert" style={{ fontFamily: Fonts.sans, color: REFERENCE_THEME.text, fontSize: 14, lineHeight: 21 }}>{current.error}</Text> : null}
     {current.cleanupNeeded ? <ImportButton label="Retry closing preview" onPress={() => void closePreview()} disabled={Boolean(current.busy)} /> : null}
     {current.refreshNeeded ? <ImportButton label="Retry account refresh" onPress={() => void run('Refreshing account', async (_signal, isCurrent) => {
-      await onSaved(); if (isCurrent()) update(userId, { refreshNeeded: false });
+      await onSaved(); if (isCurrent()) update(userId, { refreshNeeded: false }); continueManual(isCurrent);
     })} disabled={Boolean(current.busy)} /> : null}
     {current.status?.active ? <>
       <Text style={{ fontFamily: Fonts.sans, color: REFERENCE_THEME.textStrong, lineHeight: 21 }}>Imported {current.status.provenance.collected_at ? new Date(current.status.provenance.collected_at).toLocaleDateString() : 'from public GitHub activity'}. Recommendation updates are prepared asynchronously.</Text>
@@ -115,7 +125,7 @@ function GitHubImportPanelBody({ userId, identityDraft, onSaved, onManual, api =
       const status = await api.status(signal, userId); if (isCurrent()) update(userId, { status });
     })} /> : null}
     {!current.status?.active ? <ImportButton label={current.declined ? 'Show import option' : 'Choose preferences myself'} onPress={() => {
-      if (current.declined) update(userId, { declined: false }); else decline();
+      if (current.declined) { manualAfterCleanup.current = false; update(userId, { declined: false }); } else decline();
     }} /> : null}
   </View>;
 }

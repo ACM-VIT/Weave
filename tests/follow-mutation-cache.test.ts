@@ -110,6 +110,10 @@ test('newly mounted control accepts fresher server relationship but ignores olde
  const key=followStateQueryKey('target','alice');
  f.client.setQueryData(key,true,{updatedAt:Date.now()-100});
  await f.freshRemount(false,Date.now()+100);
+ // Observe the committed query update instead of assuming one five-ms turn.
+ for(let attempt=0;attempt<100&&f.buttons[0].props.accessibilityState.selected!==false;attempt++){
+   await act(async()=>{await new Promise(resolve=>setTimeout(resolve,1));});
+ }
  assert.equal(f.buttons[0].props.accessibilityState.selected,false);
  await f.freshRemount(true,Date.now()-1000);
  assert.equal(f.buttons[0].props.accessibilityState.selected,false);
