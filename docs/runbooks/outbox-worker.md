@@ -49,11 +49,12 @@ node dist/worker.js --role=outbox
 ```
 
 The script passes `--role=outbox`; an explicitly supplied `WORKER_ROLE` must
-match. Each run claims one row immediately before delivery, so the configured
-database lease never expires behind an older queued request. The systemd unit
+match. Four independent slots deliver new feedback, singleton feedback retries,
+onboarding and repository jobs. Each slot claims only its immediate RPC capacity;
+no rows wait in an in-memory delivery backlog. The systemd unit
 gives the container 300 seconds after `SIGTERM` (plus 30 seconds of supervisor
 margin), which exceeds the 240-second repository-index request bound and lets
-the single active row finish before shutdown.
+the active deliveries finish before shutdown.
 `SIGTERM` completes the active run and closes Redis/PostgreSQL connections.
 The outbox unit gives Docker 300 seconds to stop and systemd 330 seconds,
 covering the default 240-second index request and cleanup. When increasing
@@ -62,6 +63,37 @@ the request timeout in seconds plus 60, and `TimeoutStopSec` to at least another
 30 seconds beyond that. For a 600000 ms index timeout, use 660 and 690 seconds.
 Avoid `SIGKILL`, which can leave the current row claimed until reconciliation
 releases its lease.
+
+### Feedback batching and compatibility
+
+`OUTBOX_FEEDBACK_BATCH_SIZE` defaults to 20 and accepts integers from 1 to 100.
+Set it to 1 for singleton rollback. The fixed four slots bound downstream RPC
+concurrency to four per worker process; new feedback batches and retries share
+the feedback endpoint's 429/503 Retry-After cooldown. Existing durable retry
+deadlines, polling and commit notifications remain recovery mechanisms. Repository
+index and refresh admission alternates without bypassing delivered-index checks.
+
+Only first-attempt feedback from independent users is batched. PostgreSQL still
+blocks every later feedback version until its predecessor is delivered. Retries
+use their reserved singleton slot, so a conflicting event cannot repeatedly fail
+unrelated users' batches. Shutdown finishes the admitted RPCs without claiming
+another turn; claim-token checks fence stale completion after lease recovery.
+
+The compatible ML provider returns `durable: true`, acceptance/duplicate counts
+and `acknowledged_event_ids` identifying the durable events. The worker validates
+canonical unique identities and count consistency before acknowledging individual
+outbox rows. A valid subset acknowledges only that subset. Partial enqueue errors,
+transport ambiguity, malformed responses or missing batch identities retain unknown
+members for singleton retry, including after a batch-level terminal error. Existing
+single-event durable aggregate acknowledgements remain compatible with old ML.
+Redis acceptance is not completed vector learning.
+
+Roll out the provider acknowledgement contract before enabling multi-event batches.
+Keep the backend's pinned OpenAPI contract and paired HTTP checks synchronized.
+An old provider remains loss-safe but will trigger singleton retries after batch
+responses lacking identities. No migration, event rewriting, queue reset or new
+listener is needed. Inspect pending/claimed/dead counts, oldest pending age,
+`outbox_feedback_events_per_request` and `outbox_feedback_unacknowledged_total`.
 
 The backend test command runs files serially because database integration files
 share destructive fixtures. Use `RUN_DATABASE_INTEGRATION=1 npm test` only with
