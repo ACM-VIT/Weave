@@ -85,7 +85,16 @@ integration('reservation discovery bounds each cycle on large keyspaces and coal
   // Releasing an old reservation may recreate the old queue; indexed cleanup
   // must remove it while preserving the active version, without another SCAN.
   recording = false;
-  for (const { user, request, token } of requests) await queue.release(user, 0n, request, token);
+  for (const user of users) {
+    await queue.deleteStaleVersions(user, 1n);
+    assert.equal(await queue.depth(user, 0n), 0, 'remove the old queue before recovery recreates it');
+    assert.equal(await redis.zscore(`feed:v2:version-index:${user}`, '0'), null);
+  }
+  for (const { user, request, token } of requests) assert.equal(await queue.release(user, 0n, request, token), true);
+  for (const user of users) {
+    assert.equal(await queue.depth(user, 0n), 12, 'successful releases restore exactly the reserved cards');
+    assert.notEqual(await redis.zscore(`feed:v2:version-index:${user}`, '0'), null, 'recreated queues must be tracked again');
+  }
   commands = []; recording = true;
   for (const user of users) await queue.deleteStaleVersions(user, 1n);
   recording = false;
@@ -95,4 +104,35 @@ integration('reservation discovery bounds each cycle on large keyspaces and coal
     assert.equal(await queue.depth(user, 1n), entries.length);
   }
   t.diagnostic(JSON.stringify({ observersPerCycle: 32, reservations: expected.size, measurements }));
+});
+
+integration('oversized reservation indexes cannot expand one discovery cycle beyond its page budgets', async t => {
+  const url = new URL(process.env.REDIS_TEST_URL ?? 'redis://127.0.0.1:6379/15');
+  assert.ok(['127.0.0.1', 'localhost'].includes(url.hostname) && url.pathname === '/15');
+  const redis = new Redis(url.toString(), { maxRetriesPerRequest: 1 });
+  const queue = new RedisFeedQueue(redis, 30_000);
+  const indexes: string[] = [];
+  t.after(async () => { try { if (indexes.length) await redis.del(...indexes); } finally { redis.disconnect(); } });
+  // Missing metadata simulates crash/expiry-era index records. Each index has
+  // enough unique members to expose an unbounded zrange, and there are enough
+  // indexes to expose an unbounded discovery page even on a tiny keyspace.
+  for (let scope = 0; scope < 64; scope++) {
+    const user = crypto.randomUUID();
+    const index = `feed:v2:reservation-index:${user}:0`; indexes.push(index);
+    const members = Array.from({ length: 64 }, () => `feed:v2:reservation:${user}:0:${crypto.randomUUID()}:meta`);
+    await redis.zadd(index, ...members.flatMap(member => [Date.now() + 30_000, member]));
+    await redis.expire(index, 60);
+  }
+  let indexReads = 0;
+  let metadataReads = 0;
+  const send = redis.sendCommand;
+  redis.sendCommand = function (...args: Parameters<typeof send>) {
+    if (args[0].name === 'zrange') indexReads++;
+    if (args[0].name === 'eval') metadataReads++;
+    return send.apply(this, args);
+  };
+  assert.deepEqual(await queue.scanReservations(), [], 'stale tracking must never manufacture a reservation');
+  assert.ok(indexReads > 0 && indexReads <= 16, `index page escaped its budget: ${indexReads}`);
+  assert.ok(metadataReads > 0 && metadataReads <= 128, `member pages escaped their budget: ${metadataReads}`);
+  t.diagnostic(JSON.stringify({ indexedScopes: 64, membersPerScope: 64, indexReads, metadataReads }));
 });
