@@ -4,7 +4,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import test from 'node:test';
 import { assertDisposableDatabase } from '../database/disposableDatabase.js';
 
-const integration = process.env.RUN_SEARCH_INTEGRATION === '1' ? test : test.skip;
+const integration = process.env.RUN_SEARCH_SQL_INTEGRATION === '1' ? test : test.skip;
 
 integration('real search SQL cancellation retires only its connection and later work can reuse admission', { timeout: 15_000 }, async t => {
   assertDisposableDatabase();
@@ -26,7 +26,7 @@ integration('real search SQL cancellation retires only its connection and later 
     await sql`SELECT pg_sleep(10)`;
   });
   const rejected = assert.rejects(running);
-  await began;
+  await Promise.race([began, running]);
   const visibleUntil = performance.now() + 1_000;
   let active = false;
   while (performance.now() < visibleUntil) {
@@ -44,12 +44,12 @@ integration('real search SQL cancellation retires only its connection and later 
     await sql`SELECT pg_sleep(0.05)`;
     return Number((await sql`SELECT 7 AS result`)[0].result);
   });
-  await independentReady;
+  await Promise.race([independentReady, independent]);
   const cancelledAt = performance.now();
   controller.abort(new Error('HTTP caller disconnected'));
   await rejected;
   const cancellationMs = performance.now() - cancelledAt;
-  assert.ok(cancellationMs < 2_500, `obsolete SQL survived cancellation for ${cancellationMs} ms`);
+  assert.ok(cancellationMs < 500, `obsolete SQL survived cancellation for ${cancellationMs} ms`);
   assert.equal(await independent, 7);
   // PostgreSQL need not observe TCP close during pg_sleep. The scoped server
   // statement deadline must still retire that work within the search budget.
@@ -69,7 +69,7 @@ integration('real search SQL cancellation retires only its connection and later 
   await assert.rejects(searchSql(createSearchWork(undefined, performance.now() + 100),
     async sql => { await sql`SELECT pg_sleep(10)`; }));
   const deadlineMs = performance.now() - deadlineAt;
-  assert.ok(deadlineMs < 2_500, `search deadline did not stop SQL: ${deadlineMs} ms`);
+  assert.ok(deadlineMs < 500, `search deadline did not stop SQL: ${deadlineMs} ms`);
   assert.equal(await searchSql(createSearchWork(), async sql => Number((await sql`SELECT 11 AS result`)[0].result)), 11);
   t.diagnostic(JSON.stringify({ cancellationMs, serverRetirementMs, deadlineMs, cancelledConnectionRetired: true, independentAndReplacementQueries: 'passed' }));
 });
