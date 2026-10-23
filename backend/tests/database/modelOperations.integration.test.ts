@@ -175,3 +175,26 @@ integration('SQL constraint details cannot expose frozen profile source through 
   await sqlClient.unsafe('DROP FUNCTION telemetry.model_fixture_reject()');
  }
 });
+
+integration('only identity-bound applied proof suppresses historical profile withdrawal',async()=>{
+ const owner=await fixture();
+ await sqlClient.begin(async tx=>{
+  await tx`SELECT user_id FROM app.users WHERE user_id=${owner}::uuid FOR KEY SHARE`;
+  const lane=await lockModelLane(tx,owner);assert.ok(lane);
+  for(let version=1;version<=3;version++)await enqueueModelProfile(tx,lane,buildMlOnboardingJob(owner,version,{username:'Tarun',bio:'Rust '+version}));
+ });
+ const originals=await sqlClient`SELECT outbox_id,source_envelope_sha256,model_operation_version FROM telemetry.ml_outbox WHERE aggregate_id=${owner}::uuid ORDER BY model_operation_version`;
+ for(const [index,row] of originals.entries()){
+  const proof={model_profile_applied:true,status:'applied',basis_status:'ready',operation_id:String(row.outbox_id),model_operation_version:String(row.model_operation_version),
+   applied_profile_version:String(row.model_operation_version),source_envelope_sha256:index===0?'0'.repeat(64):String(row.source_envelope_sha256),
+   operation_head:'a'.repeat(64),observed_head:'b'.repeat(64)};
+  await sqlClient`UPDATE telemetry.ml_outbox SET status='delivered',response_payload=${index===2?null:JSON.stringify(proof)}::jsonb WHERE outbox_id=${String(row.outbox_id)}::uuid`;
+ }
+ await sqlClient.begin(async tx=>{
+  await tx`SELECT user_id FROM app.users WHERE user_id=${owner}::uuid FOR KEY SHARE`;
+  const lane=await lockModelLane(tx,owner);assert.ok(lane);await withdrawPendingProfiles(tx,lane,'3');
+ });
+ const rows=await sqlClient`SELECT withdrawal_json,status FROM telemetry.ml_outbox WHERE aggregate_id=${owner}::uuid ORDER BY model_operation_version`;
+ assert.equal(typeof rows[0].withdrawal_json,'string');assert.equal(rows[1].withdrawal_json,null);assert.equal(rows[1].status,'delivered');
+ assert.equal(typeof rows[2].withdrawal_json,'string');
+});

@@ -128,24 +128,36 @@ export async function enqueueProfileDelivery(tx:TransactionSql,job:MlOnboardingJ
 
 /** Consent revocation preserves originals and sends only bounded source attestations. */
 async function withdrawPendingProfilesInTransaction(tx:TransactionSql,lane:LockedModelLane,throughProfileVersion:string):Promise<void>{
-  const rows=await tx`SELECT * FROM telemetry.ml_outbox WHERE aggregate_id=${lane.userId}::uuid AND job_type='model_operation'
+  const rows=await tx`SELECT outbox_id,model_operation_version,previous_model_operation_version,source_envelope_sha256,
+    operation_json::jsonb->>'accepted_at_ms' AS accepted_at_ms,operation_json::jsonb->>'policy_version' AS policy_version,
+    operation_json::jsonb->>'policy_sha256' AS policy_sha256,operation_json::jsonb->'operation'->>'job_id' AS profile_job_id,
+    operation_json::jsonb->'operation'->>'profile_version' AS profile_version,
+    operation_json::jsonb->'operation'->'allow_genesis' AS allow_genesis
+    FROM telemetry.ml_outbox WHERE aggregate_id=${lane.userId}::uuid AND job_type='model_operation'
     AND operation_json::jsonb->>'kind'='profile' AND withdrawal_json IS NULL
+    AND NOT COALESCE(response_payload->>'model_profile_applied'='true'
+      AND response_payload->>'source_envelope_sha256'=source_envelope_sha256
+      AND response_payload->>'model_operation_version'=model_operation_version::text
+      AND response_payload->>'operation_id'=outbox_id::text
+      AND response_payload->>'applied_profile_version'=operation_json::jsonb->'operation'->>'profile_version'
+      AND response_payload->>'status'='applied' AND response_payload->>'basis_status'='ready'
+      AND response_payload->>'operation_head' ~ '^[a-f0-9]{64}$' AND response_payload->>'observed_head' ~ '^[a-f0-9]{64}$',false)
     AND (operation_json::jsonb->'operation'->>'profile_version')::bigint<=${throughProfileVersion}::bigint ORDER BY model_operation_version FOR UPDATE`;
+  if(!rows.length)return;
   const [clock]=await tx`SELECT floor(extract(epoch FROM clock_timestamp())*1000)::bigint AS revoked_at_ms`;
-  for(const row of rows){
-    const original=JSON.parse(String(row.operation_json)) as {operation_id:string;user_id:string;model_operation_version:string;previous_model_operation_version:string;
-      accepted_at_ms:string;policy_version:string;policy_sha256:string;operation:{job_id:string;profile_version:string;allow_genesis:boolean}};
-    const revokedAtMs=String(clock.revoked_at_ms);
-    const witness=modelDigest(canonicalJson({user_id:lane.userId,operation_id:original.operation_id,
+  const withdrawals=rows.map(row=>{
+    const revokedAtMs=String(clock.revoked_at_ms),operationId=String(row.outbox_id);
+    const witness=modelDigest(canonicalJson({user_id:lane.userId,operation_id:operationId,
       source_envelope_sha256:String(row.source_envelope_sha256),revoked_at_ms:revokedAtMs,reason:'github_consent_revoked'}));
-    const withdrawal=canonicalJson({schema_version:1,operation_id:original.operation_id,user_id:lane.userId,
-      model_operation_version:original.model_operation_version,previous_model_operation_version:original.previous_model_operation_version,
-      accepted_at_ms:original.accepted_at_ms,policy_version:original.policy_version,policy_sha256:original.policy_sha256,
-      source_envelope_sha256:String(row.source_envelope_sha256),profile_job_id:original.operation.job_id,profile_version:original.operation.profile_version,
-      allow_genesis:original.operation.allow_genesis,revoked_at_ms:revokedAtMs,revocation_witness_sha256:witness,reason:'github_consent_revoked'});
-    await tx`UPDATE telemetry.ml_outbox SET withdrawal_json=${withdrawal},status='pending',attempts=0,
-      available_at=now(),claim_token=NULL,claimed_at=NULL,last_error=NULL WHERE outbox_id=${String(row.outbox_id)}::uuid`;
-  }
+    return {outbox_id:operationId,withdrawal_json:canonicalJson({schema_version:1,operation_id:operationId,user_id:lane.userId,
+      model_operation_version:String(row.model_operation_version),previous_model_operation_version:String(row.previous_model_operation_version),
+      accepted_at_ms:String(row.accepted_at_ms),policy_version:String(row.policy_version),policy_sha256:String(row.policy_sha256),
+      source_envelope_sha256:String(row.source_envelope_sha256),profile_job_id:String(row.profile_job_id),profile_version:String(row.profile_version),
+      allow_genesis:row.allow_genesis===true,revoked_at_ms:revokedAtMs,revocation_witness_sha256:witness,reason:'github_consent_revoked'})};
+  });
+  await tx`UPDATE telemetry.ml_outbox target SET withdrawal_json=input.withdrawal_json,status='pending',attempts=0,
+    available_at=now(),claim_token=NULL,claimed_at=NULL,last_error=NULL FROM jsonb_to_recordset(${JSON.stringify(withdrawals)}::jsonb)
+    AS input(outbox_id uuid,withdrawal_json text) WHERE target.outbox_id=input.outbox_id`;
 }
 
 export async function withdrawPendingProfiles(tx:TransactionSql,lane:LockedModelLane,throughProfileVersion:string):Promise<void>{
