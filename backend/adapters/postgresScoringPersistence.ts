@@ -21,12 +21,16 @@ export class PostgresScoringPersistence implements ScoringPersistencePort {
         SELECT pg_has_role(current_user,'ghsocial_scoring_writer','MEMBER') AS writer,
           pg_has_role(current_user,'ghsocial_scoring_exporter','MEMBER') AS exporter,
           pg_has_role(current_user,'ghsocial_scoring_retention','MEMBER') AS retention,
+          pg_has_role(current_user,'ghsocial_backend','MEMBER') AS product,
           rolsuper,rolcreaterole,rolcreatedb,rolreplication,rolbypassrls,
           has_any_column_privilege('private_scoring.scoring_inputs','SELECT') AS reads_inputs,
-          has_any_column_privilege('private_scoring.scoring_generations','SELECT') AS reads_context
+          has_any_column_privilege('private_scoring.scoring_generations','SELECT') AS reads_context,
+          EXISTS(SELECT 1 FROM pg_class relation JOIN pg_namespace namespace ON namespace.oid=relation.relnamespace
+            WHERE namespace.nspname IN ('app','telemetry') AND relation.relkind IN ('r','p','v','m','f')
+              AND has_any_column_privilege(relation.oid,'SELECT')) AS reads_product
         FROM pg_roles WHERE rolname=current_user
       `;
-      if (!role?.writer || role.exporter || role.retention || role.rolsuper || role.rolcreaterole
+      if (!role?.writer || role.product || role.reads_product || role.exporter || role.retention || role.rolsuper || role.rolcreaterole
         || role.rolcreatedb || role.rolreplication || role.rolbypassrls || role.reads_inputs || role.reads_context) {
         throw new ScoringPersistenceError('permission');
       }

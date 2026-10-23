@@ -50,6 +50,21 @@ integration('private scoring persistence enforces exact bytes, atomic retries, r
     await assert.rejects(privileged.persist(validated(), policy), (error: unknown) =>
       error instanceof ScoringPersistenceError && error.reason === 'permission');
 
+    // A separate URL must also be a separate least-privilege credential.
+    await admin.unsafe(`GRANT ghsocial_backend TO ${writerRole}`);
+    try {
+      await assert.rejects(new PostgresScoringPersistence(writer).persist(validated(),policy),
+        (error:unknown)=>error instanceof ScoringPersistenceError && error.reason==='permission');
+    } finally { await admin.unsafe(`REVOKE ghsocial_backend FROM ${writerRole}`); }
+    await admin.unsafe(`GRANT USAGE ON SCHEMA app TO ${writerRole}`);
+    await admin.unsafe(`GRANT SELECT(user_id) ON app.users TO ${writerRole}`);
+    try {
+      await assert.rejects(new PostgresScoringPersistence(writer).persist(validated(),policy),
+        (error:unknown)=>error instanceof ScoringPersistenceError && error.reason==='permission');
+    } finally {
+      await admin.unsafe(`REVOKE SELECT(user_id) ON app.users FROM ${writerRole}`);
+      await admin.unsafe(`REVOKE USAGE ON SCHEMA app FROM ${writerRole}`);
+    }
     const storage = new PostgresScoringPersistence(writer);
     const [first, retry] = await Promise.all([storage.persist(validated(), policy), storage.persist(validated(), policy)]);
     assert.deepEqual(first, retry, 'concurrent identical submissions reuse one immutable set and expiry');
