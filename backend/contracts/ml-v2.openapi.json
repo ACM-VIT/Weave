@@ -1,0 +1,1876 @@
+{
+  "components": {
+    "schemas": {
+      "CardSummaryArtifact": {
+        "additionalProperties": false,
+        "description": "Versioned summary artifact returned to the canonical backend.",
+        "properties": {
+          "format_version": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Format Version",
+            "type": "string"
+          },
+          "highlights": {
+            "items": {
+              "maxLength": 96,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 3,
+            "title": "Highlights",
+            "type": "array"
+          },
+          "model_version": {
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Model Version",
+            "type": "string"
+          },
+          "prompt_version": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Prompt Version",
+            "type": "string"
+          },
+          "source": {
+            "enum": [
+              "generated",
+              "description_fallback"
+            ],
+            "title": "Source",
+            "type": "string"
+          },
+          "summary": {
+            "maxLength": 360,
+            "minLength": 1,
+            "title": "Summary",
+            "type": "string"
+          }
+        },
+        "required": [
+          "summary",
+          "prompt_version",
+          "model_version",
+          "format_version",
+          "source"
+        ],
+        "title": "CardSummaryArtifact",
+        "type": "object"
+      },
+      "FeedbackBatch": {
+        "additionalProperties": false,
+        "properties": {
+          "events": {
+            "items": {
+              "$ref": "#/components/schemas/FeedbackEvent"
+            },
+            "maxItems": 100,
+            "minItems": 1,
+            "title": "Events",
+            "type": "array"
+          },
+          "schema_version": {
+            "const": 2,
+            "title": "Schema Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "schema_version",
+          "events"
+        ],
+        "title": "FeedbackBatch",
+        "type": "object"
+      },
+      "FeedbackEvent": {
+        "additionalProperties": false,
+        "properties": {
+          "dwell_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dwell Ms"
+          },
+          "event_id": {
+            "format": "uuid",
+            "title": "Event Id",
+            "type": "string"
+          },
+          "event_type": {
+            "enum": [
+              "dwell",
+              "readme_open",
+              "github_open",
+              "like",
+              "unlike",
+              "dislike",
+              "undislike",
+              "save",
+              "unsave",
+              "share"
+            ],
+            "title": "Event Type",
+            "type": "string"
+          },
+          "feedback_version": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "pattern": "^[1-9][0-9]*$",
+                "type": "string"
+              }
+            ],
+            "title": "Feedback Version"
+          },
+          "occurred_at": {
+            "format": "date-time",
+            "title": "Occurred At",
+            "type": "string"
+          },
+          "repo_id": {
+            "format": "uuid",
+            "title": "Repo Id",
+            "type": "string"
+          },
+          "user_id": {
+            "format": "uuid",
+            "title": "User Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "event_id",
+          "user_id",
+          "repo_id",
+          "feedback_version",
+          "event_type",
+          "occurred_at"
+        ],
+        "title": "FeedbackEvent",
+        "type": "object"
+      },
+      "FeedbackResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "accepted": {
+            "maximum": 100.0,
+            "minimum": 0.0,
+            "title": "Accepted",
+            "type": "integer"
+          },
+          "duplicates": {
+            "maximum": 100.0,
+            "minimum": 0.0,
+            "title": "Duplicates",
+            "type": "integer"
+          },
+          "durable": {
+            "const": true,
+            "title": "Durable",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "accepted",
+          "duplicates",
+          "durable"
+        ],
+        "title": "FeedbackResponse",
+        "type": "object"
+      },
+      "OnboardingJob": {
+        "additionalProperties": false,
+        "properties": {
+          "job_id": {
+            "format": "uuid",
+            "title": "Job Id",
+            "type": "string"
+          },
+          "profile": {
+            "$ref": "#/components/schemas/OnboardingProfile"
+          },
+          "profile_version": {
+            "minimum": 1.0,
+            "title": "Profile Version",
+            "type": "integer"
+          },
+          "schema_version": {
+            "const": 2,
+            "title": "Schema Version",
+            "type": "integer"
+          },
+          "user_id": {
+            "format": "uuid",
+            "title": "User Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "schema_version",
+          "job_id",
+          "user_id",
+          "profile_version",
+          "profile"
+        ],
+        "title": "OnboardingJob",
+        "type": "object"
+      },
+      "OnboardingProfile": {
+        "additionalProperties": false,
+        "properties": {
+          "avatar_url": {
+            "anyOf": [
+              {
+                "maxLength": 2048,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Avatar Url"
+          },
+          "bio": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bio"
+          },
+          "full_name": {
+            "anyOf": [
+              {
+                "maxLength": 512,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Full Name"
+          },
+          "github_username": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Github Username"
+          },
+          "interests": {
+            "items": {
+              "maxLength": 128,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 100,
+            "title": "Interests",
+            "type": "array"
+          },
+          "skills": {
+            "items": {
+              "maxLength": 128,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 100,
+            "title": "Skills",
+            "type": "array"
+          },
+          "tech_stack": {
+            "items": {
+              "maxLength": 128,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 100,
+            "title": "Tech Stack",
+            "type": "array"
+          },
+          "topics": {
+            "items": {
+              "maxLength": 128,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 100,
+            "title": "Topics",
+            "type": "array"
+          },
+          "username": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Username"
+          }
+        },
+        "title": "OnboardingProfile",
+        "type": "object"
+      },
+      "OnboardingResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "accepted": {
+            "const": true,
+            "title": "Accepted",
+            "type": "boolean"
+          },
+          "profile_version": {
+            "minimum": 1.0,
+            "title": "Profile Version",
+            "type": "integer"
+          },
+          "status": {
+            "enum": [
+              "applied",
+              "duplicate",
+              "current"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "user_id": {
+            "format": "uuid",
+            "title": "User Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "accepted",
+          "status",
+          "user_id",
+          "profile_version"
+        ],
+        "title": "OnboardingResponse",
+        "type": "object"
+      },
+      "RecommendationContext": {
+        "additionalProperties": false,
+        "properties": {
+          "cold_start": {
+            "default": false,
+            "title": "Cold Start",
+            "type": "boolean"
+          },
+          "locale": {
+            "anyOf": [
+              {
+                "maxLength": 32,
+                "minLength": 2,
+                "pattern": "^[A-Za-z]{2,3}(?:[-_][A-Za-z0-9]{2,8})*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Locale"
+          }
+        },
+        "title": "RecommendationContext",
+        "type": "object"
+      },
+      "RecommendationContextStatus": {
+        "additionalProperties": false,
+        "properties": {
+          "cold_start_applied": {
+            "title": "Cold Start Applied",
+            "type": "boolean"
+          },
+          "locale": {
+            "enum": [
+              "reserved_unused",
+              "not_provided"
+            ],
+            "title": "Locale",
+            "type": "string"
+          }
+        },
+        "required": [
+          "cold_start_applied",
+          "locale"
+        ],
+        "title": "RecommendationContextStatus",
+        "type": "object"
+      },
+      "RecommendationItem": {
+        "additionalProperties": false,
+        "properties": {
+          "repo_id": {
+            "format": "uuid",
+            "title": "Repo Id",
+            "type": "string"
+          },
+          "score": {
+            "title": "Score",
+            "type": "number"
+          },
+          "source": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Source",
+            "type": "string"
+          }
+        },
+        "required": [
+          "repo_id",
+          "score",
+          "source"
+        ],
+        "title": "RecommendationItem",
+        "type": "object"
+      },
+      "RecommendationRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "context": {
+            "$ref": "#/components/schemas/RecommendationContext"
+          },
+          "exclude_repo_ids": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "maxItems": 500,
+            "title": "Exclude Repo Ids",
+            "type": "array"
+          },
+          "feed_version": {
+            "minimum": 1.0,
+            "title": "Feed Version",
+            "type": "integer"
+          },
+          "generation_id": {
+            "format": "uuid",
+            "title": "Generation Id",
+            "type": "string"
+          },
+          "limit": {
+            "maximum": 100.0,
+            "minimum": 1.0,
+            "title": "Limit",
+            "type": "integer"
+          },
+          "schema_version": {
+            "const": 2,
+            "title": "Schema Version",
+            "type": "integer"
+          },
+          "social_repo_ids": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "maxItems": 500,
+            "title": "Social Repo Ids",
+            "type": "array"
+          },
+          "user_id": {
+            "format": "uuid",
+            "title": "User Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "schema_version",
+          "generation_id",
+          "user_id",
+          "feed_version",
+          "limit",
+          "context"
+        ],
+        "title": "RecommendationRequest",
+        "type": "object"
+      },
+      "RecommendationResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "context_status": {
+            "$ref": "#/components/schemas/RecommendationContextStatus"
+          },
+          "embedding_version": {
+            "maxLength": 1048,
+            "minLength": 1,
+            "title": "Embedding Version",
+            "type": "string"
+          },
+          "embedding_versions": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Embedding Versions",
+            "type": "array"
+          },
+          "fallback_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fallback Code"
+          },
+          "fallback_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fallback Reason"
+          },
+          "feed_version": {
+            "minimum": 1.0,
+            "title": "Feed Version",
+            "type": "integer"
+          },
+          "generation_id": {
+            "format": "uuid",
+            "title": "Generation Id",
+            "type": "string"
+          },
+          "heavy_ranker_selected": {
+            "title": "Heavy Ranker Selected",
+            "type": "boolean"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/RecommendationItem"
+            },
+            "maxItems": 150,
+            "title": "Items",
+            "type": "array"
+          },
+          "model_version": {
+            "maxLength": 512,
+            "minLength": 1,
+            "title": "Model Version",
+            "type": "string"
+          },
+          "ranker_applied": {
+            "title": "Ranker Applied",
+            "type": "boolean"
+          },
+          "retrieval_mode": {
+            "title": "Retrieval Mode",
+            "type": "string"
+          },
+          "schema_version": {
+            "const": 2,
+            "title": "Schema Version",
+            "type": "integer"
+          },
+          "served_ranker": {
+            "enum": [
+              "heavy",
+              "hybrid"
+            ],
+            "title": "Served Ranker",
+            "type": "string"
+          },
+          "user_id": {
+            "format": "uuid",
+            "title": "User Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "schema_version",
+          "generation_id",
+          "user_id",
+          "feed_version",
+          "model_version",
+          "embedding_version",
+          "embedding_versions",
+          "served_ranker",
+          "heavy_ranker_selected",
+          "ranker_applied",
+          "fallback_code",
+          "fallback_reason",
+          "retrieval_mode",
+          "context_status",
+          "items"
+        ],
+        "title": "RecommendationResponse",
+        "type": "object"
+      },
+      "RepositoryFeaturePatch": {
+        "additionalProperties": false,
+        "properties": {
+          "activity_score": {
+            "anyOf": [
+              {
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Activity Score"
+          },
+          "code_health": {
+            "anyOf": [
+              {
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Code Health"
+          },
+          "delta_30d": {
+            "anyOf": [
+              {
+                "maximum": 2147483647.0,
+                "minimum": -2147483648.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Delta 30D"
+          },
+          "delta_3d": {
+            "anyOf": [
+              {
+                "maximum": 2147483647.0,
+                "minimum": -2147483648.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Delta 3D"
+          },
+          "delta_7d": {
+            "anyOf": [
+              {
+                "maximum": 2147483647.0,
+                "minimum": -2147483648.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Delta 7D"
+          },
+          "discovery_band": {
+            "anyOf": [
+              {
+                "maxLength": 512,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Discovery Band"
+          },
+          "discovery_category": {
+            "anyOf": [
+              {
+                "maxLength": 512,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Discovery Category"
+          },
+          "doc_quality": {
+            "anyOf": [
+              {
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Doc Quality"
+          },
+          "fork_count": {
+            "anyOf": [
+              {
+                "maximum": 9.223372036854776e+18,
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fork Count"
+          },
+          "mentionable_users_count": {
+            "anyOf": [
+              {
+                "maximum": 9.223372036854776e+18,
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mentionable Users Count"
+          },
+          "open_issues_count": {
+            "anyOf": [
+              {
+                "maximum": 9.223372036854776e+18,
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Open Issues Count"
+          },
+          "pushed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pushed At"
+          },
+          "pushed_days_ago": {
+            "anyOf": [
+              {
+                "maximum": 100000.0,
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pushed Days Ago"
+          },
+          "star_count": {
+            "anyOf": [
+              {
+                "maximum": 9.223372036854776e+18,
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Star Count"
+          },
+          "trend_velocity": {
+            "anyOf": [
+              {
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Trend Velocity"
+          },
+          "updated_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updated At"
+          }
+        },
+        "title": "RepositoryFeaturePatch",
+        "type": "object"
+      },
+      "RepositoryIndexResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "accepted": {
+            "const": true,
+            "title": "Accepted",
+            "type": "boolean"
+          },
+          "card_summary": {
+            "$ref": "#/components/schemas/CardSummaryArtifact"
+          },
+          "content_version": {
+            "minimum": 1.0,
+            "title": "Content Version",
+            "type": "integer"
+          },
+          "embedding_version": {
+            "maxLength": 512,
+            "minLength": 1,
+            "title": "Embedding Version",
+            "type": "string"
+          },
+          "job_id": {
+            "format": "uuid",
+            "title": "Job Id",
+            "type": "string"
+          },
+          "repo_id": {
+            "format": "uuid",
+            "title": "Repo Id",
+            "type": "string"
+          },
+          "schema_version": {
+            "const": 2,
+            "title": "Schema Version",
+            "type": "integer"
+          },
+          "status": {
+            "enum": [
+              "applied",
+              "duplicate",
+              "current"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "schema_version",
+          "accepted",
+          "status",
+          "job_id",
+          "repo_id",
+          "content_version",
+          "embedding_version",
+          "card_summary"
+        ],
+        "title": "RepositoryIndexResponse",
+        "type": "object"
+      },
+      "RepositoryJob": {
+        "additionalProperties": false,
+        "properties": {
+          "content_version": {
+            "minimum": 1.0,
+            "title": "Content Version",
+            "type": "integer"
+          },
+          "job_id": {
+            "format": "uuid",
+            "title": "Job Id",
+            "type": "string"
+          },
+          "repo_id": {
+            "format": "uuid",
+            "title": "Repo Id",
+            "type": "string"
+          },
+          "repository": {
+            "$ref": "#/components/schemas/RepositorySource"
+          },
+          "schema_version": {
+            "const": 2,
+            "title": "Schema Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "schema_version",
+          "job_id",
+          "repo_id",
+          "content_version",
+          "repository"
+        ],
+        "title": "RepositoryJob",
+        "type": "object"
+      },
+      "RepositoryRefreshJob": {
+        "additionalProperties": false,
+        "properties": {
+          "feature_version": {
+            "minimum": 1.0,
+            "title": "Feature Version",
+            "type": "integer"
+          },
+          "features": {
+            "$ref": "#/components/schemas/RepositoryFeaturePatch"
+          },
+          "job_id": {
+            "format": "uuid",
+            "title": "Job Id",
+            "type": "string"
+          },
+          "repo_id": {
+            "format": "uuid",
+            "title": "Repo Id",
+            "type": "string"
+          },
+          "schema_version": {
+            "const": 2,
+            "title": "Schema Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "schema_version",
+          "job_id",
+          "repo_id",
+          "feature_version",
+          "features"
+        ],
+        "title": "RepositoryRefreshJob",
+        "type": "object"
+      },
+      "RepositoryRefreshResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "accepted": {
+            "const": true,
+            "title": "Accepted",
+            "type": "boolean"
+          },
+          "feature_version": {
+            "minimum": 1.0,
+            "title": "Feature Version",
+            "type": "integer"
+          },
+          "repo_id": {
+            "format": "uuid",
+            "title": "Repo Id",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "applied",
+              "duplicate",
+              "current"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "accepted",
+          "status",
+          "repo_id",
+          "feature_version"
+        ],
+        "title": "RepositoryRefreshResponse",
+        "type": "object"
+      },
+      "RepositorySearchFilters": {
+        "additionalProperties": false,
+        "properties": {
+          "languages": {
+            "items": {
+              "maxLength": 64,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 10,
+            "title": "Languages",
+            "type": "array"
+          },
+          "topics": {
+            "items": {
+              "maxLength": 100,
+              "minLength": 1,
+              "pattern": "^[a-z0-9][a-z0-9-]*$",
+              "type": "string"
+            },
+            "maxItems": 10,
+            "title": "Topics",
+            "type": "array"
+          }
+        },
+        "title": "RepositorySearchFilters",
+        "type": "object"
+      },
+      "RepositorySearchHit": {
+        "additionalProperties": false,
+        "properties": {
+          "repo_id": {
+            "format": "uuid",
+            "title": "Repo Id",
+            "type": "string"
+          },
+          "score": {
+            "maximum": 1.0,
+            "minimum": -1.0,
+            "title": "Score",
+            "type": "number"
+          }
+        },
+        "required": [
+          "repo_id",
+          "score"
+        ],
+        "title": "RepositorySearchHit",
+        "type": "object"
+      },
+      "RepositorySearchRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "exclude_repo_ids": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "maxItems": 500,
+            "title": "Exclude Repo Ids",
+            "type": "array"
+          },
+          "filters": {
+            "$ref": "#/components/schemas/RepositorySearchFilters"
+          },
+          "limit": {
+            "maximum": 100.0,
+            "minimum": 1.0,
+            "title": "Limit",
+            "type": "integer"
+          },
+          "query": {
+            "maxLength": 512,
+            "minLength": 2,
+            "title": "Query",
+            "type": "string"
+          },
+          "schema_version": {
+            "const": 2,
+            "title": "Schema Version",
+            "type": "integer"
+          },
+          "search_id": {
+            "format": "uuid",
+            "title": "Search Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "schema_version",
+          "search_id",
+          "query",
+          "limit"
+        ],
+        "title": "RepositorySearchRequest",
+        "type": "object"
+      },
+      "RepositorySearchResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "embedding_version": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Embedding Version",
+            "type": "string"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/RepositorySearchHit"
+            },
+            "maxItems": 100,
+            "title": "Items",
+            "type": "array"
+          },
+          "schema_version": {
+            "const": 2,
+            "title": "Schema Version",
+            "type": "integer"
+          },
+          "search_id": {
+            "format": "uuid",
+            "title": "Search Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "schema_version",
+          "search_id",
+          "embedding_version",
+          "items"
+        ],
+        "title": "RepositorySearchResponse",
+        "type": "object"
+      },
+      "RepositorySource": {
+        "additionalProperties": false,
+        "properties": {
+          "content_hash": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Content Hash"
+          },
+          "created_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created At"
+          },
+          "delta_30d": {
+            "default": 0,
+            "maximum": 2147483647.0,
+            "minimum": -2147483648.0,
+            "title": "Delta 30D",
+            "type": "integer"
+          },
+          "delta_3d": {
+            "default": 0,
+            "maximum": 2147483647.0,
+            "minimum": -2147483648.0,
+            "title": "Delta 3D",
+            "type": "integer"
+          },
+          "delta_7d": {
+            "default": 0,
+            "maximum": 2147483647.0,
+            "minimum": -2147483648.0,
+            "title": "Delta 7D",
+            "type": "integer"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "maxLength": 10000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "discovery_band": {
+            "anyOf": [
+              {
+                "maxLength": 512,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Discovery Band"
+          },
+          "discovery_category": {
+            "anyOf": [
+              {
+                "maxLength": 512,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Discovery Category"
+          },
+          "extracted_paragraphs": {
+            "items": {
+              "maxLength": 10000,
+              "type": "string"
+            },
+            "maxItems": 512,
+            "title": "Extracted Paragraphs",
+            "type": "array"
+          },
+          "fork_count": {
+            "default": 0,
+            "maximum": 9.223372036854776e+18,
+            "minimum": 0.0,
+            "title": "Fork Count",
+            "type": "integer"
+          },
+          "full_name": {
+            "maxLength": 256,
+            "minLength": 3,
+            "pattern": "^[^/\\s]+/[^/\\s]+$",
+            "title": "Full Name",
+            "type": "string"
+          },
+          "github_id": {
+            "anyOf": [
+              {
+                "pattern": "^[0-9]{1,32}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Github Id"
+          },
+          "github_node_id": {
+            "anyOf": [
+              {
+                "maxLength": 512,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Github Node Id"
+          },
+          "html_url": {
+            "anyOf": [
+              {
+                "maxLength": 2048,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Html Url"
+          },
+          "languages": {
+            "items": {
+              "maxLength": 128,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 100,
+            "title": "Languages",
+            "type": "array"
+          },
+          "mentionable_users_count": {
+            "default": 0,
+            "maximum": 9.223372036854776e+18,
+            "minimum": 0.0,
+            "title": "Mentionable Users Count",
+            "type": "integer"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "observed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Observed At"
+          },
+          "open_issues_count": {
+            "default": 0,
+            "maximum": 9.223372036854776e+18,
+            "minimum": 0.0,
+            "title": "Open Issues Count",
+            "type": "integer"
+          },
+          "owner": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Owner"
+          },
+          "primary_language": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Primary Language"
+          },
+          "pushed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pushed At"
+          },
+          "pushed_days_ago": {
+            "default": 999,
+            "maximum": 100000.0,
+            "minimum": 0.0,
+            "title": "Pushed Days Ago",
+            "type": "integer"
+          },
+          "readme": {
+            "anyOf": [
+              {
+                "maxLength": 1000000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Readme"
+          },
+          "readme_base_url": {
+            "anyOf": [
+              {
+                "maxLength": 2048,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Readme Base Url"
+          },
+          "readme_default_branch": {
+            "anyOf": [
+              {
+                "maxLength": 256,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Readme Default Branch"
+          },
+          "readme_length": {
+            "default": 0,
+            "maximum": 9.223372036854776e+18,
+            "minimum": 0.0,
+            "title": "Readme Length",
+            "type": "integer"
+          },
+          "readme_source_path": {
+            "anyOf": [
+              {
+                "maxLength": 1024,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Readme Source Path"
+          },
+          "readme_to_codebase_ratio": {
+            "default": 0.0,
+            "minimum": 0.0,
+            "title": "Readme To Codebase Ratio",
+            "type": "number"
+          },
+          "recent_commits": {
+            "items": {
+              "format": "date-time",
+              "type": "string"
+            },
+            "maxItems": 100,
+            "title": "Recent Commits",
+            "type": "array"
+          },
+          "repo_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Repo Id"
+          },
+          "star_count": {
+            "default": 0,
+            "maximum": 9.223372036854776e+18,
+            "minimum": 0.0,
+            "title": "Star Count",
+            "type": "integer"
+          },
+          "topics": {
+            "items": {
+              "maxLength": 128,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 200,
+            "title": "Topics",
+            "type": "array"
+          },
+          "updated_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updated At"
+          }
+        },
+        "required": [
+          "full_name"
+        ],
+        "title": "RepositorySource",
+        "type": "object"
+      },
+      "RequestValidationDetail": {
+        "additionalProperties": false,
+        "properties": {
+          "message": {
+            "title": "Message",
+            "type": "string"
+          },
+          "path": {
+            "title": "Path",
+            "type": "string"
+          },
+          "type": {
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path",
+          "message",
+          "type"
+        ],
+        "title": "RequestValidationDetail",
+        "type": "object"
+      },
+      "RequestValidationResponse": {
+        "additionalProperties": false,
+        "description": "Safe validation envelope emitted by the integrated application handler.",
+        "properties": {
+          "code": {
+            "const": "REQUEST_VALIDATION_FAILED",
+            "title": "Code",
+            "type": "string"
+          },
+          "detail": {
+            "title": "Detail",
+            "type": "string"
+          },
+          "details": {
+            "items": {
+              "$ref": "#/components/schemas/RequestValidationDetail"
+            },
+            "title": "Details",
+            "type": "array"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          },
+          "request_id": {
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9._:-]+$",
+            "title": "Request Id",
+            "type": "string"
+          },
+          "retryable": {
+            "const": false,
+            "title": "Retryable",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "detail",
+          "code",
+          "message",
+          "retryable",
+          "request_id",
+          "details"
+        ],
+        "title": "RequestValidationResponse",
+        "type": "object"
+      }
+    },
+    "securitySchemes": {
+      "InternalSecret": {
+        "in": "header",
+        "name": "x-internal-secret",
+        "type": "apiKey"
+      }
+    }
+  },
+  "info": {
+    "description": "Authenticated ML operations and durable feedback ingestion.",
+    "title": "Git Social ML API",
+    "version": "2.0.0",
+    "x-database-schema-owner": "ACM-VIT/Weave/database/migrations",
+    "x-online-product-database-access": false,
+    "x-product-schema-version": 2
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/api/v2/feedback/batch": {
+      "post": {
+        "operationId": "submit_feedback_api_v2_feedback_batch_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FeedbackBatch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FeedbackResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestValidationResponse"
+                }
+              }
+            },
+            "description": "Request validation failed"
+          }
+        },
+        "security": [
+          {
+            "InternalSecret": []
+          }
+        ],
+        "summary": "Submit Feedback",
+        "tags": [
+          "v2"
+        ]
+      }
+    },
+    "/api/v2/recommendations/generate": {
+      "post": {
+        "operationId": "generate_recommendations_api_v2_recommendations_generate_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RecommendationRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RecommendationResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestValidationResponse"
+                }
+              }
+            },
+            "description": "Request validation failed"
+          }
+        },
+        "security": [
+          {
+            "InternalSecret": []
+          }
+        ],
+        "summary": "Generate Recommendations",
+        "tags": [
+          "v2"
+        ]
+      }
+    },
+    "/api/v2/repositories/embed": {
+      "post": {
+        "operationId": "embed_repository_api_v2_repositories_embed_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RepositoryJob"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RepositoryIndexResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestValidationResponse"
+                }
+              }
+            },
+            "description": "Request validation failed"
+          }
+        },
+        "security": [
+          {
+            "InternalSecret": []
+          }
+        ],
+        "summary": "Embed Repository",
+        "tags": [
+          "v2"
+        ]
+      }
+    },
+    "/api/v2/repositories/refresh": {
+      "post": {
+        "operationId": "refresh_repository_api_v2_repositories_refresh_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RepositoryRefreshJob"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RepositoryRefreshResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestValidationResponse"
+                }
+              }
+            },
+            "description": "Request validation failed"
+          }
+        },
+        "security": [
+          {
+            "InternalSecret": []
+          }
+        ],
+        "summary": "Refresh Repository",
+        "tags": [
+          "v2"
+        ]
+      }
+    },
+    "/api/v2/search/repositories": {
+      "post": {
+        "operationId": "repository_search_api_v2_search_repositories_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RepositorySearchRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RepositorySearchResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestValidationResponse"
+                }
+              }
+            },
+            "description": "Request validation failed"
+          }
+        },
+        "security": [
+          {
+            "InternalSecret": []
+          }
+        ],
+        "summary": "Repository Search",
+        "tags": [
+          "v2"
+        ]
+      }
+    },
+    "/api/v2/users/onboard": {
+      "post": {
+        "operationId": "onboard_user_api_v2_users_onboard_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OnboardingJob"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OnboardingResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestValidationResponse"
+                }
+              }
+            },
+            "description": "Request validation failed"
+          }
+        },
+        "security": [
+          {
+            "InternalSecret": []
+          }
+        ],
+        "summary": "Onboard User",
+        "tags": [
+          "v2"
+        ]
+      }
+    }
+  }
+}

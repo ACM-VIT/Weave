@@ -14,6 +14,12 @@ import {
 
 import { snapshotMetrics } from '../../observability/metrics.js';
 
+const recommendationProvenance = {
+  context_status: { cold_start_applied: false, locale: 'not_provided' },
+  embedding_versions: [], served_ranker: 'heavy', heavy_ranker_selected: true,
+  ranker_applied: true, fallback_code: null, fallback_reason: null, retrieval_mode: 'personalized',
+} as const;
+
 async function withServer(handler: RequestListener, run: (url: string) => Promise<void>): Promise<void> {
   const server: Server = createServer(handler);
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -521,6 +527,7 @@ test('ML recommendation client accepts validated empty success', async () => {
       feed_version: 1,
       model_version: 'test-model',
       embedding_version: 'test-embedding',
+      ...recommendationProvenance,
       items: [],
     }));
   }, async (url) => {
@@ -578,6 +585,7 @@ test('ML recommendation client rejects non-canonical repository IDs', async () =
       feed_version: 1,
       model_version: 'test-model',
       embedding_version: 'test-embedding',
+      ...recommendationProvenance,
       items: [{ repo_id: 'owner/repository', score: 0.9, source: 'semantic' }],
     }));
   }, async (url) => {
@@ -647,7 +655,9 @@ const recommendationInput = {
   feed_version: 1, limit: 10, exclude_repo_ids: [], context: { cold_start: false },
 };
 const validRecommendation = {
-  ...recommendationInput, model_version: 'test-model', embedding_version: 'test-embedding', items: [],
+  schema_version: 2, generation_id: recommendationInput.generation_id, user_id: recommendationInput.user_id,
+  feed_version: recommendationInput.feed_version, model_version: 'test-model', embedding_version: 'test-embedding',
+  ...recommendationProvenance, items: [],
 };
 const recommendationConfig = { baseUrl: 'http://ml.test', internalSecret: 'test', timeoutMs: 100, maxResponseBytes: 10_000 };
 
@@ -829,4 +839,39 @@ test('stage histograms retain cumulative buckets and distinguish outcome familie
   assert.equal(after[key].buckets['240000'] - (before?.buckets['240000'] ?? 0), 1);
   assert.equal(after[key].buckets['+Inf'], after[key].count);
   assert.equal(after[rejectedKey].count - (beforeRejected?.count ?? 0), 1);
+});
+
+
+test('recommendation client validates every generated provenance field', async t => {
+  let body: Record<string, unknown> = { ...validRecommendation };
+  t.mock.method(globalThis, 'fetch', async () => new Response(JSON.stringify(body), { status: 200 }));
+  const client = new MlV2Client(recommendationConfig);
+  await client.generate(recommendationInput);
+  const invalid: Record<string, unknown> = {
+    context_status: null, embedding_versions: [1], served_ranker: 'unknown',
+    heavy_ranker_selected: 'true', ranker_applied: 1, fallback_code: 3,
+    fallback_reason: {}, retrieval_mode: null,
+  };
+  for (const [field, value] of Object.entries(invalid)) {
+    body = { ...validRecommendation }; delete body[field];
+    await assert.rejects(client.generate(recommendationInput), { kind: 'contract' }, `missing ${field}`);
+    body = { ...validRecommendation, [field]: value };
+    await assert.rejects(client.generate(recommendationInput), { kind: 'contract' }, `invalid ${field}`);
+  }
+  for (const context_status of [{ cold_start_applied: 1, locale: 'not_provided' },
+    { cold_start_applied: false, locale: 'unknown' }]) {
+    body = { ...validRecommendation, context_status };
+    await assert.rejects(client.generate(recommendationInput), { kind: 'contract' });
+  }
+});
+
+test('recommendation provenance accepts the supported mixed-version maximum', async t => {
+  const versions = Array.from({ length: 8 }, (_, index) => `${index}${'v'.repeat(127)}`);
+  const mixed = `compatible-mixed:${versions.join(',')}`;
+  let body = { ...validRecommendation, embedding_versions: versions, embedding_version: mixed };
+  t.mock.method(globalThis, 'fetch', async () => new Response(JSON.stringify(body), { status: 200 }));
+  const client = new MlV2Client(recommendationConfig);
+  assert.equal((await client.generate(recommendationInput)).embedding_version, mixed);
+  body = { ...body, embedding_version: mixed + 'x' };
+  await assert.rejects(client.generate(recommendationInput), { kind: 'contract' });
 });

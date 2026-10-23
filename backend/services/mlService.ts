@@ -6,6 +6,9 @@ import type { RecommendationPort } from '../ports/recommendationPort.js';
 import type { OutboxTransportPort } from '../ports/outboxTransportPort.js';
 import type {
   DeliveryResult,
+  MlPostPath,
+  MlRequest,
+  MlDeliveryPath,
   MlFeedbackBatch,
   MlOnboardingJob,
   MlRecommendationRequest,
@@ -262,9 +265,9 @@ export class MlV2Client implements RecommendationPort, OutboxTransportPort {
     incrementMetric('ml_recommendation_circuit_transition_total', { from: previous, to: state, reason });
   }
 
-  private async request(
-    path: string,
-    payload: unknown,
+  private async request<Path extends MlPostPath>(
+    path: Path,
+    payload: MlRequest<NoInfer<Path>>,
     idempotencyKey: string,
     timeoutMs = this.config.timeoutMs,
     responseFormat: 'required-json' | 'optional-json' = 'required-json',
@@ -365,6 +368,20 @@ export class MlV2Client implements RecommendationPort, OutboxTransportPort {
         || !Array.isArray(value.items)) {
         throw new MlRecommendationError('ML recommendation response violated the v2 envelope.', 200, 'contract');
       }
+      const context = value.context_status;
+      const nullableText = (field: unknown) => field === null || typeof field === 'string';
+      if (!boundedVersion(value.model_version, 512) || !boundedVersion(value.embedding_version, 1048)
+        || !Array.isArray(value.embedding_versions) || !value.embedding_versions.every(version => typeof version === 'string')
+        || !['heavy', 'hybrid'].includes(value.served_ranker)
+        || typeof value.heavy_ranker_selected !== 'boolean' || typeof value.ranker_applied !== 'boolean'
+        || !nullableText(value.fallback_code) || !nullableText(value.fallback_reason)
+        || typeof value.retrieval_mode !== 'string'
+        || !context || typeof context !== 'object' || Array.isArray(context)
+        || typeof context.cold_start_applied !== 'boolean'
+        || !['reserved_unused', 'not_provided'].includes(context.locale)
+        || value.items.length > 150) {
+        throw new MlRecommendationError('ML recommendation response violated the v2 provenance contract.', 200, 'contract');
+      }
       const ids = new Set<string>();
       for (const item of value.items) {
         if (!item || !isValidUuid(item.repo_id) || ids.has(item.repo_id) || !Number.isFinite(item.score)
@@ -399,7 +416,7 @@ export class MlV2Client implements RecommendationPort, OutboxTransportPort {
     }
   }
 
-  private async deliver(path: string, payload: unknown, idempotencyKey: string): Promise<DeliveryResult> {
+  private async deliver<Path extends MlDeliveryPath>(path: Path, payload: MlRequest<NoInfer<Path>>, idempotencyKey: string): Promise<DeliveryResult> {
     try {
       const { status, body, retryAfterMs } = await this.request(
         path,
@@ -433,7 +450,7 @@ export class MlV2Client implements RecommendationPort, OutboxTransportPort {
     return this.deliver('/api/v2/users/onboard', { schema_version: 2, ...job }, job.job_id);
   }
 
-  async deliverRepositoryIndex(job: MlRepositoryIndexJob): Promise<DeliveryResult> {
+  async deliverRepositoryIndex(job: MlRepositoryIndexJob): Promise<DeliveryResult<MlRepositoryIndexResponse>> {
     try {
       const { status, body, retryAfterMs } = await this.request(
         '/api/v2/repositories/embed',
