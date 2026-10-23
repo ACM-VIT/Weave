@@ -7,7 +7,7 @@ import { MlV2Client } from '../services/mlService.js';
 import { FeedGenerationService } from '../services/feedGenerationService.js';
 import { FeedV2Service } from '../services/feedV2Service.js';
 import { OutboxService, resolveOutboxLeaseMs } from '../services/outboxService.js';
-import { OutboxDeliveryLanes } from '../workers/outboxDeliveryLanes.js';
+import { OutboxDeliveryLanes, feedbackBatchSize } from '../workers/outboxDeliveryLanes.js';
 import { OUTBOX_LANES, outboxTaskName } from './outboxLanes.js';
 import { FeedReconciliationWorker } from '../workers/feedReconciliationWorker.js';
 import { DataReconciliationWorker } from '../workers/dataReconciliationWorker.js';
@@ -119,6 +119,9 @@ export class ApplicationRuntime {
       const worker = new OutboxDeliveryLanes(
         this.outbox,
         this.ml,
+        feedbackBatchSize(),
+        Date.now,
+        () => this.supervisor.wake(outboxTaskName('feedback')),
       );
       const activeInterval = intervalFromEnvironment('OUTBOX_ACTIVE_INTERVAL_MS', 1_000, 100, 60_000);
       const idleInterval = intervalFromEnvironment('OUTBOX_IDLE_INTERVAL_MS', 30_000, 1_000, 300_000);

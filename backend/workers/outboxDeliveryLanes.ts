@@ -5,6 +5,8 @@ import type { OutboxLane } from '../runtime/outboxLanes.js';
 import { OutboxService, type OutboxClaimOptions, type OutboxRow } from '../services/outboxService.js';
 import { acknowledgedFeedbackIds } from '../services/mlFeedbackAcknowledgement.js';
 import { incrementMetric, observeMetric, observeStage } from '../observability/metrics.js';
+import { startSpan, httpOutcome } from '../observability/tracing.js';
+import type { StageOutcome } from '../observability/metrics.js';
 import { OutboxWorker } from './outboxWorker.js';
 
 export function feedbackBatchSize(value = process.env.OUTBOX_FEEDBACK_BATCH_SIZE): number {
@@ -28,6 +30,7 @@ export class OutboxDeliveryLanes {
     private readonly transport: OutboxTransportPort,
     private readonly batchSize = feedbackBatchSize(),
     private readonly now = Date.now,
+    private readonly wakeFirstFeedback: () => void = () => {},
   ) {
     feedbackBatchSize(String(batchSize));
     this.worker = new OutboxWorker(outbox, transport);
@@ -43,11 +46,20 @@ export class OutboxDeliveryLanes {
     }
   }
 
-  private async feedback(rows: OutboxRow[]): Promise<void> {
+  private async feedback(rows: OutboxRow[]): Promise<boolean> {
     const events = rows.map(row => row.payload as unknown as MlFeedbackBatch['events'][number]);
     rows.forEach(row => observeStage('feedback', 'outbox_age', 'success', this.now() - Date.parse(row.created_at)));
     observeMetric('outbox_feedback_events_per_request', events.length);
-    const result = await this.transport.deliverFeedback({ schema_version: 2, events });
+    const span = startSpan('feedback', 'outbox_delivery', true);
+    let outcome: StageOutcome = 'failure';
+    const result = await span.run(async () => {
+      try {
+        const delivery = await this.transport.deliverFeedback({ schema_version: 2, events });
+        outcome = delivery.accepted ? 'success' : delivery.failure_kind === 'timeout' ? 'timeout'
+          : delivery.status_code >= 400 ? httpOutcome(delivery.status_code) : 'failure';
+        return delivery;
+      } finally { span.finish(outcome); }
+    });
     this.backpressure('feedback', result);
     let ids = new Set<string>();
     let detail = result.detail ?? `Feedback delivery status ${result.status_code}.`;
@@ -55,8 +67,11 @@ export class OutboxDeliveryLanes {
       try { ids = acknowledgedFeedbackIds(result.response_body, events); }
       catch (error) { detail = error instanceof Error ? error.message : 'Invalid feedback acknowledgement.'; }
     }
+    let delivered = false;
     for (const row of rows) {
-      if (ids.has(String(row.payload.event_id).toLowerCase())) await this.outbox.markDelivered(row);
+      if (ids.has(String(row.payload.event_id).toLowerCase())) {
+        delivered = (await this.outbox.markDelivered(row)) || delivered;
+      }
       else {
         // A multi-event failure can follow partial durable acceptance. Retry each
         // unknown member as a singleton; only an unambiguous singleton can be terminal.
@@ -65,6 +80,7 @@ export class OutboxDeliveryLanes {
         incrementMetric('outbox_feedback_unacknowledged_total');
       }
     }
+    return delivered;
   }
 
   async runOnce(lane: OutboxLane): Promise<AdaptiveWorkerReport> {
@@ -99,7 +115,10 @@ export class OutboxDeliveryLanes {
           .filter((value): value is number => value !== undefined && value > 0);
         return { processed: 0, nextRunInMs: delays.length ? Math.min(...delays) : undefined };
       }
-      if (lane === 'feedback' || lane === 'feedback-retry') await this.feedback(rows);
+      if (lane === 'feedback' || lane === 'feedback-retry') {
+        const delivered = await this.feedback(rows);
+        if (lane === 'feedback-retry' && delivered) this.wakeFirstFeedback();
+      }
       else this.backpressure(rows[0]!.job_type, await this.worker.deliverClaimed(rows[0]!));
       return { processed: rows.length };
     } finally { this.active.delete(lane); }
