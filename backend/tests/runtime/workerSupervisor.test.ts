@@ -88,6 +88,10 @@ test('wake hints coalesce during a run, interrupt idle polling and stop with the
 
 test('worker snapshots cross the process boundary without exporting arbitrary Redis data', async () => {
   const { WorkerTelemetryPublisher, readWorkerTelemetry, parseWorkerSnapshot } = await import('../../observability/workerTelemetry.js');
+  const { observeMetric, incrementMetric } = await import('../../observability/metrics.js');
+  observeMetric('outbox_feedback_events_per_request',3);
+  incrementMetric('outbox_feedback_unacknowledged_total');
+  incrementMetric('private_fixture_value',{secret:'must-not-export'});
   let raw: string | null = null;
   let readKeys: string[] = [];
   const redis = {
@@ -106,9 +110,17 @@ test('worker snapshots cross the process boundary without exporting arbitrary Re
   assert.equal(result.status, 'ok');
   assert.equal(result.snapshots.length, 1);
   assert.equal(result.snapshots[0].role, 'outbox');
+  assert.deepEqual(result.snapshots[0].feedback_delivery,{
+    outbox_feedback_events_per_request:{count:1,p50:3,p95:3,p99:3,max:3},outbox_feedback_unacknowledged_total:1,
+  });
   assert.equal(readKeys.length, 16);
   const original = String(raw);
   const snapshot = JSON.parse(original.slice(37));
+  assert.ok(!original.includes('must-not-export'));
+  const {feedback_delivery: _metrics,...legacy}=snapshot;
+  assert.ok(parseWorkerSnapshot(original.slice(0,37)+JSON.stringify(legacy)),'older worker snapshots remain readable');
+  assert.equal(parseWorkerSnapshot(original.slice(0,37)+JSON.stringify({...snapshot,feedback_delivery:{...snapshot.feedback_delivery,secret:'x'}})),null);
+  assert.equal(parseWorkerSnapshot(original.slice(0,37)+JSON.stringify({...snapshot,feedback_delivery:{...snapshot.feedback_delivery,outbox_feedback_events_per_request:{count:1,p50:3,p95:3,p99:3,max:101}}})),null);
   assert.equal(parseWorkerSnapshot(original, snapshot.captured_at_ms + 61_000), null);
   assert.equal(parseWorkerSnapshot(original.slice(0, 37) + JSON.stringify({ ...snapshot, secret: 'must-not-export' })), null);
   assert.equal(parseWorkerSnapshot('x'.repeat(300_000)), null);
