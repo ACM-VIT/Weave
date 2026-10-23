@@ -67,3 +67,71 @@ test('same-owner ingestion bounds SQL work by batches rather than repeated ident
   assert.ok(measured[2].statements <= measured[1].statements * 4,
     'four 25-repository stages must remain bounded by their batch count');
 });
+
+test('adjacent owner observations preserve renames and retry an empty reconciliation result', {
+  skip: process.env.RUN_DATABASE_INTEGRATION !== '1', timeout: 30_000,
+}, async t => {
+  assertDisposableDatabase();
+  const [{ default: postgres }, { PostgresRepositoryPersistence }] = await Promise.all([
+    import('postgres'), import('../../adapters/postgresRepositoryPersistence.js'),
+  ]);
+  const db = postgres(process.env.DATABASE_URL!, { max: 1, prepare: false, fetch_types: false });
+  const persistence = new PostgresRepositoryPersistence(db);
+  const suffix = crypto.randomUUID().replaceAll('-', '');
+  const base = BigInt(`0x${suffix.slice(0, 12)}`) + 900_000_000_000_000n;
+  const ownerIds = [String(base), String(base + 1n)];
+  const githubIds = [String(base + 2n), String(base + 3n)];
+  // Identifiers contain only a fixed prefix and generated hex, never caller text.
+  const trigger = `ingestion_retry_${suffix}`;
+  const counter = `attempts_${suffix}`;
+  t.after(async () => {
+    try {
+      await db.unsafe(`DROP TRIGGER IF EXISTS ${trigger} ON app.social_profiles`);
+      await db`DELETE FROM telemetry.ml_outbox WHERE aggregate_id IN
+        (SELECT repo_id FROM app.repos WHERE github_id IN
+          (SELECT jsonb_array_elements_text(${db.json(githubIds)}::jsonb)::bigint))`;
+      await db`DELETE FROM app.repos WHERE github_id IN
+        (SELECT jsonb_array_elements_text(${db.json(githubIds)}::jsonb)::bigint)`;
+      await db`DELETE FROM app.social_profiles WHERE provider='github'
+        AND provider_subject IN (SELECT jsonb_array_elements_text(${db.json(ownerIds)}::jsonb))
+        AND claimed_by_user_id IS NULL`;
+    } finally { await db.end({ timeout: 1 }); }
+  });
+  function repository(index: number, owner: string): RepositoryUpsert {
+    const name = `repository-${githubIds[index]}`;
+    return { github_id: githubIds[index], owner_github_id: ownerIds[index], owner, name,
+      full_name: `${owner}/${name}`, url: `https://github.com/${owner}/${name}`,
+      observed_at: '2026-10-21T00:00:00Z' };
+  }
+  await t.test('equal numeric owner IDs with adjacent different handles reconcile both observations', async () => {
+    const original = repository(0, `before-${suffix.slice(0, 8)}`);
+    const renamed = repository(0, `after-${suffix.slice(0, 8)}`);
+    assert.equal((await persistence.bulkUpsert([original, renamed])).length, 2);
+    const [profile] = await db`SELECT handle FROM app.social_profiles
+      WHERE provider='github' AND provider_subject=${ownerIds[0]} AND status='active'`;
+    assert.equal(profile.handle, renamed.owner);
+    const [repo] = await db`SELECT owner FROM app.repos WHERE github_id=${githubIds[0]}::bigint`;
+    assert.equal(repo.owner, renamed.owner);
+  });
+  await t.test('a null insert is retried by the next identical observation', async () => {
+    // A scoped BEFORE INSERT failpoint deterministically produces the same empty
+    // RETURNING result as a racing ON CONFLICT DO NOTHING. It does not model
+    // concurrent claim scheduling; it verifies the adapter retries real SQL.
+    await db.unsafe(`CREATE TEMP SEQUENCE ${counter}`);
+    await db.unsafe(`CREATE FUNCTION pg_temp.${trigger}() RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN
+        IF nextval('pg_temp.${counter}')=1 THEN RETURN NULL; END IF;
+        RETURN NEW;
+      END $$`);
+    await db.unsafe(`CREATE TRIGGER ${trigger} BEFORE INSERT ON app.social_profiles
+      FOR EACH ROW WHEN (NEW.provider='github' AND NEW.provider_subject='${ownerIds[1]}')
+      EXECUTE FUNCTION pg_temp.${trigger}()`);
+    const input = repository(1, `retry-${suffix.slice(0, 8)}`);
+    assert.equal((await persistence.bulkUpsert([input, input])).length, 2);
+    const [attempts] = await db.unsafe(`SELECT last_value FROM pg_temp.${counter}`);
+    assert.equal(Number(attempts.last_value), 2, 'failed reconciliation must not be cached as complete');
+    const [profile] = await db`SELECT handle FROM app.social_profiles
+      WHERE provider='github' AND provider_subject=${ownerIds[1]} AND status='active'`;
+    assert.equal(profile?.handle, input.owner);
+  });
+});

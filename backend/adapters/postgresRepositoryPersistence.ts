@@ -163,8 +163,9 @@ export class PostgresRepositoryPersistence implements RepositoryPersistencePort 
       // No identity write intervenes between adjacent equal observations. Do
       // not cache across another owner: A/H, B/H, A/H must reconcile all three.
       if (previousOwner?.id === ownerId && previousOwner.handle === repo.owner) continue;
-      await reconcileGithubProfileForIngestion(tx, { githubId: ownerId, githubHandle: repo.owner });
-      previousOwner = { id: ownerId, handle: repo.owner };
+      const profileId = await reconcileGithubProfileForIngestion(tx, { githubId: ownerId, githubHandle: repo.owner });
+      // A raced insert may return null; let the next observation repair it.
+      previousOwner = profileId ? { id: ownerId, handle: repo.owner } : undefined;
     }
 
     const results: Array<RepositoryUpsertResult & { order: number }> = [];
