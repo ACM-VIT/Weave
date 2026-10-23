@@ -67,6 +67,8 @@ export class OutboxService {
     delivered: number;
     dead: number;
     superseded: number;
+    retrying: number;
+    retry_attempts: number;
     oldest_pending_seconds: number;
   }> {
     const rows = await sqlClient`
@@ -76,12 +78,16 @@ export class OutboxService {
         count(*) FILTER (WHERE status='delivered')::int AS delivered,
         count(*) FILTER (WHERE status='dead')::int AS dead,
         count(*) FILTER (WHERE status='superseded')::int AS superseded,
+        count(*) FILTER (WHERE (status='pending' AND attempts>0)
+          OR (status='claimed' AND attempts>1))::int AS retrying,
+        COALESCE(sum(GREATEST(attempts-1,0)),0)::bigint AS retry_attempts,
         COALESCE(EXTRACT(EPOCH FROM now()-min(created_at) FILTER (WHERE status='pending')),0)::int AS oldest_pending_seconds
       FROM telemetry.ml_outbox
     `;
     return {
       pending: Number(rows[0].pending), claimed: Number(rows[0].claimed), delivered: Number(rows[0].delivered),
       dead: Number(rows[0].dead), superseded: Number(rows[0].superseded),
+      retrying: Number(rows[0].retrying), retry_attempts: Number(rows[0].retry_attempts),
       oldest_pending_seconds: Number(rows[0].oldest_pending_seconds),
     };
   }
