@@ -747,3 +747,27 @@ indexes include `app_repo_stats_latest_idx (repo_id, observed_at DESC)`,
 primary key, and the owner-GitHub-ID index. No index or migration is added without
 representative plans. Follow/like/save/comment OFFSET conversion and app rollout
 remain outside this core-surface slice, so this change alone does not close #122.
+
+### Internal acquisition inventory
+
+`GET /api/internal/v2/ingestion/repositories/manifest` requires `x-internal-secret`.
+It returns `{version:1, as_of, items, next_cursor}` with 1-250 entries per page.
+Each entry includes canonical `repo_id`, decimal-string `github_id`, lowercased
+`full_name`, `content_hash`, `content_version`, `content_updated_at` and nullable
+`source_updated_at`. Pass `limit` and then the opaque `cursor` with the same limit.
+Cursors bind version/cutoff/UUID position and expire after 15 minutes; invalid/stale
+cursors return 409, invalid query shapes 400, and unavailable storage 503. Empty is 200.
+
+This bounded keyset scan is conservative, not an HTTP-spanning SQL snapshot:
+active content/identity rows updated after the cutoff are omitted and remain
+eligible for acquisition refresh. It does not return a global count or README
+content, retain snapshots, or change ingestion writes. Each SQL page has a 2-second
+statement budget. Deploy this additive endpoint before the paired ML manifest
+client; older clients ignore it, and a newer client falls back to its existing
+idempotent acquisition path if inventory is unavailable. No migration is needed.
+
+The standalone adapter fixture uses `RUN_MANIFEST_DATABASE_INTEGRATION=1` and an
+empty disposable `weave_scroll` database. It rolls back its own minimal schema.
+It intentionally does not run under the migrated-suite `RUN_DATABASE_INTEGRATION`
+flag. Operator logs classify unavailable inventory as configuration, timeout,
+missing schema or unexpected failure without recording cursors or error text.
