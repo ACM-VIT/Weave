@@ -523,6 +523,7 @@ export async function continueOAuth(req: Request, res: Response): Promise<void> 
     if (!authorization) {
       return sendError(res, 400, "Invalid or expired OAuth attempt.");
     }
+    res.clearCookie('github_unlink_attempt', clearOAuthAttemptCookieOptions());
     res.cookie(OAUTH_ATTEMPT_COOKIE, authorization.state, oauthAttemptCookieOptions());
     res.redirect(302, authorization.url);
   } catch (error) {

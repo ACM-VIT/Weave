@@ -87,7 +87,7 @@ test('registered unlink routes use actual scoped Supabase OAuth/session HTTP wit
   const server = app.listen(0, '127.0.0.1');
   await new Promise<void>(resolve => server.listening ? resolve() : server.once('listening', resolve));
   const address = server.address(); assert.ok(address && typeof address === 'object');
-  const origin = `http://127.0.0.1:${address.port}`;
+  let origin = `http://127.0.0.1:${address.port}`;
   let activeFlow = flow;
   const dynamicFlow = new Proxy(flow, { get(_target, property) { const value = Reflect.get(activeFlow, property); return typeof value === 'function' ? value.bind(activeFlow) : value; } });
   const routes = createGithubUnlinkRoutes({ flow: dynamicFlow, backendUrl: origin, clientUrl: `${origin}/callback`, nodeEnv: 'test' });
@@ -193,6 +193,9 @@ test('registered unlink routes use actual scoped Supabase OAuth/session HTTP wit
     const revocations: string[] = [];
     const functionName = `unlink_failure_${userId.replaceAll('-', '')}`;
     let triggered = false;
+    let wiredServer: ReturnType<typeof app.listen> | undefined;
+    let runtimeRedis: { disconnect(): void } | undefined;
+    const fixtureOrigin = origin;
     try {
       reset();
       await sqlClient`INSERT INTO auth.users(id) VALUES(${userId}::uuid)`;
@@ -236,7 +239,34 @@ test('registered unlink routes use actual scoped Supabase OAuth/session HTTP wit
       await sqlClient`UPDATE app.users SET github_id='9' WHERE user_id=${userId}::uuid`;
       assert.equal(await actual.complete({ userId, githubId: ownerGithubId }, operationId), 'superseded');
       assert.equal((await sqlClient`SELECT github_id FROM app.users WHERE user_id=${userId}::uuid`)[0].github_id, '9');
+      // Now traverse the actual production registration and lazy runtime wiring,
+      // including the shared callback dispatch and real import revocation.
+      linked = true;
+      await sqlClient`UPDATE app.users SET github_id=${ownerGithubId},github_handle='fixture',github_identity_verified_at=now() WHERE user_id=${userId}::uuid`;
+      const wired = express(); wired.use(express.json()); wired.use(cookieParser());
+      wiredServer = wired.listen(0, '127.0.0.1');
+      await new Promise<void>(resolve => wiredServer!.listening ? resolve() : wiredServer!.once('listening', resolve));
+      const wiredAddress = wiredServer.address(); assert.ok(wiredAddress && typeof wiredAddress === 'object');
+      origin = `http://127.0.0.1:${wiredAddress.port}`;
+      Object.assign(process.env, { NODE_ENV: 'test', SUPABASE_URL: `http://127.0.0.1:${providerAddress.port}`,
+        SUPABASE_KEY: 'fixture-anon-key', SUPABASE_SERVICE_ROLE_KEY: 'fixture-service-key',
+        CLIENT_URL: `${origin}/callback`, BACKEND_URL: origin, REDIS_URL: redisUrl.toString() });
+      const [{ default: authRoutes }, { default: productRoutes }, { default: configuredRedis }] = await Promise.all([
+        import('../../routes/authRoutes.js'), import('../../routes/productV2Routes.js'), import('../../config/redis.js'),
+      ]);
+      runtimeRedis = configuredRedis;
+      wired.use('/api/auth', authRoutes); wired.use('/api/v2', productRoutes);
+      const wiredProof = await authorize();
+      assert.ok(wiredProof.searchParams.get('unlink_code'));
+      const wiredFinish = await finish(wiredProof.searchParams.get('unlink_code')!);
+      assert.equal(wiredFinish.status, 200, await wiredFinish.clone().text());
+      assert.equal((await wiredFinish.json() as { data: { status: string } }).data.status, 'done');
+      assert.equal((await imports.status(userId)).linked, false);
+
     } finally {
+      origin = fixtureOrigin;
+      if (wiredServer) { wiredServer.closeAllConnections(); await new Promise<void>(resolve => wiredServer!.close(() => resolve())); }
+      runtimeRedis?.disconnect();
       activeFlow = flow;
       if (triggered) await sqlClient.unsafe(`DROP TRIGGER IF EXISTS ${functionName} ON app.user_github_unlinks; DROP FUNCTION IF EXISTS app.${functionName}()`);
       if (written.size) await realRedis.del(...written);
