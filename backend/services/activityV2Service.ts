@@ -1,3 +1,4 @@
+import { lockModelLane, enqueueModelFeedback } from './modelOperationService.js';
 import { withOutboxTrace } from '../observability/tracing.js';
 import {
   FEED_INVALIDATING_EVENTS,
@@ -66,6 +67,7 @@ export async function processInteractionBatchV2InTransaction(
   await tx`INSERT INTO app.user_feed_state (user_id) VALUES (${userId}::uuid) ON CONFLICT (user_id) DO NOTHING`;
   const states = await tx`SELECT feed_version,feedback_version FROM app.user_feed_state WHERE user_id=${userId}::uuid FOR UPDATE`;
   if (states.length === 0) throw new Error('User feed state is unavailable.');
+  const modelLane = await lockModelLane(tx, userId);
   let feedVersion = BigInt(states[0].feed_version);
   let feedbackVersion = BigInt(states[0].feedback_version);
   let invalidateFeed = false;
@@ -198,7 +200,9 @@ export async function processInteractionBatchV2InTransaction(
   if (feedback.length) {
     await tx`UPDATE telemetry.interaction_events target SET feedback_version=input.feedback_version
       FROM jsonb_to_recordset(${JSON.stringify(feedback)}::jsonb) AS input(event_id uuid,feedback_version bigint) WHERE target.event_id=input.event_id`;
-    await tx`INSERT INTO telemetry.ml_outbox(job_type,aggregate_id,idempotency_key,payload)
+    if (modelLane) {
+      for (const row of feedback) await enqueueModelFeedback(tx,modelLane,row.event_id,row.feedback_version,JSON.stringify(row.payload),unique.get(row.event_id)!.serve_id);
+    } else await tx`INSERT INTO telemetry.ml_outbox(job_type,aggregate_id,idempotency_key,payload)
       SELECT 'feedback',${userId}::uuid,'feedback:' || event_id::text,payload
       FROM jsonb_to_recordset(${JSON.stringify(feedback.map(row => ({ ...row, payload: withOutboxTrace(row.payload) })))}::jsonb) AS input(event_id uuid,payload jsonb)
       ON CONFLICT (idempotency_key) DO NOTHING`;

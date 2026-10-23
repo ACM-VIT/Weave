@@ -17,7 +17,7 @@ export class RetentionWorker {
         ORDER BY aggregate_id,content_version DESC,created_at DESC,outbox_id DESC
       )
       DELETE FROM telemetry.ml_outbox expired
-      WHERE expired.status='delivered' AND expired.delivered_at < now()-(${deliveredDays}::text || ' days')::interval
+      WHERE expired.job_type<>'model_operation' AND expired.status='delivered' AND expired.delivered_at < now()-(${deliveredDays}::text || ' days')::interval
         -- Keep both the legacy/latest-time witness and the highest valid int32
         -- content version. A same-transaction UUID or malformed newer payload
         -- must not erase the index prerequisite for a numeric successor.

@@ -11,12 +11,12 @@
     ],
     "telemetry": [
       "counter_reconciliation_progress", "feed_prewarm_jobs", "feed_serve_items", "feed_item_provenance", "feed_serves", "generation_attempts", "interaction_events",
-      "ml_outbox", "readme_summary_jobs", "sessions", "user_repo_engagement"
+      "ml_outbox", "feed_intent_sessions", "pending_model_feedback", "readme_summary_jobs", "sessions", "user_repo_engagement"
     ],
     "private_scoring": ["scoring_generations", "scoring_inputs", "generation_witnesses", "export_admission_fence", "export_authorizations", "subject_revocations", "subject_export_fences", "export_snapshots", "export_snapshot_labels"]
   },
   "indexes": [
-    "feed_serves_feed_request_id_key", "feed_serves_user_created_idx", "feed_serves_user_session_idx",
+    "model_outbox_owner_version", "feed_intent_sessions_owner", "feed_serves_feed_request_id_key", "feed_serves_user_created_idx", "feed_serves_user_session_idx",
     "interaction_events_serve_repo_idx", "interaction_events_user_received_idx",
     "feed_prewarm_ready_idx", "feed_prewarm_expiry_idx", "generation_attempts_published_idx", "ml_outbox_idempotency_key_key", "ml_outbox_ready_idx", "ml_outbox_feedback_predecessor_idx", "app_refresh_tokens_user_idx",
     "app_comments_repo_idx", "app_comments_user_idx", "app_boards_user_idx",
