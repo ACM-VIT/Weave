@@ -10,16 +10,16 @@ export function canonicalJson(value: CanonicalValue): string {
     return JSON.stringify(value);
   }
   if (typeof value === 'number' && (!Number.isSafeInteger(value) || Object.is(value, -0))) throw new Error('Invalid model operation number.');
-  if (Array.isArray(value)) return '[' + value.map(item => canonicalJson(item)).join(',') + ']';
+  if (Array.isArray(value)) return '[' + Array.from(value,item => canonicalJson(item)).join(',') + ']';
   if (value !== null && typeof value === 'object') {
-    return '{' + Object.keys(value).sort().map(key => canonicalJson(key) + ':' + canonicalJson((value as { readonly [key: string]: CanonicalValue })[key])).join(',') + '}';
+    return '{' + Object.keys(value).sort((a,b)=>Buffer.compare(Buffer.from(a,'utf8'),Buffer.from(b,'utf8'))).map(key => canonicalJson(key) + ':' + canonicalJson((value as { readonly [key: string]: CanonicalValue })[key])).join(',') + '}';
   }
   if (value === undefined) throw new Error('Missing model operation value.');
   return JSON.stringify(value);
 }
 export const modelDigest = (text: string): string => createHash('sha256').update(text, 'utf8').digest('hex');
 export function decimalInt64(value: string, positive = false): string {
-  if (!/^(0|[1-9][0-9]*)$/.test(value) || BigInt(value) > 9223372036854775807n || (positive && value === '0')) throw new Error('Invalid model operation revision.');
+  if (value.length>19 || !/^(0|[1-9][0-9]*)$/.test(value) || BigInt(value) > 9223372036854775807n || (positive && value === '0')) throw new Error('Invalid model operation revision.');
   return value;
 }
 export type CanonicalAttribution = {

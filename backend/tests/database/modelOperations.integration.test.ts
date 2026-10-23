@@ -155,3 +155,23 @@ integration('dead common predecessor blocks ordinary jobs while source-bound wit
  assert.equal((await outbox.claim(100,undefined,{jobTypes:['model_operation']})).filter(row=>row.aggregate_id===owner).length,0);
  assert.equal((await sqlClient`SELECT status FROM telemetry.ml_outbox WHERE outbox_id=${lower.operation.operationId}::uuid`)[0].status,'dead');
 });
+
+integration('SQL constraint details cannot expose frozen profile source through new-lane errors',async()=>{
+ const owner=await fixture();
+ await sqlClient.unsafe(`CREATE FUNCTION telemetry.model_fixture_reject() RETURNS trigger LANGUAGE plpgsql AS $$
+ BEGIN RAISE EXCEPTION USING MESSAGE='fixture failure',DETAIL='PRIVATE_PROFILE_CONSTRAINT_DETAIL';END $$`);
+ await sqlClient.unsafe('CREATE TRIGGER model_fixture_reject BEFORE INSERT ON telemetry.ml_outbox FOR EACH ROW EXECUTE FUNCTION telemetry.model_fixture_reject()');
+ try{
+  await assert.rejects(sqlClient.begin(async tx=>{
+   await tx`SELECT user_id FROM app.users WHERE user_id=${owner}::uuid FOR KEY SHARE`;
+   const lane=await lockModelLane(tx,owner);assert.ok(lane);
+   await enqueueModelProfile(tx,lane,buildMlOnboardingJob(owner,1,{username:'Tarun',bio:'PRIVATE_PROFILE_CONSTRAINT_DETAIL'}));
+  }),error=>{
+   assert.doesNotMatch(String(error)+JSON.stringify(error),/PRIVATE_PROFILE_CONSTRAINT_DETAIL/);
+   assert.equal('cause' in (error as Error),false);return /MODEL_OPERATION_UNAVAILABLE/.test(String(error));
+  });
+ }finally{
+  await sqlClient.unsafe('DROP TRIGGER model_fixture_reject ON telemetry.ml_outbox');
+  await sqlClient.unsafe('DROP FUNCTION telemetry.model_fixture_reject()');
+ }
+});

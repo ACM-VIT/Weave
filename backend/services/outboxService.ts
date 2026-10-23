@@ -252,6 +252,12 @@ export class OutboxService {
   }
 
   async markDelivered(row: OutboxRow): Promise<boolean> {
+    if(row.job_type==='model_operation'){
+      try{const rows=await sqlClient`UPDATE telemetry.ml_outbox SET status='delivered',delivered_at=now(),claim_token=NULL,claimed_at=NULL,last_error=NULL
+        WHERE outbox_id=${row.outbox_id}::uuid AND claim_token=${row.claim_token}::uuid AND status='claimed' RETURNING outbox_id`;
+        return rows.length===1;
+      }catch{throw new ModelOperationError();}
+    }
     if (row.job_type === 'onboard') {
       return sqlClient.begin(async tx => {
         // Revocation/provisioning lock the user before touching onboarding jobs.
@@ -433,6 +439,10 @@ export class OutboxService {
   }
 
   async markFailed(row: OutboxRow, error: string, retryable: boolean, retryAfterMs?: number): Promise<void> {
+    try{await this.markFailedInDatabase(row,error,retryable,retryAfterMs);}
+    catch(failure){if(row.job_type==='model_operation')throw new ModelOperationError();throw failure;}
+  }
+  private async markFailedInDatabase(row: OutboxRow, error: string, retryable: boolean, retryAfterMs?: number): Promise<void> {
     const ageMs = Date.now() - Date.parse(row.created_at);
     const dead = !retryable || row.attempts >= 10 || ageMs > 7 * 24 * 60 * 60_000;
     const delay = retryAfterMs == null ? retryDelayMs(row.attempts) : Math.min(15 * 60_000, Math.max(0, retryAfterMs));

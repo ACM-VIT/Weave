@@ -127,7 +127,7 @@ export async function enqueueProfileDelivery(tx:TransactionSql,job:MlOnboardingJ
 }
 
 /** Consent revocation preserves originals and sends only bounded source attestations. */
-export async function withdrawPendingProfiles(tx:TransactionSql,lane:LockedModelLane,throughProfileVersion:string):Promise<void>{
+async function withdrawPendingProfilesInTransaction(tx:TransactionSql,lane:LockedModelLane,throughProfileVersion:string):Promise<void>{
   const rows=await tx`SELECT * FROM telemetry.ml_outbox WHERE aggregate_id=${lane.userId}::uuid AND job_type='model_operation'
     AND operation_json::jsonb->>'kind'='profile' AND withdrawal_json IS NULL
     AND (operation_json::jsonb->'operation'->>'profile_version')::bigint<=${throughProfileVersion}::bigint ORDER BY model_operation_version FOR UPDATE`;
@@ -146,4 +146,9 @@ export async function withdrawPendingProfiles(tx:TransactionSql,lane:LockedModel
     await tx`UPDATE telemetry.ml_outbox SET withdrawal_json=${withdrawal},status='pending',attempts=0,
       available_at=now(),claim_token=NULL,claimed_at=NULL,last_error=NULL WHERE outbox_id=${String(row.outbox_id)}::uuid`;
   }
+}
+
+export async function withdrawPendingProfiles(tx:TransactionSql,lane:LockedModelLane,throughProfileVersion:string):Promise<void>{
+  try{await withdrawPendingProfilesInTransaction(tx,lane,throughProfileVersion);}
+  catch(error){if(error instanceof ModelOperationError)throw error;throw new ModelOperationError();}
 }

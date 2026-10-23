@@ -558,7 +558,7 @@ export class MlV2Client implements RecommendationPort, OutboxTransportPort {
   async modelAuthority(input:MlModelAuthorityRequest):Promise<MlModelAuthorityResponse>{
     try{const result=await this.request('/api/v2/model-authority',input,input.user_id);
       if(result.status!==200)throw new ModelOperationError();
-      const body=modelRecord(result.body);if(body.schema_version!==1)throw new ModelOperationError();
+      const body=modelRecord(result.body);if(body.schema_version!==1||Object.keys(body).sort().join(',')!=='model_context,schema_version')throw new ModelOperationError();
       return {schema_version:1,model_context:parseAppliedModelContext(body.model_context)};
     }catch{throw new ModelOperationError();}
   }
