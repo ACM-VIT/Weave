@@ -78,7 +78,9 @@ integration('consented public import uses actual HTTP/SQL/Redis, rolls back fail
     assert.equal((await send('/preview', 'POST', { consent: false })).status, 400);
     assert.equal((await send('/preview', 'POST', { consent: true, user_id: peer })).status, 400);
     assert.equal(providerRequests, 0);
-    assert.equal((await fetch(`http://127.0.0.1:${address.port}/api/v2/onboarding/github-import`)).status, 401);
+    for (const [suffix, method] of [['', 'GET'], ['/preview', 'POST'], ['/accept', 'POST'], ['', 'DELETE']]) {
+      assert.equal((await fetch(`http://127.0.0.1:${address.port}/api/v2/onboarding/github-import${suffix}`, { method })).status, 401);
+    }
     const previewResponse = await send('/preview', 'POST', { consent: true });
     assert.equal(previewResponse.status, 200, await previewResponse.clone().text());
     const preview = await data<Preview>(previewResponse);
