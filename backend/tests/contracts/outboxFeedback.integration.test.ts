@@ -42,6 +42,7 @@ test('real PostgreSQL outbox and pinned Python HTTP/Redis retain partial, confli
     try {
       await stopChild?.();
       await sqlClient`DELETE FROM telemetry.ml_outbox WHERE outbox_id=ANY(${ids}::uuid[])`;
+      await sqlClient`DELETE FROM telemetry.ml_outbox WHERE job_type='feedback' AND aggregate_id=${productUser}::uuid`;
       await sqlClient`DELETE FROM telemetry.interaction_events WHERE user_id=${productUser}::uuid`;
       await sqlClient`DELETE FROM telemetry.user_repo_engagement WHERE user_id=${productUser}::uuid`;
       await sqlClient`DELETE FROM app.users WHERE user_id=${productUser}::uuid`;
@@ -194,6 +195,10 @@ test('real PostgreSQL outbox and pinned Python HTTP/Redis retain partial, confli
   assert.deepEqual(await statuses(productIds), ['delivered', 'delivered']);
   const afterRetry = await streamIds();
   assert.equal(afterRetry.length, new Set(afterRetry).size);
+  for (const job of productJobs) {
+    assert.equal(afterRetry.filter(id => id === String(job.payload.event_id)).length, 1,
+      'each committed product feedback event must reach Redis exactly once');
+  }
   assert.deepEqual(await counts(), [1, 1, 1], 'delivered duplicate acknowledgements leave all product counts unchanged');
   const rolledBack = [interaction('unlike'), interaction('impression')];
   await assert.rejects(write(rolledBack, false, true), /fixture rollback/);
