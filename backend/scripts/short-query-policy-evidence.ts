@@ -155,7 +155,7 @@ async function run() {
       records.push({policy:'prototype_name_prefix',...describeQuery(query),group,filtered:false,samples});
     }
     const source = await readFile(new URL('../adapters/postgresSearchPersistence.ts',import.meta.url));
-    console.log(JSON.stringify({ fixture: 'synthetic-local-v1', production_latency_claim: false, policy_approved: false,
+    console.log(JSON.stringify({ fixture: 'synthetic-local-v1', production_latency_claim: false, selected_policy: 'keep_broad_names_descriptions_bios', prototype_policy_approved: false,
       baseline_path: 'actual PostgresSearchPersistence + searchSql lane', source_sha256: crypto.createHash('sha256').update(source).digest('hex'),
       measurement: 'first call plus 3 warm repeats; loopback and concurrent per-group SQL; not HTTP/ML/end-to-end latency',
       settings, records }, null, 2));

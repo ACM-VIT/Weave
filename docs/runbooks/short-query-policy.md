@@ -2,10 +2,10 @@
 
 ## Recorded product decision
 
-On23October2026 the user chose **“Keep matching names, descriptions and bios
+On 23 October 2026 the user chose **“Keep matching names, descriptions and bios
 (recommended).”** This resolves #118's short-query semantics decision. Preserve
 the current two-character broad matching, exact-name/prefix ranking, semantic
-eligibility, visibility rules and300ms typing delay. The earlier prefix-only,
+eligibility, visibility rules and 300 ms typing delay. The earlier prefix-only,
 minimum-three and extra-delay alternatives below were diagnostic prototypes;
 none was selected or activated.
 
@@ -23,13 +23,13 @@ needs only ID, name and searchable description; membership/nested-board counts
 belong to bounded page hydration. This does not weaken broad substring recall or
 remove visible product counters.
 
-## Executed local comparison
+## Historical alternative comparison (not selected)
 
-23 October2026, Node22.22, PostgreSQL17.11 Alpine, shared_buffers128MB. Synthetic
-fixture:100,008 repositories,100,008 content rows,20,002 users,20,000 external
-profiles,20,000 boards,2,000 collections and20,000 repository-topic memberships.
-The measured fixture had migrations through0037, including unrelated social
-lookup indexes from0036; the independent dev base has the identical search SQL
+23 October 2026, Node 22.22, PostgreSQL 17.11 Alpine, shared_buffers=128MB. Synthetic
+fixture: 100,008 repositories,100,008 content rows, 20,002 users, 20,000 external
+profiles, 20,000 boards, 2,000 collections and 20,000 repository-topic memberships.
+The measured fixture had migrations through 0037, including unrelated social
+lookup indexes from 0036; the independent dev base has the identical search SQL
 source and lane, but reproducing on another schema/index set can change plans.
 The data intentionally contains common internal `go` substrings, selective `zx`
 names/bios, private/unlisted/owner/public Lists and isolated Unicode recall cases.
@@ -98,10 +98,48 @@ For actual plans start the disposable PostgreSQL process with
 `auto_explain.log_format=json`, `auto_explain.log_nested_statements=on` and
 `auto_explain.log_timing=off`. Capture only this
 owned container's logs. SQL plans can contain fixture values; do not enable this
-on a shared/production target. Output labels the corpus synthetic and the policy
-unapproved. Row digests include the returned record shape and are not directly
+on a shared/production target. Output labels the corpus synthetic, records the selected broad policy and marks
+the prefix prototype unapproved. Row digests include the returned record shape and are not directly
 comparable across prototype/baseline shapes. Sentinel IDs expose specific recall
 differences; they are not genuine relevance judgments.
+
+## Same-result implementation and measurement
+
+List candidate ranking now projects only ID, name and searchable text. The same
+visibility predicates, escaped substring pattern, exact-name/similarity ordering
+and100-reference cap remain. Full page hydration still reads current repository
+and nested-board counts and rechecks visibility. No new index or schema change is
+needed. The shared query builder changes its projection, not its predicates.
+
+Matched before/after runs on a fresh independent-dev schema and the same synthetic
+fixture above produced identical ordered reference hashes for every current-path
+query/group/filter/repeat. This isolates the selected broad path from the rejected
+prefix prototype. Warm medians of three samples: `go` List candidates245.12→37.86ms;
+current concurrent `all`243.24→217.44ms. Selective List `zx`14.30→15.81ms did not
+improve, so no universal speedup is claimed. These remain local SQL/lane timings,
+not HTTP/ML/UI or production latency.
+
+Actual server plans for the `go` List query:232.787→31.648ms,70,105→305 shared-buffer
+hits, zero physical reads in both. The old plan executed collection membership
+counts200 times, nested-board count scans200 times and board membership counts
+8,000 times. The new ranking plan contains none of those count subplans; its broad
+board candidate scan still returns8,000 rows. This is projection-work reduction,
+not an invented two-character substring-index improvement.
+
+The enabled SQL regression compares exact ordered references against a frozen
+pre-change query for two/three/long/Unicode/literal-wildcard queries and both
+viewers. It verifies description/bio-only recall, all groups, repository filters,
+private/unlisted/inactive entities, live hydrated counts after repository state
+changes, visibility changes after ranking, and unchanged two-character semantic
+eligibility through the real search service with an explicit semantic double.
+
+```sh
+RUN_SHORT_QUERY_INTEGRATION=1 node --import tsx --test \
+  tests/search/shortQueryLists.integration.test.ts
+```
+
+The standalone Broad short-query parity workflow enables that actual SQL fixture.
+It does not run a timing threshold on noisy shared CI machines.
 
 ## Acceptance for the selected policy
 
@@ -118,3 +156,14 @@ at subsequent pages. Compare actual server plans and local timings on equivalent
 fixtures without attributing unrelated prefix-prototype gains to this change.
 Browser checks must retain current typing delay, cancellation, offline results,
 pagination and account isolation. No production speedup or rollout is inferred.
+
+
+The enabled browser regression uses actual Explore, SearchBar, React Query and
+API mapping with explicit HTTP/auth/network/card presentation doubles. It checks
+one-character validation, two-character broad results, the existing typing delay,
+paging, offline retained results, account changes, Unicode and obsolete-response
+cancellation. It does not claim physical-device or deployed-backend acceptance.
+
+```sh
+RUN_SEARCH_BROAD_BROWSER=1 node --import tsx --test tests/search-broad-browser.test.ts
+```
