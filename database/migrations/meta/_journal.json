@@ -329,6 +329,13 @@
       "when": 1794009600000,
       "tag": "0043_feed_item_provenance",
       "breakpoints": true
+    },
+    {
+      "idx": 47,
+      "version": "7",
+      "when": 1794096000000,
+      "tag": "0044_private_scoring_exports",
+      "breakpoints": true
     }
   ]
 }
