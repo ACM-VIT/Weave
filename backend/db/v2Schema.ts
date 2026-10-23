@@ -597,6 +597,7 @@ export const userGithubUnlinks = appSchema.table('user_github_unlinks', {
   userId: uuid('user_id').primaryKey().references(() => appUsers.userId, { onDelete: 'cascade' }),
   operationId: uuid('operation_id').notNull().unique(),
   githubId: text('github_id').notNull(),
+  providerIdentityId: uuid('provider_identity_id'),
   status: text('status').notNull(),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),

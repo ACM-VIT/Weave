@@ -276,6 +276,7 @@ export async function login(req: Request, res: Response): Promise<void> {
       githubId: githubIdentity.githubId,
       githubHandle: githubIdentity.githubHandle,
       githubIdentityFence: githubIdentity.fence,
+      githubProviderIdentityId: githubIdentity.providerIdentityId,
       githubIdentityVerified: Boolean(githubIdentity.githubId && githubIdentity.githubHandle),
       avatarUrl: typeof data.user.user_metadata?.avatar_url === "string" ? data.user.user_metadata.avatar_url : null,
       onboardingCompleted: loginOnboardingCompleted(
@@ -611,6 +612,7 @@ export async function handleOAuthCallback(
       githubId: githubIdentity.githubId,
       githubHandle: githubIdentity.githubHandle,
       githubIdentityFence: githubIdentity.fence,
+      githubProviderIdentityId: githubIdentity.providerIdentityId,
       githubIdentityVerified: Boolean(githubIdentity.githubId && githubIdentity.githubHandle),
       avatarUrl: typeof data.user.user_metadata?.avatar_url === "string" ? data.user.user_metadata.avatar_url : null,
       // Existing accounts retain their durable completion state. New OAuth

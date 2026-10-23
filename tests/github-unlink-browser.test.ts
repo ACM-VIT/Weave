@@ -49,7 +49,7 @@ test('actual disconnect UI and client flow preserve owner, cancellation and pend
     if(url.pathname.startsWith('/fixture/')){
       const action=url.pathname.split('/').pop()!,owner=url.searchParams.get('owner')!,mode=url.searchParams.get('mode')!;
       requests.push({owner,action,mode});res.setHeader('Content-Type','application/json');
-      res.end(JSON.stringify(action==='start'?{url:'http://provider.invalid/reauth'}:{status:action==='finish'?(mode==='pending'?'pending':mode==='refused'?'refused':'done'):mode==='initial-done'?'done':mode==='pending'?'pending':mode==='refused'?'refused':'none'}));return;
+      res.end(JSON.stringify(action==='start'?{url:'http://provider.invalid/reauth'}:{retryable:mode==='pending',status:action==='finish'?(mode==='pending'?'pending':mode==='refused'?'refused':'done'):mode==='initial-done'?'done':mode==='pending'?'pending':mode==='refused'?'refused':'none'}));return;
     }
     if(url.pathname==='/bundle.js'){res.setHeader('Content-Type','application/javascript');res.end(await readFile(path.join(directory,'bundle.js')));return;}
     if(url.pathname==='/font.ttf'){res.setHeader('Content-Type','font/ttf');res.end(await readFile('assets/fonts/NataSans-Regular.ttf'));return;}
@@ -114,7 +114,7 @@ test('actual disconnect UI and client flow preserve owner, cancellation and pend
     assert.equal(await evaluate('document.documentElement.scrollWidth<=innerWidth'),true);
     if(process.env.GITHUB_UNLINK_BROWSER_ARTIFACTS){await mkdir(process.env.GITHUB_UNLINK_BROWSER_ARTIFACTS,{recursive:true});const screenshot=await send('Page.captureScreenshot',{format:'png',captureBeyondViewport:true});await writeFile(path.join(process.env.GITHUB_UNLINK_BROWSER_ARTIFACTS,name+'.png'),Buffer.from(screenshot.result.data,'base64'));}
   }
-  assert.equal(await evaluate(`Boolean(document.querySelector('[aria-label="Reauthenticate and disconnect GitHub"]'))`),false,'pending intent cannot start a second provider mutation');
+  assert.equal(await evaluate(`Boolean(document.querySelector('[aria-label="Reauthenticate and retry disconnect"]'))`),true,'pending exact-target intent offers a fresh confirmation retry');
   await evaluate('window.fixture.mode="refused"');await click('Check disconnect status');
   await until('document.body.innerText.includes("provider refused")');
   await click('Reauthenticate and disconnect GitHub');

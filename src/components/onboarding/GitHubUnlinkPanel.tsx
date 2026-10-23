@@ -50,9 +50,9 @@ function UnlinkBody({ userId, onSaved, authorize = startGithubUnlink, api = gith
       {result?.status === 'pending' ? <Text style={{ color: REFERENCE_THEME.textSecondary, fontFamily: Fonts.sans }}>{result.message ?? 'Disconnect is pending verification. Activity imports are paused.'}</Text> : null}
       {result?.status === 'refused' ? <Text style={{ color: REFERENCE_THEME.textSecondary, fontFamily: Fonts.sans }}>The provider refused the disconnect. GitHub remains linked; imported preferences were revoked.</Text> : null}
       {result?.status === 'superseded' ? <Text style={{ color: REFERENCE_THEME.textSecondary, fontFamily: Fonts.sans }}>Your GitHub identity changed. The newer login was preserved.</Text> : null}
-      {result?.status !== 'pending' ? <>{confirmed ? <UnlinkAction label="Reauthenticate and disconnect GitHub" onPress={() => { void run(false); }} disabled={busy} />
-        : <UnlinkAction label="Disconnect GitHub login" onPress={() => setConfirmed(true)} disabled={busy} />}
-      {confirmed ? <UnlinkAction label="Keep GitHub login" onPress={() => setConfirmed(false)} disabled={busy} /> : null}</> : null}
+      {(result?.status !== 'pending' || result.retryable === true) ? <>{confirmed ? <UnlinkAction label={result?.status === 'pending' ? 'Reauthenticate and retry disconnect' : 'Reauthenticate and disconnect GitHub'} onPress={() => { void run(false); }} disabled={busy} />
+        : <UnlinkAction label={result?.status === 'pending' ? 'Retry pending GitHub disconnect' : 'Disconnect GitHub login'} onPress={() => setConfirmed(true)} disabled={busy} />}
+      {confirmed ? <UnlinkAction label={result?.status === 'pending' ? 'Back to disconnect status' : 'Keep GitHub login'} onPress={() => setConfirmed(false)} disabled={busy} /> : null}</> : null}
     </>}
     <UnlinkAction label="Check disconnect status" onPress={() => { void run(true); }} disabled={busy} />
     {busy ? <ActivityIndicator accessibilityLabel="Verifying GitHub disconnect" color={APP_THEME.primary} /> : null}
