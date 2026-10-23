@@ -157,9 +157,15 @@ export class PostgresRepositoryPersistence implements RepositoryPersistencePort 
     // Reuse the collision/follow reconciliation, keeping conflicting owner-handle
     // observations in their original sorted order rather than dropping history.
     const ordered = batches.flat().sort((left, right) => left.order - right.order);
+    let previousOwner: { id: string; handle: string } | undefined;
     for (const { repository: repo } of ordered) {
       const ownerId = canonicalGithubProfileSubject(repo.owner_github_id);
-      await reconcileGithubProfileForIngestion(tx, { githubId: ownerId, githubHandle: repo.owner });
+      // No identity write intervenes between adjacent equal observations. Do
+      // not cache across another owner: A/H, B/H, A/H must reconcile all three.
+      if (previousOwner?.id === ownerId && previousOwner.handle === repo.owner) continue;
+      const profileId = await reconcileGithubProfileForIngestion(tx, { githubId: ownerId, githubHandle: repo.owner });
+      // A raced insert may return null; let the next observation repair it.
+      previousOwner = profileId ? { id: ownerId, handle: repo.owner } : undefined;
     }
 
     const results: Array<RepositoryUpsertResult & { order: number }> = [];
