@@ -17,6 +17,25 @@ export interface OutboxRow {
   claim_token: string;
 }
 
+export interface OutboxClaimOptions {
+  jobTypes?: readonly OutboxRow['job_type'][];
+  /** Retry slots never compete with first-attempt feedback batches. */
+  attempts?: 'first' | 'retry';
+}
+
+function validateClaim(limit: number, options: OutboxClaimOptions): void {
+  if (!Number.isInteger(limit) || limit < 1 || limit > 1_000) {
+    throw new Error('Outbox claim limit must be an integer between 1 and 1000.');
+  }
+  if (options.jobTypes && (!options.jobTypes.length || options.jobTypes.some(type =>
+    !['feedback', 'onboard', 'repo_index', 'repo_refresh'].includes(type)))) {
+    throw new Error('Outbox claim requires valid job types.');
+  }
+  if (options.attempts && !['first', 'retry'].includes(options.attempts)) {
+    throw new Error('Outbox claim attempt filter is invalid.');
+  }
+}
+
 export class RepositoryIndexCompletionConflictError extends Error {
   constructor(message: string) {
     super(message);
@@ -86,7 +105,8 @@ export class OutboxService {
     };
   }
 
-  async claim(limit = 50, leaseMs = resolveOutboxLeaseMs()): Promise<OutboxRow[]> {
+  async claim(limit = 50, leaseMs = resolveOutboxLeaseMs(), options: OutboxClaimOptions = {}): Promise<OutboxRow[]> {
+    validateClaim(limit, options);
     const token = crypto.randomUUID();
     const rows = await sqlClient.begin(async (tx) => tx`
       WITH ready AS (
@@ -95,6 +115,10 @@ export class OutboxService {
           (candidate.status='pending' AND candidate.available_at<=now())
           OR (candidate.status='claimed' AND candidate.claimed_at < now()-(${leaseMs}::text || ' milliseconds')::interval)
         )
+        AND candidate.job_type=ANY(${options.jobTypes ?? ['feedback', 'onboard', 'repo_index', 'repo_refresh']}::text[])
+        AND (${options.attempts ?? null}::text IS NULL
+          OR (${options.attempts ?? null}='first' AND candidate.attempts=0)
+          OR (${options.attempts ?? null}='retry' AND candidate.attempts>0))
         AND (
           candidate.job_type<>'feedback'
           OR NOT EXISTS (
@@ -161,6 +185,26 @@ export class OutboxService {
       idempotency_key: String(row.idempotency_key), job_type: row.job_type as OutboxRow['job_type'],
       attempts: Number(row.attempts), created_at: new Date(row.created_at as string).toISOString(),
       claim_token: String(row.claim_token), payload: row.payload as Record<string, unknown> }));
+  }
+
+  /** Future retry/lease deadlines are hints; polling remains the recovery path. */
+  async nextRunInMs(options: OutboxClaimOptions): Promise<number | undefined> {
+    validateClaim(1, options);
+    const leaseMs = resolveOutboxLeaseMs();
+    const rows = await sqlClient`
+      SELECT EXTRACT(EPOCH FROM min(deadline)-now())*1000 AS delay_ms
+      FROM (
+        SELECT CASE WHEN status='pending' THEN available_at
+          ELSE claimed_at+(${leaseMs}::text || ' milliseconds')::interval END AS deadline
+        FROM telemetry.ml_outbox
+        WHERE status IN ('pending','claimed')
+          AND job_type=ANY(${options.jobTypes ?? ['feedback', 'onboard', 'repo_index', 'repo_refresh']}::text[])
+          AND (${options.attempts ?? null}::text IS NULL
+            OR (${options.attempts ?? null}='first' AND attempts=0)
+            OR (${options.attempts ?? null}='retry' AND attempts>0))
+      ) eligible WHERE deadline>now()
+    `;
+    return rows[0]?.delay_ms == null ? undefined : Math.max(0, Number(rows[0].delay_ms));
   }
 
   async markDelivered(row: OutboxRow): Promise<void> {
