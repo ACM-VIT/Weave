@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import { mergeRepositoryLineage, type RepositoryLineage } from '../services/repositoryLineage.js';
 import type { Sql, TransactionSql } from 'postgres';
 
 import type {
@@ -155,7 +156,9 @@ export class PostgresRepositoryPersistence implements RepositoryPersistencePort 
       const repositories = batch.map(({ repository }) => repository);
       const source = JSON.stringify(repositories);
       const previousRows = await tx`
-        SELECT repo.github_id::text,repo.repo_id,content.content_hash,content.content_version
+        SELECT repo.github_id::text,repo.repo_id,content.content_hash,content.content_version,
+          repo.is_fork,repo.fork_parent_github_id::text,repo.fork_family_github_id::text,repo.lineage_source,
+          to_char(repo.lineage_observed_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS lineage_observed_at
         FROM app.repos repo LEFT JOIN app.repo_content content USING(repo_id)
         WHERE repo.github_id IN (
           SELECT github_id::bigint FROM jsonb_to_recordset(${source}::text::jsonb) AS incoming(github_id text)
@@ -165,27 +168,37 @@ export class PostgresRepositoryPersistence implements RepositoryPersistencePort 
       const previous = new Map(previousRows.map((row) => [String(row.github_id), row]));
       const prepared = batch.map(({ repository: repo, order }) => {
         const old = previous.get(BigInt(repo.github_id).toString());
-        const hash = repositoryContentHash(repo);
+        // This orders ancestry observations only. Owner/name arrival ordering
+        // and profile reconciliation above retain their existing behavior.
+        const canonical = { ...repo, ...mergeRepositoryLineage(repo, (old ?? {}) as RepositoryLineage, repo.github_id) };
+        const hash = repositoryContentHash(canonical);
         const changed = !old || old.content_hash !== hash;
-        return { ...repo, content_hash: hash,
+        return { ...canonical, content_hash: hash,
           content_version: changed ? Number(old?.content_version ?? 0) + 1 : Number(old.content_version),
           changed, order };
       });
       const preparedSource = JSON.stringify(prepared);
       const repoRows = await tx`
         WITH upserted AS (
-          INSERT INTO app.repos (github_id,github_node_id,owner_github_id,full_name,owner,name,url)
-          SELECT github_id::bigint,github_node_id,owner_github_id::bigint,full_name,owner,name,url
+          INSERT INTO app.repos (github_id,github_node_id,owner_github_id,full_name,owner,name,url,
+            is_fork,fork_parent_github_id,fork_family_github_id,lineage_source,lineage_observed_at)
+          SELECT github_id::bigint,github_node_id,owner_github_id::bigint,full_name,owner,name,url,
+            is_fork,fork_parent_github_id::bigint,fork_family_github_id::bigint,lineage_source,lineage_observed_at
           FROM jsonb_to_recordset(${preparedSource}::text::jsonb) AS incoming(
-            github_id text,github_node_id text,owner_github_id text,full_name text,owner text,name text,url text
+            github_id text,github_node_id text,owner_github_id text,full_name text,owner text,name text,url text,
+            is_fork boolean,fork_parent_github_id text,fork_family_github_id text,lineage_source text,lineage_observed_at timestamptz
           ) ORDER BY github_id::bigint
           ON CONFLICT (github_id) DO UPDATE SET github_node_id=EXCLUDED.github_node_id,
             owner_github_id=EXCLUDED.owner_github_id,full_name=EXCLUDED.full_name,owner=EXCLUDED.owner,
-            name=EXCLUDED.name,url=EXCLUDED.url,updated_at=clock_timestamp()
+            name=EXCLUDED.name,url=EXCLUDED.url,is_fork=EXCLUDED.is_fork,
+            fork_parent_github_id=EXCLUDED.fork_parent_github_id,fork_family_github_id=EXCLUDED.fork_family_github_id,
+            lineage_source=EXCLUDED.lineage_source,lineage_observed_at=EXCLUDED.lineage_observed_at,updated_at=clock_timestamp()
           WHERE (app.repos.github_node_id,app.repos.owner_github_id,app.repos.full_name,
-                 app.repos.owner,app.repos.name,app.repos.url)
+                 app.repos.owner,app.repos.name,app.repos.url,app.repos.is_fork,app.repos.fork_parent_github_id,
+                 app.repos.fork_family_github_id,app.repos.lineage_source,app.repos.lineage_observed_at)
             IS DISTINCT FROM (EXCLUDED.github_node_id,EXCLUDED.owner_github_id,EXCLUDED.full_name,
-                              EXCLUDED.owner,EXCLUDED.name,EXCLUDED.url)
+                              EXCLUDED.owner,EXCLUDED.name,EXCLUDED.url,EXCLUDED.is_fork,EXCLUDED.fork_parent_github_id,
+                              EXCLUDED.fork_family_github_id,EXCLUDED.lineage_source,EXCLUDED.lineage_observed_at)
             OR EXCLUDED.github_id IN (
               SELECT github_id::bigint FROM jsonb_to_recordset(${preparedSource}::text::jsonb)
                 AS changed_repositories(github_id text,changed boolean) WHERE changed

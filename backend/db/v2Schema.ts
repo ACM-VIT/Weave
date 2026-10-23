@@ -193,6 +193,11 @@ export const appRepos = appSchema.table('repos', {
   githubId: bigint('github_id', { mode: 'bigint' }).notNull().unique(),
   githubNodeId: text('github_node_id'),
   ownerGithubId: bigint('owner_github_id', { mode: 'bigint' }),
+  isFork: boolean('is_fork'),
+  forkParentGithubId: bigint('fork_parent_github_id', { mode: 'bigint' }),
+  forkFamilyGithubId: bigint('fork_family_github_id', { mode: 'bigint' }),
+  lineageObservedAt: timestamp('lineage_observed_at', { withTimezone: true }),
+  lineageSource: text('lineage_source'),
   fullName: text('full_name').notNull(),
   owner: text('owner').notNull(),
   name: text('name').notNull(),
@@ -208,7 +213,20 @@ export const appRepos = appSchema.table('repos', {
     .where(sql`${table.status}='active' AND ${table.ownerGithubId} IS NOT NULL`),
   check('app_repos_github_id_positive', sql`${table.githubId} > 0`),
   check('app_repos_owner_github_id_positive', sql`${table.ownerGithubId} IS NULL OR ${table.ownerGithubId} > 0`),
-  check('app_repos_status_check', sql`${table.status} IN ('active','archived','deleted','blocked')`),
+  check('app_repos_lineage_identity_check', sql`
+    (${table.forkParentGithubId} IS NULL OR ${table.forkParentGithubId}>0)
+    AND (${table.forkFamilyGithubId} IS NULL OR ${table.forkFamilyGithubId}>0)
+    AND (${table.isFork} IS NOT NULL OR (${table.forkParentGithubId} IS NULL AND ${table.forkFamilyGithubId} IS NULL))
+    AND (${table.isFork} IS DISTINCT FROM false OR (${table.forkParentGithubId} IS NULL
+      AND (${table.forkFamilyGithubId} IS NULL OR ${table.forkFamilyGithubId}=${table.githubId})))
+    AND (${table.isFork} IS DISTINCT FROM true OR ((${table.forkParentGithubId} IS NULL OR ${table.forkParentGithubId}<>${table.githubId})
+      AND (${table.forkFamilyGithubId} IS NULL OR ${table.forkFamilyGithubId}<>${table.githubId})))`),
+  check('app_repos_lineage_provenance_check', sql`
+    (${table.lineageSource} IS NULL)=(${table.lineageObservedAt} IS NULL)
+    AND (${table.isFork} IS NULL OR ${table.lineageSource} IS NOT NULL)
+    AND (${table.lineageObservedAt} IS NULL OR isfinite(${table.lineageObservedAt}))
+    AND (${table.lineageSource} IS NULL OR ${table.lineageSource} IN ('github-graphql-repository','github-rest-repository'))`),
+  check('app_repos_status_check' , sql`${table.status} IN ('active','archived','deleted','blocked')`),
 ]);
 
 export const repoContent = appSchema.table('repo_content', {
