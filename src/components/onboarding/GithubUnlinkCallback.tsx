@@ -13,6 +13,7 @@ export function GithubUnlinkCallback({ code, error }: { code?: string; error?: s
   const [busy, setBusy] = useState(true);
   const flight = useRef<Promise<import('../../api/githubUnlink').GithubUnlinkResult> | null>(null);
   const owner = useRef<string | null>(null);
+  const refreshed = useRef(false);
   useEffect(() => {
     if (isLoading) return;
     let active = true;
@@ -27,7 +28,10 @@ export function GithubUnlinkCallback({ code, error }: { code?: string; error?: s
         const result = await flight.current;
         if (!active) return;
         setMessage(result.status === 'done' ? 'GitHub login disconnected.' : result.message ?? 'Disconnect needs verification. Check its status from your profile.');
-        if (result.status === 'done' || result.status === 'superseded') await checkOnboardingStatus();
+        if (result.status !== 'none' && !refreshed.current) {
+          refreshed.current = true;
+          try { await checkOnboardingStatus(); } catch (reason) { refreshed.current = false; throw reason; }
+        }
       } catch (reason) { if (active) setMessage(reason instanceof Error ? reason.message : 'Check disconnect status from your profile.'); }
       finally { if (active) setBusy(false); }
     };
