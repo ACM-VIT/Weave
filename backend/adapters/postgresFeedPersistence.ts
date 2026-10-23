@@ -226,6 +226,11 @@ export class PostgresFeedPersistence implements FeedPersistencePort, FeedReconci
           AND serve.feed_version=${feedVersion.toString()}::bigint
           AND serve.source='personalized'
           AND NOT (item.repo_id=ANY(${excludeRepoIds}::uuid[]))
+          AND NOT EXISTS (
+            SELECT 1 FROM app.reactions negative
+            WHERE negative.user_id=serve.user_id AND negative.repo_id=item.repo_id
+              AND negative.reaction='dislike'
+          )
       )
       SELECT repo_id,score,source,model_version,summary_id,generation_id
       FROM candidates WHERE repo_rank=1
