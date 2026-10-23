@@ -1,3 +1,4 @@
+import { isValidUuid } from '../utils/validators.js';
 import { sqlClient } from '../db/index.js';
 import { buildMlOnboardingJob, hasMlEmbeddingContext } from './mlOnboardingService.js';
 import { claimVerifiedGithubProfile } from './socialProfileService.js';
@@ -13,12 +14,14 @@ interface IdentityProfile {
   githubHandle?: string | null;
   githubIdentityVerified?: boolean;
   githubIdentityFence?: GithubIdentityFence | null;
+  githubProviderIdentityId?: string | null;
   avatarUrl?: string | null;
   onboardingCompleted?: boolean;
 }
 
 interface AuthIdentity {
   id?: string;
+  identity_id?: string;
   provider?: string;
   identity_data?: Record<string, unknown>;
 }
@@ -62,17 +65,25 @@ export async function githubIdentityForProvisioning(
   refresh: () => Promise<{ id: string; identities?: AuthIdentity[] | null; user_metadata?: Record<string, unknown> }>,
   authenticatedProvider?: 'github' | 'google',
 ) {
-  const [operation] = await sqlClient`SELECT operation_id,status FROM app.user_github_unlinks WHERE user_id=${user.id}::uuid`;
+  const [operation] = await sqlClient`SELECT operation_id,status,provider_identity_id FROM app.user_github_unlinks WHERE user_id=${user.id}::uuid`;
   const fence: GithubIdentityFence | null = operation
-    ? { operationId: String(operation.operation_id), status: String(operation.status) } : null;
-  if (!fence) return { ...githubIdentityFromAuthUser(user, authenticatedProvider), fence };
+    ? { operationId: String(operation.operation_id), status: String(operation.status), providerIdentityId: operation.provider_identity_id == null ? null : String(operation.provider_identity_id) } : null;
+  const credential = (value: typeof user) => {
+    const id = value.identities?.find(identity => identity.provider === 'github')?.identity_id;
+    return typeof id === 'string' && isValidUuid(id) ? id.toLowerCase() : null;
+  };
+  if (!fence) return { ...githubIdentityFromAuthUser(user, authenticatedProvider), providerIdentityId: credential(user), fence };
   // Network reads stay outside SQL locks. Metadata can survive an unlink, so a
   // refreshed observation must have an actual linked GitHub identity.
   const fresh = await refresh();
   if (fresh.id !== user.id || !Array.isArray(fresh.identities)) {
     throw Object.assign(new Error('Provider identity could not be verified.'), { statusCode: 503 });
   }
-  return { ...githubIdentityFromAuthUser(fresh), fence };
+  const providerIdentityId = credential(fresh);
+  if (fresh.identities.some(identity => identity.provider === 'github') && !providerIdentityId) {
+    throw Object.assign(new Error('Provider credential identity could not be verified.'), { statusCode: 503 });
+  }
+  return { ...githubIdentityFromAuthUser(fresh), providerIdentityId, fence };
 }
 
 export async function ensureIdentityProfile(profile: IdentityProfile): Promise<void> {
@@ -101,11 +112,11 @@ export async function ensureIdentityProfile(profile: IdentityProfile): Promise<v
     `;
     // The upsert acquired the user lock; unlink preparation/completion uses the
     // same lock first. Re-read after acquiring it, never reuse a pre-lock row.
-    const [operation] = await tx`SELECT operation_id,status FROM app.user_github_unlinks WHERE user_id=${profile.userId}::uuid FOR UPDATE`;
+    const [operation] = await tx`SELECT operation_id,status,provider_identity_id FROM app.user_github_unlinks WHERE user_id=${profile.userId}::uuid FOR UPDATE`;
     const currentFence: GithubIdentityFence | null = operation
-      ? { operationId: String(operation.operation_id), status: String(operation.status) } : null;
+      ? { operationId: String(operation.operation_id), status: String(operation.status), providerIdentityId: operation.provider_identity_id == null ? null : String(operation.provider_identity_id) } : null;
     const acceptGithub = githubIdentityVerified
-      && githubIdentityFenceMatches(profile.githubIdentityFence, currentFence);
+      && githubIdentityFenceMatches(profile.githubIdentityFence, currentFence, profile.githubProviderIdentityId);
     if (acceptGithub) {
       await tx`UPDATE app.users SET github_id=${profile.githubId!},github_handle=${profile.githubHandle!},
         github_identity_verified_at=now(),updated_at=now() WHERE user_id=${profile.userId}::uuid`;

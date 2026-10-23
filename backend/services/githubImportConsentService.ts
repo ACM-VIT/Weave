@@ -192,9 +192,17 @@ export class GitHubImportConsentService {
     return result;
   }
 
-  async revoke(userId: string) {
+  async revoke(userId: string, unlinkOperationId?: string) {
     const result = await this.db.begin(async tx => {
       const profile = await this.owner(tx, userId);
+      if (unlinkOperationId) {
+        const [operation] = await tx`SELECT operation_id,status FROM app.user_github_unlinks
+          WHERE user_id=${userId}::uuid`;
+        if (operation?.status !== 'prepared' || String(operation.operation_id) !== unlinkOperationId) {
+          throw failure('This disconnect operation was superseded.');
+        }
+      }
+
       const state = await this.state(tx, userId);
       const current = arrays(profile);
       const baseline = arrays(state.baseline);
