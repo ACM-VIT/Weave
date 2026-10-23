@@ -156,8 +156,9 @@ test('a flush delivers its starting snapshot and retains events queued during de
 
 for (const mode of ['snapshot', 'append'] as const) test(`failed initial storage read retains exact prepared impression before later actions (${mode})`, async () => {
   let unavailable = true, generation = 1;
-  const prior = event(90), first = { ...event(91), client_occurred_at: '2026-10-24T00:00:01.123Z' };
-  const action = { ...event(92, 'like'), impression_event_id: first.event_id };
+  const prior = event(90), first = { ...event(91), serve_id: '00000000-0000-4000-8000-888888888888', position: 0, client_occurred_at: '2026-10-24T00:00:01.123Z' };
+  const action = { ...event(92, 'like'), repo_id: first.repo_id, serve_id: first.serve_id, position: first.position,
+    client_occurred_at: '2026-10-24T00:00:02.456Z', impression_event_id: first.event_id };
   const bytes = JSON.stringify(first);
   let stored = [prior]; const sent: QueuedActivity[] = [];
   const persistence = mode === 'snapshot' ? {
