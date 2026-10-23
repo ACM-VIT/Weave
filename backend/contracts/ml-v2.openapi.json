@@ -1554,7 +1554,9 @@
             "type": "string"
           },
           "request_id": {
-            "format": "uuid",
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9._:-]+$",
             "title": "Request Id",
             "type": "string"
           },

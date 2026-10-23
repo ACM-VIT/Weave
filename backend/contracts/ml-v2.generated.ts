@@ -660,10 +660,7 @@ export interface components {
             details: components["schemas"]["RequestValidationDetail"][];
             /** Message */
             message: string;
-            /**
-             * Request Id
-             * Format: uuid
-             */
+            /** Request Id */
             request_id: string;
             /**
              * Retryable
