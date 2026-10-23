@@ -15,7 +15,8 @@ export class PostgresScoringPersistence implements ScoringPersistencePort {
   #permission: Promise<void> | undefined;
   constructor(private readonly writer: Sql) {}
   private verifyPermission(): Promise<void> {
-    return this.#permission ??= (async () => {
+    if (this.#permission) return this.#permission;
+    const permission = (async () => {
       const [role] = await this.writer`
         SELECT pg_has_role(current_user,'ghsocial_scoring_writer','MEMBER') AS writer,
           pg_has_role(current_user,'ghsocial_scoring_exporter','MEMBER') AS exporter,
@@ -30,6 +31,9 @@ export class PostgresScoringPersistence implements ScoringPersistencePort {
         throw new ScoringPersistenceError('permission');
       }
     })();
+    this.#permission = permission;
+    void permission.catch(() => { if (this.#permission === permission) this.#permission = undefined; });
+    return permission;
   }
 
   async persist(generation: ValidatedScoringGeneration, policy: CaptureRetentionPolicy): Promise<ScoringPersistenceResult> {
