@@ -88,7 +88,6 @@ export class OutboxWorker {
 
   /** A caller must already own immediate transport capacity for this claim. */
   async deliverClaimed(row: OutboxRow): Promise<DeliveryResult> {
-    if(row.job_type==='model_operation')return this.deliverModel(row);
     if (row.job_type === 'onboard' && !await this.outbox.prepareOnboardingDelivery(row)) {
       return { accepted: false, retryable: false, status_code: 0, detail: 'Onboarding context is no longer current.' };
     }
@@ -98,12 +97,13 @@ export class OutboxWorker {
     let outcome: StageOutcome = 'failure';
     const result = await span.run(async () => {
       try {
-        const delivery = await this.deliver(row);
+        const delivery = row.job_type==='model_operation'?await this.deliverModel(row):await this.deliver(row);
         outcome = delivery.accepted ? 'success' : delivery.failure_kind === 'timeout' ? 'timeout'
           : delivery.status_code >= 400 ? httpOutcome(delivery.status_code) : 'failure';
         return delivery;
       } finally { span.finish(outcome); }
     });
+    if(row.job_type==='model_operation')return result;
     if (result.accepted) {
       if (row.job_type === 'repo_index') {
         if (!result.response_body) {
