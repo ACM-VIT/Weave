@@ -2,10 +2,10 @@ name: Verify summary delivery persistence
 
 on:
   pull_request:
-    paths: ['backend/**', '.github/workflows/summary-delivery.yml']
+    paths: ['backend/**', 'database/**', '.github/workflows/summary-delivery.yml']
   push:
     branches: [dev, main, master]
-    paths: ['backend/**', '.github/workflows/summary-delivery.yml']
+    paths: ['backend/**', 'database/**', '.github/workflows/summary-delivery.yml']
 
 permissions:
   contents: read
