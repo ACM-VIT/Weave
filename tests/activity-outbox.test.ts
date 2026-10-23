@@ -153,3 +153,45 @@ test('a flush delivers its starting snapshot and retains events queued during de
   await outbox.flush('token');
   assert.deepEqual(stored, []);
 });
+
+for (const mode of ['snapshot', 'append'] as const) test(`failed initial storage read retains exact prepared impression before later actions (${mode})`, async () => {
+  let unavailable = true, generation = 1;
+  const prior = event(90), first = { ...event(91), client_occurred_at: '2026-10-24T00:00:01.123Z' };
+  const action = { ...event(92, 'like'), impression_event_id: first.event_id };
+  const bytes = JSON.stringify(first);
+  let stored = [prior]; const sent: QueuedActivity[] = [];
+  const persistence = mode === 'snapshot' ? {
+    persist: async (events: readonly QueuedActivity[]) => { stored = structuredClone([...events]); },
+  } : {
+    append: async (event: QueuedActivity) => { stored.push(structuredClone(event)); },
+    acknowledge: async (ids: ReadonlySet<string>) => { stored = stored.filter(event => !ids.has(event.event_id)); },
+  };
+  const outbox = new DurableActivityOutbox({
+    ...persistence,
+    load: async () => { if (unavailable) throw new Error('initial storage import unavailable'); return structuredClone(stored); },
+    prepare,
+    session: { capture: () => generation, assertCurrent: (token, expected) => {
+      if (token !== 'owner-a' || expected !== generation) throw new Error('account lease changed');
+    } },
+    send: async batch => {
+      for (const row of batch) assert.ok(stored.some(saved => JSON.stringify(saved) === JSON.stringify(row)), 'every exact event must be durable before delivery');
+      sent.push(...batch); return acknowledgement(batch);
+    },
+  });
+  await assert.rejects(outbox.enqueue(first), /initial storage import unavailable/);
+  assert.deepEqual(stored, [prior]);
+  generation = 2;
+  await assert.rejects(outbox.flush('owner-b', generation), /account lease changed/);
+  assert.deepEqual(sent, [], 'a different account cannot retry the original event');
+  unavailable = false;
+  // Storage recovery alone must allow the periodic flush to retry the original,
+  // without requiring a second visibility event or an additional enqueue.
+  const recovered = await outbox.flush('owner-a', generation);
+  assert.equal(recovered.delivered, 2);
+  assert.deepEqual(sent.map(row => row.event_id), [prior.event_id, first.event_id]);
+  assert.equal(JSON.stringify(sent[1]), bytes, 'initial UUID, time and payload remain exact');
+  await outbox.enqueue(action);
+  await outbox.flush('owner-a', generation);
+  assert.equal(sent[2].impression_event_id, first.event_id);
+  assert.equal(sent.filter(row => row.event_id === first.event_id).length, 1);
+});
