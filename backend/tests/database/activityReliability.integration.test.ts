@@ -20,6 +20,7 @@ test('accepted HTTP interactions survive process death, ML outages and replay wi
     import('../../workers/outboxWorker.js'), import('../../services/mlService.js'),
   ]);
   const user = randomUUID(); const repo = randomUUID(); const board = randomUUID();
+  const fault = `fixture_activity_${user.replaceAll('-', '')}`;
   const serve = randomUUID(); const session = randomUUID();
   const child = spawn(process.execPath, ['--import', 'tsx', fileURLToPath(new URL('../fixtures/activityApiProcess.ts', import.meta.url))], {
     env: { ...process.env, JWT_SECRET: 'local-activity-reliability-key', DB_SCHEMA_V2_WRITES: 'true' },
@@ -30,6 +31,8 @@ test('accepted HTTP interactions survive process death, ML outages and replay wi
     if (child.exitCode === null && child.signalCode === null) { const exited = once(child, 'exit'); child.kill('SIGKILL'); await exited; }
     if (mlServer) await new Promise<void>(resolve => { mlServer!.closeAllConnections(); mlServer!.close(() => resolve()); });
     try {
+      await sqlClient.unsafe(`DROP TRIGGER IF EXISTS ${fault} ON telemetry.ml_outbox`);
+      await sqlClient.unsafe(`DROP FUNCTION IF EXISTS telemetry.${fault}()`);
       await sqlClient`DELETE FROM telemetry.ml_outbox WHERE aggregate_id=${user}::uuid`;
       await sqlClient`DELETE FROM app.users WHERE user_id=${user}::uuid`;
       await sqlClient`DELETE FROM auth.users WHERE id=${user}::uuid`;
@@ -79,6 +82,25 @@ test('accepted HTTP interactions survive process death, ML outages and replay wi
   assert.equal((await repeated.json() as { duplicates: number }).duplicates, 2);
   const rejected = await post([event('unlike'), { ...event('save'), position: 99 }]);
   assert.equal(rejected.status, 409); assert.deepEqual(await counts(), [1, 1, 1, 1, 2, 2]);
+  // This fixture UUID/identifier is generated here, never supplied by a caller.
+  // Force a real SQL failure only after the same transaction changed the counter.
+  await sqlClient.unsafe(`CREATE FUNCTION telemetry.${fault}() RETURNS trigger LANGUAGE plpgsql AS $$
+    BEGIN
+      IF NEW.aggregate_id='${user}'::uuid AND NEW.payload->>'event_type'='unlike' THEN
+        IF (SELECT likes_count FROM app.repo_engagement WHERE repo_id='${repo}'::uuid)=0 THEN
+          RAISE EXCEPTION 'fixture_outbox_failure_after_counter_write';
+        ELSE RAISE EXCEPTION 'fixture_failed_before_counter_write'; END IF;
+      END IF;
+      RETURN NEW;
+    END $$`);
+  await sqlClient.unsafe(`CREATE TRIGGER ${fault} BEFORE INSERT ON telemetry.ml_outbox
+    FOR EACH ROW EXECUTE FUNCTION telemetry.${fault}()`);
+  const failedSql = await post([event('unlike'), event('github_open')]);
+  assert.equal(failedSql.status, 409);
+  assert.match((await failedSql.json() as { error: string }).error, /fixture_outbox_failure_after_counter_write/);
+  assert.deepEqual(await counts(), [1, 1, 1, 1, 2, 2], 'SQL failure rolls back events, counters and outbox together');
+  await sqlClient.unsafe(`DROP TRIGGER ${fault} ON telemetry.ml_outbox`);
+  await sqlClient.unsafe(`DROP FUNCTION telemetry.${fault}()`);
   const exited = once(child, 'exit'); child.kill('SIGKILL'); await exited;
   assert.equal(child.signalCode, 'SIGKILL'); assert.deepEqual(await counts(), [1, 1, 1, 1, 2, 2]);
 

@@ -1,11 +1,15 @@
-import { existsSync, readFileSync, readdirSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
-import { basename, join } from 'node:path';
+import { existsSync, readFileSync, readdirSync, realpathSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
+import { basename, dirname, join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { IncrementalActivityStorage } from '../../src/services/activityOutboxRecordStorage';
 import { DurableActivityOutbox } from '../../src/services/activityOutbox';
 import type { QueuedActivity } from '../../src/api/activity';
 
 const [directory, mode] = process.argv.slice(2);
 if (!directory || !mode) throw new Error('A private fixture directory and phase are required.');
+if (dirname(realpathSync(directory)) !== realpathSync(tmpdir()) || !basename(directory).startsWith('weave-activity-restart-')) {
+  throw new Error('Select the private temporary activity fixture directory.');
+}
 const file = (name: string) => { if (basename(name) !== name) throw new Error('Unsafe fixture path'); return join(directory, name); };
 const report = (value: unknown) => process.stdout.write(JSON.stringify(value) + '\n');
 const hold = () => { setInterval(() => {}, 1000); };
