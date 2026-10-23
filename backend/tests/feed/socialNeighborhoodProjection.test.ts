@@ -8,11 +8,14 @@ const row = { repo_id:repo,owner_github_id:'123',source:'followed_like',actor_ke
 test('social neighborhood loader uses one viewer-bound snapshot and returns source evidence without product data', async () => {
   let calls = 0;
   const result = await loadSocialNeighborhoodRows({ query:async (sql,parameters) => {
-    calls++; assert.equal(sql,PUBLIC_SOCIAL_NEIGHBORHOODS_SQL); assert.deepEqual(parameters,[user]);
+    calls++; assert.equal(sql,PUBLIC_SOCIAL_NEIGHBORHOODS_SQL); assert.deepEqual(parameters,[user,'[]']);
     return [row,{...row,source:'board_topic',actor_key:`public-board-owner:${user}`},
       {...row,source:'adjacent_interest',actor_key:`own-positive-seed:${repo}`}];
   } },user);
   assert.equal(calls,1);
+  await loadSocialNeighborhoodRows({ query:async (_sql,parameters) => {
+    assert.deepEqual(parameters,[user,JSON.stringify([repo])]); return [];
+  } },user,[repo.toUpperCase(),repo]);
   assert.deepEqual(result.map(item => item.source),['followed_like','board_topic','adjacent_interest']);
   assert.ok(result.every(item => item.viewer_can_access && item.actor_active && item.signal_allowed));
   assert.ok(result.every(item => !('description' in item) && !('readme' in item) && !('score' in item)));
@@ -21,6 +24,8 @@ test('social neighborhood loader uses one viewer-bound snapshot and returns sour
 test('neighborhood loader rejects invalid viewers before SQL and rejects malformed/unbounded evidence', async () => {
   let calls = 0;
   await assert.rejects(loadSocialNeighborhoodRows({ query:async () => { calls++; return []; } },'mutable-handle'),/canonical UUID/);
+  await assert.rejects(loadSocialNeighborhoodRows({ query:async () => { calls++; return []; } },user,['mutable-repo']),/bounded canonical/);
+  await assert.rejects(loadSocialNeighborhoodRows({ query:async () => { calls++; return []; } },user,Array(1501).fill(repo)),/bounded canonical/);
   assert.equal(calls,0);
   for (const patch of [{owner_github_id:'handle'},{owner_github_id:'9223372036854775808'},
     {repo_id:'name/repo'},{source:'followed_save'},{star_count:-1},
@@ -100,6 +105,26 @@ test('real SQL neighborhoods exclude private/unlisted discovery and other accoun
     assert.ok(projected.some(row => row.source==='adjacent_interest' && row.repo_id===ownAdjacent));
     assert.ok(projected.every(row => !('actor_key' in row)));
     assert.ok(result.every(r => ![privateRepo,unlistedRepo,otherSaved,seed].includes(r.repo_id as typeof seed)));
+    // Fill each recent public source sample with excluded entries. The older
+    // eligible candidate must survive all source caps, not merely a final filter.
+    const excluded: string[] = Array.from({length:20},()=>randomUUID()); repos.push(...excluded);
+    await sql`INSERT INTO app.repos(repo_id,github_id,owner_github_id,full_name,owner,name,url,status)
+      SELECT id,${String(Date.now()*100)}::bigint+n,1000+n,'excluded/'||id,'excluded',id::text,'https://github.com/excluded/'||id,'active'
+      FROM unnest(${excluded}::uuid[]) WITH ORDINALITY AS incoming(id,n)`;
+    await sql`INSERT INTO app.repo_stat_snapshots(repo_id,star_count,observed_at) SELECT unnest(${excluded}::uuid[]),10,now()`;
+    await sql`INSERT INTO app.reactions(user_id,repo_id,reaction,updated_at)
+      SELECT actor,id,'like','2030-01-01'::timestamptz FROM unnest(${[a!,b!]}::uuid[]) actor CROSS JOIN unnest(${excluded}::uuid[]) id`;
+    await sql`INSERT INTO app.board_repos(board_id,repo_id,added_by,added_at)
+      SELECT board.board_id,id,board.user_id,'2030-01-01'::timestamptz FROM app.boards board
+      CROSS JOIN unnest(${excluded}::uuid[]) id WHERE board.board_id=ANY(${boards.slice(0,3)}::uuid[])`;
+    const withoutExclusions = await new PostgresFeedPersistence().listSocialRepositoryCandidates(viewer!,100);
+    for (const source of ['followed_like','co_like','board_topic']) assert.ok(!withoutExclusions.some(row=>row.source===source&&row.repo_id===publicRepo), `${source} fixture must reproduce crowding before filtering`);
+    const afterCaps = await new PostgresFeedPersistence().listSocialRepositoryCandidates(viewer!,100,excluded);
+    for (const source of ['followed_like','co_like','board_topic']) {
+      assert.ok(afterCaps.some(row=>row.source===source&&row.repo_id===publicRepo),`${source} excluded sample must not crowd out older evidence`);
+    }
+    assert.ok(afterCaps.every(row=>!excluded.includes(row.repo_id)));
+    assert.deepEqual(await new PostgresFeedPersistence().listSocialRepositoryCandidates(viewer!,100,[...excluded,publicRepo!,ownAdjacent!]),[]);
     const otherViewer = await loadSocialNeighborhoodRows(reader,b!);
     assert.ok(otherViewer.every(r => r.source!=='followed_like'),'Another viewer cannot inherit the first viewer follows.');
     assert.deepEqual(await loadSocialNeighborhoodRows(reader,inactive!),[],'Suspended viewers have no candidate evidence.');
