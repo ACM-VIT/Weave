@@ -192,11 +192,29 @@ export class OutboxService {
     });
   }
 
-  async markDelivered(row: OutboxRow): Promise<void> {
-    await sqlClient`
+  async markDelivered(row: OutboxRow): Promise<boolean> {
+    if (row.job_type === 'onboard') {
+      return sqlClient.begin(async tx => {
+        // Revocation/provisioning lock the user before touching onboarding jobs.
+        // The delivered trigger inserts a prewarm row whose FK also locks this
+        // user. Acquire that lock first, before the outbox UPDATE owns its row.
+        await tx`SELECT user_id FROM app.users WHERE user_id=${row.aggregate_id}::uuid FOR UPDATE`;
+        const delivered = await tx`
+          UPDATE telemetry.ml_outbox SET status='delivered',delivered_at=now(),claim_token=NULL,claimed_at=NULL,last_error=NULL
+          WHERE outbox_id=${row.outbox_id}::uuid AND claim_token=${row.claim_token}::uuid
+            AND status='claimed' AND job_type='onboard' AND aggregate_id=${row.aggregate_id}::uuid
+          RETURNING outbox_id
+        `;
+        return delivered.length === 1;
+      });
+    }
+    const delivered = await sqlClient`
       UPDATE telemetry.ml_outbox SET status='delivered',delivered_at=now(),claim_token=NULL,claimed_at=NULL,last_error=NULL
       WHERE outbox_id=${row.outbox_id}::uuid AND claim_token=${row.claim_token}::uuid
+        AND status='claimed'
+      RETURNING outbox_id
     `;
+    return delivered.length === 1;
   }
 
   /**
