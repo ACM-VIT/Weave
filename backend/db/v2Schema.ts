@@ -189,6 +189,8 @@ export const appRepos = appSchema.table('repos', {
   uniqueIndex('app_repos_full_name_lower_uidx').on(sql`lower(${table.fullName})`),
   uniqueIndex('app_repos_github_node_id_uidx').on(table.githubNodeId),
   index('app_repos_owner_github_id_idx').on(table.ownerGithubId),
+  index('app_repos_owner_active_recent_idx').on(table.ownerGithubId, table.updatedAt.desc(), table.repoId)
+    .where(sql`${table.status}='active' AND ${table.ownerGithubId} IS NOT NULL`),
   check('app_repos_github_id_positive', sql`${table.githubId} > 0`),
   check('app_repos_owner_github_id_positive', sql`${table.ownerGithubId} IS NULL OR ${table.ownerGithubId} > 0`),
   check('app_repos_status_check', sql`${table.status} IN ('active','archived','deleted','blocked')`),
@@ -259,7 +261,8 @@ export const repoEngagement = appSchema.table('repo_engagement', {
 export const repoTopics = appSchema.table('repo_topics', {
   repoId: uuid('repo_id').notNull().references(() => appRepos.repoId, { onDelete: 'cascade' }),
   topicId: bigint('topic_id', { mode: 'number' }).notNull().references(() => topics.topicId, { onDelete: 'cascade' }),
-}, (table) => [primaryKey({ columns: [table.repoId, table.topicId] })]);
+}, (table) => [primaryKey({ columns: [table.repoId, table.topicId] }),
+  index('app_repo_topics_topic_idx').on(table.topicId, table.repoId)]);
 
 export const repoCardSummaries = appSchema.table('repo_card_summaries', {
   summaryId: uuid('summary_id').defaultRandom().primaryKey(),
@@ -365,6 +368,9 @@ export const reactions = appSchema.table('reactions', {
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 }, (table) => [
   primaryKey({ columns: [table.userId, table.repoId] }),
+  index('app_reactions_user_recent_like_idx').on(table.userId, table.updatedAt.desc(), table.repoId)
+    .where(sql`${table.reaction}='like'`),
+  index('app_reactions_repo_public_like_idx').on(table.repoId, table.userId).where(sql`${table.reaction}='like'`),
   check('reactions_value_check', sql`${table.reaction} IN ('like','dislike')`),
 ]);
 
@@ -428,7 +434,8 @@ export const appBoardRepos = appSchema.table('board_repos', {
   repoId: uuid('repo_id').notNull().references(() => appRepos.repoId, { onDelete: 'cascade' }),
   addedBy: uuid('added_by').references(() => appUsers.userId, { onDelete: 'set null' }),
   addedAt: timestamp('added_at', { withTimezone: true }).notNull().defaultNow(),
-}, (table) => [primaryKey({ columns: [table.boardId, table.repoId] })]);
+}, (table) => [primaryKey({ columns: [table.boardId, table.repoId] }),
+  index('app_board_repos_repository_idx').on(table.repoId, table.boardId)]);
 
 export const trendingSnapshots = appSchema.table('trending_snapshots', {
   snapshotId: uuid('snapshot_id').primaryKey(),
