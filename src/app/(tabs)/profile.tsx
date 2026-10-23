@@ -16,6 +16,7 @@ import { getStorageItem } from "@/utils/storage"
 import { formatCompactCount } from "@/utils/format-count"
 import { isValidUsername, USERNAME_GUIDANCE } from "@/utils/username"
 import { loadPinnedRepositories } from "@/services/pinnedRepositoryStorage"
+import { GitHubUnlinkPanel } from '@/components/onboarding/GitHubUnlinkPanel'
 import { GitHubImportPanel } from '@/components/onboarding/GitHubImportPanel'
 import { APP_THEME, Fonts, Spacing } from '@/constants/theme'
 
@@ -189,7 +190,7 @@ export default function ProfileScreen() {
               onPress={() => setGithubPreferencesVisible(value => !value)} style={{ minHeight: 48, justifyContent: 'center', paddingVertical: Spacing.two }}>
               <Text style={{ fontFamily: Fonts.sans, color: APP_THEME.primary, fontSize: 15 }}>GitHub activity preferences</Text>
             </Pressable>
-            {githubPreferencesVisible && user ? <GitHubImportPanel key={user.user_id} userId={user.user_id} onSaved={checkOnboardingStatus} /> : null}
+            {githubPreferencesVisible && user ? <View><GitHubImportPanel key={user.user_id} userId={user.user_id} onSaved={checkOnboardingStatus} /><GitHubUnlinkPanel userId={user.user_id} onSaved={checkOnboardingStatus} /></View> : null}
             <Text className="text-white font-nataBold" style={{ fontSize: isCompact ? 18 : 22 }}>Lists</Text>
           </View>
         </View>

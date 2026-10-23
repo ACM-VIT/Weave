@@ -2,7 +2,7 @@ import { KeyboardProvider } from 'react-native-keyboard-controller';
 import '@/global.css';
 import { useEffect, useRef, useState } from 'react';
 import { Pressable, Text, View } from 'react-native';
-import { Stack, type Href, usePathname, useRouter, useSegments } from 'expo-router';
+import { Stack, type Href, usePathname, useRouter, useSegments, useGlobalSearchParams } from 'expo-router';
 import Head from 'expo-router/head';
 import { useFonts } from 'expo-font';
 import * as SplashScreen from 'expo-splash-screen';
@@ -32,6 +32,8 @@ Sentry.init({
 function RootLayoutNav({ fontsReady }: { fontsReady: boolean }) {
   const { user, isLoading, startupError, retryStartupSession } = useAuth();
   const pathname = usePathname();
+  const unlinkParams = useGlobalSearchParams<{ unlink_code?: string; unlink_error?: string }>();
+  const unlinkCallback = pathname.endsWith('/callback') && Boolean(unlinkParams.unlink_code || unlinkParams.unlink_error);
   const queryClient = useQueryClient();
   const pendingProtectedRouteRef = useRef<RepositoryRouteHref | null>(null);
   const previousViewerRef = useRef<string | null | undefined>(undefined);
@@ -58,7 +60,7 @@ function RootLayoutNav({ fontsReady }: { fontsReady: boolean }) {
   }, [isLoading, queryClient, user?.user_id]);
 
   useEffect(() => {
-    if (!isReady) return;
+    if (!isReady || unlinkCallback) return;
 
     const inOnboardingGroup = segments[0] === 'onboarding';
     const routeRequiresAuthentication = !inAuthGroup && !inPublicRoute;
@@ -80,7 +82,7 @@ function RootLayoutNav({ fontsReady }: { fontsReady: boolean }) {
         router.replace(destination as Href);
       }
     }
-  }, [user, isReady, pathname, segments, router, inAuthGroup, inPublicRoute]);
+  }, [user, isReady, pathname, segments, router, inAuthGroup, inPublicRoute, unlinkCallback]);
 
   useEffect(() => {
     if (!splashHidden.current && fontsReady && (startupComplete || startupError || publicRouteReady)) {
