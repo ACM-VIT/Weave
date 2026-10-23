@@ -69,3 +69,40 @@ test('a same-version model cursor restart keeps loaded attribution and appends o
  assert.deepEqual(second.items.map(item=>item.repo_id),['two']);assert.equal(first.items[0],original);
  assert.deepEqual(original.client_original_impression,{eventId:'original'});assert.equal(calls,3);
 });
+
+test('a rejected stale Reset reconciles another client epoch and End can drain after restart',async()=>{
+ let stored:string|null=null,epoch='1',active=true,fail=false;
+ const accepted=new Map<string,FeedSessionResult>(),sent:FeedSessionControl[]=[];
+ const deps={read:async()=>stored,write:async(value:string)=>{stored=value;},assertCurrent:()=>{},
+  inspect:async():Promise<FeedSessionResult>=>({mode:'ordered',session:{session_id:session,epoch,status:active?'active':'retired'}}),
+  send:async(control:FeedSessionControl):Promise<FeedSessionResult>=>{
+   sent.push(structuredClone(control));const prior=accepted.get(control.request_id);if(prior)return prior;
+   if(control.kind!=='begin'&&control.expected_epoch!==epoch)throw Object.assign(new Error('stale'),{status:409,code:'MODEL_SESSION_STALE'});
+   if(control.kind==='reset')epoch=(BigInt(epoch)+1n).toString();if(control.kind==='end')active=false;
+   const result:FeedSessionResult={mode:'ordered',session:{session_id:session,epoch,status:active?'active':'retired'}};
+   accepted.set(control.request_id,result);if(fail)throw new Error('lost response');return result;
+  }};
+ const client=new FeedIntentLifecycle(owner,deps);await client.prepare(session);
+ epoch='2'; // Another restored client performed Reset after this client's GET.
+ await client.reset(session);assert.equal(epoch,'3');assert.equal(sent.length,2);
+ assert.equal(sent[0].kind,'reset');assert.equal(sent[1].kind,'reset');
+ assert.notEqual(sent[0].request_id,sent[1].request_id);
+ assert.equal((sent[0] as Extract<FeedSessionControl,{kind:'reset'|'end'}>).expected_epoch,'1');
+ assert.equal((sent[1] as Extract<FeedSessionControl,{kind:'reset'|'end'}>).expected_epoch,'2');
+ fail=true;await assert.rejects(client.reset(session),/lost response/);const uncertain=structuredClone(sent.at(-1));
+ fail=false;await new FeedIntentLifecycle(owner,deps).endAll();
+ assert.deepEqual(sent.at(-2),uncertain,'an uncertain accepted control retains its original request bytes');
+ assert.equal(active,false);assert.deepEqual(JSON.parse(stored!).entries,[]);
+});
+
+test('generic conflict keeps frozen bytes, while a proven stale End reconciles remote retirement',async()=>{
+ let stored:string|null=null,retired=false,stale=false;const sent:FeedSessionControl[]=[];
+ const deps={read:async()=>stored,write:async(value:string)=>{stored=value;},assertCurrent:()=>{},
+  inspect:async():Promise<FeedSessionResult>=>({mode:'ordered',session:{session_id:session,epoch:'1',status:retired?'retired':'active'}}),
+  send:async(control:FeedSessionControl):Promise<FeedSessionResult>=>{sent.push(structuredClone(control));
+   throw Object.assign(new Error('conflict'),{status:409,...(stale?{code:'MODEL_SESSION_STALE'}:{})});}};
+ const client=new FeedIntentLifecycle(owner,deps);await client.prepare(session);
+ await assert.rejects(client.reset(session),/conflict/);const original=structuredClone(sent[0]);
+ await assert.rejects(new FeedIntentLifecycle(owner,deps).prepare(session),/conflict/);assert.deepEqual(sent[1],original);
+ retired=true;stale=true;await new FeedIntentLifecycle(owner,deps).endAll();assert.deepEqual(JSON.parse(stored!).entries,[]);
+});

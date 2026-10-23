@@ -30,8 +30,30 @@ export class FeedIntentLifecycle{
  private async drain(){
   await this.persist();
   for(const entry of this.entries){
+   let reconciled=false;
    while(entry.pending.length){
-    const result=await this.deps.send(entry.pending[0]);this.deps.assertCurrent();
+    const control=entry.pending[0];let result:FeedSessionResult;
+    try{result=await this.deps.send(control);}
+    catch(error){
+     const failure=error as {status?:unknown;code?:unknown};
+     if(reconciled||control.kind==='begin'||failure.status!==409||failure.code!=='MODEL_SESSION_STALE')throw error;
+     // The server rejects this control BEFORE allocating any operation. A lost
+     // response does not enter this path and retains its exact durable request.
+     const current=await this.deps.inspect(entry.sessionId);this.deps.assertCurrent();
+     if(current?.mode!=='ordered'||current.session.session_id!==entry.sessionId)throw error;
+     entry.epoch=current.session.epoch;entry.status=current.session.status;
+     if(entry.status==='retired')entry.pending=[];
+     else{
+      let epoch=entry.epoch;
+      entry.pending=entry.pending.map(queued=>{
+       if(queued.kind==='begin')throw error;
+       const replacement={...queued,request_id:createUuid(),expected_epoch:epoch};
+       if(queued.kind==='reset')epoch=(BigInt(epoch)+1n).toString();return replacement;
+      });
+     }
+     reconciled=true;await this.persist();continue;
+    }
+    this.deps.assertCurrent();
     if(result.mode==='legacy'){this.legacy=true;entry.pending=[];break;}
     if(result.session.session_id!==entry.sessionId)throw new Error('Feed session response does not match.');
     entry.epoch=result.session.epoch;entry.status=result.session.status;entry.pending.shift();await this.persist();
