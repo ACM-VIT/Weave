@@ -20,7 +20,8 @@ function loadSource(path: string, mocks: Record<string, unknown>): Record<string
   return module.exports;
 }
 
-test('mounted onboarding recovery protects the top inset and refreshes import controls without clearing drafts', async () => {
+for (const manualMode of [false, true]) {
+test(`mounted onboarding recovery preserves drafts and refreshes controls (manualMode=${manualMode})`, async () => {
   (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
   let linked = true, reads = 0, refreshes = 0;
   const native = Object.fromEntries(['View', 'Text', 'ScrollView', 'Pressable', 'ActivityIndicator'].map(name => [name, name]));
@@ -41,9 +42,9 @@ test('mounted onboarding recovery protects the top inset and refreshes import co
   const step = loadSource('src/app/onboarding/step1.tsx', {
     'react-native': native, 'react-native-safe-area-context': safeArea,
     'expo-router': { router: { push() {} } },
-    '@/components/onboarding/PrimaryButton': blank, '@/components/onboarding/ProgressBar': blank,
-    '@/components/onboarding/SkillCard': blank, '@/components/onboarding/LogoPlaceholder': blank,
-    '@/constants/onboarding': { SKILL_CATEGORIES: [] },
+    '@/components/onboarding/PrimaryButton': (props: any) => React.createElement('PrimaryButton', props), '@/components/onboarding/ProgressBar': blank,
+    '@/components/onboarding/SkillCard': (props: any) => React.createElement('SkillCard', props), '@/components/onboarding/LogoPlaceholder': blank,
+    '@/constants/onboarding': { SKILL_CATEGORIES: [{ id: 'data', title: 'Data' }, { id: 'systems', title: 'Systems' }] },
     '../../store/OnboardingContext': onboarding, '../../store/AuthContext': auth,
     '../../components/onboarding/GitHubImportPanel': importPanel,
   });
@@ -63,11 +64,25 @@ test('mounted onboarding recovery protects the top inset and refreshes import co
     assert.equal(recovery.props.style.maxHeight, '45%');
     assert.equal(recovery.findAllByType('ScrollView' as any).length, 1);
     await act(async () => { current.updateData({ username: 'draft-name', bio: 'draft-bio' }); });
+    if (manualMode) {
+      await act(async () => { renderer.root.findByProps({ accessibilityLabel: 'Choose preferences myself' }).props.onPress(); });
+      await act(async () => {
+        for (const card of renderer.root.findAllByType('SkillCard' as any)) card.props.onPress();
+      });
+      assert.deepEqual(renderer.root.findAllByType('SkillCard' as any).map(card => card.props.selected), [true, true]);
+      assert.equal(current.data.skills, undefined, 'category picks are still an unsaved step-local draft');
+    }
     const before = reads;
     linked = false;
     const check = renderer.root.findByProps({ accessibilityLabel: 'Check disconnect status' });
     await act(async () => { check.props.onPress(); });
-    assert.ok(reads > before, 'the mounted import panel must reload after recovery refresh');
+    if (!manualMode) assert.ok(reads > before, 'the mounted import panel must reload after recovery refresh');
+    else {
+      assert.deepEqual(renderer.root.findAllByType('SkillCard' as any).map(card => card.props.selected), [true, true],
+        'recovery must not remount the whole step and lose unsaved category picks');
+      assert.equal(renderer.root.findByType('PrimaryButton' as any).props.disabled, false);
+      assert.equal(current.data.skills, undefined);
+    }
     assert.ok(refreshes >= 2);
     assert.ok(!JSON.stringify(renderer.toJSON()).includes('Preview public activity'));
     assert.equal(current.data.username, 'draft-name');
@@ -79,3 +94,5 @@ test('mounted onboarding recovery protects the top inset and refreshes import co
     delete (globalThis as any).IS_REACT_ACT_ENVIRONMENT;
   }
 });
+
+}
