@@ -3,17 +3,25 @@ import type { Server } from 'node:http';
 import test from 'node:test';
 import jwt from 'jsonwebtoken';
 
+// Validate before importing any clients, even when test-name filtering skips execution.
+if (process.env.RUN_PRODUCT_KEYSET_INTEGRATION === '1') {
+  const fail = () => { throw new Error('Use plain disposable loopback weave_keyset PostgreSQL and Redis /15 URLs outside production.'); };
+  if (process.env.NODE_ENV === 'production') fail();
+  for (const [raw, protocols, path] of [
+    [process.env.DATABASE_URL, ['postgres:', 'postgresql:'], '/weave_keyset'],
+    [process.env.REDIS_URL, ['redis:'], '/15'],
+  ] as const) {
+    let target: URL;
+    try { target = new URL(raw ?? ''); } catch { fail(); continue; }
+    if (!protocols.some(protocol => protocol === target.protocol)
+      || !['127.0.0.1', 'localhost', '[::1]'].includes(target.hostname)
+      || target.pathname !== path || raw!.includes('?') || raw!.includes('#')) fail();
+  }
+}
+
 const integration = process.env.RUN_PRODUCT_KEYSET_INTEGRATION === '1' ? test : test.skip;
 
 integration('product keysets paginate large tied portfolios beyond the legacy offset ceiling', { timeout: 180_000 }, async () => {
-  // This fixture truncates its dedicated disposable database. Never accept a
-  // shared/remote destination merely because another integration flag is set.
-  const target = new URL(process.env.DATABASE_URL!);
-  assert.ok(['127.0.0.1', 'localhost'].includes(target.hostname));
-  assert.equal(target.pathname, '/weave_keyset');
-  const redisTarget = new URL(process.env.REDIS_URL!);
-  assert.ok(['127.0.0.1', 'localhost'].includes(redisTarget.hostname));
-  assert.equal(redisTarget.pathname, '/15');
   Object.assign(process.env, {
     NODE_ENV: 'test', JWT_SECRET: 'keyset-disposable-fixture-jwt-secret',
     SUPABASE_URL: 'http://127.0.0.1:9', SUPABASE_KEY: 'fixture-anon', SUPABASE_SERVICE_ROLE_KEY: 'fixture-service',
