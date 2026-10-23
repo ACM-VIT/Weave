@@ -230,6 +230,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       if (!delta) continue;
       pendingLikesGivenDelta.current -= delta;
       pendingLikesGivenEvents.current.delete(eventId);
+      // The next profile response already includes this confirmed change.
+      // Advance its baseline so it cannot consume a different queued event.
+      // Events consumed by a previous profile response are absent above.
+      if (lastServerLikesGivenCount.current !== null) {
+        lastServerLikesGivenCount.current += delta;
+      }
     }
   }, []);
 

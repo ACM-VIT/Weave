@@ -38,7 +38,7 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
-type Viewer = { user_id: string; username: string; onboarding_completed: boolean };
+type Viewer = { user_id: string; username: string; onboarding_completed: boolean; likes_given_count?: number };
 
 function startup({
   segments = ['(auth)'],
@@ -68,6 +68,9 @@ function startup({
     startupError: string | null;
     retryStartupSession: () => Promise<void>;
     signOut: () => Promise<void>;
+    adjustLikesGivenCount: (eventId: string, delta: -1 | 1) => void;
+    settleLikesGivenCountAdjustments: (eventIds: readonly string[]) => void;
+    checkOnboardingStatus: () => Promise<void>;
   };
   session.promise.then(token => { storedToken = token; });
   const router = { replace: (path: string) => { redirects.push(path); } };
@@ -256,6 +259,39 @@ test('session restoration starts while fonts are pending; fonts alone cannot rev
   } finally {
     await app.unmount();
   }
+});
+
+test('confirming one rapid like preserves the other queued count across refreshes', async () => {
+  const viewer = { user_id: 'alice', username: 'alice', onboarding_completed: true, likes_given_count: 0 };
+  const app = startup({ viewer });
+  await app.mount();
+  try {
+    await act(async () => { app.session.resolve('stored-token'); app.fonts.resolve(); });
+    await act(async () => {
+      app.auth.adjustLikesGivenCount('first', 1);
+      app.auth.adjustLikesGivenCount('second', 1);
+    });
+    assert.equal(app.auth.user?.likes_given_count, 2);
+    await act(async () => { app.auth.settleLikesGivenCountAdjustments(['first']); });
+    app.setProfileRequest(Promise.resolve({ ...viewer, likes_given_count: 1 }));
+    await act(async () => { await app.auth.checkOnboardingStatus(); });
+    assert.equal(app.auth.user?.likes_given_count, 2, 'first confirmation must not consume the queued second like');
+    // A repeated confirmation must not advance the baseline twice.
+    await act(async () => {
+      app.auth.settleLikesGivenCountAdjustments(['first']);
+      await app.auth.checkOnboardingStatus();
+    });
+    assert.equal(app.auth.user?.likes_given_count, 2);
+    // A profile can observe the second commit before its upload response.
+    app.setProfileRequest(Promise.resolve({ ...viewer, likes_given_count: 2 }));
+    await act(async () => { await app.auth.checkOnboardingStatus(); });
+    assert.equal(app.auth.user?.likes_given_count, 2);
+    await act(async () => {
+      app.auth.settleLikesGivenCountAdjustments(['second']);
+      await app.auth.checkOnboardingStatus();
+    });
+    assert.equal(app.auth.user?.likes_given_count, 2);
+  } finally { await app.unmount(); }
 });
 
 test('a restored session still waits for fonts and preserves onboarding routing', async () => {
