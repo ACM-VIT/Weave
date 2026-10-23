@@ -19,8 +19,14 @@ function limits(value: Record<string, unknown>): ModelPolicyLimits {
 }
 /** Caller owns the parent user lock BEFORE this call; never upgrade it after feed. */
 export async function lockModelLane(tx: TransactionSql, userId: string): Promise<LockedModelLane | null> {
-  const [state] = await tx`SELECT model_policy_sha256,model_policy_limits,model_initialized FROM app.user_feed_state WHERE user_id=${userId}::uuid FOR UPDATE`;
+  const [state] = await tx`SELECT model_policy_sha256,model_policy_limits,model_initialized,feedback_version FROM app.user_feed_state WHERE user_id=${userId}::uuid FOR UPDATE`;
   if (!state?.model_policy_sha256) return null;
+  if(state.model_initialized!==true&&BigInt(String(state.feedback_version))>0n){
+    const [pending]=await tx`SELECT count(*)::bigint AS count,min(feedback_version) AS first,max(feedback_version) AS last
+      FROM telemetry.pending_model_feedback WHERE user_id=${userId}::uuid`;
+    if(String(pending.count)!==String(state.feedback_version)||String(pending.first)!=='1'||String(pending.last)!==String(state.feedback_version))
+      throw new ModelOperationError('MODEL_CUTOVER_REQUIRED',409);
+  }
   return { [locked]:true,userId,policySha256:String(state.model_policy_sha256),initialized:state.model_initialized===true,
     limits:limits(state.model_policy_limits as Record<string,unknown>) };
 }

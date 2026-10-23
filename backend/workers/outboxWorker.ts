@@ -1,3 +1,4 @@
+import { modelDigest } from '../contracts/modelOperations.js';
 import { startSpan, httpOutcome, withoutOutboxTrace } from '../observability/tracing.js';
 import { observeStage, type StageOutcome } from '../observability/metrics.js';
 import type {
@@ -36,6 +37,42 @@ export class OutboxWorker {
     return this.transport.deliverRepositoryRefresh({ job_id, repo_id, feature_version, features });
   }
 
+  private async deliverModel(row:OutboxRow):Promise<DeliveryResult>{
+    const current=await this.outbox.prepareModelDelivery(row);
+    if(!current)return {accepted:false,retryable:true,status_code:0,detail:'Model delivery claim is no longer current.'};
+    if(!current.operation_json || modelDigest(current.operation_json)!==current.source_envelope_sha256 || !current.model_operation_version){
+      await this.outbox.markFailed(current,'Invalid frozen model source.',false);
+      return {accepted:false,retryable:false,status_code:0,detail:'Invalid frozen model source.'};
+    }
+    let result:DeliveryResult;
+    let acknowledged=false;
+    if(current.withdrawal_json){
+      if(!this.transport.deliverProfileWithdrawals)result={accepted:false,retryable:true,status_code:503};
+      else{
+        const response=await this.transport.deliverProfileWithdrawals({schema_version:1,withdrawals:[{withdrawal_json:current.withdrawal_json}]});
+        result=response;
+        const a=response.response_body?.withdrawals;
+        acknowledged=response.accepted && a?.length===1 && a[0].operation_id===current.outbox_id
+          && a[0].model_operation_version===current.model_operation_version && a[0].source_envelope_sha256===current.source_envelope_sha256
+          && a[0].withdrawal_sha256===modelDigest(current.withdrawal_json) && ['accepted','duplicate'].includes(a[0].status);
+      }
+    }else{
+      if(!this.transport.deliverModelOperations)result={accepted:false,retryable:true,status_code:503};
+      else{
+        const response=await this.transport.deliverModelOperations({schema_version:1,operations:[{operation_json:current.operation_json}]});
+        result=response;
+        const a=response.response_body?.operations;
+        // withdrawal_accepted requires reloading the attestation, never claims original application.
+        acknowledged=response.accepted && a?.length===1 && a[0].operation_id===current.outbox_id
+          && a[0].model_operation_version===current.model_operation_version && a[0].source_envelope_sha256===current.source_envelope_sha256
+          && ['accepted','duplicate'].includes(a[0].status);
+      }
+    }
+    if(acknowledged)await this.outbox.markDelivered(current);
+    else await this.outbox.markFailed(current,'Model delivery was not durably acknowledged.',result.accepted||result.retryable,result.retry_after_ms);
+    return {...result,accepted:acknowledged,detail:acknowledged?undefined:'Model delivery was not durably acknowledged.'};
+  }
+
   async runOnce(limit = 1): Promise<number> {
     let processed = 0;
     for (let index = 0; index < limit; index++) {
@@ -51,6 +88,7 @@ export class OutboxWorker {
 
   /** A caller must already own immediate transport capacity for this claim. */
   async deliverClaimed(row: OutboxRow): Promise<DeliveryResult> {
+    if(row.job_type==='model_operation')return this.deliverModel(row);
     if (row.job_type === 'onboard' && !await this.outbox.prepareOnboardingDelivery(row)) {
       return { accepted: false, retryable: false, status_code: 0, detail: 'Onboarding context is no longer current.' };
     }

@@ -1,3 +1,4 @@
+import { parseAppliedModelContext } from './modelOperationValidation.js';
 import type { MlRecommendationRequest, MlRecommendationResponse } from '../contracts/ml.v2.js';
 import { ValidatedScoringGeneration } from './scoringCaptureValidation.js';
 
@@ -40,6 +41,12 @@ export function rejectDuplicateJsonKeys(text: string): void {
 
 /** Called only after ordinary recommendation identity/provenance validation. */
 export function validateCapturedRecommendation(value: MlRecommendationResponse, input: MlRecommendationRequest): ValidatedScoringGeneration | null {
+  const modelKeys=input.model_context?['model_context']:[];
+  const model=input.model_context?parseAppliedModelContext('model_context' in value?value.model_context:undefined):null;
+  if(model && (model.user_id!==input.user_id||model.session_id!==input.model_context!.session_id||model.epoch!==input.model_context!.epoch
+    ||model.policy_sha256!==input.model_context!.policy_sha256||model.profile_version!==input.model_context!.required_profile_version
+    ||model.as_of_ms!==input.model_context!.as_of_ms||BigInt(model.applied_operation_version)<BigInt(input.model_context!.minimum_applied_operation_version)))invalid();
+  if(!input.model_context&&'model_context' in value)invalid();
   if (!input.scoring_capture) {
     if ('scoring_capture' in value || 'scoring_context' in value || 'scoring_metadata_complete' in value
       || value.items.some(item => 'scored_input' in item || 'raw_heavy_score' in item)) invalid();
@@ -52,16 +59,17 @@ export function validateCapturedRecommendation(value: MlRecommendationResponse, 
   exact(value.context_status, ['cold_start_applied','locale']);
   if (value.scoring_capture.schema_version !== 1 || value.fallback_code !== null || value.fallback_reason !== null) invalid();
   if (value.scoring_capture.status === 'not_scored_empty') {
-    exact(value, [...ordinaryKeys, 'scoring_capture']);
+    exact(value, [...ordinaryKeys,...modelKeys, 'scoring_capture']);
     if (value.items.length !== 0) invalid();
     return null;
   }
   if (value.scoring_capture.status !== 'captured' || !('scoring_context' in value)) return invalid();
-  exact(value, [...ordinaryKeys, 'scoring_capture','scoring_context','scoring_metadata_complete']);
+  exact(value, [...ordinaryKeys,...modelKeys, 'scoring_capture','scoring_context','scoring_metadata_complete']);
   if (value.served_ranker !== 'heavy' || !value.heavy_ranker_selected || !value.ranker_applied
     || !['personalized','cold_start_profile'].includes(value.retrieval_mode)
     || value.scoring_context.model_version !== value.model_version
     || value.scoring_metadata_complete !== (value.scoring_context.user_embedding_version !== null)) invalid();
+  if(model && value.scoring_context.user_vector_sha256!==model.effective_vector_sha256)invalid();
   for (const item of value.items) {
     exact(item, ['repo_id','score','source','raw_heavy_score','scored_input',
       ...(item.retrieval_scores === undefined ? [] : ['retrieval_scores'])]);

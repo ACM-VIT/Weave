@@ -104,7 +104,7 @@ export class OutboxDeliveryLanes {
       } else if (lane === 'onboard') {
         const remaining = this.remaining('onboard');
         if (remaining) return { processed: 0, nextRunInMs: remaining };
-        options = { jobTypes: ['onboard'] };
+        options = { jobTypes: ['onboard','model_operation'] };
       } else {
         options = { jobTypes: [this.repositoryKind] };
         this.repositoryKind = this.repositoryKind === 'repo_index' ? 'repo_refresh' : 'repo_index';

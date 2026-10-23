@@ -1,3 +1,6 @@
+import type { MlModelOperationBatch, MlModelOperationResponse, MlProfileWithdrawalBatch, MlProfileWithdrawalResponse, MlModelOperationStatusRequest, MlModelOperationStatusResponse, MlModelAuthorityRequest, MlModelAuthorityResponse } from '../contracts/ml.v2.js';
+import { parseModelAcknowledgement, parseWithdrawalAcknowledgement, parseModelOperationStatus, parseAppliedModelContext,modelRecord } from './modelOperationValidation.js';
+import { ModelOperationError } from '../contracts/modelOperations.js';
 import crypto from 'node:crypto';
 import { rejectDuplicateJsonKeys, validateCapturedRecommendation } from './capturedRecommendation.js';
 import { startSpan, mlOperation, httpOutcome } from '../observability/tracing.js';
@@ -529,6 +532,35 @@ export class MlV2Client implements RecommendationPort, OutboxTransportPort {
       return { accepted: false, retryable: true, status_code: 0, detail: String(error),
         ...(error instanceof MlTransportTimeoutError ? { failure_kind: 'timeout' as const } : {}) };
     }
+  }
+
+  async deliverModelOperations(batch:MlModelOperationBatch):Promise<DeliveryResult<MlModelOperationResponse>> {
+    const result=await this.deliver('/api/v2/model-operations',batch,'model-operations');
+    if(!result.accepted)return {...result,detail:'Model operation delivery unavailable.',response_body:undefined};
+    try{return {...result,response_body:parseModelAcknowledgement(result.response_body)};}
+    catch{return {accepted:false,retryable:true,status_code:502,detail:'Invalid model operation acknowledgement.'};}
+  }
+  async deliverProfileWithdrawals(batch:MlProfileWithdrawalBatch):Promise<DeliveryResult<MlProfileWithdrawalResponse>> {
+    const result=await this.deliver('/api/v2/model-operation-withdrawals',batch,'model-withdrawals');
+    if(!result.accepted)return {...result,detail:'Model withdrawal delivery unavailable.',response_body:undefined};
+    try{return {...result,response_body:parseWithdrawalAcknowledgement(result.response_body)};}
+    catch{return {accepted:false,retryable:true,status_code:502,detail:'Invalid model withdrawal acknowledgement.'};}
+  }
+  async modelOperationStatus(input:MlModelOperationStatusRequest):Promise<MlModelOperationStatusResponse>{
+    try{const result=await this.request('/api/v2/model-operation-status',input,input.operation_id);
+      if(result.status!==200)throw new ModelOperationError();
+      const status=parseModelOperationStatus(result.body);
+      if(status.user_id!==input.user_id || status.operation_id!==input.operation_id || status.model_operation_version!==input.model_operation_version
+        || status.source_envelope_sha256!==input.source_envelope_sha256)throw new ModelOperationError();
+      return status;
+    }catch{throw new ModelOperationError();}
+  }
+  async modelAuthority(input:MlModelAuthorityRequest):Promise<MlModelAuthorityResponse>{
+    try{const result=await this.request('/api/v2/model-authority',input,input.user_id);
+      if(result.status!==200)throw new ModelOperationError();
+      const body=modelRecord(result.body);if(body.schema_version!==1)throw new ModelOperationError();
+      return {schema_version:1,model_context:parseAppliedModelContext(body.model_context)};
+    }catch{throw new ModelOperationError();}
   }
 
   deliverFeedback(batch: MlFeedbackBatch): Promise<DeliveryResult> {

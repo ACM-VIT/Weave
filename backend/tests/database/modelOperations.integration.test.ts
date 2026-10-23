@@ -1,8 +1,10 @@
+import {OutboxService} from '../../services/outboxService.js';
+import {OutboxWorker} from '../../workers/outboxWorker.js';
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
 import test from 'node:test';
 import { sqlClient } from '../../db/index.js';
-import { appendModelOperation,lockModelLane,enqueueModelProfile,sequencePendingModelFeedback } from '../../services/modelOperationService.js';
+import { appendModelOperation,lockModelLane,enqueueModelProfile,sequencePendingModelFeedback,withdrawPendingProfiles } from '../../services/modelOperationService.js';
 import { FeedIntentSessionService } from '../../services/feedIntentSessionService.js';
 import { canonicalJson,modelDigest } from '../../contracts/modelOperations.js';
 import { buildMlOnboardingJob } from '../../services/mlOnboardingService.js';
@@ -112,4 +114,44 @@ integration('real product feedback remains durable before genesis and drains onc
  assert.equal(frozen.accepted_at_ms,String(pending[0].accepted_at_ms));
  assert.equal('canonical_attribution' in frozen.operation,false);
  }finally{await sqlClient`DELETE FROM telemetry.pending_model_feedback WHERE user_id=${owner}::uuid`;await sqlClient`DELETE FROM telemetry.interaction_events WHERE user_id=${owner}::uuid`;await sqlClient`DELETE FROM app.repos WHERE repo_id=${repo}::uuid`;}
+});
+
+integration('unregistered nonzero legacy feedback history refuses implicit model genesis',async()=>{
+ const owner=await fixture(false);
+ await sqlClient`UPDATE app.user_feed_state SET feedback_version=1 WHERE user_id=${owner}::uuid`;
+ await assert.rejects(sqlClient.begin(async tx=>{
+  await tx`SELECT user_id FROM app.users WHERE user_id=${owner}::uuid FOR KEY SHARE`;
+  await lockModelLane(tx,owner);
+ }),/MODEL_CUTOVER_REQUIRED/);
+ assert.equal((await sqlClient`SELECT 1 FROM telemetry.ml_outbox WHERE aggregate_id=${owner}::uuid`).length,0);
+});
+
+integration('dead common predecessor blocks ordinary jobs while source-bound withdrawal bypasses dispatch without raw context',async()=>{
+ const owner=await fixture();const lower=await append(owner,'blocked-feedback');
+ await sqlClient`UPDATE telemetry.ml_outbox SET status='dead' WHERE outbox_id=${lower.operation.operationId}::uuid`;
+ let original='';
+ await sqlClient.begin(async tx=>{
+  await tx`SELECT user_id FROM app.users WHERE user_id=${owner}::uuid FOR KEY SHARE`;
+  const lane=await lockModelLane(tx,owner);assert.ok(lane);
+  await enqueueModelProfile(tx,lane,buildMlOnboardingJob(owner,2,{username:'Tarun',bio:'PRIVATE_REVOKED_PROFILE'}));
+  const [row]=await tx`SELECT operation_json FROM telemetry.ml_outbox WHERE aggregate_id=${owner}::uuid AND model_operation_version=2`;
+  original=row.operation_json;await withdrawPendingProfiles(tx,lane,'2');
+ });
+ const outbox=new OutboxService();const claimed=(await outbox.claim(100,undefined,{jobTypes:['model_operation']})).find(row=>row.aggregate_id===owner);
+ assert.ok(claimed);assert.equal(String(claimed.model_operation_version),'2');assert.equal(claimed.operation_json,original);
+ assert.doesNotMatch(claimed.withdrawal_json!,/PRIVATE_REVOKED_PROFILE/);
+ let sent='';
+ const unavailable=async()=>({accepted:false,retryable:true,status_code:503});
+ const worker=new OutboxWorker(outbox,{deliverFeedback:unavailable,deliverOnboarding:unavailable,deliverRepositoryIndex:unavailable,deliverRepositoryRefresh:unavailable,
+  deliverModelOperations:async()=>{throw new Error('Revoked original was forwarded');},
+  deliverProfileWithdrawals:async batch=>{
+   sent=batch.withdrawals[0].withdrawal_json;
+   return {accepted:true,retryable:false,status_code:202,response_body:{schema_version:1,withdrawals:[{
+    operation_id:claimed.outbox_id,model_operation_version:String(claimed.model_operation_version),source_envelope_sha256:claimed.source_envelope_sha256!,
+    withdrawal_sha256:modelDigest(sent),status:'accepted'}]}};
+  }});
+ assert.equal((await worker.deliverClaimed(claimed)).accepted,true);assert.equal(sent,claimed.withdrawal_json);
+ await append(owner,'still-blocked');
+ assert.equal((await outbox.claim(100,undefined,{jobTypes:['model_operation']})).filter(row=>row.aggregate_id===owner).length,0);
+ assert.equal((await sqlClient`SELECT status FROM telemetry.ml_outbox WHERE outbox_id=${lower.operation.operationId}::uuid`)[0].status,'dead');
 });
