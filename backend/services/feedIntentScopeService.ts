@@ -1,3 +1,5 @@
+import { StaleFeedCursorError } from './feedCursor.js';
+import { parseAppliedModelContext } from './modelOperationValidation.js';
 import type { Sql } from 'postgres';
 import { sqlClient } from '../db/index.js';
 import type { FeedIntentScope } from '../contracts/feedIntent.js';
@@ -39,6 +41,18 @@ export class FeedIntentScopeService {
     ||applied.applied_feedback_version!==snapshot.feedbackVersion||applied.session_witness_sha256!==snapshot.witnessSha256||applied.as_of_ms!==context.as_of_ms
     ||BigInt(applied.valid_until_ms)>BigInt(context.as_of_ms)+BigInt(snapshot.generationFreshnessMs)
     ||BigInt(applied.valid_until_ms)<=BigInt(Date.now())||BigInt(applied.as_of_ms)<BigInt(snapshot.epochStartedMs))throw new ModelOperationError('MODEL_SESSION_PENDING',409);
+ }
+ async restoreCursor(current:NonNullable<Awaited<ReturnType<FeedIntentScopeService['snapshot']>>>,queueScope:string):Promise<MlAppliedModelContext>{
+  const [row]=await this.db`SELECT applied_context FROM telemetry.feed_model_generations
+    WHERE user_id=${current.userId}::uuid AND session_id=${current.sessionId}::uuid AND queue_scope=${queueScope}
+      AND valid_until_ms>floor(extract(epoch FROM clock_timestamp())*1000)::bigint ORDER BY generation_id LIMIT 1`;
+  if(!row)throw new StaleFeedCursorError();
+  const applied=parseAppliedModelContext(row.applied_context);
+  if(applied.user_id!==current.userId||applied.session_id!==current.sessionId||applied.epoch!==current.epoch
+    ||applied.policy_sha256!==current.policySha256||applied.profile_version!==current.profileVersion
+    ||applied.applied_operation_version!==current.acceptedOperationVersion||applied.applied_feedback_version!==current.feedbackVersion
+    ||applied.session_witness_sha256!==current.witnessSha256||BigInt(applied.valid_until_ms)<=BigInt(Date.now()))throw new StaleFeedCursorError();
+  return applied;
  }
  async isCurrent(scope:FeedIntentScope):Promise<boolean>{
   if(BigInt(scope.applied.valid_until_ms)<=BigInt(Date.now()))return false;

@@ -16,7 +16,7 @@ const request={feed_request_id:owner,session_id:session,limit:2,cursor:null};
 test('concurrent cold authority awaits install one service and stop drains that service',async()=>{
  const barriers:(()=>void)[]=[];let created=0,stopped=0,reads=0;
  const legacy={getFeed:async()=>response,stop:async()=>{}};
- const gateway=new IntentFeedGateway(legacy,{getServeByRequest:async()=>null},{snapshot:async()=>snapshot,
+ const gateway=new IntentFeedGateway(legacy,{getServeByRequest:async()=>null},{snapshot:async()=>snapshot,restoreCursor:async()=>scope.applied,
   resolve:async()=>{reads++;await new Promise<void>(resolve=>barriers.push(resolve));return scope;}},()=>{
    created++;return {getFeed:async()=>response,stop:async()=>{stopped++;}};});
  const first=gateway.getFeed(owner,request),second=gateway.getFeed(owner,{...request,feed_request_id:session});
@@ -26,7 +26,7 @@ test('concurrent cold authority awaits install one service and stop drains that 
 });
 test('stop during authority I/O prevents a later service installation',async()=>{
  let release:()=>void=()=>{};let resolving=false,created=0;
- const gateway=new IntentFeedGateway({getFeed:async()=>response,stop:async()=>{}},{getServeByRequest:async()=>null},{snapshot:async()=>snapshot,
+ const gateway=new IntentFeedGateway({getFeed:async()=>response,stop:async()=>{}},{getServeByRequest:async()=>null},{snapshot:async()=>snapshot,restoreCursor:async()=>scope.applied,
   resolve:async()=>{resolving=true;await new Promise<void>(resolve=>{release=resolve;});return scope;}},()=>{
    created++;return {getFeed:async()=>response,stop:async()=>{}};});
  const pending=gateway.getFeed(owner,request);while(!resolving)await new Promise(resolve=>setImmediate(resolve));

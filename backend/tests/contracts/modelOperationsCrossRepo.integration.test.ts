@@ -23,10 +23,14 @@ integration('registered product SQL/HTTP reaches actual ordered ML, captured ran
   JWT_SECRET:'model35-owned-fixture-jwt-secret'});
  const {sqlClient:sql}=await import('../../db/index.js');
  await sql.unsafe(`CREATE ROLE ${writerRole} LOGIN PASSWORD 'model35_fixture' IN ROLE ghsocial_scoring_writer`);
- const [{default:app},{getApplicationRuntime},{default:redis},{OutboxWorker}]=await Promise.all([
+ const [{default:app},{getApplicationRuntime,ApplicationRuntime},{default:redis},{OutboxWorker}]=await Promise.all([
   import('../../app.js'),import('../../runtime/applicationRuntime.js'),import('../../config/redis.js'),import('../../workers/outboxWorker.js')]);
  const runtime=getApplicationRuntime();assert.ok(runtime.ml&&runtime.orderedProfiles);
  const worker=new OutboxWorker(runtime.outbox,runtime.ml);
+ let providerReads=0;
+ const readAuthority=runtime.ml.modelAuthority.bind(runtime.ml),readStatus=runtime.ml.modelOperationStatus.bind(runtime.ml);
+ runtime.ml.modelAuthority=async input=>{providerReads++;return readAuthority(input);};
+ runtime.ml.modelOperationStatus=async input=>{providerReads++;return readStatus(input);};
  const server=app.listen(0,'127.0.0.1');await new Promise<void>(resolve=>server.once('listening',resolve));
  const address=server.address();assert.ok(address&&typeof address==='object');const origin=`http://127.0.0.1:${address.port}`;
  const tokens=owners.map(userId=>jwt.sign({userId,email:'fixture@example.test'},process.env.JWT_SECRET!,{expiresIn:'10m'}));
@@ -66,15 +70,42 @@ integration('registered product SQL/HTTP reaches actual ordered ML, captured ran
   const request={feed_request_id:crypto.randomUUID(),session_id:sessions[0][0],limit:2,cursor:null};
   const first=await until(()=>call<FeedResponseV2>(0,'/feed',request),response=>response.status===200);
   assert.equal(first.body.items.length,2);assert.ok(first.body.next_cursor);
-  const second=await call<FeedResponseV2>(0,'/feed',{...request,feed_request_id:crypto.randomUUID(),cursor:first.body.next_cursor});
+  const replica=new ApplicationRuntime();
+  let replicaPage:FeedResponseV2;
+  try{replicaPage=await replica.feed.getFeed(owners[0],{...request,feed_request_id:crypto.randomUUID(),cursor:first.body.next_cursor});}
+  finally{await replica.supervisor.stop();}
+  const second={status:200,body:replicaPage!};
   assert.equal(second.status,200);assert.equal(new Set([...first.body.items,...second.body.items].map(item=>item.repo_id)).size,4);
+  const parts=first.body.next_cursor!.split('.');
+  const badSignature=parts[0]+'.'+(parts[1][0]==='a'?'b':'a')+parts[1].slice(1);
+  for(const [owner,session,cursor] of [[owners[0],sessions[0][0],badSignature],[owners[0],sessions[0][1],first.body.next_cursor!],[owners[1],sessions[1][0],first.body.next_cursor!]] as const){
+   const before=providerReads;
+   await assert.rejects(runtime.feed.getFeed(owner,{...request,feed_request_id:crypto.randomUUID(),session_id:session,cursor}),/cursor/i);
+   assert.equal(providerReads,before,'invalid MAC/foreign scope must fail before provider reads');
+  }
+  await sql`UPDATE telemetry.feed_model_generations SET valid_until_ms=1 WHERE generation_id=ANY(${[...new Set(first.body.items.map(item=>item.generation_id!))]}::uuid[])`;
+  const beforeExpiry=providerReads;
+  await assert.rejects(runtime.feed.getFeed(owners[0],{...request,feed_request_id:crypto.randomUUID(),cursor:first.body.next_cursor}),/cursor/i);
+  assert.equal(providerReads,beforeExpiry,'expired generation must fail before provider reads');
   const otherDevice=await call<FeedResponseV2>(0,'/feed',{...request,feed_request_id:crypto.randomUUID(),session_id:sessions[0][1]});assert.equal(otherDevice.status,200);
   const otherUser=await until(()=>call<FeedResponseV2>(1,'/feed',{...request,feed_request_id:crypto.randomUUID(),session_id:sessions[1][0]}),response=>response.status===200);assert.equal(otherUser.body.session_id,sessions[1][0]);
+  const dwell={...preinit,event_id:crypto.randomUUID(),serve_id:otherDevice.body.serve_id,repo_id:otherDevice.body.items[0].repo_id,
+    position:otherDevice.body.items[0].position,event_type:'dwell',dwell_ms:4000};
+  assert.equal((await call(0,'/interactions/batch',{schema_version:2,events:[dwell]})).status,202);
+  const [unchangedFeed]=await sql`SELECT feed_version FROM app.user_feed_state WHERE user_id=${owners[0]}::uuid`;
+  assert.equal(String(unchangedFeed.feed_version),otherDevice.body.feed_version,'dwell changes model order without changing feed version');
+  const beforeDwellCursor=providerReads;
+  await assert.rejects(runtime.feed.getFeed(owners[0],{...request,session_id:sessions[0][1],feed_request_id:crypto.randomUUID(),cursor:otherDevice.body.next_cursor}),/cursor/i);
+  assert.equal(providerReads,beforeDwellCursor,'changed model frontier must restart the old cursor before provider reads');
+  await deliver();
   const [captured]=await sql`SELECT count(*)::int AS count FROM private_scoring.scoring_inputs WHERE user_id=${owners[0]}::uuid AND octet_length(input_bytes)=3112`;
   assert.ok(captured.count>=4,'actual trained 778-value inputs must persist before serve');
   const [stamp]=await sql`SELECT intent_epoch,intent_epoch_witness_sha256 FROM telemetry.feed_serves WHERE serve_id=${first.body.serve_id}::uuid`;
   assert.equal(String(stamp.intent_epoch),'1');assert.match(stamp.intent_epoch_witness_sha256,/^[a-f0-9]{64}$/);
   const reset=await call(0,'/feed-sessions',{kind:'reset',request_id:crypto.randomUUID(),session_id:sessions[0][0],expected_epoch:'1'});assert.equal(reset.status,200);
+  const beforeResetCursor=providerReads;
+  await assert.rejects(runtime.feed.getFeed(owners[0],{...request,feed_request_id:crypto.randomUUID(),cursor:first.body.next_cursor}),/cursor/i);
+  assert.equal(providerReads,beforeResetCursor,'changed epoch/frontier must fail before provider reads');
   const replay=await call<FeedResponseV2>(0,'/feed',request);assert.equal(replay.status,200);assert.equal(replay.body.serve_id,first.body.serve_id);
   const identity=(body:FeedResponseV2)=>body.items.map(item=>[item.repo_id,item.position,item.generation_id,item.exposure_id]);
   assert.deepEqual(identity(replay.body),identity(first.body));
@@ -87,12 +118,15 @@ integration('registered product SQL/HTTP reaches actual ordered ML, captured ran
   const after=await until(()=>call<FeedResponseV2>(0,'/feed',{...request,feed_request_id:crypto.randomUUID()}),response=>response.status===200);
   assert.ok(after.body.items.every(item=>item.repo_id!==late.repo_id));
   const ended=await call(0,'/feed-sessions',{kind:'end',request_id:crypto.randomUUID(),session_id:sessions[0][0],expected_epoch:'2'});assert.equal(ended.status,200);
+  const beforeEndCursor=providerReads;
+  const retiredCursor=await call(0,'/feed',{...request,feed_request_id:crypto.randomUUID(),cursor:after.body.next_cursor});
+  assert.equal(retiredCursor.status,400);assert.equal(retiredCursor.body.code,'FEED_CURSOR_STALE');assert.equal(providerReads,beforeEndCursor);
   assert.equal((await call<FeedResponseV2>(0,'/feed',request)).body.serve_id,first.body.serve_id);
   assert.equal((await call(0,'/feed-sessions',{kind:'begin',request_id:crypto.randomUUID(),session_id:sessions[0][0]})).status,409);
   if(process.env.MODEL_PAIR_OUTPUT)await writeFile(process.env.MODEL_PAIR_OUTPUT,JSON.stringify({owners,tokens,writerUrl:writerUrl.toString(),
     provider:receipt.source_commit,ml:receipt.api_url,secret:receipt.internal_secret,capability:receipt.scoring_capture_capability},null,2),{mode:0o600});
   console.log(JSON.stringify({provider:receipt.source_commit,users:2,canonicalSessions:4,productPreinitFeedback:true,
-   actualCaptured778:true,scopedPages:4,lateEpochInactive:true,resetEndReplay:true}));
+   actualCaptured778:true,scopedPages:4,replicaContinuation:true,cursorAdmissionBeforeProvider:true,dwellSameVersionRestart:true,retiredCursorRestart:true,lateEpochInactive:true,resetEndReplay:true}));
  }finally{
   server.closeAllConnections();await new Promise<void>(resolve=>server.close(()=>resolve()));await runtime.supervisor.stop();redis.disconnect();
   // Frozen capture/provenance stays inside this explicitly owned disposable target.

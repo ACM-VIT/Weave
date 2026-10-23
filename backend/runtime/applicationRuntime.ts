@@ -134,7 +134,7 @@ export class ApplicationRuntime {
     } : undefined,
     userId => this.scoringCapture.enabled && this.scoringCapture.userIds.has(userId),
   );
-  readonly feed=this.modelScopes?new IntentFeedGateway(this.legacyFeed,this.persistence,this.modelScopes,scope=>this.createIntentFeed(scope)):this.legacyFeed;
+  readonly feed=this.modelScopes?new IntentFeedGateway(this.legacyFeed,this.persistence,this.modelScopes,scope=>this.createIntentFeed(scope),process.env.JWT_SECRET):this.legacyFeed;
   private createIntentFeed(scope:FeedIntentScope):FeedV2Service{
     if(!this.ml||!this.modelScopes)throw new Error('Model feed dependencies are unavailable.');
     const persistence=new PostgresFeedPersistence();
