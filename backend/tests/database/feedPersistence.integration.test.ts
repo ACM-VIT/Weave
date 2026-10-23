@@ -140,7 +140,7 @@ integration('concurrent session deliveries serialize final overlap checks includ
   const f = await fixture(1);
   const persistence = new PostgresFeedPersistence();
   const competing = { ...f.input, feed_request_id: crypto.randomUUID(),
-    user_id: f.user.toUpperCase(), session_id: f.session.toUpperCase() };
+    session_id: f.session.toUpperCase() };
   const results = await Promise.allSettled([persistence.createServe(f.input), persistence.createServe(competing)]);
   const winners = results.filter(result => result.status === 'fulfilled');
   const losers = results.filter(result => result.status === 'rejected');
@@ -199,7 +199,7 @@ integration('UUID case aliases wait on the same session delivery lock', async ()
     acquired(); await hold;
   });
   await ready;
-  const creating = persistence.createServe({ ...f.input, user_id: f.user.toUpperCase(), session_id: f.session.toUpperCase() });
+  const creating = persistence.createServe({ ...f.input, session_id: f.session.toUpperCase() });
   try {
     const state = await Promise.race([creating.then(() => 'committed'), new Promise<string>(resolve => setTimeout(() => resolve('waiting'), 50))]);
     assert.equal(state, 'waiting', 'UUID spelling must not bypass another session writer');
