@@ -17,7 +17,7 @@ test('browser localStorage survives reload and lifecycle recovery drains acknowl
     import {DurableActivityOutbox} from './src/services/activityOutbox';
     import {startActivityOutboxLifecycle} from './src/services/activityOutboxLifecycle';
     import {loadActivityOutbox,appendActivityOutboxEvent,acknowledgeActivityOutboxEvents} from './src/services/activityOutboxStorage';
-    const owner='00000000-0000-4000-8000-000000000001';let online=false,failures=0;
+    const owner='00000000-0000-4000-8000-000000000001',other='00000000-0000-4000-8000-000000000099';let online=false,failures=0;
     const event=n=>({event_id:'00000000-0000-4000-8000-'+String(n).padStart(12,'0'),session_id:owner,
       repo_id:'10000000-0000-4000-8000-000000000001',action:'like',client_occurred_at:'2026-10-23T00:00:00Z',serve_id:null,position:null});
     const queue=new DurableActivityOutbox({load:()=>loadActivityOutbox(owner),append:e=>appendActivityOutboxEvent(owner,e),
@@ -30,10 +30,12 @@ test('browser localStorage survives reload and lifecycle recovery drains acknowl
     const output=(status,value)=>{const result=document.createElement('pre');result.id='activity-result';result.dataset.status=status;result.textContent=JSON.stringify(value);document.body.append(result);};
     async function run(){
       if(!sessionStorage.getItem('activity-test-phase')){
+        await appendActivityOutboxEvent(other,event(99));
         await queue.enqueue(event(1));try{await queue.flush('fixture');}catch{}
         sessionStorage.setItem('activity-test-phase','restarted');location.reload();return;
       }
       const restored=await loadActivityOutbox(owner);check(restored.length===1&&restored[0].event_id===event(1).event_id,'Reload lost pending identity');
+      check((await loadActivityOutbox(other))[0]?.event_id===event(99).event_id,'Reload lost second account event');
       let appState,network;
       const stop=startActivityOutboxLifecycle({flush:()=>queue.flush('fixture'),intervalMs:8000,
         subscribeAppState:fn=>{appState=fn;return()=>{};},subscribeConnectivity:fn=>{network=fn;return()=>{};}});
@@ -44,7 +46,8 @@ test('browser localStorage survives reload and lifecycle recovery drains acknowl
       await until(async()=>await queue.pendingCount()===0);
       await queue.enqueue(event(3));stop();await until(async()=>await queue.pendingCount()===0);
       check((await loadActivityOutbox(owner)).length===0,'Acknowledged records retained');
-      check((await loadActivityOutbox('00000000-0000-4000-8000-000000000099')).length===0,'Account storage leaked');
+      const otherPending=await loadActivityOutbox(other);
+      check(otherPending.length===1&&otherPending[0].event_id===event(99).event_id&&otherPending[0].client_occurred_at===event(99).client_occurred_at,'Draining account A changed account B pending event');
       appState('active');network({isConnected:true,isInternetReachable:true});
       output('passed',{reloaded:true,foreground:true,connectivity:true,unmount:true,pending:await queue.pendingCount()});
     }
@@ -79,7 +82,7 @@ test('browser localStorage survives reload and lifecycle recovery drains acknowl
   });
   let port: string | undefined;
   for (let n = 0; n < 100; n++) {
-    if (spawnError) throw spawnError;
+    if (spawnError) throw new Error('Install Chromium or set CHROMIUM_BIN to an executable Chromium browser before RUN_ACTIVITY_BROWSER=1.', { cause: spawnError });
     try { port = (await readFile(path.join(directory, 'chrome/DevToolsActivePort'), 'utf8')).split('\n')[0]; break; }
     catch { await new Promise(resolve => setTimeout(resolve, 50)); }
   }
