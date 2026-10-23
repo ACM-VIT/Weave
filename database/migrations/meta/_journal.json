@@ -273,6 +273,13 @@
       "when": 1793318400000,
       "tag": "0035_github_import_consent",
       "breakpoints": true
+    },
+    {
+      "idx": 39,
+      "version": "7",
+      "when": 1793404800000,
+      "tag": "0036_social_candidate_lookup_indexes",
+      "breakpoints": true
     }
   ]
 }
