@@ -294,6 +294,60 @@ test('confirming one rapid like preserves the other queued count across refreshe
   } finally { await app.unmount(); }
 });
 
+test('a delayed profile read cannot consume a queued unlike or overwrite a later count', async () => {
+  const viewer = { user_id: 'alice', username: 'alice', onboarding_completed: true, likes_given_count: 10 };
+  const app = startup({ viewer });
+  await app.mount();
+  try {
+    await act(async () => { app.session.resolve('stored-token'); app.fonts.resolve(); });
+    const old = deferred<Viewer>();
+    app.setProfileRequest(old.promise);
+    let oldRead!: Promise<void>;
+    await act(async () => { oldRead = app.auth.checkOnboardingStatus(); });
+    await act(async () => {
+      app.auth.adjustLikesGivenCount('like', 1);
+      app.auth.adjustLikesGivenCount('unlike', -1);
+      app.auth.settleLikesGivenCountAdjustments(['like']);
+    });
+    await act(async () => { old.resolve(viewer); await oldRead; });
+    app.setProfileRequest(Promise.resolve({ ...viewer, likes_given_count: 11 }));
+    await act(async () => { await app.auth.checkOnboardingStatus(); });
+    assert.equal(app.auth.user?.likes_given_count, 10, 'queued unlike must survive an old response');
+    const older = deferred<Viewer>();
+    app.setProfileRequest(older.promise);
+    await act(async () => { oldRead = app.auth.checkOnboardingStatus(); });
+    await act(async () => { app.auth.settleLikesGivenCountAdjustments(['unlike']); });
+    app.setProfileRequest(Promise.resolve(viewer));
+    await act(async () => { await app.auth.checkOnboardingStatus(); });
+    await act(async () => { older.resolve({ ...viewer, likes_given_count: 11 }); await oldRead; });
+    assert.equal(app.auth.user?.likes_given_count, 10, 'late response must not replace the settled count');
+  } finally { await app.unmount(); }
+});
+
+test('accepted no-op likes do not fabricate count changes or retire another queued event', async () => {
+  const viewer = { user_id: 'alice', username: 'alice', onboarding_completed: true, likes_given_count: 10 };
+  const app = startup({ viewer });
+  await app.mount();
+  try {
+    await act(async () => { app.session.resolve('stored-token'); app.fonts.resolve(); });
+    await act(async () => {
+      app.auth.adjustLikesGivenCount('stale-like', 1);
+      app.auth.adjustLikesGivenCount('unlike', -1);
+      app.auth.settleLikesGivenCountAdjustments(['stale-like']);
+      await app.auth.checkOnboardingStatus();
+    });
+    // The aggregate count gives no evidence of which event changed a reaction.
+    // It must not clear the outstanding unlike while the queue is still active.
+    app.setProfileRequest(Promise.resolve({ ...viewer, likes_given_count: 11 }));
+    await act(async () => { await app.auth.checkOnboardingStatus(); });
+    assert.equal(app.auth.user?.likes_given_count, 10);
+    await act(async () => { app.auth.settleLikesGivenCountAdjustments(['unlike']); });
+    app.setProfileRequest(Promise.resolve({ ...viewer, likes_given_count: 9 }));
+    await act(async () => { await app.auth.checkOnboardingStatus(); });
+    assert.equal(app.auth.user?.likes_given_count, 9, 'settled server count corrects a stale feed estimate');
+  } finally { await app.unmount(); }
+});
+
 test('a restored session still waits for fonts and preserves onboarding routing', async () => {
   const app = startup({ viewer: { user_id: 'new', username: 'new', onboarding_completed: false } });
   await app.mount();

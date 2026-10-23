@@ -58,9 +58,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [isLoading, setIsLoading] = useState(true);
   const [startupError, setStartupError] = useState<string | null>(null);
   const startupController = useRef<AbortController | null>(null);
-  const pendingLikesGivenDelta = useRef(0);
   const pendingLikesGivenEvents = useRef(new Map<string, -1 | 1>());
-  const lastServerLikesGivenCount = useRef<number | null>(null);
+  const likesGivenRevision = useRef(0);
+  const profileReadSequence = useRef(0);
 
   const fetchUserProfile = useCallback(async (
     token: string,
@@ -72,6 +72,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       signal,
     }: UserProfileRequestPolicy = {},
   ) => {
+    const readSequence = ++profileReadSequence.current;
+    const likesRevisionAtStart = likesGivenRevision.current;
     const assertCurrent = () => {
       authSessionLifecycle.assertCurrent(sessionGeneration);
       if (signal?.aborted) throw new SessionChangedError();
@@ -86,34 +88,21 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         : (await apiV2<{ completed: boolean }>('/onboarding/status', { signal }, token, requestPolicy)).completed;
       assertCurrent();
       const serverLikesGivenCount = Number(profile.likes_given_count);
-      if (Number.isFinite(serverLikesGivenCount)) {
-        const previousServerCount = lastServerLikesGivenCount.current;
-        if (previousServerCount !== null) {
-          let serverDelta = serverLikesGivenCount - previousServerCount;
-          if (serverDelta !== 0) {
-            for (const [eventId, eventDelta] of pendingLikesGivenEvents.current) {
-              if (Math.sign(eventDelta) !== Math.sign(serverDelta)) continue;
-              if (Math.abs(eventDelta) > Math.abs(serverDelta)) continue;
-              serverDelta -= eventDelta;
-              pendingLikesGivenDelta.current -= eventDelta;
-              pendingLikesGivenEvents.current.delete(eventId);
-              if (serverDelta === 0) break;
-            }
-          }
-        }
-        lastServerLikesGivenCount.current = serverLikesGivenCount;
-      }
-      setUser({
+      setUser(current => ({
         ...profile,
         user_id: String(profile.user_id),
         username: String(profile.username),
         onboarding_completed: resolveOnboardingCompleted(profile, completionStatus),
-        likes_given_count: Math.max(
-          0,
-          (Number.isFinite(serverLikesGivenCount) ? serverLikesGivenCount : 0)
-            + pendingLikesGivenDelta.current,
-        ),
-      });
+        // Aggregate counts cannot tell us which queued events have committed.
+        // Keep the optimistic display until the queue settles, then accept a
+        // fresh authoritative count. Older reads cannot undo newer reactions.
+        likes_given_count: current && (
+          pendingLikesGivenEvents.current.size > 0
+          || likesRevisionAtStart !== likesGivenRevision.current
+          || readSequence !== profileReadSequence.current
+        ) ? current.likes_given_count
+          : Math.max(0, Number.isFinite(serverLikesGivenCount) ? serverLikesGivenCount : 0),
+      }));
     } catch (error) {
       assertCurrent();
       const status = httpStatus(error);
@@ -217,7 +206,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const adjustLikesGivenCount = useCallback((eventId: string, delta: -1 | 1) => {
     if (pendingLikesGivenEvents.current.has(eventId)) return;
     pendingLikesGivenEvents.current.set(eventId, delta);
-    pendingLikesGivenDelta.current += delta;
+    likesGivenRevision.current += 1;
     setUser((current) => current ? {
       ...current,
       likes_given_count: Math.max(0, Number(current.likes_given_count ?? 0) + delta),
@@ -228,14 +217,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     for (const eventId of eventIds) {
       const delta = pendingLikesGivenEvents.current.get(eventId);
       if (!delta) continue;
-      pendingLikesGivenDelta.current -= delta;
       pendingLikesGivenEvents.current.delete(eventId);
-      // The next profile response already includes this confirmed change.
-      // Advance its baseline so it cannot consume a different queued event.
-      // Events consumed by a previous profile response are absent above.
-      if (lastServerLikesGivenCount.current !== null) {
-        lastServerLikesGivenCount.current += delta;
-      }
+      likesGivenRevision.current += 1;
     }
   }, []);
 
@@ -251,9 +234,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     if (storedToken !== accessToken) throw new SessionChangedError();
 
     clearAccountQueryCache(queryClient);
-    pendingLikesGivenDelta.current = 0;
     pendingLikesGivenEvents.current.clear();
-    lastServerLikesGivenCount.current = null;
+    likesGivenRevision.current += 1;
     setStartupError(null);
     setUser(null);
     setIsLoading(true);
@@ -272,9 +254,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const logout = logoutRequest();
     const logoutGeneration = authSessionLifecycle.currentGeneration();
     clearAccountQueryCache(queryClient);
-    pendingLikesGivenDelta.current = 0;
     pendingLikesGivenEvents.current.clear();
-    lastServerLikesGivenCount.current = null;
+    likesGivenRevision.current += 1;
     setUser(null);
     setIsLoading(false);
 
@@ -302,9 +283,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => authSessionLifecycle.subscribe(() => {
     clearAccountQueryCache(queryClient);
-    pendingLikesGivenDelta.current = 0;
     pendingLikesGivenEvents.current.clear();
-    lastServerLikesGivenCount.current = null;
+    likesGivenRevision.current += 1;
     setUser(null);
     setIsLoading(false);
     setStartupError(null);
@@ -313,9 +293,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     setSessionExpiredHandler(() => {
       clearAccountQueryCache(queryClient);
-      pendingLikesGivenDelta.current = 0;
       pendingLikesGivenEvents.current.clear();
-      lastServerLikesGivenCount.current = null;
+      likesGivenRevision.current += 1;
       setUser(null);
     });
     return () => setSessionExpiredHandler(null);
