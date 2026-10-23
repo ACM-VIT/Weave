@@ -368,6 +368,20 @@ export class MlV2Client implements RecommendationPort, OutboxTransportPort {
         || !Array.isArray(value.items)) {
         throw new MlRecommendationError('ML recommendation response violated the v2 envelope.', 200, 'contract');
       }
+      const context = value.context_status;
+      const nullableText = (field: unknown) => field === null || typeof field === 'string';
+      if (!boundedVersion(value.model_version, 512) || !boundedVersion(value.embedding_version, 1048)
+        || !Array.isArray(value.embedding_versions) || !value.embedding_versions.every(version => typeof version === 'string')
+        || !['heavy', 'hybrid'].includes(value.served_ranker)
+        || typeof value.heavy_ranker_selected !== 'boolean' || typeof value.ranker_applied !== 'boolean'
+        || !nullableText(value.fallback_code) || !nullableText(value.fallback_reason)
+        || typeof value.retrieval_mode !== 'string'
+        || !context || typeof context !== 'object' || Array.isArray(context)
+        || typeof context.cold_start_applied !== 'boolean'
+        || !['reserved_unused', 'not_provided'].includes(context.locale)
+        || value.items.length > 150) {
+        throw new MlRecommendationError('ML recommendation response violated the v2 provenance contract.', 200, 'contract');
+      }
       const ids = new Set<string>();
       for (const item of value.items) {
         if (!item || !isValidUuid(item.repo_id) || ids.has(item.repo_id) || !Number.isFinite(item.score)

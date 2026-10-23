@@ -477,7 +477,10 @@ test('validated empty ML success ends continuation without opening the circuit',
       response.writeHead(200, { 'content-type': 'application/json' });
       response.end(JSON.stringify({ schema_version: 2, generation_id: input.generation_id,
         user_id: input.user_id, feed_version: input.feed_version,
-        model_version: 'test-heavy', embedding_version: 'test-embedding', items: [] }));
+        model_version: 'test-heavy', embedding_version: 'test-embedding', items: [],
+        embedding_versions: [], served_ranker: 'heavy', heavy_ranker_selected: true, ranker_applied: true,
+        fallback_code: null, fallback_reason: null, retrieval_mode: 'personalized',
+        context_status: { cold_start_applied: input.context.cold_start, locale: 'not_provided' } }));
     });
   });
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
