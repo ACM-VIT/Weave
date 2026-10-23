@@ -113,16 +113,34 @@ test('new feedback is bounded per RPC while retry slots always claim one event',
 });
 
 test('partial acknowledgement finalizes only explicit identities; malformed acknowledgements finalize none', async () => {
+  const { snapshotHistograms } = await import('../../observability/metrics.js');
+  const { snapshotSpans } = await import('../../observability/tracing.js');
+  const count = (outcome: string) => snapshotHistograms()[JSON.stringify({
+    operation: 'feedback', stage: 'outbox_delivery', outcome,
+  })]?.count ?? 0;
+  const beforeSuccess = count('success'), beforeFailure = count('failure');
   const first = row(); const second = row();
+  for (const item of [first, second]) {
+    item.payload._traceparent = `00-${randomUUID().replaceAll('-', '')}-1234567890abcdef-01`;
+  }
   const f = fixture([first, second], async () => ({ accepted: true, retryable: false, status_code: 202,
     response_body: { accepted: 1, duplicates: 0, durable: true, acknowledged_event_ids: [first.payload.event_id] } }));
   await new OutboxDeliveryLanes(f.outbox, f.transport).runOnce('feedback');
   assert.deepEqual(f.delivered, [first.outbox_id]);
   assert.deepEqual(f.failed.map(item => [item.row.outbox_id, item.retryable]), [[second.outbox_id, true]]);
+  assert.equal(count('success'), beforeSuccess + 1);
+  assert.equal(count('failure'), beforeFailure + 1);
+  for (const [item, outcome] of [[first, 'success'], [second, 'failure']] as const) {
+    const trace = String(item.payload._traceparent).split('-')[1];
+    assert.equal(snapshotSpans().find(span => span.trace_id === trace
+      && span.stage === 'outbox_delivery')?.outcome, outcome);
+  }
   const bad = fixture([row(), row()], async () => ({ accepted: true, retryable: false, status_code: 202,
     response_body: { accepted: 2, duplicates: 0, durable: true } }));
   await new OutboxDeliveryLanes(bad.outbox, bad.transport).runOnce('feedback');
   assert.deepEqual(bad.delivered, []); assert.ok(bad.failed.every(item => item.retryable));
+  assert.equal(count('success'), beforeSuccess + 1);
+  assert.equal(count('failure'), beforeFailure + 3);
 });
 
 test('batch conflict or ambiguous timeout retries every unknown member; singleton conflict is terminal', async () => {

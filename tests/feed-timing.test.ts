@@ -67,3 +67,30 @@ test('sampling, ring capacity and finite histogram bounds hold across repeated l
   snapshot.spans[0].duration_ms = -999;
   assert.notEqual(snapshotFeedTiming().spans[0].duration_ms, -999);
 });
+
+for (const recovery of ['feed-change', 'stale-cursor'] as const) {
+  test(`later-page ${recovery} recovery never becomes first-visible timing`, async () => {
+    const loaded: FeedPage[] = [{ ...page(), nextCursor: 'later', sessionId: 'cached-session' }];
+    const calls: Array<{ cursor: string | null; initialPage: boolean }> = [];
+    let stale = recovery === 'stale-cursor';
+    const pagination = new FeedPaginationController(async (cursor, _signal, _id, _session, initialPage) => {
+      calls.push({ cursor, initialPage });
+      if (stale) {
+        stale = false;
+        throw Object.assign(new Error('stale'), { status: 400, code: 'FEED_CURSOR_STALE' });
+      }
+      return measureFeedLoad(async () => ({ ...page(), feedVersion: '2',
+        items: [{ repo_id: 'new-repository' }] }), initialPage);
+    }, loaded, () => loaded);
+    if (recovery === 'feed-change') pagination.markStale('2');
+    const beforeVisible = count('first_visible');
+    const beforeReadyGap = count('ready_to_visible');
+    const recovered = await pagination.load('later');
+    assert.equal(calls.at(-1)?.cursor, null);
+    assert.ok(calls.every(call => call.initialPage === false));
+    assert.equal(recovered.timing?.initialPage, false);
+    markFeedFirstVisible(recovered.timing);
+    assert.equal(count('first_visible'), beforeVisible);
+    assert.equal(count('ready_to_visible'), beforeReadyGap);
+  });
+}

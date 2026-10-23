@@ -56,10 +56,10 @@ export default function HomeScreen() {
   const feedQueryKey = useMemo(() => getFeedQueryKey(user?.user_id), [user?.user_id]);
   const listRef = useRef<FlatList<{ feedId: string; repository: RepositoryData }> | null>(null);
   const pagination = useMemo(() => {
-    const controller = new FeedPaginationController(async (cursor, signal, requestId, sessionId) => {
+    const controller = new FeedPaginationController(async (cursor, signal, requestId, sessionId, initialPage) => {
       const token = await SecureStore.getItemAsync('access_token');
       if (!token) throw new Error('No token');
-      return fetchHomeFeed(token, cursor, { signal, requestId, sessionId });
+      return fetchHomeFeed(token, cursor, { signal, requestId, sessionId, initialPage });
     }, queryClient.getQueryData<InfiniteData<FeedPage>>(feedQueryKey)?.pages,
     () => queryClient.getQueryData<InfiniteData<FeedPage>>(feedQueryKey)?.pages ?? []);
     return { controller, reset: () => controller.reset() };
