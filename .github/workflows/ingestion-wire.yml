@@ -1,0 +1,46 @@
+name: Verify ingestion wire contract
+
+on:
+  pull_request:
+    paths: ['backend/**', '.github/workflows/ingestion-wire.yml']
+  push:
+    branches: [dev, main, master]
+    paths: ['backend/**', '.github/workflows/ingestion-wire.yml']
+
+permissions:
+  contents: read
+
+jobs:
+  paired-http:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: ACM-VIT/Weave-ml
+          ref: 7a7091cc45fda7884cfd21e582c1e7bd9f69d509
+          path: .ingestion-provider
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v5
+        with:
+          python-version: '3.12'
+      - name: Install transport-only Python test dependencies
+        working-directory: .ingestion-provider
+        run: |
+          python -m venv .venv
+          .venv/bin/python -m pip install requests==2.34.2 httpx==0.28.1
+      - run: npm ci
+        working-directory: backend
+      - name: Exercise real Python-to-Express ingestion boundaries
+        working-directory: backend
+        run: npx --no-install tsx --test tests/http/ingestionWireContract.test.ts
+        env:
+          WEAVE_ML_INGESTION_ROOT: ${{ github.workspace }}/.ingestion-provider
