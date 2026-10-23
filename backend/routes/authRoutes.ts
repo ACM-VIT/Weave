@@ -11,6 +11,8 @@ import {
   requestPasswordReset,
   signUp,
 } from '../controllers/authController.js';
+import { githubUnlinkRoutes } from '../runtime/githubUnlink.js';
+import { GITHUB_UNLINK_COOKIE } from './githubUnlinkRoutes.js';
 
 const router: Router = Router();
 
@@ -23,7 +25,9 @@ router.post('/refresh', refreshToken);
 router.post('/logout', logout);
 router.post('/password/reset/request', requestPasswordReset);
 router.post('/password/reset/confirm', confirmPasswordReset);
-router.get('/callback', handleOAuthCallback);
+router.use('/github-unlink', (req, res, next) => githubUnlinkRoutes().publicRoutes(req, res, next));
+router.get('/callback', (req, res) => req.cookies?.[GITHUB_UNLINK_COOKIE]
+  ? githubUnlinkRoutes().callback(req, res) : handleOAuthCallback(req, res));
 
 // POST /api/auth/exchange
 router.post('/exchange', exchangeAuthCode);

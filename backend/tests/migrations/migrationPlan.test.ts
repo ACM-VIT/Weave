@@ -22,10 +22,19 @@ test('normal pending migrations run before retroactive V2 repair timestamps are 
   const journal = JSON.parse(await readFile(new URL('../../../database/migrations/meta/_journal.json', import.meta.url), 'utf8')) as {
     entries: { idx: number; tag: string; when: number }[];
   };
+  // The unlink recovery branch can precede the independently published lineage
+  // and board-index branches. Preserve their journal IDs instead of renumbering
+  // applied history; these are the only temporarily absent reserved slots.
+  const reserved = new Map([[41, '0038_repository_lineage'], [42, '0039_social_board_sampling_index']]);
+  let expectedIndex = 0;
   for (const [index, entry] of journal.entries.entries()) {
-    assert.equal(entry.idx, index);
+    while (reserved.has(expectedIndex) && !journal.entries.some(item => item.idx === expectedIndex)) expectedIndex++;
+    assert.equal(entry.idx, expectedIndex++);
+    if (reserved.has(entry.idx)) assert.equal(entry.tag, reserved.get(entry.idx));
     if (index) assert.ok(entry.when > journal.entries[index - 1].when);
   }
+  const recovery = journal.entries.find(entry => entry.tag === '0040_github_unlink_credential_target');
+  if (recovery) assert.equal(recovery.idx, 43);
   assert.equal(journal.entries.find(entry => entry.tag === '0025_repository_summary_artifacts')?.when, 1786291200000);
   assert.equal(journal.entries.some(entry => entry.tag === '0024_repository_summary_artifacts'), false);
 });

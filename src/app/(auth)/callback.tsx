@@ -1,3 +1,4 @@
+import { GithubUnlinkCallback } from '@/components/onboarding/GithubUnlinkCallback';
 import { useEffect, useRef, useState } from 'react';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { ActivityIndicator, Text, TouchableOpacity, View } from 'react-native';
@@ -23,6 +24,11 @@ WebBrowser.maybeCompleteAuthSession();
  * Expo Router parses those into search params automatically.
  */
 export default function OAuthCallbackScreen() {
+  const { unlink_code, unlink_error } = useLocalSearchParams<{ unlink_code?: string; unlink_error?: string }>();
+  if (unlink_code || unlink_error) return <GithubUnlinkCallback code={unlink_code} error={unlink_error} />;
+  return <SignInCallbackScreen />;
+}
+function SignInCallbackScreen() {
   const { code, error: oauthError } = useLocalSearchParams<{ code?: string; error?: string }>();
   const { setSession } = useAuth();
   const router = useRouter();

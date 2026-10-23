@@ -102,6 +102,7 @@ test('actual import panel renders consent/error/revoke and ignores late account 
   await send('Page.enable');
   await send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
   await send('Page.navigate', { url: `http://127.0.0.1:${address.port}` });
+  if (process.env.GITHUB_IMPORT_MANUAL_RETRY_ONLY !== '1') {
   await until('Boolean(document.querySelector(\'[aria-label="Preview public activity"]\'))');
   assert.equal(requests.filter(request => request.action === 'preview').length, 0);
   await evaluate('window.fixture.mode="error"'); await click('Preview public activity');
@@ -121,7 +122,7 @@ test('actual import panel renders consent/error/revoke and ignores late account 
   }
   await evaluate('window.fixture.mode="cleanup-error"');
   await click('Choose preferences myself'); await cleanupStarted;
-  assert.equal(await evaluate('window.fixture.manual'), 1, 'manual choice must complete while cleanup HTTP is held');
+  assert.equal(await evaluate('window.fixture.manual'), 0, 'cleanup host stays mounted until revocation acknowledgement');
   releaseCleanup(); await until('document.body.innerText.includes("Preview cleanup unavailable")');
   await evaluate('window.fixture.mode="normal"'); await click('Retry closing preview');
   await until(`!document.querySelector('[aria-label="Retry closing preview"]')`);
@@ -148,19 +149,42 @@ test('actual import panel renders consent/error/revoke and ignores late account 
   assert.equal(requests.filter(request => request.actor === 'B' && request.action === 'accept').length, 0);
   const saved = await evaluate('window.fixture.saved') as string[];
   assert.ok(saved.length >= 3 && saved.every(actor => actor === 'A'), 'only the current account refreshes after successful mutations');
-  // Match the real onboarding parent, which replaces this panel on manual
-  // choice. Hold token/transport admission until React has unmounted it.
+  }
+  // Match the actual parent, which unmounts this panel on onManual. A failed
+  // DELETE must leave its cleanup host and retry state visible, not navigate.
   await send('Page.navigate',{url:`http://127.0.0.1:${address.port}`});
   await click('Preview public activity'); await until('document.body.innerText.includes("only-A-topic")');
   const cleanupBefore=requests.filter(row=>row.action==='revoke').length;
-  await evaluate('window.fixture.unmountManual=true;window.fixture.holdCleanup=true');
-  await click('Choose preferences myself'); await until('Boolean(document.getElementById("manual-view"))');
-  assert.equal(await evaluate('window.fixture.manual'),1,'manual choice must not wait for cleanup');
-  assert.equal(await evaluate('window.fixture.cleanupSignal.aborted'),false,'view replacement cannot cancel owner-bound consent cleanup');
+  active.A=true; // Model acceptance committed before its browser response settled.
+  await evaluate('window.fixture.unmountManual=true;window.fixture.holdCleanup=true;window.fixture.mode="cleanup-error"');
+  await click('Choose preferences myself');
+  await until('Boolean(window.fixture.releaseCleanup)');
+  assert.equal(await evaluate('window.fixture.cleanupSignal.aborted'),false);
   await evaluate('window.fixture.releaseCleanup()');
-  for(let n=0;n<100&&requests.filter(row=>row.action==='revoke').length===cleanupBefore;n++)await new Promise(resolve=>setTimeout(resolve,10));
-  assert.equal(requests.filter(row=>row.action==='revoke').length,cleanupBefore+1);
+  await cleanupStarted; releaseCleanup();
   await until('window.fixture.cleanupSettled');
-  assert.deepEqual(await evaluate('window.fixture.saved'),[],'unmounted cleanup must not refresh the retired parent');
+  await until('document.body.innerText.includes("Preview cleanup unavailable")');
+  assert.equal(await evaluate('window.fixture.manual'),0,'failed cleanup cannot abandon the manual intent');
+  assert.equal(await evaluate('Boolean(document.getElementById("manual-view"))'),false);
+  assert.equal(active.A,true,'failed DELETE did not revoke the accepted server state');
+  await evaluate('window.fixture.holdCleanup=false;window.fixture.mode="refresh-error"');
+  await click('Retry closing preview');
+  await until('document.body.innerText.includes("Account refresh unavailable")');
+  assert.equal(active.A,false,'successful retry acknowledged the consent revocation');
+  assert.equal(await evaluate('window.fixture.manual'),0,'refresh failure retains the same pending manual intent');
+  await evaluate('window.fixture.mode="normal"'); await click('Retry account refresh');
+  await until('Boolean(document.getElementById("manual-view"))');
+  assert.equal(await evaluate('window.fixture.manual'),1,'successful retry continues manually exactly once');
+  assert.equal(requests.filter(row=>row.action==='revoke').length,cleanupBefore+2);
+  assert.deepEqual(await evaluate('window.fixture.saved'),['A']);
+  // Empty manual setup has no preview/acceptance to retire and must not invent
+  // a network dependency or populate any choices.
+  await send('Page.navigate',{url:`http://127.0.0.1:${address.port}`});
+  await until(`Boolean(document.querySelector('[aria-label="Preview public activity"]'))`);
+  const emptyCleanupBefore=requests.filter(row=>row.action==='revoke').length;
+  await evaluate('window.fixture.unmountManual=true'); await click('Choose preferences myself');
+  await until('Boolean(document.getElementById("manual-view"))');
+  assert.equal(await evaluate('window.fixture.manual'),1);
+  assert.equal(requests.filter(row=>row.action==='revoke').length,emptyCleanupBefore);
   t.diagnostic('Actual React Native Web panel: explicit consent, error/retry, partial provenance, decline, expiry, revoke and late-account isolation pass; HTTP API is a controlled boundary.');
 });

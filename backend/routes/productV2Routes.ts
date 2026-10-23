@@ -3,11 +3,13 @@ import { requireAuth } from '../middlewares/authMiddleware.js';
 import * as product from '../controllers/productV2Controller.js';
 import { search } from '../controllers/searchController.js';
 import { createGithubImportRouter } from './githubImportRoutes.js';
+import { githubUnlinkRoutes } from '../runtime/githubUnlink.js';
 
 const router = Router();
 router.get('/repositories/:repoId/share', product.getRepositoryShare);
 router.use(requireAuth);
 router.use('/onboarding/github-import', createGithubImportRouter());
+router.use('/onboarding/github-unlink', (req, res, next) => githubUnlinkRoutes().authenticated(req, res, next));
 router.post('/search', search);
 router.get('/users/me', product.getMe);
 router.patch('/users/me', product.updateMe);

@@ -45,7 +45,9 @@ function startup({
   viewer = { user_id: 'alice', username: 'alice', onboarding_completed: true },
   realNetwork = false,
   mountCallback = false,
-}: { segments?: string[]; viewer?: Viewer | null; realNetwork?: boolean; mountCallback?: boolean } = {}) {
+  globalParams = {} as Record<string, string>,
+  pathname = '/repository/test-repo',
+}: { segments?: string[]; viewer?: Viewer | null; realNetwork?: boolean; mountCallback?: boolean; globalParams?: Record<string, string>; pathname?: string } = {}) {
   const fonts = deferred<void>();
   const session = deferred<string | null>();
   const events: string[] = [];
@@ -73,10 +75,12 @@ function startup({
 
   const mocks: Record<string, unknown> = {
     '@/global.css': {},
+    '@/components/onboarding/GithubUnlinkCallback': { GithubUnlinkCallback: () => null },
     'react-native-keyboard-controller': { KeyboardProvider: ({ children }: { children: React.ReactNode }) => children },
     'expo-router': {
       useSegments: () => segments,
-      usePathname: () => '/repository/test-repo',
+      usePathname: () => pathname,
+      useGlobalSearchParams: () => globalParams,
       useLocalSearchParams: () => ({ code: 'synthetic-oauth-code' }),
       useRouter: () => router,
       Stack: () => {
@@ -970,5 +974,19 @@ test('late logout preparation reconciles credentials before restoring the curren
         assert.equal(app.storedToken, bobToken);
       }
     } finally { t.mock.timers.reset(); await app.unmount(); }
+  }
+});
+
+
+test('owner-bound unlink callback stays mounted after session restoration instead of redirecting before completion', async () => {
+  for (const onboardingCompleted of [true, false]) {
+    const app = startup({ segments: ['(auth)', 'callback'], pathname: '/callback', globalParams: { unlink_code: 'opaque-unlink-code' },
+      viewer: { user_id: 'Tarun', username: 'Tarun', onboarding_completed: onboardingCompleted } });
+    await app.mount();
+    try {
+      await act(async () => { app.fonts.resolve(); app.session.resolve('stored-token'); });
+      assert.ok(app.navigationMounts > 0);
+      assert.deepEqual(app.redirects, [], 'callback owns completion and its explicit return action');
+    } finally { await app.unmount(); }
   }
 });

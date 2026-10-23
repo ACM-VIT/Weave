@@ -40,7 +40,7 @@ function scenario(t: test.TestContext, read: () => Promise<string | null>) {
     requests.push({ url: String(url), authorization: new Headers(options.headers).get('Authorization') });
     return Response.json({ success: true, data: {} });
   });
-  return { api: load('src/api/githubImport.ts').githubImportApi, lifecycle, requests };
+  return { api: load('src/api/githubImport.ts').githubImportApi, unlink: load('src/api/githubUnlink.ts').githubUnlinkApi, lifecycle, requests };
 }
 
 test('all import calls authenticate their first request without a refresh cookie', async t => {
@@ -78,4 +78,20 @@ test('an aborted owner request never reaches HTTP after token storage settles', 
   const rejected = assert.rejects(operation, { name: 'AbortError' });
   controller.abort(); release(token(owner)); await rejected;
   assert.deepEqual(app.requests, []);
+});
+
+
+test('unlink start, finish and status authenticate immediately with their bound owner', async t => {
+  const app = scenario(t, async () => token(owner)); const signal = new AbortController().signal;
+  await app.unlink.start('challenge','weave://callback',signal,owner);
+  await app.unlink.finish('proof','verifier',signal,owner); await app.unlink.status(signal,owner);
+  assert.equal(app.requests.length,3);
+  assert.ok(app.requests.every(request=>request.authorization===`Bearer ${token(owner)}`));
+  assert.ok(app.requests.every(request=>!request.url.includes('/auth/refresh')));
+});
+
+test('unlink completion cannot use another account token', async t => {
+  const app = scenario(t, async () => token(peer));
+  await assert.rejects(app.unlink.finish('proof','verifier',new AbortController().signal,owner),SessionChangedError);
+  assert.deepEqual(app.requests,[]);
 });

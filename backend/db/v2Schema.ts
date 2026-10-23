@@ -573,3 +573,16 @@ export const generationAttempts = telemetrySchema.table('generation_attempts', {
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 }, table => [index('generation_attempts_published_idx').on(table.userId, table.feedVersion)
   .where(sql`${table.status}='completed' AND ${table.mode} IN ('live','prewarm')`)]);
+
+export const userGithubUnlinks = appSchema.table('user_github_unlinks', {
+  userId: uuid('user_id').primaryKey().references(() => appUsers.userId, { onDelete: 'cascade' }),
+  operationId: uuid('operation_id').notNull().unique(),
+  githubId: text('github_id').notNull(),
+  providerIdentityId: uuid('provider_identity_id'),
+  status: text('status').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+}, table => [
+  check('user_github_unlinks_github_id_check', sql`${table.githubId} ~ '^[1-9][0-9]{0,18}$'`),
+  check('user_github_unlinks_status_check', sql`${table.status} IN ('prepared','done','refused','superseded')`),
+]);

@@ -44,8 +44,9 @@ jobs:
       - run: npm run migrate
       - name: Exercise consent, taxonomy, discovery and OAuth boundaries
         run: >-
-          RUN_DATABASE_INTEGRATION=1 node --import tsx --test
+          RUN_DATABASE_INTEGRATION=1 node --import tsx --test --test-concurrency=1
           tests/database/onboardingImport.integration.test.ts
           tests/database/repositoryDiscovery.integration.test.ts
           tests/database/githubConsent.integration.test.ts
           tests/database/oauthConsent.integration.test.ts
+          tests/auth/githubUnlinkFlow.test.ts

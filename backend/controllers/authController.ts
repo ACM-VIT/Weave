@@ -13,7 +13,7 @@ import { appOauthCodes as oauthCodes, appRefreshTokens as refreshTokens, appUser
 import {
   ensureIdentityProfile,
   fallbackUsername,
-  githubIdentityFromAuthUser,
+  githubIdentityForProvisioning,
 } from "../services/identityService.js";
 import { RefreshUserLookupTimeoutError, withRefreshUserLookupDeadline } from '../services/refreshUserLookup.js';
 import { updatePasswordFromRecoverySession } from "../services/passwordRecoveryService.js";
@@ -257,7 +257,11 @@ export async function login(req: Request, res: Response): Promise<void> {
     if (error) return sendError(res, error.status || 401, error.message);
 
     const userId = data.user.id;
-    const githubIdentity = githubIdentityFromAuthUser(data.user);
+    const githubIdentity = await githubIdentityForProvisioning(data.user, async () => {
+      const result = await withRefreshUserLookupDeadline(() => supabaseAdmin.auth.admin.getUserById(data.user.id));
+      if (result.error || !result.data.user) throw new Error('Provider identity could not be verified.');
+      return result.data.user;
+    });
     const [existingProductProfile] = await db
       .select({ onboardingCompleted: users.onboardingCompleted })
       .from(users)
@@ -271,6 +275,8 @@ export async function login(req: Request, res: Response): Promise<void> {
       dateOfBirth: typeof data.user.user_metadata?.date_of_birth === "string" ? data.user.user_metadata.date_of_birth : null,
       githubId: githubIdentity.githubId,
       githubHandle: githubIdentity.githubHandle,
+      githubIdentityFence: githubIdentity.fence,
+      githubProviderIdentityId: githubIdentity.providerIdentityId,
       githubIdentityVerified: Boolean(githubIdentity.githubId && githubIdentity.githubHandle),
       avatarUrl: typeof data.user.user_metadata?.avatar_url === "string" ? data.user.user_metadata.avatar_url : null,
       onboardingCompleted: loginOnboardingCompleted(
@@ -523,6 +529,7 @@ export async function continueOAuth(req: Request, res: Response): Promise<void> 
     if (!authorization) {
       return sendError(res, 400, "Invalid or expired OAuth attempt.");
     }
+    res.clearCookie('github_unlink_attempt', clearOAuthAttemptCookieOptions());
     res.cookie(OAUTH_ATTEMPT_COOKIE, authorization.state, oauthAttemptCookieOptions());
     res.redirect(302, authorization.url);
   } catch (error) {
@@ -576,7 +583,11 @@ export async function handleOAuthCallback(
 
     // 2. Ensure the v2 product profile exists before the one-time code references it.
     const expiresAt = new Date(Date.now() + 5 * 60 * 1000);
-    const githubIdentity = githubIdentityFromAuthUser(data.user, attempt.provider);
+    const githubIdentity = await githubIdentityForProvisioning(data.user, async () => {
+      const result = await withRefreshUserLookupDeadline(() => supabaseAdmin.auth.admin.getUserById(data.user.id));
+      if (result.error || !result.data.user) throw new Error('Provider identity could not be verified.');
+      return result.data.user;
+    }, attempt.provider);
     const [existingProductProfile] = await db
       .select({ onboardingCompleted: users.onboardingCompleted })
       .from(users)
@@ -600,6 +611,8 @@ export async function handleOAuthCallback(
         ?? (typeof data.user.user_metadata?.date_of_birth === "string" ? data.user.user_metadata.date_of_birth : null),
       githubId: githubIdentity.githubId,
       githubHandle: githubIdentity.githubHandle,
+      githubIdentityFence: githubIdentity.fence,
+      githubProviderIdentityId: githubIdentity.providerIdentityId,
       githubIdentityVerified: Boolean(githubIdentity.githubId && githubIdentity.githubHandle),
       avatarUrl: typeof data.user.user_metadata?.avatar_url === "string" ? data.user.user_metadata.avatar_url : null,
       // Existing accounts retain their durable completion state. New OAuth

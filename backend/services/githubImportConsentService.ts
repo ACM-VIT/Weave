@@ -31,9 +31,14 @@ export class GitHubImportConsentService {
   private async owner(tx: TransactionSql, userId: string) {
     const [profile] = await tx`SELECT * FROM app.users WHERE user_id=${userId}::uuid AND status='active' FOR UPDATE`;
     if (!profile) throw failure('User profile not found.', 404);
+    // Read after acquiring the owner lock: an earlier statement snapshot could
+    // miss an unlink intent committed while this query waited for that lock.
+    const [intent] = await tx`SELECT status FROM app.user_github_unlinks WHERE user_id=${userId}::uuid AND status='prepared'`;
+    profile.unlink_pending = Boolean(intent);
     return profile;
   }
   private verified(profile: Record<string, unknown>) {
+    if (profile.unlink_pending) throw failure('GitHub disconnect needs verification before importing activity.');
     if (!profile.github_id || !profile.github_handle || !profile.github_identity_verified_at) {
       throw failure('A verified GitHub login identity is required for public activity import.');
     }
@@ -62,7 +67,7 @@ export class GitHubImportConsentService {
     return this.db.begin(async tx => {
       const profile = await this.owner(tx, userId);
       const [state] = await tx`SELECT accepted_at,revoked_at,consented_at,provenance FROM app.user_github_imports WHERE user_id=${userId}::uuid`;
-      return { linked: Boolean(profile.github_id && profile.github_identity_verified_at),
+      return { unlink_pending: Boolean(profile.unlink_pending), linked: Boolean(profile.github_id && profile.github_identity_verified_at),
         active: Boolean(state?.accepted_at && !state.revoked_at),
         consented_at: state?.consented_at ?? null, accepted_at: state?.accepted_at ?? null,
         provenance: state?.provenance ?? {}, profile_version: String(profile.profile_version) };
@@ -187,9 +192,17 @@ export class GitHubImportConsentService {
     return result;
   }
 
-  async revoke(userId: string) {
+  async revoke(userId: string, unlinkOperationId?: string) {
     const result = await this.db.begin(async tx => {
       const profile = await this.owner(tx, userId);
+      if (unlinkOperationId) {
+        const [operation] = await tx`SELECT operation_id,status FROM app.user_github_unlinks
+          WHERE user_id=${userId}::uuid`;
+        if (operation?.status !== 'prepared' || String(operation.operation_id) !== unlinkOperationId) {
+          throw failure('This disconnect operation was superseded.');
+        }
+      }
+
       const state = await this.state(tx, userId);
       const current = arrays(profile);
       const baseline = arrays(state.baseline);

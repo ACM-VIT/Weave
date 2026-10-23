@@ -7,7 +7,7 @@
       "repo_stat_snapshots", "repo_topics", "repos", "saves", "topics",
       "oauth_codes", "refresh_tokens", "social_profile_follows", "social_profiles",
       "trending_snapshot_items", "trending_snapshots", "user_feed_state",
-      "user_stats", "user_topics", "users", "user_github_imports"
+      "user_stats", "user_topics", "users", "user_github_imports", "user_github_unlinks"
     ],
     "telemetry": [
       "counter_reconciliation_progress", "feed_prewarm_jobs", "feed_serve_items", "feed_serves", "generation_attempts", "interaction_events",
@@ -37,5 +37,6 @@
     "repos_github_id_key", "trending_one_active_period_uidx"
   ],
   "functions": ["activate_repo_summary", "enforce_comment_parent_repo"],
-  "roles": ["ghsocial_backend"]
+  "roles": ["ghsocial_backend"],
+  "columns": ["app.user_github_unlinks.provider_identity_id"]
 }
