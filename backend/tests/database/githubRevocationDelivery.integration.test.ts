@@ -97,3 +97,60 @@ test('revocation retires queued import deliveries and current-profile admission 
     await sqlClient`DELETE FROM auth.users WHERE id=ANY(${ids}::uuid[])`;
   }
 });
+
+
+test('onboarding completion waits for its user before locking the claimed job', {
+  skip: !enabled, timeout: 30_000,
+}, async () => {
+  const user = crypto.randomUUID(), id = crypto.randomUUID(), token = crypto.randomUUID();
+  const outbox = new OutboxService();
+  let completion: Promise<boolean> | undefined;
+  try {
+    await sqlClient`INSERT INTO auth.users(id) VALUES(${user}::uuid)`;
+    await sqlClient`INSERT INTO app.users(user_id,username,status,profile_version,interests,onboarding_completed)
+      VALUES(${user}::uuid,${'completion_lock_'+user.replaceAll('-', '')},'active',2,'["manual"]'::jsonb,true)`;
+    await sqlClient`INSERT INTO app.user_feed_state(user_id,feed_version) VALUES(${user}::uuid,1)`;
+    const payload = buildMlOnboardingJob(user, 2, { username: 'fixture', interests: ['manual'] });
+    const [stored] = await sqlClient`INSERT INTO telemetry.ml_outbox(outbox_id,job_type,aggregate_id,idempotency_key,payload,status,claim_token,claimed_at)
+      VALUES(${id}::uuid,'onboard',${user}::uuid,${'completion-lock:'+id},${JSON.stringify(payload)}::jsonb,'claimed',${token}::uuid,now()) RETURNING *`;
+    const row = { ...stored, created_at: new Date(stored.created_at).toISOString() } as OutboxRow;
+    // Force the first-delivery FK-insert path, not an existing-row conflict update.
+    await sqlClient`DELETE FROM telemetry.feed_prewarm_jobs WHERE user_id=${user}::uuid`;
+    await sqlClient.begin(async tx => {
+      await tx`SELECT user_id FROM app.users WHERE user_id=${user}::uuid FOR UPDATE`;
+      const [backend] = await tx`SELECT pg_backend_pid() AS pid`;
+      // Completion uses a second actual connection and must block on this user.
+      completion = outbox.markDelivered(row);
+      // Attach rejection immediately so a failure cannot become unhandled while
+      // the deterministic barrier is still inspecting PostgreSQL lock state.
+      void completion.catch(() => undefined);
+      let blocked = false;
+      for (let attempt = 0; attempt < 200; attempt++) {
+        await tx`SELECT pg_stat_clear_snapshot()`;
+        const [waiting] = await tx`SELECT EXISTS(SELECT 1 FROM pg_stat_activity
+          WHERE ${Number(backend.pid)}::int=ANY(pg_blocking_pids(pid)) AND wait_event_type='Lock') AS waiting`;
+        if (waiting.waiting) { blocked = true; break; }
+        await new Promise(resolve => setTimeout(resolve, 10));
+      }
+      assert.ok(blocked, 'observe actual completion waiting on the held user');
+      // Before the fix, completion already owns this job and waits on the user
+      // FK in schedule_onboarding_prewarm. NOWAIT exposes that inverse lock
+      // order immediately instead of manufacturing a database deadlock timeout.
+      await tx`SELECT outbox_id FROM telemetry.ml_outbox WHERE outbox_id=${id}::uuid FOR UPDATE NOWAIT`;
+      await tx`UPDATE telemetry.ml_outbox SET status='superseded',claim_token=NULL,claimed_at=NULL
+        WHERE outbox_id=${id}::uuid AND status='claimed' AND claim_token=${token}::uuid`;
+    });
+    assert.ok(completion);
+    assert.equal(await completion, false, 'a superseded claim must not report delivery confirmation');
+    const [state] = await sqlClient`SELECT status,claim_token FROM telemetry.ml_outbox WHERE outbox_id=${id}::uuid`;
+    assert.deepEqual([state.status,state.claim_token], ['superseded',null]);
+    const [prewarm] = await sqlClient`SELECT count(*) FROM telemetry.feed_prewarm_jobs WHERE user_id=${user}::uuid`;
+    assert.equal(Number(prewarm.count), 0, 'retired context cannot enqueue a first prewarm');
+  } finally {
+    await completion?.catch(() => undefined);
+    await sqlClient`DELETE FROM telemetry.ml_outbox WHERE aggregate_id=${user}::uuid`;
+    await sqlClient`DELETE FROM telemetry.feed_prewarm_jobs WHERE user_id=${user}::uuid`;
+    await sqlClient`DELETE FROM app.users WHERE user_id=${user}::uuid`;
+    await sqlClient`DELETE FROM auth.users WHERE id=${user}::uuid`;
+  }
+});

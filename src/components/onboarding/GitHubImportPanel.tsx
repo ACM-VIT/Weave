@@ -34,9 +34,10 @@ function GitHubImportPanelBody({ userId, identityDraft, onSaved, onManual, api =
     return () => { alive.current = false; controller.abort(); request.current?.abort(); };
   }, [api, userId]);
 
-  const run = async (label: string, work: (signal: AbortSignal, isCurrent: () => boolean) => Promise<void>) => {
+  const run = async (label: string, work: (signal: AbortSignal, isCurrent: () => boolean) => Promise<void>, continueAfterUnmount = false) => {
     request.current?.abort();
-    const controller = new AbortController(); request.current = controller;
+    const controller = new AbortController();
+    if (!continueAfterUnmount) request.current = controller;
     const actor = userId, operation = ++sequence.current;
     const isCurrent = () => !controller.signal.aborted && alive.current && sequence.current === operation;
     update(actor, { busy: label, error: '' });
@@ -65,19 +66,21 @@ function GitHubImportPanelBody({ userId, identityDraft, onSaved, onManual, api =
     await onSaved();
     if (isCurrent()) update(userId, { refreshNeeded: false });
   });
-  const closePreview = () => run('Closing preview', async (signal, isCurrent) => {
+  const closePreview = (continueAfterUnmount = false) => run('Closing preview', async (signal, isCurrent) => {
     await api.revoke(signal, userId);
     if (!isCurrent()) return;
     update(userId, { cleanupNeeded: false, refreshNeeded: true });
     await onSaved();
     if (isCurrent()) update(userId, { refreshNeeded: false });
-  });
+  }, continueAfterUnmount);
   const decline = () => {
     const shouldClose = Boolean(current.preview || current.busy === 'Reading public activity' || current.cleanupNeeded);
     request.current?.abort(); sequence.current++;
     update(userId, { preview: null, busy: null, declined: true, error: '', cleanupNeeded: shouldClose });
     onManual?.();
-    if (shouldClose) void closePreview();
+    // A manual view transition must not cancel its owner-bound consent cleanup.
+    // The API still fences account changes; callbacks remain mounted-only.
+    if (shouldClose) void closePreview(true);
   };
   const hasSuggestions = current.preview && Object.values(current.preview.suggestions).some(values => values.length > 0);
   return <View style={{ gap: Spacing.two, paddingVertical: Spacing.three, width: '100%' }}>
