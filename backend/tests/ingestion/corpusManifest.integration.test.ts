@@ -4,7 +4,7 @@ import postgres from 'postgres';
 import { postgresCorpusManifest } from '../../adapters/postgresCorpusManifest.js';
 import { assertDisposableDatabase } from '../database/disposableDatabase.js';
 
-const integration = process.env.RUN_DATABASE_INTEGRATION === '1' ? test : test.skip;
+const integration = process.env.RUN_MANIFEST_DATABASE_INTEGRATION === '1' ? test : test.skip;
 integration('PostgreSQL inventory uses UUID keysets, normalized names and conservative content/identity cutoff', async () => {
   assertDisposableDatabase();
   const db = postgres(process.env.DATABASE_URL!, { max: 1 });

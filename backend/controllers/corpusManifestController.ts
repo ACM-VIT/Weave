@@ -1,7 +1,8 @@
 import type { Request, Response } from 'express';
-import { CorpusManifestService, InvalidManifestCursor } from '../services/corpusManifestService.js';
+import { CorpusManifestService, InvalidManifestCursor, ManifestConfigurationError } from '../services/corpusManifestService.js';
 
-export function corpusManifestController(service: () => CorpusManifestService) {
+export function corpusManifestController(service: () => CorpusManifestService,
+  logFailure: (category: string) => void = (category) => console.error('[CorpusManifest] unavailable:', category)) {
   return async (req: Request, res: Response): Promise<void> => {
     const rawLimit = req.query.limit ?? '250';
     const cursor = req.query.cursor;
@@ -15,6 +16,9 @@ export function corpusManifestController(service: () => CorpusManifestService) {
       if (error instanceof InvalidManifestCursor) {
         res.status(409).json({ error: 'MANIFEST_CURSOR_STALE' }); return;
       }
+      const code = (error as { code?: unknown } | null)?.code;
+      logFailure(error instanceof ManifestConfigurationError ? 'configuration'
+        : code === '57014' ? 'database_timeout' : code === '42P01' ? 'schema_missing' : 'unexpected');
       res.status(503).json({ error: 'Corpus manifest unavailable' });
     }
   };

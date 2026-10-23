@@ -12,6 +12,7 @@ export interface CorpusManifestEntry {
 }
 interface Position { version: 1; as_of: string; expires_at: number; after: string; limit: number }
 export class InvalidManifestCursor extends Error {}
+export class ManifestConfigurationError extends Error {}
 export type ManifestReader = (after: string | null, asOf: string, limit: number) => Promise<CorpusManifestEntry[]>;
 
 /** Conservative cutoff inventory, not a retained database snapshot. Rows changed
@@ -22,7 +23,7 @@ export class CorpusManifestService {
 
   async page(limit: number, cursor?: string) {
     if (!Number.isInteger(limit) || limit < 1 || limit > 250) throw new RangeError('limit must be 1-250');
-    if (!this.secret) throw new Error('Manifest cursor signing is not configured');
+    if (!this.secret) throw new ManifestConfigurationError('Manifest cursor signing is not configured');
     const started = this.now();
     const position = cursor ? this.decode(cursor, limit) : {
       version: 1 as const, as_of: new Date(started).toISOString(),

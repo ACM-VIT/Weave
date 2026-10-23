@@ -765,3 +765,9 @@ content, retain snapshots, or change ingestion writes. Each SQL page has a 2-sec
 statement budget. Deploy this additive endpoint before the paired ML manifest
 client; older clients ignore it, and a newer client falls back to its existing
 idempotent acquisition path if inventory is unavailable. No migration is needed.
+
+The standalone adapter fixture uses `RUN_MANIFEST_DATABASE_INTEGRATION=1` and an
+empty disposable `weave_scroll` database. It rolls back its own minimal schema.
+It intentionally does not run under the migrated-suite `RUN_DATABASE_INTEGRATION`
+flag. Operator logs classify unavailable inventory as configuration, timeout,
+missing schema or unexpected failure without recording cursors or error text.
