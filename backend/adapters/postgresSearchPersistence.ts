@@ -10,17 +10,18 @@ const profileText = `lower(coalesce(p.handle,'')||' '||coalesce(p.display_name,'
 const listText = (alias: string) => `lower(${alias}.name||' '||coalesce(${alias}.description,''))`;
 
 // Collections are private owner Lists; Boards are legacy Lists with visibility.
-const listRows = (collectionPredicate = '', boardPredicate = '') => `SELECT 'collection:'||c.collection_id::text AS id,c.collection_id AS raw_id,'collection' AS source,
+const listRows = (collectionPredicate = '', boardPredicate = '', candidateOnly = false) => `SELECT 'collection:'||c.collection_id::text AS id,
+  ${candidateOnly ? 'c.name,' : `c.collection_id AS raw_id,'collection' AS source,
   c.user_id,c.name,c.description,c.icon,c.color,c.created_at,c.updated_at,
   (SELECT count(*)::int FROM app.collection_repos cr JOIN app.repos r USING(repo_id) WHERE cr.collection_id=c.collection_id AND r.status='active') AS repo_count,
-  (SELECT count(*)::int FROM app.boards b WHERE b.collection_id=c.collection_id) AS board_count,
+  (SELECT count(*)::int FROM app.boards b WHERE b.collection_id=c.collection_id) AS board_count,`}
   ${listText('c')} AS search_text
   FROM app.board_collections c JOIN app.users owner ON owner.user_id=c.user_id AND owner.status='active'
   WHERE c.user_id=$1::uuid ${collectionPredicate}
   UNION ALL
-  SELECT 'legacy-board:'||b.board_id::text,b.board_id,'legacy-board',b.user_id,b.name,b.description,
+  SELECT 'legacy-board:'||b.board_id::text,${candidateOnly ? 'b.name,' : `b.board_id,'legacy-board',b.user_id,b.name,b.description,
   NULL::text,NULL::text,b.created_at,NULL::timestamptz,
-  (SELECT count(*)::int FROM app.board_repos br JOIN app.repos r USING(repo_id) WHERE br.board_id=b.board_id AND r.status='active'),0,
+  (SELECT count(*)::int FROM app.board_repos br JOIN app.repos r USING(repo_id) WHERE br.board_id=b.board_id AND r.status='active'),0,`}
   ${listText('b')}
   FROM app.boards b JOIN app.users owner ON owner.user_id=b.user_id AND owner.status='active'
   WHERE (b.user_id=$1::uuid OR b.visibility='public') ${boardPredicate}`;
@@ -86,7 +87,9 @@ export class PostgresSearchPersistence implements SearchPersistence {
   }
   async lists(viewer: string, request: SearchRequest, work = createSearchWork()): Promise<SearchRef[]> {
     return searchSql(work, async sql => {
-      const rows = await sql.unsafe(`WITH candidates AS (${listRows()}) SELECT id FROM candidates
+      // Rank references only. Full counts are computed for the bounded page by
+      // hydrate(), rather than for every substring match before LIMIT100.
+      const rows = await sql.unsafe(`WITH candidates AS (${listRows('', '', true)}) SELECT id FROM candidates
         WHERE search_text LIKE $2 ORDER BY (lower(name)=lower($3)) DESC,app.explore_similarity(search_text,lower($3)) DESC,id LIMIT 100`,[viewer,searchPattern(request.query),request.query]);
       return rows.map(row => ({ type: 'list', id: String(row.id) }));
     });
