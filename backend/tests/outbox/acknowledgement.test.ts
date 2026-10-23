@@ -15,4 +15,9 @@ test('acknowledgement identity is canonical, bounded, unique and tied to request
   }
   assert.equal(acknowledgedFeedbackIds({ accepted: 0, duplicates: 1, durable: true }, events).size, 1);
 });
-
+test('aggregate-only acceptance is compatible for a singleton and ambiguous for a batch', () => {
+  const events = [{ event_id: randomUUID() }, { event_id: randomUUID() }] as MlFeedbackBatch['events'];
+  assert.throws(() => acknowledgedFeedbackIds({ accepted: 2, duplicates: 0, durable: true }, events), /Ambiguous/);
+  assert.throws(() => acknowledgedFeedbackIds({ accepted: 1, duplicates: 0 }, events.slice(0, 1)), /Invalid/);
+  assert.throws(() => acknowledgedFeedbackIds({ accepted: true, duplicates: 0, durable: true }, events.slice(0, 1)), /Invalid/);
+});
