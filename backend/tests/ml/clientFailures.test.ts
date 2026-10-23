@@ -408,7 +408,7 @@ test('oversized HTTP failures preserve retry policy while oversized recommendati
       assert.equal(result.status_code, status);
       assert.equal(result.retryable, retryable);
       assert.equal(result.retry_after_ms, 2_000);
-      assert.equal(result.detail?.length, 4_000);
+      assert.equal(result.detail?.length, 100, 'diagnostics obey the configured byte cap');
     });
   }
   await withServer((_request, response) => {
