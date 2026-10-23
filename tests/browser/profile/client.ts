@@ -10,7 +10,7 @@ export async function apiV2(path: string) {
     (window as any).repositoryRequests.push(offset);
     if (offset === 40 && !failed) {
         failed = true;
-        throw new Error('Fixture page failure');
+        throw Object.assign(new Error('Fixture page failure'), { status: window.location.hash === '#rejected' ? 400 : 503 });
     }
     const has_more = offset + limit < items.length;
     return { items: items.slice(offset, offset + limit), has_more, next_cursor: has_more ? `fixture-${offset+limit}` : null };

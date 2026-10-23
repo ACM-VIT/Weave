@@ -1,3 +1,4 @@
+import { retryKeysetQuery } from '@/services/keysetQueryRecovery';
 import { useReducedMotion } from 'react-native-reanimated';
 import { KeyboardSurface } from '@/components/keyboard/keyboard-layout';
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
@@ -536,17 +537,17 @@ export function CommentSheet({
               keyboardShouldPersistTaps="handled"
               keyExtractor={(item) => item.comment_id}
               ListEmptyComponent={emptyState}
-              ListFooterComponent={commentsQuery.hasNextPage || commentsQuery.isFetchNextPageError ? (
+              ListFooterComponent={commentsQuery.hasNextPage || commentsQuery.isError ? (
                 <View style={{ alignItems: 'center', paddingVertical: 12 }}>
-                  {commentsQuery.isFetchNextPageError ? <Text style={styles.stateText}>More comments could not load.</Text> : null}
+                  {commentsQuery.isError ? <Text style={styles.stateText}>More comments could not load.</Text> : null}
                   <Pressable
                     accessibilityRole="button"
-                    disabled={commentsQuery.isFetchingNextPage}
-                    onPress={() => { void commentsQuery.fetchNextPage(); }}
+                    disabled={commentsQuery.isFetching}
+                    onPress={() => { void (commentsQuery.isError ? retryKeysetQuery(commentsQuery) : commentsQuery.fetchNextPage({ cancelRefetch: false })); }}
                     style={styles.retryButton}
                   >
-                    {commentsQuery.isFetchingNextPage ? <ActivityIndicator color={REFERENCE_THEME.accent} size="small" />
-                      : <Text style={styles.retryText}>{commentsQuery.isFetchNextPageError ? 'Try again' : 'Load more comments'}</Text>}
+                    {commentsQuery.isFetching ? <ActivityIndicator color={REFERENCE_THEME.accent} size="small" />
+                      : <Text style={styles.retryText}>{commentsQuery.isError ? 'Try again' : 'Load more comments'}</Text>}
                   </Pressable>
                 </View>
               ) : null}

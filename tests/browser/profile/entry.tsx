@@ -63,7 +63,9 @@ async function run() {
     await wait(400);
     assert((window as any).repositoryRequests.length === failedRequests, 'Error triggered an automatic page loop');
     button('Retry repositories')!.click();
-    await until(() => (window as any).repositoryRequests.filter((offset: number) => offset === 40).length === 2);
+    await until(() => window.location.hash === '#rejected'
+      ? (window as any).repositoryRequests.filter((offset: number) => offset === 0).length === 2 && !!button('Load more repositories')
+      : (window as any).repositoryRequests.filter((offset: number) => offset === 40).length === 2);
     for (let n = 0; n < 10 && !(window as any).repositoryRequests.includes(120); n++) {
         const more = [...sheet().querySelectorAll('[role="button"]')].find(e => e.textContent === 'Load more repositories') as HTMLElement;
         more?.click();
@@ -78,7 +80,10 @@ async function run() {
         await wait(300);
     }
     assert(!!document.querySelector('[aria-label="Open weave/Repo 136"]'), 'Final saved repository was unreachable');
-    assert(JSON.stringify((window as any).repositoryCursors) === JSON.stringify([null, 'fixture-40', 'fixture-40', 'fixture-80', 'fixture-120']), 'The UI did not preserve the opaque continuation across retry');
+    const expectedCursors = window.location.hash === '#rejected'
+      ? [null, 'fixture-40', null, 'fixture-40', 'fixture-80', 'fixture-120']
+      : [null, 'fixture-40', 'fixture-40', 'fixture-80', 'fixture-120'];
+    assert(JSON.stringify((window as any).repositoryCursors) === JSON.stringify(expectedCursors), 'The UI did not recover with the expected opaque cursors');
     const savedRows = sheet().querySelectorAll('[aria-label^="Open weave/Repo "]').length;
     assert(savedRows < 100, `Saved grid was not bounded: ${savedRows}`);
     (window as any).showRepositorySheet(false);

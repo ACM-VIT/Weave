@@ -1,3 +1,4 @@
+import { retryKeysetQuery } from '@/services/keysetQueryRecovery';
 import React, { memo, useCallback, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
@@ -412,19 +413,26 @@ export function ConnectionList({
   })();
 
   const handleEndReached = useCallback(() => {
-    if (peopleQuery.hasNextPage && !peopleQuery.isFetchingNextPage) {
+    if (peopleQuery.hasNextPage && !peopleQuery.isFetching && !peopleQuery.isError) {
       void peopleQuery.fetchNextPage();
     }
   }, [peopleQuery]);
 
-  const listFooter = peopleQuery.isFetchingNextPage
+  const listFooter = peopleQuery.isFetching
     ? (
       <View style={styles.listFooter}>
         <ActivityIndicator color={REFERENCE_THEME.accent} size="small" />
         <Text style={styles.listFooterText}>Loading more people...</Text>
       </View>
     )
-    : null;
+    : peopleQuery.isError ? (
+      <View style={styles.listFooter}>
+        <Text style={styles.listFooterText}>More people could not load. Your loaded people are still available.</Text>
+        <Pressable accessibilityRole="button" onPress={() => void retryKeysetQuery(peopleQuery)}>
+          <Text style={styles.retryText}>Try again</Text>
+        </Pressable>
+      </View>
+    ) : null;
 
   return (
     <View style={styles.root}>

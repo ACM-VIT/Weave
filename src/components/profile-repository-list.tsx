@@ -1,3 +1,4 @@
+import { retryKeysetQuery } from '@/services/keysetQueryRecovery';
 import { useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
@@ -78,7 +79,7 @@ export function ProfileRepositoryList({
       return (
         <StateView
           message={repositoriesQuery.error instanceof Error ? repositoriesQuery.error.message : 'Check your connection and try again.'}
-          onRetry={() => void (repositoriesQuery.isFetchNextPageError ? repositoriesQuery.fetchNextPage() : repositoriesQuery.refetch())}
+          onRetry={() => void retryKeysetQuery(repositoriesQuery)}
           title={`${type === 'likes' ? 'Liked' : 'Saved'} repositories could not load`}
         />
       );
@@ -139,7 +140,7 @@ export function ProfileRepositoryList({
           {repositoriesQuery.isFetchingNextPage ? <ActivityIndicator accessibilityLabel="Loading more repositories" color={REFERENCE_THEME.accent} />
             : repositoriesQuery.isError && filteredRepositories.length > 0 ? <>
               <Text accessibilityLiveRegion="polite" style={styles.stateMessage}>More repositories could not load. Your loaded repositories are still available.</Text>
-              <Pressable accessibilityRole="button" onPress={() => void (repositoriesQuery.isFetchNextPageError ? repositoriesQuery.fetchNextPage() : repositoriesQuery.refetch())} style={styles.retryButton}>
+              <Pressable accessibilityRole="button" onPress={() => void retryKeysetQuery(repositoriesQuery)} style={styles.retryButton}>
                 <Text style={styles.retryText}>Retry repositories</Text>
               </Pressable>
             </> : repositoriesQuery.hasNextPage ? <Pressable accessibilityRole="button" disabled={repositoriesQuery.isFetching} onPress={() => void repositoriesQuery.fetchNextPage()} style={styles.retryButton}>
