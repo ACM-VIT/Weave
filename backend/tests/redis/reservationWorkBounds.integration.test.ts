@@ -112,27 +112,52 @@ integration('oversized reservation indexes cannot expand one discovery cycle bey
   const redis = new Redis(url.toString(), { maxRetriesPerRequest: 1 });
   const queue = new RedisFeedQueue(redis, 30_000);
   const indexes: string[] = [];
+  const fixtureUsers = new Set<string>();
+  const fixtureMetadata = new Set<string>();
   t.after(async () => { try { if (indexes.length) await redis.del(...indexes); } finally { redis.disconnect(); } });
   // Missing metadata simulates crash/expiry-era index records. Each index has
   // enough unique members to expose an unbounded zrange, and there are enough
   // indexes to expose an unbounded discovery page even on a tiny keyspace.
   for (let scope = 0; scope < 64; scope++) {
-    const user = crypto.randomUUID();
+    const user = crypto.randomUUID(); fixtureUsers.add(user);
     const index = `feed:v2:reservation-index:${user}:0`; indexes.push(index);
     const members = Array.from({ length: 64 }, () => `feed:v2:reservation:${user}:0:${crypto.randomUUID()}:meta`);
+    members.forEach(member => fixtureMetadata.add(member));
     await redis.zadd(index, ...members.flatMap(member => [Date.now() + 30_000, member]));
     await redis.expire(index, 60);
   }
   let indexReads = 0;
   let metadataReads = 0;
+  let forcedEmptyScans = 0;
   const send = redis.sendCommand;
   redis.sendCommand = function (...args: Parameters<typeof send>) {
     if (args[0].name === 'zrange') indexReads++;
-    if (args[0].name === 'eval') metadataReads++;
+    if (args[0].name === 'eval' && fixtureMetadata.has(String(args[0].args[2]))) metadataReads++;
+    // Inject a valid empty first cycle at the external Redis boundary. The
+    // actual SCAN still runs and returns its actual continuation cursor.
+    if (args[0].name === 'scan' && forcedEmptyScans < 2) {
+      const match = args[0].args.findIndex(value => String(value).toUpperCase() === 'MATCH');
+      args[0].args[match + 1] = `no-match-fixture:${indexes[0]}`;
+      forcedEmptyScans++;
+    }
     return send.apply(this, args);
   };
-  assert.deepEqual(await queue.scanReservations(), [], 'stale tracking must never manufacture a reservation');
-  assert.ok(indexReads > 0 && indexReads <= 16, `index page escaped its budget: ${indexReads}`);
-  assert.ok(metadataReads > 0 && metadataReads <= 128, `member pages escaped their budget: ${metadataReads}`);
-  t.diagnostic(JSON.stringify({ indexedScopes: 64, membersPerScope: 64, indexReads, metadataReads }));
+  let observedFixturePage = false;
+  let cycles = 0;
+  let maxIndexReads = 0;
+  let maxMetadataReads = 0;
+  for (; cycles < 512 && !observedFixturePage; cycles++) {
+    indexReads = 0; metadataReads = 0;
+    const candidates = await queue.scanReservations();
+    assert.ok(candidates.every(candidate => !fixtureUsers.has(candidate.userId)),
+      'stale fixture tracking must never manufacture a reservation');
+    assert.ok(indexReads <= 16, `index page escaped its budget: ${indexReads}`);
+    assert.ok(metadataReads <= 128, `member pages escaped their budget: ${metadataReads}`);
+    maxIndexReads = Math.max(maxIndexReads, indexReads);
+    maxMetadataReads = Math.max(maxMetadataReads, metadataReads);
+    observedFixturePage = metadataReads > 0;
+  }
+  assert.ok(observedFixturePage, 'bounded discovery must eventually inspect the fixture after empty pages');
+  assert.ok(cycles > 1, 'the injected empty first cycle must not be mistaken for exhaustion');
+  t.diagnostic(JSON.stringify({ indexedScopes: 64, membersPerScope: 64, cycles, maxIndexReads, maxMetadataReads }));
 });
