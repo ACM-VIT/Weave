@@ -39,6 +39,8 @@ import { repositoryHref } from '@/utils/repository-links';
 import { FeedPaginationController, type FeedPage } from '@/services/feedPagination';
 import { authSessionLifecycle } from '@/api/session-lifecycle';
 import { createFeedItemMapper } from '@/utils/feed-items';
+import NetInfo from '@react-native-community/netinfo';
+import { startActivityOutboxLifecycle } from '@/services/activityOutboxLifecycle';
 
 const WEB_FEED_LIST_STYLE =
   Platform.OS === 'web'
@@ -189,18 +191,18 @@ export default function HomeScreen() {
       pagination.controller.markStale(feedVersion);
       void checkOnboardingStatus().catch(() => undefined);
     });
-    void flushActivityBatch().catch(() => undefined);
-
-    const interval = setInterval(() => {
-      void flushActivityBatch().catch(() => undefined);
-    }, ACTIVITY_FLUSH_INTERVAL_MS);
-    const subscription = AppState.addEventListener('change', (state) => {
-      if (state !== 'active') void flushActivityBatch().catch(() => undefined);
+    const stopLifecycle = startActivityOutboxLifecycle({
+      flush: flushActivityBatch,
+      intervalMs: ACTIVITY_FLUSH_INTERVAL_MS,
+      subscribeAppState: listener => {
+        const subscription = AppState.addEventListener('change', listener);
+        return () => subscription.remove();
+      },
+      subscribeConnectivity: listener => NetInfo.addEventListener(listener),
     });
 
     return () => {
-      clearInterval(interval);
-      subscription.remove();
+      stopLifecycle();
       unsubscribe();
     };
   }, [activityOutbox, checkOnboardingStatus, flushActivityBatch, pagination]);
