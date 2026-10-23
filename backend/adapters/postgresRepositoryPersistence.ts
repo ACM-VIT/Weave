@@ -84,8 +84,19 @@ export class PostgresRepositoryPersistence implements RepositoryPersistencePort 
       await this.lockIngestion(tx, batches);
       const existing = await tx`SELECT github_id::text FROM app.repos WHERE github_id=ANY(${[...ids]}::bigint[])`;
       const known = new Set(existing.map(row => String(row.github_id)));
-      const missing = batches.map(batch => batch.filter(item => !known.has(BigInt(item.repository.github_id).toString())))
-        .filter(batch => batch.length > 0);
+      // Discovery is create-only: a known repository may have moved while its
+      // old name is reused in the public snapshot. Do not overwrite its rich
+      // canonical content or let that stale name roll back the whole import.
+      const names = batches.flat().map(item => item.repository.full_name.toLowerCase());
+      const occupied = await tx`SELECT lower(full_name) AS full_name FROM app.repos
+        WHERE lower(full_name)=ANY(${names}::text[])`;
+      const occupiedNames = new Set(occupied.map(row => String(row.full_name)));
+      const missing = batches.map(batch => batch.filter(item => {
+        const name = item.repository.full_name.toLowerCase();
+        if (known.has(BigInt(item.repository.github_id).toString()) || occupiedNames.has(name)) return false;
+        occupiedNames.add(name);
+        return true;
+      })).filter(batch => batch.length > 0);
       return this.upsertBatches(tx, missing);
     };
     return transaction ? apply(transaction) : this.db.begin(apply);

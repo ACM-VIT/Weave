@@ -49,10 +49,11 @@ integration('expired feedback leases move to singleton retry, and stale claim to
   assert.deepEqual(await outbox.claim(20, undefined, { jobTypes: ['feedback'], attempts: 'first' }), []);
   const [recovered] = await outbox.claim(1, undefined, { jobTypes: ['feedback'], attempts: 'retry' });
   assert.notEqual(recovered!.claim_token, old!.claim_token);
-  await outbox.markDelivered(old!); await outbox.markFailed(old!, 'stale failure', false);
+  assert.equal(await outbox.markDelivered(old!), false); await outbox.markFailed(old!, 'stale failure', false);
   const [state] = await sqlClient`SELECT status,claim_token FROM telemetry.ml_outbox WHERE outbox_id=${id}::uuid`;
   assert.equal(state!.status, 'claimed'); assert.equal(state!.claim_token, recovered!.claim_token);
-  await outbox.markDelivered(recovered!);
+  assert.equal(await outbox.markDelivered(recovered!), true);
+  assert.equal(await outbox.markDelivered(recovered!), false);
   assert.equal((await sqlClient`SELECT status FROM telemetry.ml_outbox WHERE outbox_id=${id}::uuid`)[0]!.status, 'delivered');
 });
 

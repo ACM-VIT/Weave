@@ -207,11 +207,43 @@ export class OutboxService {
     return rows[0]?.delay_ms == null ? undefined : Math.max(0, Number(rows[0].delay_ms));
   }
 
-  async markDelivered(row: OutboxRow): Promise<void> {
-    await sqlClient`
+  /**
+   * Last local admission before onboarding transport. This transaction shares
+   * user -> outbox lock order with profile/consent changes and ends before I/O.
+   * Admission preceding revocation is already in flight: it cannot be unsent.
+   * Versioned ML application and current-version readiness remain authoritative.
+   */
+  async prepareOnboardingDelivery(row: OutboxRow): Promise<boolean> {
+    if (row.job_type !== 'onboard') return false;
+    return sqlClient.begin(async tx => {
+      const [profile] = await tx`SELECT profile_version,status FROM app.users
+        WHERE user_id=${row.aggregate_id}::uuid FOR UPDATE`;
+      const [claimed] = await tx`SELECT payload FROM telemetry.ml_outbox
+        WHERE outbox_id=${row.outbox_id}::uuid AND aggregate_id=${row.aggregate_id}::uuid
+          AND job_type='onboard' AND status='claimed' AND claim_token=${row.claim_token}::uuid
+        FOR UPDATE`;
+      if (!claimed) return false;
+      const payload = claimed.payload as Record<string, unknown>;
+      if (profile?.status === 'active'
+        && payload.user_id === row.aggregate_id && row.payload.user_id === row.aggregate_id
+        && String(payload.profile_version) === String(profile.profile_version)
+        && String(row.payload.profile_version) === String(profile.profile_version)) return true;
+      await tx`UPDATE telemetry.ml_outbox SET status='superseded',claim_token=NULL,claimed_at=NULL,
+          last_error='Onboarding context no longer matches the current active profile.'
+        WHERE outbox_id=${row.outbox_id}::uuid AND status='claimed'
+          AND claim_token=${row.claim_token}::uuid`;
+      return false;
+    });
+  }
+
+  async markDelivered(row: OutboxRow): Promise<boolean> {
+    const delivered = await sqlClient`
       UPDATE telemetry.ml_outbox SET status='delivered',delivered_at=now(),claim_token=NULL,claimed_at=NULL,last_error=NULL
       WHERE outbox_id=${row.outbox_id}::uuid AND claim_token=${row.claim_token}::uuid
+        AND status='claimed'
+      RETURNING outbox_id
     `;
+    return delivered.length === 1;
   }
 
   /**

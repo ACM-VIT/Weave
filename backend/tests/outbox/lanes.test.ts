@@ -19,6 +19,7 @@ function fixture(items: OutboxRow[], feedback?: (batch: MlFeedbackBatch) => Prom
   const delivered: string[] = []; const failed: Array<{ row: OutboxRow; retryable: boolean; delay?: number }> = [];
   const claims: Array<{ limit: number; options: OutboxClaimOptions }> = [];
   const outbox = {
+    prepareOnboardingDelivery: async () => true,
     claim: async (limit: number, _lease: unknown, options: OutboxClaimOptions) => {
       claims.push({ limit, options });
       const found = items.filter(item => options.jobTypes?.includes(item.job_type)
@@ -27,7 +28,7 @@ function fixture(items: OutboxRow[], feedback?: (batch: MlFeedbackBatch) => Prom
       return found;
     },
     nextRunInMs: async () => undefined,
-    markDelivered: async (item: OutboxRow) => { delivered.push(item.outbox_id); },
+    markDelivered: async (item: OutboxRow) => { delivered.push(item.outbox_id); return true; },
     markFailed: async (item: OutboxRow, _error: string, retryable: boolean, delay?: number) => { failed.push({ row: item, retryable, delay }); },
   } as unknown as OutboxService;
   const transport = {
@@ -38,6 +39,48 @@ function fixture(items: OutboxRow[], feedback?: (batch: MlFeedbackBatch) => Prom
   } as unknown as OutboxTransportPort;
   return { outbox, transport, delivered, failed, claims };
 }
+
+test('successful retry wakes a first-attempt lane sleeping behind its predecessor', async () => {
+  const first = row('feedback',2), next = row();
+  const entered=gate(), release=gate(), resumed=gate();
+  const f=fixture([first,next],async batch=>{
+    if(batch.events[0]!.event_id===first.payload.event_id){entered.release();await release.promise;}
+    else resumed.release();
+    return{accepted:true,status_code:202,retryable:false,response_body:{accepted:1,duplicates:0,durable:true,acknowledged_event_ids:[batch.events[0]!.event_id]}};
+  });
+  const claim=f.outbox.claim.bind(f.outbox);
+  f.outbox.claim=async(limit,lease,options)=>options?.attempts==='first'&&!f.delivered.includes(first.outbox_id)?[]:claim(limit,lease,options);
+  const supervisor=new WorkerSupervisor();
+  const lanes=new OutboxDeliveryLanes(f.outbox,f.transport,1,Date.now,()=>supervisor.wake('first'));
+  supervisor.registerAdaptive('first',10,2000,()=>lanes.runOnce('feedback'));
+  supervisor.registerAdaptive('retry',10,2000,()=>lanes.runOnce('feedback-retry'));
+  supervisor.start();
+  let timer:ReturnType<typeof setTimeout>|undefined;
+  try {
+    await entered.promise;
+    while(supervisor.snapshot().first.running)await new Promise(resolve=>setImmediate(resolve));
+    release.release();
+    await Promise.race([resumed.promise,new Promise((_,reject)=>{timer=setTimeout(()=>reject(new Error('Retry did not wake the idle first-attempt lane.')),500);})]);
+    assert.ok(f.delivered.includes(first.outbox_id));
+  } finally {clearTimeout(timer);release.release();await supervisor.stop();}
+});
+
+test('feedback RPCs preserve delivery histograms for success, rejection, failure and timeout',async()=>{
+  const {snapshotHistograms}=await import('../../observability/metrics.js');
+  for(const outcome of ['success','rejected','failure','timeout','thrown']as const){
+    const label=JSON.stringify({operation:'feedback',stage:'outbox_delivery',outcome:outcome==='thrown'?'failure':outcome});
+    const before=snapshotHistograms()[label]?.count??0;
+    const f=fixture([row()],async batch=>{
+      if(outcome==='thrown')throw new Error('Controlled transport failure.');
+      return{accepted:outcome==='success',retryable:outcome!=='rejected',status_code:outcome==='success'?202:outcome==='rejected'?400:outcome==='timeout'?504:503,
+        ...(outcome==='timeout'?{failure_kind:'timeout' as const}:{}),
+        response_body:{accepted:1,duplicates:0,durable:true,acknowledged_event_ids:[batch.events[0]!.event_id]}};
+    });
+    const pending=new OutboxDeliveryLanes(f.outbox,f.transport).runOnce('feedback');
+    if(outcome==='thrown')await assert.rejects(pending,/Controlled/);else await pending;
+    assert.equal(snapshotHistograms()[label]?.count,before+1,`delivery outcome ${outcome}`);
+  }
+});
 
 test('slow repository delivery does not block feedback or onboarding, and busy slots do not claim ahead', async () => {
   const hold = gate(); const entered = gate();
