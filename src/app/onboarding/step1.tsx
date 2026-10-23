@@ -13,9 +13,13 @@ import SkillCard from "@/components/onboarding/SkillCard";
 import LogoPlaceholder from "@/components/onboarding/LogoPlaceholder";
 import { SKILL_CATEGORIES } from "@/constants/onboarding";
 import { useOnboarding } from "../../store/OnboardingContext";
+import { useAuth } from '../../store/AuthContext';
+import { GitHubImportPanel } from '../../components/onboarding/GitHubImportPanel';
 
 export default function Step1() {
   const { data, updateData } = useOnboarding();
+  const { user, checkOnboardingStatus } = useAuth();
+  const [manualMode, setManualMode] = useState(Boolean(data.skills?.length));
   const [selectedCategories, setSelectedCategories] = useState<string[]>(data.skills ?? []);
 
   const toggleCategory = (id: string) => {
@@ -30,6 +34,14 @@ export default function Step1() {
       router.push("/onboarding/step2");
     }
   };
+
+  if (!manualMode && user) return <SafeAreaView className="flex-1 bg-black">
+    <ScrollView contentContainerStyle={{ padding: 20, paddingBottom: 40, maxWidth: 450, width: '100%', alignSelf: 'center' }}>
+      <ProgressBar step={1} totalSteps={3} />
+      <GitHubImportPanel userId={user.user_id} onSaved={checkOnboardingStatus} onManual={() => setManualMode(true)}
+        identityDraft={{ username: data.username ?? '', full_name: data.full_name ?? '', date_of_birth: data.date_of_birth ?? '', bio: data.bio }} />
+    </ScrollView>
+  </SafeAreaView>;
 
   return (
     <SafeAreaView className="flex-1 bg-black">
