@@ -17,6 +17,7 @@ import { runReindex } from '../../scripts/reindex-active-repositories.js';
 import { PostgresRepositoryPersistence } from '../../adapters/postgresRepositoryPersistence.js';
 import { assertDisposableDatabase } from './disposableDatabase.js';
 
+if (process.env.RUN_DATABASE_INTEGRATION === '1') assertDisposableDatabase();
 const integration = process.env.RUN_DATABASE_INTEGRATION === '1' ? test : test.skip;
 const repoId = '00000000-0000-4000-8000-000000000701';
 const claimToken = '00000000-0000-4000-8000-000000000702';
