@@ -68,3 +68,33 @@ test('completion storage bounds both entries and retained content, replacing cha
   assert.equal(cache.has('huge', 'x'.repeat(21)), false);
   cache.clear(); assert.equal(cache.has('a', 'changed'), false);
 });
+
+test('partial preview pauses without discarding characters and resumes at its prior count', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'setInterval'] });
+  let root!: ReturnType<typeof create>;
+  const props = { source: 'Tarun is reading a longer repository preview.', completionKey: 'partial-review' };
+  await act(() => { root = create(React.createElement(Probe, props)); });
+  await act(() => t.mock.timers.tick(0));
+  await act(() => t.mock.timers.tick(30));
+  const partial = root.root.findByType('preview').props.text;
+  assert.ok(partial.length > 0 && partial.length < props.source.length);
+  await act(() => root.update(React.createElement(Probe, { ...props, enabled: false })));
+  await act(() => t.mock.timers.tick(300));
+  assert.equal(root.root.findByType('preview').props.text, partial);
+  await act(() => root.update(React.createElement(Probe, props)));
+  assert.equal(root.root.findByType('preview').props.text, partial);
+  await act(() => t.mock.timers.tick(0));
+  await act(() => t.mock.timers.tick(30));
+  assert.equal(root.root.findByType('preview').props.text, props.source);
+  await act(() => root.unmount());
+});
+
+test('valid entries crossing the character budget evict the least recently used completion', () => {
+  const cache = new TypewriterCompletionCache(10, 10);
+  cache.complete('a', 'aaaa'); cache.complete('b', 'bbbb');
+  assert.equal(cache.has('a', 'aaaa'), true);
+  cache.complete('c', 'cccc');
+  assert.equal(cache.has('b', 'bbbb'), false);
+  assert.equal(cache.has('a', 'aaaa'), true);
+  assert.equal(cache.has('c', 'cccc'), true);
+});
