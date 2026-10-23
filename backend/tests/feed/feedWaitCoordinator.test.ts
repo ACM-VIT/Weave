@@ -47,6 +47,43 @@ test('independent coordinators recover a missed notification through bounded pol
   await Promise.all([a.drain(), b.drain()]);
 });
 
+test('long waits continue polling at the cap rather than doubling indefinitely', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  t.mock.method(Math, 'random', () => 0.5);
+  const coordinator = new FeedWaitCoordinator<string>(25, unavailable);
+  let reads = 0;
+  let ready = false;
+  const result = coordinator.wait('key', async () => { reads++; return ready ? 'committed' : undefined; }, 5_000);
+  await flush();
+  for (const spacing of [25, 50, 100, 200, 250, 250, 250]) {
+    const previous = reads;
+    t.mock.timers.tick(spacing - 1); await flush();
+    assert.equal(reads, previous, 'the next probe must wait for its backoff');
+    t.mock.timers.tick(1); await flush();
+    assert.equal(reads, previous + 1, 'later probes must stay within the polling cap');
+  }
+  ready = true;
+  t.mock.timers.tick(250); await flush();
+  assert.equal(await result, 'committed');
+  await coordinator.drain();
+});
+
+test('an original sibling receives completion after another observer cancels', async () => {
+  const coordinator = new FeedWaitCoordinator<string>(25, unavailable);
+  const controller = new AbortController();
+  let complete!: (value: string) => void;
+  const held = new Promise<string>(resolve => { complete = resolve; });
+  let reads = 0;
+  const cancelled = coordinator.wait('key', async () => { reads++; return held; }, 1_000, controller.signal);
+  const sibling = coordinator.wait('key', async () => { throw new Error('must share the original read'); }, 1_000);
+  const rejected = assert.rejects(cancelled, /observer left/);
+  await flush(); controller.abort(new Error('observer left')); await rejected;
+  complete('durable serve');
+  assert.equal(await sibling, 'durable serve');
+  assert.equal(reads, 1);
+  await coordinator.drain();
+});
+
 test('cancellation isolates observers and never duplicates an outstanding abandoned probe', async () => {
   const coordinator = new FeedWaitCoordinator<string>(25, unavailable, 1);
   let complete!: (value: string) => void;
