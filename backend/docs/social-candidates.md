@@ -1,56 +1,75 @@
-# Social candidates: initial followed-owner slice
+# Public social candidate channels
 
-Pairs with Weave-ml PR #135, commit `c3237ba329483c8a005f8374a7d26958271839ab`,
-schema SHA256 `8c6956cfc921cb2997dcd965fa579b1d28c21b9fe6366f852f6cebbb36a0dd66`.
-This consumer stacks on PR #193's generated contract and feedback ACK integration.
-It does not complete or close full ML issue 34.
+Uses the existing ML PR #135 contract at
+`c3237ba329483c8a005f8374a7d26958271839ab`, schema SHA256
+`8c6956cfc921cb2997dcd965fa579b1d28c21b9fe6366f852f6cebbb36a0dd66`.
+Stacks on Weave PR #199. Apply PR #200's `0034`/`0035` migration history before this
+follow-up's `0036`/idx39. The exact prerequisite SQL/audit entries are retained in a
+separate commit; no #57 feature source is copied. Credential-unlink0037/idx40 must
+follow0036. Do not renumber applied history.
 
-`FEED_SOCIAL_CANDIDATES_ENABLED=false` is the default. When enabled, feed
-generation derives evidence internally for the authenticated viewer. Public
-feed input cannot supply source actors/scores. Online ML never reads product SQL.
+## Permission and evidence
 
-The query reads current follows of active, verified registered GitHub users and
-active, unclaimed GitHub social profiles. Repository ownership joins use positive
-canonical numeric GitHub identity, never mutable handles. Only active public
-catalogue repositories with an actual statistics snapshot qualify. The query
-never reads private boards, saves or another account's activity.
+`FEED_SOCIAL_CANDIDATES_ENABLED=false` remains the default. The authenticated
+backend derives bounded canonical IDs and evidence internally; online ML never
+reads product SQL. The provider separately controls shadow/enabled user cohorts.
+No private actor identity, board name or membership list is sent to ML.
 
-The 50 most recently followed owners each supply at most two repositories. The
-projection caps output at 100 entries, two repositories per owner and 20 entries
-per source. Distinct actors provide support; actor identities stay backend-only.
-Only `followed_owner` is populated by this initial adapter. Its score derives
-from actual support and latest observed stars:
-`support/(support+1)/sqrt(1+log1p(stars))`. This popularity control is not a measured
-relevance probability. Query/projection errors fail generation and release its
-lease rather than inventing evidence.
+Sources now include verified/unclaimed followed owners, followed users' public
+likes, co-like neighbors sharing the viewer's positive seeds, public-board
+co-membership, and topic neighbors of the viewer's own likes/saves. Registered
+user likes are already an authenticated public product surface. Raw cross-user
+saves and private collections are not sharing authority and are never queried.
+Unlisted boards are direct-link resources, not public discovery candidates.
 
-Deploy the pinned provider before enabling this flag. ML separately controls
-disabled/shadow/enabled mode and stable user traffic cohorts. Begin with shadow;
-genuine source-quality evidence is required before promotion. Eligibility,
-canonical hydration, exclusions, feed-version fences, strict-heavy ranking and
-durable serving remain enforced. The legacy `social_repo_ids` boost stays
-compatible. Node validates bounded finite source scores returned by ML.
+Only active viewers/actors and active canonical catalogue repositories with
+positive numeric owner identity and real statistics qualify. Owner identity is
+never inferred from handles. Collaborative sources require at least two distinct
+supporters; multiple boards from one owner count once. Adjacent support counts
+own seed repositories. The shared projection deduplicates, normalizes actual
+support by observed stars, and applies owner/source/overall caps. This heuristic
+score is not a measured relevance probability.
 
-## Verification
+Permission/evidence reads use one repeatable-read, read-only transaction with a
+1,000 ms PostgreSQL statement timeout. Errors propagate for retry; no invented
+candidate fallback. The timeout bounds server statements, not shared-pool queue
+wait or total feed latency. Source evidence stays request-local.
 
-Normal backend tests discover pure projection/generation cases under `tests/feed`.
-SQL acceptance requires `RUN_SOCIAL_CANDIDATES_INTEGRATION=1`, `NODE_ENV=test` and
-an owned loopback `DATABASE_URL` ending in `/weave_social_candidates_test`, with
-migrated schemas. Run `node --import tsx --test tests/database/socialCandidates.integration.test.ts`.
-The fixture cleans only its own IDs and checks viewer scope, verified identity,
-rename, block/unfollow, unknown owner, missing stats and per-owner bounds.
+## Bounded lookup and verification
 
-`WEAVE_ML_CONTRACT_ROOT=<exact-provider-checkout>` enables the existing
-`tests/contracts/mlCrossRepo.integration.test.ts` and new
-`tests/contracts/socialCrossRepo.integration.test.ts`. The latter uses real
-registered HTTP/auth/admission/strict DTOs, with a deterministic model boundary.
-It proves the rich payload and source-score wire, not production ranking/storage.
+Membership samples precede fanout: 20 own seeds; 50 followed/co-like actors with 20
+likes each; 50 public boards with 20 items; 20 topics with 10 repositories each.
+Per-seed membership scans sample 100 deterministic IDs, then recheck visibility
+and active identity. Sampling may underfill; it never substitutes private rows.
+Output is at most 10,000 raw rows, followed by 100 total candidates, two repositories per owner and20 entries per source
+caps (provider quotas can be tighter).`0036` adds the supporting selective indexes.
 
-## Remaining full issue 34 criteria
+Opt-in `tests/feed/socialNeighborhoodProjection.test.ts` requires an owned
+loopback `/weave_social_neighborhoods_test` database and
+`RUN_PUBLIC_SOCIAL_NEIGHBORHOODS_INTEGRATION=1` outside production. It exercises
+actual persistence wiring, distinct support, owner/viewer state, private/unlisted
+suppression, co-like/own-topic source attribution, revocation, real blocked-read
+cancellation and recovery. Parent owner-source acceptance remains separately
+covered by `tests/database/socialCandidates.integration.test.ts`.
 
-Followed-user likes/saves, co-like/co-save, board/topic and adjacent-interest
-sources still need actual permission-aware adapters and support/fanout tests.
-Their enum values do not implement those channels. Representative offline
-relevance, coverage, novelty and source-contribution reports remain outstanding.
-No production quality, rollout or private-board safety claim is made for those
-unimplemented sources. No migration or model promotion is included.
+A matched synthetic owned-PostgreSQL workload used 100 users/5,000 repositories/100,000 likes,
+2,000 boards/100,000 memberships/15,000 topic memberships. Identical 3,280 raw rows/hash
+were returned before/after indexing. Three query samples were763/379/374ms before
+and94/76/76ms after; EXPLAIN execution425→94ms, shared-buffer hits68590→28561.
+The owner lookup used its composite index to read two rows without sorting.
+These are local query measurements, not production request latency or quality.
+
+Exact-provider Node/Python HTTP tests validate all five source enums and source
+scores through real registered routes/auth/admission; model/storage boundaries
+are deterministic fixtures. Core strict-heavy, eligibility, canonical hydration,
+feedback ACK and durable serving remain unchanged.
+
+## Remaining full issue #34 acceptance
+
+Raw followed-save/co-save channels need explicit shareable provenance or a
+product policy; no sharing consent is invented. Representative relevance,
+coverage, novelty and source-contribution reports remain outstanding. Generation
+permission checks and structural fixtures do not prove production qualification,
+quality or rollout approval. Full issue #34 stays open; no deployment or promotion
+is performed. ML #24 lineage and #26 historical model/input snapshots are separate
+work and are not silently claimed by these channels.
