@@ -65,6 +65,7 @@ jobs:
           cache: npm
           cache-dependency-path: backend/package-lock.json
       - run: npm ci
+      - run: npm run ml:check
       - run: npm run build
       - run: npm run migrate
         env:
@@ -89,3 +90,48 @@ jobs:
         run: |
           docker build -f backend/Dockerfile -t gh-social-backend:${{ github.sha }} .
           docker run --rm --entrypoint node gh-social-backend:${{ github.sha }} dist/scripts/verify-deployment-assets.js
+
+  ml-contract:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Read the pinned provider release
+        id: provider
+        run: |
+          node --input-type=module - <<'NODE'
+          import fs from 'node:fs';
+          const release = JSON.parse(fs.readFileSync('backend/contracts/ml-contract-release.json', 'utf8'));
+          if (release.repository !== 'ACM-VIT/Weave-ml' || !/^[a-f0-9]{40}$/.test(release.revision)) throw new Error('Invalid provider release');
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `revision=${release.revision}\n`);
+          NODE
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: ACM-VIT/Weave-ml
+          ref: ${{ steps.provider.outputs.revision }}
+          path: .contract-provider
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
+        with:
+          python-version: '3.12'
+      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b
+        with:
+          version: '0.11.29'
+      - run: uv sync --locked --dev
+        working-directory: .contract-provider
+      - run: npm ci
+        working-directory: backend
+      - run: npm run ml:check
+        working-directory: backend
+      - run: npx --no-install tsx --test tests/contracts/mlCrossRepo.integration.test.ts
+        working-directory: backend
+        env:
+          WEAVE_ML_CONTRACT_ROOT: ${{ github.workspace }}/.contract-provider
