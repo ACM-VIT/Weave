@@ -67,6 +67,7 @@ test('outbox claims each row immediately before sequential delivery', async () =
   const claimLimits: number[] = [];
   const delivered: string[] = [];
   const outbox = {
+    prepareOnboardingDelivery: async () => true,
     claim: async (limit: number) => {
       claimLimits.push(limit);
       return pending.shift() ?? [];
