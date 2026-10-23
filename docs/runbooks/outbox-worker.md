@@ -49,12 +49,11 @@ node dist/worker.js --role=outbox
 ```
 
 The script passes `--role=outbox`; an explicitly supplied `WORKER_ROLE` must
-match. Four independent slots deliver new feedback, singleton feedback retries,
-onboarding and repository jobs. Each slot claims only its immediate RPC capacity;
-no rows wait in an in-memory delivery backlog. The systemd unit
+match. Each run claims one row immediately before delivery, so the configured
+database lease never expires behind an older queued request. The systemd unit
 gives the container 300 seconds after `SIGTERM` (plus 30 seconds of supervisor
 margin), which exceeds the 240-second repository-index request bound and lets
-the active deliveries finish before shutdown.
+the single active row finish before shutdown.
 `SIGTERM` completes the active run and closes Redis/PostgreSQL connections.
 The outbox unit gives Docker 300 seconds to stop and systemd 330 seconds,
 covering the default 240-second index request and cleanup. When increasing
@@ -63,62 +62,6 @@ the request timeout in seconds plus 60, and `TimeoutStopSec` to at least another
 30 seconds beyond that. For a 600000 ms index timeout, use 660 and 690 seconds.
 Avoid `SIGKILL`, which can leave the current row claimed until reconciliation
 releases its lease.
-
-### Feedback batching and compatibility
-
-`OUTBOX_FEEDBACK_BATCH_SIZE` defaults to 20 and accepts integers from 1 to 100.
-Set it to 1 for singleton rollback. The fixed four slots bound downstream RPC
-concurrency to four per worker process; new feedback batches and retries share
-the feedback endpoint's 429/503 Retry-After cooldown. Existing durable retry
-deadlines, polling and commit notifications remain recovery mechanisms. Repository
-index and refresh admission alternates without bypassing delivered-index checks.
-
-Only first-attempt feedback from independent users is batched. PostgreSQL still
-blocks every later feedback version until its predecessor is delivered. Retries
-use their reserved singleton slot, so a conflicting event cannot repeatedly fail
-unrelated users' batches. Shutdown finishes the admitted RPCs without claiming
-another turn; claim-token checks fence stale completion after lease recovery.
-
-The compatible ML provider returns `durable: true`, acceptance/duplicate counts
-and `acknowledged_event_ids` identifying the durable events. The worker validates
-canonical unique identities and count consistency before acknowledging individual
-outbox rows. A valid subset acknowledges only that subset. Partial enqueue errors,
-transport ambiguity, malformed responses or missing batch identities retain unknown
-members for singleton retry, including after a batch-level terminal error. Existing
-single-event durable aggregate acknowledgements remain compatible with old ML.
-Redis acceptance is not completed vector learning.
-
-Roll out the provider acknowledgement contract before enabling multi-event batches.
-Keep the backend's pinned OpenAPI contract and paired HTTP checks synchronized.
-An old provider remains loss-safe but will trigger singleton retries after batch
-responses lacking identities. No migration, event rewriting, queue reset or new
-listener is needed. Inspect pending/claimed/dead counts, oldest pending age,
-`outbox_feedback_events_per_request` and `outbox_feedback_unacknowledged_total`.
-
-The provider acknowledgement extension is tracked in Weave-ml PR131, after its
-generated-contract PR128. Deploy the compatible provider before the consumer;
-the consumer release manifest pins its exact schema and commit. The CI
-`ml-contract` job provisions disposable PostgreSQL/Redis and executes both the
-six-operation wire contract and real outbox-to-Redis feedback failure tests.
-The latter use actual registered Python routes, admission and atomic Redis
-scripts; only fixture-local middleware injects a failed middle script, delayed
-HTTP response after acceptance and downstream429. No fault switch is available
-in the application. Each fixture removes its own rows/stream after stopping
-the child server. Run locally only against explicitly selected disposable targets:
-
-```bash
-RUN_OUTBOX_LANES_INTEGRATION=1 RUN_OUTBOX_FEEDBACK_CONTRACT=1 \
-WEAVE_ML_CONTRACT_ROOT=/absolute/path/to/pinned/Weave-ml \
-npx --no-install tsx --test --test-concurrency=1 \
-  tests/database/outboxLanes.integration.test.ts \
-  tests/contracts/outboxFeedback.integration.test.ts
-```
-
-Use a migrated loopback database named `weave_scroll`, dedicated loopback Redis
-database15 and the pinned provider's locked Python environment. These tests do
-not load models or access Qdrant, GitHub, Supabase or production data. Local
-matched SQL/mock-transport measurements establish queue progress and RPC counts,
-not production throughput or recommendation quality.
 
 The backend test command runs files serially because database integration files
 share destructive fixtures. Use `RUN_DATABASE_INTEGRATION=1 npm test` only with
