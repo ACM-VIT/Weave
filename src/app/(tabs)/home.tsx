@@ -1,3 +1,4 @@
+import {retainOriginalFeedImpressions} from '@/services/feedImpressionAttribution';
 import { useState, useCallback, useEffect, useLayoutEffect, useMemo, useRef } from 'react';
 import {
   ActivityIndicator,
@@ -117,6 +118,7 @@ export default function HomeScreen() {
     isRefetching,
   } = useInfiniteQuery({
     queryKey: feedQueryKey,
+    structuralSharing: retainOriginalFeedImpressions,
     queryFn: ({ pageParam, signal }) => pagination.controller.load(pageParam, signal),
     retry: false,
     staleTime: Infinity,

@@ -132,12 +132,17 @@ export function RepositoryFeedItem({
   React.useLayoutEffect(()=>{
     const state=attributionState.current.get(attribution)??{original:null,deliver:onQueueActivity};
     state.deliver=onQueueActivity;
-    state.original??=parseOriginalFeedImpression(repository.originalImpression);
-    if(attribution.row&&state.original&&authSessionLifecycle.isCurrent(attribution.generation)) {
+    attributionState.current.set(attribution,state);
+  },[attribution,onQueueActivity]);
+  React.useLayoutEffect(()=>{
+    const state=attributionState.current.get(attribution)!;
+    const cached=parseOriginalFeedImpression(repository.originalImpression);
+    state.original??=cached;
+    if(attribution.row&&state.original&&authSessionLifecycle.isCurrent(attribution.generation)
+      &&(cached?.eventId!==state.original.eventId||cached.occurredAt!==state.original.occurredAt)) {
       state.original=rememberOriginalFeedImpression(queryClient,attribution.row,state.original);
     }
-    attributionState.current.set(attribution,state);
-  },[attribution,onQueueActivity,queryClient,repository.originalImpression]);
+  },[attribution,queryClient,repository.originalImpression]);
   const queueRepositoryActivity=React.useCallback((event:ActivityInput,flushNow?:boolean)=>{
     const state=attributionState.current.get(attribution);
     if(!state?.deliver||!authSessionLifecycle.isCurrent(attribution.generation))return;

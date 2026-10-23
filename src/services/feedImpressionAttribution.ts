@@ -1,4 +1,4 @@
-import type {QueryClient} from '@tanstack/react-query';
+import {replaceEqualDeep, type QueryClient} from '@tanstack/react-query';
 import type {RepositoryData} from '../data/repositories';
 import {createUuid} from '../utils/uuid';
 const uuid=/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -43,6 +43,26 @@ export function rememberOriginalFeedImpression(client:QueryClient,target:FeedAtt
  });
  if(changed)client.setQueryData(key,{...current,pages});
  return original;
+}
+/** Async pagination can finish with pages captured before a local impression.
+ * Merge metadata only onto the same delivered row in this owner-scoped query;
+ * incoming page membership/order and product overlays remain authoritative. */
+export function retainOriginalFeedImpressions(previous:unknown,incoming:unknown):unknown {
+ const before=previous as CachedPages|undefined,after=incoming as CachedPages|undefined;
+ if(!Array.isArray(before?.pages)||!Array.isArray(after?.pages))return replaceEqualDeep(previous,incoming);
+ const key=(item:Record<string,unknown>)=>typeof item.repo_id==='string'&&typeof item.serve_id==='string'
+  &&typeof item.feed_session_id==='string'&&Number.isInteger(item.position)
+  ?JSON.stringify([item.repo_id,item.serve_id,item.feed_session_id,item.position]):null;
+ const originals=new Map<string,OriginalFeedImpression>();
+ for(const page of before.pages)for(const item of page.items){
+  const identity=key(item),original=parseOriginalFeedImpression(item.client_original_impression);
+  if(identity&&original)originals.set(identity,original);
+ }
+ const pages=after.pages.map(page=>({...page,items:page.items.map((item:Record<string,unknown>)=>{
+  const identity=key(item),original=identity?originals.get(identity):undefined;
+  return original?{...item,client_original_impression:original}:item;
+ })}));
+ return replaceEqualDeep(previous,{...after,pages});
 }
 export type FeedNavigationAttribution=FeedAttribution&{generation:number;original:OriginalFeedImpression|null};
 /** Only an opaque one-use token travels in internal navigation. Shared links
