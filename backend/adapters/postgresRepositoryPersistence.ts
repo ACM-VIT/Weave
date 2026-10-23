@@ -1,3 +1,4 @@
+import { withOutboxTrace } from '../observability/tracing.js';
 import crypto from 'node:crypto';
 import { mergeRepositoryLineage, type RepositoryLineage } from '../services/repositoryLineage.js';
 import type { Sql, TransactionSql } from 'postgres';
@@ -48,7 +49,7 @@ async function insertOutbox(tx: TransactionSql, input: OutboxInput[]): Promise<v
   await tx`
     INSERT INTO telemetry.ml_outbox (job_type,aggregate_id,idempotency_key,payload)
     SELECT job_type,aggregate_id::uuid,idempotency_key,payload
-    FROM jsonb_to_recordset(${JSON.stringify(input)}::text::jsonb)
+    FROM jsonb_to_recordset(${JSON.stringify(input.map(row => ({ ...row, payload: withOutboxTrace(row.payload) })))}::text::jsonb)
       AS incoming(job_type text,aggregate_id text,idempotency_key text,payload jsonb)
     ORDER BY aggregate_id,job_type,idempotency_key
     ON CONFLICT (idempotency_key) DO NOTHING

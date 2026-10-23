@@ -420,3 +420,34 @@ integration('v2 database, outbox, and Redis feed flows preserve invariants', asy
     await redis.quit();
   }
 });
+
+integration('real interaction enqueue persists parent lineage through claim and feedback delivery', async () => {
+  const { startSpan, withOutboxTrace } = await import('../../observability/tracing.js');
+  const { OutboxDeliveryLanes } = await import('../../workers/outboxDeliveryLanes.js');
+  await seed();
+  const parent = startSpan('http', 'http_completion', true,
+    '00-04444444444444444444444444444444-4444444444444444-01');
+  const interaction = event('like');
+  await parent.run(() => processInteractionBatchV2(userId, [interaction]));
+  const [stored] = await sqlClient`SELECT payload,idempotency_key FROM telemetry.ml_outbox WHERE idempotency_key=${`feedback:${interaction.event_id}`}`;
+  assert.equal(stored.payload._traceparent, parent.traceparent);
+  // Duplicate activity under another request must not overwrite the first lineage.
+  await startSpan('http', 'http_completion', true).run(() => processInteractionBatchV2(userId, [interaction]));
+  const [retained] = await sqlClient`SELECT payload,idempotency_key FROM telemetry.ml_outbox WHERE idempotency_key=${stored.idempotency_key}`;
+  assert.deepEqual(retained, stored);
+  const lanes = new OutboxDeliveryLanes(new OutboxService(), {
+    deliverFeedback: async batch => {
+      assert.equal(batch.events.length, 1);
+      assert.equal('_traceparent' in batch.events[0], false);
+      const rpc = startSpan('feedback', 'ml_transport');
+      assert.equal(rpc.traceparent.split('-')[1], parent.traceparent.split('-')[1]);
+      assert.notEqual(rpc.traceparent, parent.traceparent);
+      assert.equal(withOutboxTrace({})._traceparent?.split('-')[1], parent.traceparent.split('-')[1]);
+      return { accepted: true, retryable: false, status_code: 202, response_body: { accepted: 1,
+        duplicates: 0, durable: true, acknowledged_event_ids: [interaction.event_id] } };
+    },
+  } as import('../../ports/outboxTransportPort.js').OutboxTransportPort);
+  await lanes.runOnce('feedback');
+  const [delivered] = await sqlClient`SELECT status FROM telemetry.ml_outbox WHERE idempotency_key=${stored.idempotency_key}`;
+  assert.equal(delivered.status, 'delivered');
+});

@@ -168,3 +168,31 @@ test('batch configuration rejects unbounded or malformed values', () => {
   for (const value of ['0', '101', '1.5', 'no']) assert.throws(() => feedbackBatchSize(value));
   assert.equal(feedbackBatchSize('1'), 1); assert.equal(feedbackBatchSize('100'), 100);
 });
+
+test('feedback batch strips metadata and retains each enqueue lineage with first-member RPC parent', async () => {
+  const { startSpan, withOutboxTrace, snapshotSpans } = await import('../../observability/tracing.js');
+  const firstParent = startSpan('http', 'http_completion', true,
+    '00-02222222222222222222222222222222-2222222222222222-01');
+  const secondParent = startSpan('http', 'http_completion', true,
+    '00-03333333333333333333333333333333-3333333333333333-01');
+  const first = row(), second = row();
+  const original = [first.payload, second.payload];
+  first.payload = firstParent.run(() => withOutboxTrace(first.payload));
+  second.payload = secondParent.run(() => withOutboxTrace(second.payload));
+  const f = fixture([first, second], async batch => {
+    assert.deepEqual(batch.events, original);
+    const rpc = startSpan('feedback', 'ml_transport');
+    assert.equal(rpc.traceparent.split('-')[1], firstParent.traceparent.split('-')[1]);
+    rpc.finish('success');
+    return { accepted: true, retryable: false, status_code: 202,
+      response_body: { accepted: batch.events.length, duplicates: 0, durable: true, acknowledged_event_ids: batch.events.map(event => event.event_id) } };
+  });
+  await new OutboxDeliveryLanes(f.outbox, f.transport).runOnce('feedback');
+  for (const parent of [firstParent, secondParent]) {
+    const spans = snapshotSpans().filter(span => span.trace_id === parent.traceparent.split('-')[1]
+      && span.stage === 'outbox_delivery');
+    assert.equal(spans.length, 1);
+    assert.equal(spans[0].parent_span_id, parent.traceparent.split('-')[2]);
+  }
+  assert.deepEqual(f.delivered, [first.outbox_id, second.outbox_id]);
+});
