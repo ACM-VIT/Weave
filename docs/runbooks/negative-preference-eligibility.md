@@ -38,7 +38,8 @@ retry, same-request replay, and a final preference race. An opt-in disposable
 PostgreSQL fixture (`RUN_NEGATIVE_PREFERENCE_INTEGRATION=1`) proves the501-dislike
 case, account isolation, inverse state, active-account/repository checks, actual
 activity-versus-serve blocking/settlement, duplicate events and historical replay.
-It requires a loopback `weave_negative_preferences_test` database outside
+The `Verify current negative preferences` workflow runs this real SQL test on
+its own PostgreSQL16 service for relevant PRs. Local execution requires a loopback `weave_negative_preferences_test` database outside
 production; it never selects the developer's shared database.
 
 Existing real serve-persistence tests retain one batched item insertion and no
