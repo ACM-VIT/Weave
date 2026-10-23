@@ -108,7 +108,9 @@ function containsEvidence(candidate: string, evidence: string): boolean {
     || candidate.includes(`-${evidence}-`);
 }
 
-export function inferGitHubPersona(source: GitHubPublicPersonaSource): GitHubInferredPersona {
+export function inferGitHubPersona(source: { repositories: readonly {
+  fork: boolean; private?: boolean; visibility?: string; topics: string[]; language: string | null;
+}[] }): GitHubInferredPersona {
   const interestScores = new Map<string, number>();
   const languageScores = new Map<string, number>();
 

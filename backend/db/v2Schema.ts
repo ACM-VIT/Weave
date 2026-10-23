@@ -64,6 +64,19 @@ export const appUsers = appSchema.table('users', {
   check('app_users_onboarding_taxonomy_object', sql`jsonb_typeof(${table.onboardingTaxonomy})='object' AND octet_length(${table.onboardingTaxonomy}::text)<=32768`),
 ]);
 
+export const userGithubImports = appSchema.table('user_github_imports', {
+  userId: uuid('user_id').primaryKey().references(() => appUsers.userId, { onDelete: 'cascade' }),
+  revision: bigint('revision', { mode: 'bigint' }).notNull().default(0n),
+  githubId: text('github_id'), snapshotId: uuid('snapshot_id'), snapshotHash: text('snapshot_hash'),
+  expiresAt: timestamp('expires_at', { withTimezone: true }),
+  collectToken: uuid('collect_token'), collectUntil: timestamp('collect_until', { withTimezone: true }),
+  lastCollectedAt: timestamp('last_collected_at', { withTimezone: true }),
+  consentedAt: timestamp('consented_at', { withTimezone: true }), acceptedAt: timestamp('accepted_at', { withTimezone: true }),
+  acceptedProfileVersion: bigint('accepted_profile_version', { mode: 'bigint' }),
+  revokedAt: timestamp('revoked_at', { withTimezone: true }),
+  provenance: jsonb('provenance').notNull().default({}), baseline: jsonb('baseline').notNull().default({}), applied: jsonb('applied').notNull().default({}),
+});
+
 export const userStats = appSchema.table('user_stats', {
   userId: uuid('user_id').primaryKey().references(() => appUsers.userId, { onDelete: 'cascade' }),
   followersCount: integer('followers_count').notNull().default(0),
