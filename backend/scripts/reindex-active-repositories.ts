@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import { LINEAGE_FIELDS, type RepositoryLineage } from '../services/repositoryLineage.js';
 import { isValidUuid } from '../utils/validators.js';
 import { isAcceptedStoredSummary } from '../services/storedRepositorySummary.js';
 import { pathToFileURL } from 'node:url';
@@ -19,7 +20,7 @@ export interface ReindexOptions {
   repositoryIds?: string[];
 }
 
-interface ReindexRow {
+interface ReindexRow extends RepositoryLineage {
   repo_id: string;
   active_summary?: Record<string, unknown> | null;
   github_id: string;
@@ -93,6 +94,7 @@ export function buildCampaignRepositoryJob(
   const [owner, ...nameParts] = row.full_name.split('/');
   const repository: RepositoryUpsert = {
     github_id: String(row.github_id),
+    ...Object.fromEntries(LINEAGE_FIELDS.filter(key => row[key]!=null).map(key => [key,row[key]])),
     owner_github_id: String(row.owner_github_id ?? ''),
     full_name: row.full_name,
     owner,
@@ -161,7 +163,8 @@ export async function runReindex(options: ReindexOptions, databaseUrl: string): 
       const batch = await client.begin(async (tx) => {
         const rows = await tx`
           SELECT repo.repo_id,repo.github_id::text AS github_id,repo.owner_github_id::text AS owner_github_id,
-            repo.full_name,repo.url,
+            repo.full_name,repo.url,repo.is_fork,repo.fork_parent_github_id::text,repo.fork_family_github_id::text,
+            repo.lineage_source,to_char(repo.lineage_observed_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS lineage_observed_at,
             content.description,content.readme,content.readme_source_path,
             content.readme_default_branch,content.readme_base_url,
             content.primary_language,content.languages,
