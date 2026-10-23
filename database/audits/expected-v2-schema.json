@@ -1,5 +1,5 @@
 {
-  "schemas": ["app", "telemetry"],
+  "schemas": ["app", "telemetry", "private_scoring"],
   "tables": {
     "app": [
       "board_collections", "board_repos", "boards", "collection_repos", "comments", "follows",
@@ -12,7 +12,8 @@
     "telemetry": [
       "counter_reconciliation_progress", "feed_prewarm_jobs", "feed_serve_items", "feed_serves", "generation_attempts", "interaction_events",
       "ml_outbox", "readme_summary_jobs", "sessions", "user_repo_engagement"
-    ]
+    ],
+    "private_scoring": ["scoring_generations", "scoring_inputs", "generation_witnesses"]
   },
   "indexes": [
     "feed_serves_feed_request_id_key", "feed_serves_user_created_idx", "feed_serves_user_session_idx",
@@ -34,9 +35,11 @@
     "repo_readme_summaries_active_uidx", "readme_summary_jobs_pkey",
     "readme_summary_jobs_repo_id_content_version_content_hash_pr_key", "readme_summary_jobs_pending_idx",
     "repo_card_summaries_repo_active_idx", "repos_full_name_key",
-    "repos_github_id_key", "trending_one_active_period_uidx"
+    "repos_github_id_key", "trending_one_active_period_uidx", "scoring_generations_expiry_idx"
   ],
-  "functions": ["activate_repo_summary", "enforce_comment_parent_repo"],
-  "roles": ["ghsocial_backend"],
-  "columns": ["app.user_github_unlinks.provider_identity_id"]
+  "functions": ["activate_repo_summary", "enforce_comment_parent_repo",
+    "private_scoring.persist_generation", "private_scoring.exact_keys", "private_scoring.finite_input", "private_scoring.reject_update"],
+  "roles": ["ghsocial_backend", "ghsocial_scoring_writer", "ghsocial_scoring_exporter", "ghsocial_scoring_retention"],
+  "columns": ["app.user_github_unlinks.provider_identity_id",
+    "private_scoring.scoring_inputs.input_bytes", "private_scoring.scoring_generations.context_bytes"]
 }
