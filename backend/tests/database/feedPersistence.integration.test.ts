@@ -39,12 +39,12 @@ integration('new serves use one item insert for 1, 24 and 50 cards without follo
     try {created=await persistence.createServe(f.input);} finally {sqlClient.options.debug=previous;}
     console.log('SERVE_MEASURE '+JSON.stringify({count,statements:queries.length,ms:Math.round(performance.now()-start)}));
     assert.equal(queries.filter(query=>/INSERT INTO telemetry.feed_serve_items/i.test(query)).length,1);
-    assert.equal(queries.filter(query=>/SELECT[\s\S]*FROM telemetry.feed_serves/i.test(query)).length,0);
-    // Four bounded statements serialize current preferences with activity:
-    // user lock, feed initialization, feed lock, and candidate eligibility read.
+    assert.equal(queries.filter(query=>/SELECT[\s\S]*FROM telemetry.feed_serves/i.test(query)).length,1);
+    // Five bounded statements serialize current preferences and exposure with activity:
+    // user lock, feed initialization, feed lock, preference and exposure reads.
     assert.equal(queries.filter(query=>/FROM app.user_feed_state[\s\S]*FOR UPDATE/i.test(query)).length,1);
     assert.equal(queries.filter(query=>/negative\.reaction='dislike'/i.test(query)).length,1);
-    assert.ok(queries.length<=9,`new serve took ${queries.length} statements`);
+    assert.ok(queries.length<=10,`new serve took ${queries.length} statements`);
     assert.equal(created.items.length,count);
     assert.deepEqual(created.items.map(item=>item.repo_id),f.repos);
     assert.equal(created.created_at,new Date(created.created_at).toISOString());
@@ -97,15 +97,15 @@ integration('first-read initialization remains race safe and cannot reset an inc
   assert.equal(await persistence.getFeedVersion(f.user),9n);
 });
 
-integration('exclusions isolate accounts and sessions, count actual exposure globally and bound recent history',async()=>{
+integration('exclusions isolate accounts, include recent cross-session serves and bound history',async()=>{
   const f=await fixture();const other=await fixture();const persistence=new PostgresFeedPersistence();
   await persistence.createServe(f.input);
   await sqlClient`INSERT INTO telemetry.user_repo_engagement(user_id,repo_id,impressions,last_event_at)
     VALUES(${f.user}::uuid,${f.repos[0]}::uuid,1,now()),(${other.user}::uuid,${f.repos[1]}::uuid,1,now())`;
   const api=persistence as unknown as {listExcludedRepositoryIds(user:string,session:string|undefined,limit:number):Promise<string[]>};
-  assert.deepEqual(await api.listExcludedRepositoryIds(f.user,undefined,500),[f.repos[0]]);
+  assert.deepEqual(new Set(await api.listExcludedRepositoryIds(f.user,undefined,500)),new Set(f.repos));
   assert.deepEqual(new Set(await api.listExcludedRepositoryIds(f.user,f.session,500)),new Set(f.repos));
-  assert.deepEqual(await api.listExcludedRepositoryIds(f.user,other.session,500),[f.repos[0]]);
+  assert.deepEqual(new Set(await api.listExcludedRepositoryIds(f.user,other.session,500)),new Set(f.repos));
   assert.equal((await api.listExcludedRepositoryIds(f.user,f.session,2)).length,2);
 });
 

@@ -624,3 +624,22 @@ test('a negative preference winning at durable creation maps to a retryable feed
   }),FeedRequestInProgressError);
   assert.equal(queue.committed,0);assert.equal(queue.released,1);
 });
+
+for (const failure of ['redis', 'generation'] as const) {
+  test(`empty eligible fallback after ${failure} failure stays unavailable without a durable empty serve`, async () => {
+    const persistence = new FakePersistence();
+    persistence.getTrendingFallback = async () => [];
+    const queue = new FakeQueue();
+    queue.reserve = async (_u, _v, requestId, _l, token) => {
+      if (failure === 'redis') throw new Error('offline');
+      return { requestId, token, items: [] };
+    };
+    const service = new FeedV2Service(persistence, queue,
+      async () => { throw new Error('ML offline'); }, true);
+    await assert.rejects(service.getFeed('00000000-0000-4000-8000-000000000030', {
+      feed_request_id: '00000000-0000-4000-8000-000000000096',
+      session_id: '00000000-0000-4000-8000-000000000095', limit: 10, cursor: null,
+    }), PersonalizedFeedUnavailableError);
+    assert.equal(persistence.serve, null);
+  });
+}

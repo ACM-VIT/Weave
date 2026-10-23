@@ -260,6 +260,7 @@ export class FeedV2Service {
         for (const repository of fallback) {
           if (repository.status === 'active') byId.set(repository.repo_id, repository);
         }
+        if (entries.length === 0) throw new PersonalizedFeedUnavailableError(generationError);
         source = 'fallback';
         incrementMetric('feed_v2_fallback_total');
       } else if (!generationCompleted) throw new PersonalizedFeedUnavailableError(generationError);

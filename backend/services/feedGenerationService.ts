@@ -214,7 +214,7 @@ export class FeedGenerationService {
         response.model_version, summaries, response.generation_id);
       // A nonempty ML batch filtered entirely by existing exclusions is not
       // proof of exhaustion either. Never publish it as a terminal empty page.
-      if (this.indexedRefill && response.items.length > 0 && canonical.length === 0) {
+      if (response.items.length > 0 && canonical.length === 0) {
         await this.persistence.recordGenerationAttempt?.({
           generation_id: generationId, user_id: userId, feed_version: feedVersion, mode,
           status: 'coalesced', latency_ms: Date.now() - started, result_count: 0,

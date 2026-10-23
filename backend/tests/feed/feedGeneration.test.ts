@@ -474,3 +474,13 @@ test('mixed inactive and disliked candidates retain invalid diagnostics and a fi
   assert.equal(records.length,1); assert.equal(records[0].status,'coalesced');
   assert.equal(records[0].error_code,'FEED_PREFERENCE_FILTERED');
 });
+
+test('a batch entirely excluded by cross-session hints remains retryable in default queue mode', async () => {
+  const persistence = new GenerationPersistence();
+  persistence.listExcludedRepositoryIds = async () => [socialRepoId, otherRepoId];
+  const queue = new GenerationQueue();
+  const result = await new FeedGenerationService(persistence, queue, new CapturingRecommendations()).generate(userId);
+  assert.deepEqual(result, { status: 'capacity', feedVersion: 1n });
+  assert.equal(queue.published, false);
+  assert.equal(queue.released, true);
+});
