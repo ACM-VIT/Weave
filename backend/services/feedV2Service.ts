@@ -59,7 +59,16 @@ function responseFromServe(serve: Awaited<ReturnType<FeedPersistencePort['create
     feed_version: serve.feed_version.toString(),
     source: serve.source,
     model_version: serve.model_version,
-    items: serve.items,
+    items: serve.items.map(item => ({
+      repo_id: item.repo_id,
+      score: item.score,
+      source: item.source,
+      model_version: item.model_version,
+      summary_id: item.summary_id,
+      ...(item.generation_id === undefined ? {} : { generation_id: item.generation_id }),
+      position: item.position,
+      repository: item.repository,
+    })),
     next_cursor: serve.next_cursor,
   };
 }

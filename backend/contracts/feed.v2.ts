@@ -86,12 +86,16 @@ export interface FeedRequestV2 {
   cursor: string | null;
 }
 
+/** Explicit public fields; internal queue/persistence provenance is never serialized. */
+export type PublicFeedItem = Pick<StoredServeItem,
+  'repo_id' | 'score' | 'source' | 'model_version' | 'summary_id' | 'generation_id' | 'position' | 'repository'>;
+
 export interface FeedResponseV2 {
   serve_id: string;
   session_id: string;
   feed_version: string;
   source: FeedSource;
   model_version: string | null;
-  items: StoredServeItem[];
+  items: PublicFeedItem[];
   next_cursor: string | null;
 }

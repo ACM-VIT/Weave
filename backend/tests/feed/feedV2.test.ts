@@ -102,6 +102,33 @@ test('v2 feed reserves, persists, commits, and replays the same serve', async ()
   assert.equal(queue.released, 0);
 });
 
+test('v2 feed omits private persistence fields from creation and durable replay', async () => {
+  const persistence = new FakePersistence();
+  const originalCreate = persistence.createServe.bind(persistence);
+  persistence.createServe = async input => {
+    const stored = await originalCreate(input);
+    Object.assign(stored.items[0], {
+      scoring_reference: { generation_id: 'private', record_digest: 'private-digest' },
+      scoring_context: { user_vector_sha256: 'private-context' },
+      scored_input: { input_base64: 'PRIVATE_PACKET' },
+    });
+    return stored;
+  };
+  const request = {
+    feed_request_id: '00000000-0000-4000-8000-000000000010',
+    session_id: '00000000-0000-4000-8000-000000000020', limit: 10, cursor: null,
+  };
+  const service = new FeedV2Service(persistence, new FakeQueue());
+  for (const response of [await service.getFeed('00000000-0000-4000-8000-000000000030', request),
+    await service.getFeed('00000000-0000-4000-8000-000000000030', request)]) {
+    assert.deepEqual(Object.keys(response.items[0]).sort(),
+      ['model_version', 'position', 'repo_id', 'repository', 'score', 'source', 'summary_id']);
+    assert.doesNotMatch(JSON.stringify(response), /PRIVATE_PACKET|private-context|private-digest/);
+    assert.equal(response.items[0].repository.full_name, repo.full_name);
+  }
+  assert.ok(persistence.serve && 'scoring_reference' in persistence.serve.items[0]);
+});
+
 test('v2 feed replaces a stale queued summary id with the current persisted projection', async () => {
   const persistence = new FakePersistence();
   const queue = new FakeQueue();
