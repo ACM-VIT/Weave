@@ -10,13 +10,14 @@ import {
   useWindowDimensions,
 } from 'react-native';
 import { router } from 'expo-router';
-import { useQuery } from '@tanstack/react-query';
+import { useInfiniteQuery } from '@tanstack/react-query';
 import { FolderGit2, GitFork, Heart, RotateCcw, Search, Star, X } from 'lucide-react-native';
 
 import { apiV2 } from '@/api/client';
+import { mergeProfileRepositoryPages, nextProfileRepositoryOffset, PROFILE_REPOSITORY_PAGE_SIZE, type ProfileRepositoryPage } from '@/api/profile-data';
+import { profileRepositoryQuery } from '@/api/profile-section-queries';
 import type { RepositoryApiPayload } from '@/api/repositories';
 import { REFERENCE_THEME } from '@/constants/theme';
-import type { RepositoryDetail } from '@/models/repository';
 import { formatCompactCount } from '@/utils/format-count';
 import { README_SUMMARY_PENDING } from '@/utils/readme';
 import { repositoryHref } from '@/utils/repository-links';
@@ -28,19 +29,22 @@ export type ProfileRepositoryType = 'likes' | 'saved';
 async function loadRepositories(
   type: ProfileRepositoryType,
   userId: string,
+  offset: number,
   signal?: AbortSignal,
-): Promise<RepositoryDetail[]> {
+): Promise<ProfileRepositoryPage> {
   const token = await getStorageItem('access_token');
+  signal?.throwIfAborted();
   if (!token) throw new Error('Your session has expired. Please sign in again.');
   const path = type === 'likes'
-    ? `/users/${encodeURIComponent(userId)}/likes-given?limit=100&offset=0`
-    : '/repositories/saved?limit=100&offset=0';
+    ? `/users/${encodeURIComponent(userId)}/likes-given?limit=${PROFILE_REPOSITORY_PAGE_SIZE}&offset=${offset}`
+    : `/repositories/saved?limit=${PROFILE_REPOSITORY_PAGE_SIZE}&offset=${offset}`;
   const data = await apiV2<{ items: RepositoryApiPayload[] }>(path, { signal }, token);
-  return mapRepositoryList(Array.isArray(data.items) ? data.items : []);
+  const rawItems = Array.isArray(data.items) ? data.items : [];
+  return { items: mapRepositoryList(rawItems), nextOffset: nextProfileRepositoryOffset(offset, rawItems.length) };
 }
 
 export function ProfileRepositoryList({
-  active,
+  active = true,
   contentPaddingBottom = 24,
   type,
   userId,
@@ -57,14 +61,11 @@ export function ProfileRepositoryList({
   const [searchState, setSearchState] = useState({ key: searchKey, value: '' });
   const search = searchState.key === searchKey ? searchState.value : '';
   const setSearch = (value: string) => setSearchState({ key: searchKey, value });
-  const repositoriesQuery = useQuery({
-    queryKey: ['profile-stat-repositories', type, userId],
-    enabled: active && Boolean(userId),
-    queryFn: ({ signal }) => loadRepositories(type, userId!, signal),
-    staleTime: 30_000,
-  });
+  const repositoriesQuery = useInfiniteQuery(profileRepositoryQuery(
+    userId, type, active, (offset, signal) => loadRepositories(type, userId!, offset, signal),
+  ));
   const filteredRepositories = useMemo(() => {
-    const repositories = repositoriesQuery.data ?? [];
+    const repositories = mergeProfileRepositoryPages(repositoriesQuery.data?.pages ?? []);
     const query = search.trim().toLocaleLowerCase();
     if (!query) return repositories;
     return repositories.filter((repository) =>
@@ -82,12 +83,12 @@ export function ProfileRepositoryList({
       return (
         <StateView
           message={repositoriesQuery.error instanceof Error ? repositoriesQuery.error.message : 'Check your connection and try again.'}
-          onRetry={() => void repositoriesQuery.refetch()}
+          onRetry={() => void (repositoriesQuery.isFetchNextPageError ? repositoriesQuery.fetchNextPage() : repositoriesQuery.refetch())}
           title={`${type === 'likes' ? 'Liked' : 'Saved'} repositories could not load`}
         />
       );
     }
-    if (search.trim()) return <StateView message="Try another repository or owner name." title="No matching repositories" />;
+    if (search.trim()) return <StateView message={repositoriesQuery.hasNextPage ? 'Load more repositories to expand your search.' : 'Try another repository or owner name.'} title="No matching repositories" />;
     return (
       <StateView
         message={type === 'likes'
@@ -122,6 +123,7 @@ export function ProfileRepositoryList({
       </View>
 
       <FlatList
+        testID="profile-stat-repositories"
         columnWrapperStyle={styles.rowColumns}
         contentContainerStyle={[
           styles.listContent,
@@ -131,14 +133,33 @@ export function ProfileRepositoryList({
         contentInsetAdjustmentBehavior="automatic"
         data={filteredRepositories}
         initialNumToRender={10}
+        maxToRenderPerBatch={10}
+        windowSize={5}
         ItemSeparatorComponent={() => <View style={styles.separator} />}
         keyboardDismissMode="on-drag"
         keyboardShouldPersistTaps="handled"
         keyExtractor={(repository) => repository.id}
         ListEmptyComponent={emptyState}
+        ListFooterComponent={<View style={{ alignItems: 'center', paddingVertical: 16, gap: 8 }}>
+          {repositoriesQuery.isFetchingNextPage ? <ActivityIndicator accessibilityLabel="Loading more repositories" color={REFERENCE_THEME.accent} />
+            : repositoriesQuery.isError && filteredRepositories.length > 0 ? <>
+              <Text accessibilityLiveRegion="polite" style={styles.stateMessage}>More repositories could not load. Your loaded repositories are still available.</Text>
+              <Pressable accessibilityRole="button" onPress={() => void (repositoriesQuery.isFetchNextPageError ? repositoriesQuery.fetchNextPage() : repositoriesQuery.refetch())} style={styles.retryButton}>
+                <Text style={styles.retryText}>Retry repositories</Text>
+              </Pressable>
+            </> : repositoriesQuery.hasNextPage ? <Pressable accessibilityRole="button" disabled={repositoriesQuery.isFetching} onPress={() => void repositoriesQuery.fetchNextPage()} style={styles.retryButton}>
+              <Text style={styles.retryText}>Load more repositories</Text>
+            </Pressable> : null}
+        </View>}
         numColumns={2}
+        onEndReached={() => {
+          if (active && !search.trim() && repositoriesQuery.hasNextPage && !repositoriesQuery.isFetching && !repositoriesQuery.isError) {
+            void repositoriesQuery.fetchNextPage();
+          }
+        }}
+        onEndReachedThreshold={0.5}
         onRefresh={userId ? () => void repositoriesQuery.refetch() : undefined}
-        refreshing={repositoriesQuery.isRefetching}
+        refreshing={repositoriesQuery.isRefetching && !repositoriesQuery.isFetchingNextPage}
         renderItem={({ item }) => (
           <View style={[styles.row, compact && styles.rowCompact]}>
             <View pointerEvents="none" style={styles.cardContent}>

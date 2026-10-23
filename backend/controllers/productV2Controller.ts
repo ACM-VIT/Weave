@@ -465,7 +465,7 @@ export async function listLikesGiven(req: AuthRequest, res: Response): Promise<v
     LEFT JOIN app.saves viewer_save
       ON viewer_save.repo_id=r.repo_id AND viewer_save.user_id=${viewer}::uuid
     WHERE reaction.user_id=${target}::uuid AND reaction.reaction='like' AND r.status='active'
-    ORDER BY reaction.updated_at DESC LIMIT ${page.limit} OFFSET ${page.offset}
+    ORDER BY reaction.updated_at DESC,r.repo_id ASC LIMIT ${page.limit} OFFSET ${page.offset}
   `;
   sendSuccess(res, 200, { items: rows, ...page });
 }
@@ -609,7 +609,7 @@ export async function listSaved(req: AuthRequest, res: Response): Promise<void> 
         AND to_jsonb(x)->>'source' IN ('generated','description_fallback') ORDER BY created_at DESC LIMIT 1) summary ON true
     LEFT JOIN app.reactions viewer_reaction
       ON viewer_reaction.repo_id=r.repo_id AND viewer_reaction.user_id=${id}::uuid
-    WHERE s.user_id=${id}::uuid AND r.status='active' ORDER BY s.created_at DESC LIMIT ${page.limit} OFFSET ${page.offset}`;
+    WHERE s.user_id=${id}::uuid AND r.status='active' ORDER BY s.created_at DESC,r.repo_id ASC LIMIT ${page.limit} OFFSET ${page.offset}`;
   sendSuccess(res, 200, { items: rows, ...page });
 }
 

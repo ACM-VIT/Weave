@@ -1,15 +1,15 @@
 import { useReducedMotion } from 'react-native-reanimated';
 import { KeyboardForm } from '@/components/keyboard/keyboard-layout';
-import React, { useMemo, useState } from "react"
-import { ActivityIndicator, Modal, Pressable, ScrollView, Text, TextInput, View, useWindowDimensions } from "react-native"
-import { FolderPlus, LogOut, SquarePen } from "lucide-react-native"
+import React, { useState } from "react"
+import { ActivityIndicator, Modal, Pressable, Text, TextInput, View, useWindowDimensions } from "react-native"
+import { LogOut, SquarePen } from "lucide-react-native"
 import { router, type Href } from "expo-router"
 import { SafeAreaProvider, useSafeAreaInsets } from "react-native-safe-area-context"
 import { useQuery } from "@tanstack/react-query"
 import { API_URL } from "@/api/config"
 import { apiV2 } from "@/api/client"
-import { getProfileContent } from "@/api/profile"
-import { BoardListCard } from "@/components/profile/BoardListCard"
+import { useProfileSections } from "@/hooks/useProfileSections"
+import { ProfileContentLists } from "@/components/profile/ProfileContentLists"
 import { ConnectionSheet, type ProfileStatType } from "@/components/connection-sheet"
 import { useAuth } from "@/store/AuthContext"
 import { getStorageItem } from "@/utils/storage"
@@ -46,31 +46,13 @@ export default function ProfileScreen() {
   const [isSaving, setIsSaving] = useState(false)
   const [editError, setEditError] = useState("")
   const [statSheetType, setStatSheetType] = useState<ProfileStatType | null>(null)
-  const profileContentQuery = useQuery({
-    queryKey: ["profile-content", user?.user_id],
-    enabled: Boolean(user?.user_id),
-    queryFn: async ({ signal }) => {
-      const token = await getStorageItem("access_token")
-      if (!token) throw new Error("Your session has expired. Please log in again.")
-      return getProfileContent(token, signal)
-    },
-    staleTime: 60_000,
-  })
+  const sections = useProfileSections(user?.user_id)
   const pinnedRepositoriesQuery = useQuery({
     queryKey: ["pinned-repositories", user?.user_id],
     enabled: Boolean(user?.user_id),
     queryFn: () => loadPinnedRepositories(user!.user_id),
     staleTime: Infinity,
   })
-  const contentErrors = profileContentQuery.data?.errors ?? {}
-  const pinnedRepositories = pinnedRepositoriesQuery.data ?? []
-  const displayedLists = useMemo(
-    () => [...(profileContentQuery.data?.lists ?? [])].sort((first, second) =>
-      first.name.localeCompare(second.name, undefined, { sensitivity: "base" })
-    ),
-    [profileContentQuery.data?.lists],
-  )
-
   const openEditor = () => {
     setDraft({ name, job, username })
     setEditError("")
@@ -139,9 +121,6 @@ export default function ProfileScreen() {
     { value: formatCompactCount(user?.following_count), label: "following", onPress: () => setStatSheetType("following") },
   ]
 
-  const cardHeight = isCompact ? 40 : isTablet ? 54 : 50
-  const contentGap = isCompact ? 10 : isTablet ? 16 : 13
-  const tabContentHeight = isCompact ? 280 : isTablet ? 420 : 340
   const avatarLetter = username.trim().charAt(0).toUpperCase() || name.charAt(0).toUpperCase() || "?"
   const usernameText = username ? `@${username}` : ""
   const horizontalPadding = isTablet ? 48 : 24
@@ -164,82 +143,7 @@ export default function ProfileScreen() {
   const jobFontSize = fitSingleLineText(job, isCompact ? 12 : 15, detailsWidth)
   const fullNameFontSize = fitSingleLineText(name, isCompact ? 11 : 14, detailsWidth)
 
-  const loadingContent = profileContentQuery.isLoading || pinnedRepositoriesQuery.isLoading
-  const contentError = profileContentQuery.isError
-  const contentState = loadingContent ? (
-    <View style={{ minHeight: tabContentHeight, alignItems: "center", justifyContent: "center", gap: 12 }}>
-      <ActivityIndicator color="#63E08A" />
-      <Text className="text-[#77767C] font-nata">Loading your profile content…</Text>
-    </View>
-  ) : contentError ? (
-    <View style={{ minHeight: tabContentHeight, alignItems: "center", justifyContent: "center", gap: 12 }}>
-      <Text className="text-[#FF6878] font-nata text-center">Unable to load your saved content.</Text>
-      <Pressable onPress={() => void profileContentQuery.refetch()} className="rounded-[12px] bg-[#292929] px-5 py-3">
-        <Text className="text-white font-nataSemiBold">Retry</Text>
-      </Pressable>
-    </View>
-  ) : null
-
-  const sectionError = (message: string) => (
-    <View style={{ minHeight: cardHeight, alignItems: "center", justifyContent: "center", gap: 10, paddingVertical: 12 }}>
-      <Text className="text-[#FF6878] font-nata text-center">{message}</Text>
-      <Pressable onPress={() => void profileContentQuery.refetch()} className="rounded-[12px] bg-[#292929] px-5 py-3">
-        <Text className="text-white font-nataSemiBold">Retry</Text>
-      </Pressable>
-    </View>
-  )
-
-  const listContent = contentState ?? <View key="lists" style={{ minHeight: tabContentHeight, gap: contentGap }}>
-    <BoardListCard
-      compact={isCompact}
-      name="Pinned"
-      onPress={() => router.push(boardHref({
-        boardName: "Pinned",
-        collectionType: "pinned",
-      }))}
-      repositoryCount={pinnedRepositories.length}
-      variant="pinned"
-    />
-    <View style={{ gap: contentGap }}>
-      {contentErrors.boards ? sectionError("Unable to load some legacy Lists.") : null}
-      {contentErrors.collections ? sectionError("Unable to load your Lists.") : null}
-      {displayedLists.map((item) => <BoardListCard
-        key={`${item.source}:${item.id}`}
-        compact={isCompact}
-        description={item.description}
-        name={item.name}
-        onPress={() => router.push(boardHref(item.source === "collection" ? {
-          collectionId: item.id,
-          collectionType: "collection",
-          boardName: item.name,
-          ...(item.description ? { boardDescription: item.description } : {}),
-        } : {
-          boardId: item.id,
-          boardName: item.name,
-          ...(item.description ? { boardDescription: item.description } : {}),
-        }))}
-        repositoryCount={item.repositoryCount}
-      />)}
-      {!contentErrors.boards && !contentErrors.collections && displayedLists.length === 0 ? <View className="items-center justify-center py-9 px-6 gap-4">
-        <View className="w-[68px] h-[68px] rounded-[22px] bg-[#151515] border border-[#252525] items-center justify-center" style={{ borderCurve: "continuous" }}>
-          <FolderPlus size={29} color="#63E08A" strokeWidth={1.7} />
-        </View>
-        <View className="items-center gap-2" style={{ maxWidth: 330 }}>
-          <Text className="text-[#F7F7F8] font-nataSemiBold text-center" style={{ fontSize: isCompact ? 15 : 17 }}>Create your first list</Text>
-          <Text className="text-[#77767C] font-nata text-center" style={{ fontSize: isCompact ? 11 : 13, lineHeight: isCompact ? 17 : 19 }}>Lists you create while saving repositories will appear here.</Text>
-        </View>
-      </View> : null}
-    </View>
-  </View>
-
-  return (
-    <ScrollView
-      className="flex-1 bg-black"
-      contentInsetAdjustmentBehavior="automatic"
-      showsVerticalScrollIndicator={false}
-      contentContainerClassName="w-full items-center"
-      contentContainerStyle={{ flexGrow: 1, justifyContent: "center", paddingHorizontal: isTablet ? 48 : 24, paddingTop: Math.max(insets.top, 20) + (isTablet ? 28 : 16), paddingBottom: Math.max(insets.bottom, 20) + (isTablet ? 28 : 16) }}
-    >
+  const header = (
       <View className="w-full" style={{ maxWidth: isTablet ? 760 : 600, gap: isTablet ? 34 : 28 }}>
         <View className="w-full" style={{ gap: isTablet ? 34 : 28 }}>
           <View className="w-full" style={{ gap: isTablet ? 30 : 25 }}>
@@ -279,10 +183,22 @@ export default function ProfileScreen() {
 
           <View className="w-full" style={{ gap: isTablet ? 22 : 18 }}>
             <Text className="text-white font-nataBold" style={{ fontSize: isCompact ? 18 : 22 }}>Lists</Text>
-            {listContent}
           </View>
         </View>
       </View>
+
+  )
+
+  return (
+    <View className="flex-1 bg-black">
+      <ProfileContentLists
+        viewer={user?.user_id} header={header} compact={isCompact}
+        horizontalPadding={horizontalPadding} maxWidth={isTablet ? 760 : 600}
+        paddingTop={Math.max(insets.top, 20) + (isTablet ? 28 : 16)}
+        paddingBottom={Math.max(insets.bottom, 20) + (isTablet ? 28 : 16)}
+        boards={sections.boards} collections={sections.collections} pinned={pinnedRepositoriesQuery}
+        openList={params => router.push(boardHref(params))}
+      />
 
       <ConnectionSheet
         onClose={() => setStatSheetType(null)}
@@ -325,6 +241,6 @@ export default function ProfileScreen() {
           </View>
         </View>
       </Modal>
-    </ScrollView>
+    </View>
   )
 }
