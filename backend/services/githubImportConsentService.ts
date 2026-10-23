@@ -29,11 +29,12 @@ export class GitHubImportConsentService {
     private readonly cache: GitHubImportCache, private readonly db: Sql = sqlClient) {}
 
   private async owner(tx: TransactionSql, userId: string) {
-    const [profile] = await tx`SELECT * FROM app.users WHERE user_id=${userId}::uuid AND status='active' FOR UPDATE`;
+    const [profile] = await tx`SELECT u.*,EXISTS(SELECT 1 FROM app.user_github_unlinks x WHERE x.user_id=u.user_id AND x.status='prepared') AS unlink_pending FROM app.users u WHERE u.user_id=${userId}::uuid AND u.status='active' FOR UPDATE OF u`;
     if (!profile) throw failure('User profile not found.', 404);
     return profile;
   }
   private verified(profile: Record<string, unknown>) {
+    if (profile.unlink_pending) throw failure('GitHub disconnect needs verification before importing activity.');
     if (!profile.github_id || !profile.github_handle || !profile.github_identity_verified_at) {
       throw failure('A verified GitHub login identity is required for public activity import.');
     }
@@ -62,7 +63,7 @@ export class GitHubImportConsentService {
     return this.db.begin(async tx => {
       const profile = await this.owner(tx, userId);
       const [state] = await tx`SELECT accepted_at,revoked_at,consented_at,provenance FROM app.user_github_imports WHERE user_id=${userId}::uuid`;
-      return { linked: Boolean(profile.github_id && profile.github_identity_verified_at),
+      return { unlink_pending: Boolean(profile.unlink_pending), linked: Boolean(profile.github_id && profile.github_identity_verified_at),
         active: Boolean(state?.accepted_at && !state.revoked_at),
         consented_at: state?.consented_at ?? null, accepted_at: state?.accepted_at ?? null,
         provenance: state?.provenance ?? {}, profile_version: String(profile.profile_version) };
