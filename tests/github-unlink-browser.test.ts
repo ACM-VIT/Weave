@@ -27,6 +27,7 @@ test('actual disconnect UI and client flow preserve owner, cancellation and pend
     alias:{'react-native':'react-native-web'},define:{'process.env.NODE_ENV':'"development"'},
     plugins:[{name:'explicit-platform-transport-boundaries',setup(builder){
       const stubs = {
+        'safe-area': "import {View} from 'react-native';export const useSafeAreaInsets=()=>({top:window.fixture.insetTop||0,bottom:0,left:0,right:0});export const SafeAreaView=View;",
         'auth': "const refresh=async()=>{window.fixture.refreshes++;window.fixture.rerender();};export const useAuth=()=>({user:{user_id:window.fixture.owner,onboarding_completed:true},isLoading:false,checkOnboardingStatus:refresh});",
         'expo-router':"import React from 'react';export const useRouter=()=>({replace:route=>{window.fixture.route=route;}});export function Stack(){return React.createElement('div',{id:'onboarding-route'},React.createElement('input',{'aria-label':'Manual profile name',defaultValue:'Tarun'}),window.fixture.route);}",
         'expo-linking': "export const createURL=()=>location.origin+'/callback';export const parse=url=>({queryParams:Object.fromEntries(new URL(url).searchParams)});",
@@ -39,6 +40,7 @@ test('actual disconnect UI and client flow preserve owner, cancellation and pend
       builder.onResolve({filter:/^(expo-linking|expo-web-browser|expo-secure-store|expo-router)$/},args=>({path:args.path,namespace:'fixture'}));
       builder.onResolve({filter:/api\/client$|^\.\/client$/},()=>({path:'client',namespace:'fixture'}));
       builder.onResolve({filter:/utils\/storage$/},()=>({path:'storage',namespace:'fixture'}));
+      builder.onResolve({filter:/^react-native-safe-area-context$/},()=>({path:'safe-area',namespace:'fixture'}));
       builder.onResolve({filter:/store\/AuthContext$/},()=>({path:'auth',namespace:'fixture'}));
       builder.onResolve({filter:/oauthClientPkce$/},()=>({path:'pkce',namespace:'fixture'}));
       builder.onLoad({filter:/.*/,namespace:'fixture'},args=>({contents:stubs[args.path],resolveDir:process.cwd()}));
@@ -147,21 +149,25 @@ test('actual disconnect UI and client flow preserve owner, cancellation and pend
   await send('Page.navigate',{url:`http://127.0.0.1:${address.port}`});
   await until('document.body?.innerText.includes("Disconnect GitHub login")');
   await click('Disconnect GitHub login');
-  await evaluate('window.fixture.mode="pending";window.fixture.redirectOnRefresh=true');
+  await evaluate('window.fixture.mode="pending";window.fixture.redirectOnRefresh=true;window.fixture.insetTop=59');
   await click('Reauthenticate and disconnect GitHub');
   await until('Boolean(document.getElementById("onboarding-route"))');
   await until(`Boolean(document.querySelector('[aria-label="Check disconnect status"]'))`);
   assert.equal(await evaluate(`Boolean(document.querySelector('[aria-label="Check disconnect status"]'))`),true,'pending disconnect recovery survives onboarding redirect');
+  const recoveryTextTop = await evaluate(`Array.from(document.querySelectorAll('div')).find(node=>node.textContent==='GitHub login').getBoundingClientRect().top`);
+  assert.ok(recoveryTextTop>=59,'recovery text respects the simulated native top cutout');
   await click('Check disconnect status');
   await until('document.body?.innerText.includes("pending verification")');
+  await until(`!document.querySelector('[aria-label="Verifying GitHub disconnect"]')`);
   await evaluate('document.querySelector("input").focus()');
   assert.equal(await evaluate('document.activeElement.getAttribute("aria-label")'),'Manual profile name');
   const statusBeforeKeyboard = requests.filter(row=>row.action==='status').length;
   await send('Input.dispatchKeyEvent',{type:'keyDown',key:'Tab',code:'Tab',modifiers:8});
   await send('Input.dispatchKeyEvent',{type:'keyUp',key:'Tab',code:'Tab',modifiers:8});
   assert.equal(await evaluate('document.activeElement.getAttribute("aria-label")'),'Check disconnect status');
-  await send('Input.dispatchKeyEvent',{type:'keyDown',key:'Enter',code:'Enter'});
-  await send('Input.dispatchKeyEvent',{type:'keyUp',key:'Enter',code:'Enter'});
+  const keyResponse = await send('Input.dispatchKeyEvent',{type:'keyDown',key:'Enter',code:'Enter',text:'\r',windowsVirtualKeyCode:13,nativeVirtualKeyCode:13});
+  assert.ok(!keyResponse.error,JSON.stringify(keyResponse));
+  await send('Input.dispatchKeyEvent',{type:'keyUp',key:'Enter',code:'Enter',windowsVirtualKeyCode:13,nativeVirtualKeyCode:13});
   for(let attempt=0;requests.filter(row=>row.action==='status').length===statusBeforeKeyboard&&attempt<100;attempt++)await new Promise(resolve=>setTimeout(resolve,25));
   assert.ok(requests.filter(row=>row.action==='status').length>statusBeforeKeyboard,'keyboard activation checks pending status');
   // Manual step changes retain the same layout host and profile draft.

@@ -1,3 +1,4 @@
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Pressable, ScrollView, Text, View } from 'react-native';
 import { APP_THEME, Fonts, REFERENCE_THEME, Spacing } from '../../constants/theme';
@@ -13,6 +14,7 @@ function UnlinkAction({ label, onPress, disabled }: { label: string; onPress: ()
 }
 export function GitHubUnlinkPanel(props: Props) { return <UnlinkBody key={props.userId} {...props} />; }
 function UnlinkBody({ userId, onSaved, recoveryOnly = false, authorize = startGithubUnlink, api = githubUnlinkApi }: Props) {
+  const insets = useSafeAreaInsets();
   const [result, setResult] = useState<GithubUnlinkResult | null>(null);
   const [confirmed, setConfirmed] = useState(false), [busy, setBusy] = useState(false), [error, setError] = useState('');
   const alive = useRef(false), request = useRef<AbortController | null>(null), sequence = useRef(0);
@@ -60,7 +62,7 @@ function UnlinkBody({ userId, onSaved, recoveryOnly = false, authorize = startGi
     {error ? <Text accessibilityRole="alert" style={{ color: REFERENCE_THEME.text, fontFamily: Fonts.sans }}>{error}</Text> : null}
   </View>;
   return recoveryOnly ? <ScrollView keyboardShouldPersistTaps="handled" style={{ flexGrow: 0, maxHeight: '45%' }}
-    contentContainerStyle={{ paddingHorizontal: Spacing.four, maxWidth: 450, width: '100%', alignSelf: 'center' }}>
+    contentContainerStyle={{ paddingTop: insets.top, paddingHorizontal: Spacing.four, maxWidth: 450, width: '100%', alignSelf: 'center' }}>
     {content}
   </ScrollView> : content;
 }
