@@ -40,4 +40,4 @@ jobs:
       - run: npm ci
       - run: npm run build && npm run typecheck:test && npm run ml:check
       - run: npm run migrate && npm run schema:audit
-      - run: node --import tsx --test tests/feed/negativePreferenceEligibility.test.ts
+      - run: node --import tsx --test --test-concurrency=1 tests/feed/negativePreferenceEligibility.test.ts tests/database/negativeRecovery.integration.test.ts
