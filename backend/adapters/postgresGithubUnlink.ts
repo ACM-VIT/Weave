@@ -15,10 +15,12 @@ export class PostgresGithubUnlink implements GithubUnlinkPersistence {
     await this.db.begin(async tx => {
       const [profile] = await tx`SELECT github_id,github_identity_verified_at,status FROM app.users WHERE user_id=${owner.userId}::uuid FOR UPDATE`;
       if (profile?.status !== 'active' || !profile.github_identity_verified_at || String(profile.github_id) !== owner.githubId) throw fail('The verified GitHub account changed.');
-      await tx`INSERT INTO app.user_github_unlinks(user_id,operation_id,github_id,status)
+      const [prepared] = await tx`INSERT INTO app.user_github_unlinks(user_id,operation_id,github_id,status)
         VALUES(${owner.userId}::uuid,${operationId}::uuid,${owner.githubId},'prepared')
         ON CONFLICT(user_id) DO UPDATE SET operation_id=EXCLUDED.operation_id,github_id=EXCLUDED.github_id,
-          status='prepared',created_at=now(),updated_at=now()`;
+          status='prepared',created_at=now(),updated_at=now()
+        WHERE app.user_github_unlinks.status <> 'prepared' RETURNING operation_id`;
+      if (!prepared) throw fail('A GitHub disconnect is already pending verification. Check its status before retrying.');
     });
   }
   async refused(owner: GithubUnlinkOwner, operationId: string) {

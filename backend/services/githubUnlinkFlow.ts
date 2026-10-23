@@ -97,6 +97,12 @@ export class GithubUnlinkFlow {
     if (!attempt || !this.recent(attempt.createdAt)) throw fail('Invalid or expired unlink authorization.', 400);
     return { url: attempt.authorizationUrl };
   }
+  async cancelCallback(state: string) {
+    if (!opaque.test(state)) throw fail('Invalid unlink authorization.', 400);
+    const attempt = await new OwnedAttemptStore(this.options.redis).consume(state);
+    if (!attempt || !this.recent(attempt.createdAt)) throw fail('The unlink authorization expired. Start again.', 400);
+    return { clientRedirect: attempt.clientRedirect };
+  }
   async callback(state: string, code: string) {
     if (!opaque.test(state) || !code || code.length > 4_096) throw fail('Invalid unlink authorization.', 400);
     const store = new OwnedAttemptStore(this.options.redis);
@@ -152,7 +158,13 @@ export class GithubUnlinkFlow {
     const operationId = crypto.randomUUID();
     await this.options.persistence.prepare(owner, operationId);
     // Persist the fence before revocation, so concurrent previews cannot restore consent.
-    await this.options.revokeImport(userId);
+    try { await this.options.revokeImport(userId); }
+    catch {
+      // No provider mutation has been admitted. Retire only this exact intent;
+      // a concurrent reconciliation or replacement remains fenced by its CAS.
+      await this.options.persistence.refused(owner, operationId);
+      throw fail('Activity preferences could not be revoked. No disconnect request was sent. Try again.', 503);
+    }
     try { await this.options.provider.unlink(proof.accessToken, identity.identityId); }
     catch (error) {
       const status = error && typeof error === 'object' && 'status' in error ? Number(error.status) : 0;
@@ -167,11 +179,20 @@ export class GithubUnlinkFlow {
   }
   async reconcile(userId: string) {
     const operation = await this.options.persistence.operation(userId);
-    if (!operation || operation.status !== 'prepared') return operation ? { status: operation.status, operation_id: operation.operationId } : { status: 'none' };
+    if (!operation) return { status: 'none' };
+    if (operation.status !== 'prepared') {
+      // A normal verified OAuth relink can reuse the same immutable subject.
+      // Terminal intent history must not hide controls for the current login.
+      try { await this.options.persistence.owner(userId); return { status: 'none' }; }
+      catch (error) {
+        if (!(error && typeof error === 'object' && 'statusCode' in error && error.statusCode === 409)) throw error;
+      }
+      return { status: operation.status, operation_id: operation.operationId };
+    }
     const user = await this.options.provider.inspect(userId);
     if (user.userId !== userId) throw fail('Provider verification returned the wrong account.', 503);
     if (user.identities.some(identity => identity.provider === 'github' && identity.subject === operation.githubId)) {
-      return { status: 'pending', operation_id: operation.operationId, message: 'GitHub still reports this identity. Reauthenticate to retry, or check again later.' };
+      return { status: 'pending', operation_id: operation.operationId, message: 'GitHub still reports this identity. Check disconnect status again; the pending provider outcome must be verified before another disconnect.' };
     }
     return { status: await this.options.persistence.complete(operation, operation.operationId), operation_id: operation.operationId };
   }

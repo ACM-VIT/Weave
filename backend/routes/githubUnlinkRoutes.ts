@@ -48,7 +48,12 @@ export function createGithubUnlinkRoutes(options: {
   const callback = async (req: Request, res: Response) => {
     const state = req.cookies?.[GITHUB_UNLINK_COOKIE];
     res.clearCookie(GITHUB_UNLINK_COOKIE, clearCookie);
-    if (typeof state !== 'string' || typeof req.query.code !== 'string' || req.query.error) { redirectError(res); return; }
+    if (typeof state !== 'string') { redirectError(res); return; }
+    if (typeof req.query.code !== 'string' || req.query.error) {
+      try { redirectError(res, await options.flow.cancelCallback(state)); }
+      catch (error) { redirectError(res, error); }
+      return;
+    }
     try {
       const proof = await options.flow.callback(state, req.query.code);
       const redirect = new URL(proof.clientRedirect); redirect.searchParams.set('unlink_code', proof.completion);
