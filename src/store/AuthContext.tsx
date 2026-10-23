@@ -60,6 +60,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const startupController = useRef<AbortController | null>(null);
   const pendingLikesGivenDelta = useRef(0);
   const pendingLikesGivenEvents = useRef(new Map<string, -1 | 1>());
+  const lastServerLikesGivenCount = useRef<number | null>(null);
 
   const fetchUserProfile = useCallback(async (
     token: string,
@@ -84,6 +85,24 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         ? profile.onboarding_completed
         : (await apiV2<{ completed: boolean }>('/onboarding/status', { signal }, token, requestPolicy)).completed;
       assertCurrent();
+      const serverLikesGivenCount = Number(profile.likes_given_count);
+      if (Number.isFinite(serverLikesGivenCount)) {
+        const previousServerCount = lastServerLikesGivenCount.current;
+        if (previousServerCount !== null) {
+          let serverDelta = serverLikesGivenCount - previousServerCount;
+          if (serverDelta !== 0) {
+            for (const [eventId, eventDelta] of pendingLikesGivenEvents.current) {
+              if (Math.sign(eventDelta) !== Math.sign(serverDelta)) continue;
+              if (Math.abs(eventDelta) > Math.abs(serverDelta)) continue;
+              serverDelta -= eventDelta;
+              pendingLikesGivenDelta.current -= eventDelta;
+              pendingLikesGivenEvents.current.delete(eventId);
+              if (serverDelta === 0) break;
+            }
+          }
+        }
+        lastServerLikesGivenCount.current = serverLikesGivenCount;
+      }
       setUser({
         ...profile,
         user_id: String(profile.user_id),
@@ -91,7 +110,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         onboarding_completed: resolveOnboardingCompleted(profile, completionStatus),
         likes_given_count: Math.max(
           0,
-          Number(profile.likes_given_count ?? 0) + pendingLikesGivenDelta.current,
+          (Number.isFinite(serverLikesGivenCount) ? serverLikesGivenCount : 0)
+            + pendingLikesGivenDelta.current,
         ),
       });
     } catch (error) {
@@ -227,6 +247,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     clearAccountQueryCache(queryClient);
     pendingLikesGivenDelta.current = 0;
     pendingLikesGivenEvents.current.clear();
+    lastServerLikesGivenCount.current = null;
     setStartupError(null);
     setUser(null);
     setIsLoading(true);
@@ -247,6 +268,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     clearAccountQueryCache(queryClient);
     pendingLikesGivenDelta.current = 0;
     pendingLikesGivenEvents.current.clear();
+    lastServerLikesGivenCount.current = null;
     setUser(null);
     setIsLoading(false);
 
@@ -276,6 +298,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     clearAccountQueryCache(queryClient);
     pendingLikesGivenDelta.current = 0;
     pendingLikesGivenEvents.current.clear();
+    lastServerLikesGivenCount.current = null;
     setUser(null);
     setIsLoading(false);
     setStartupError(null);
@@ -286,6 +309,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       clearAccountQueryCache(queryClient);
       pendingLikesGivenDelta.current = 0;
       pendingLikesGivenEvents.current.clear();
+      lastServerLikesGivenCount.current = null;
       setUser(null);
     });
     return () => setSessionExpiredHandler(null);

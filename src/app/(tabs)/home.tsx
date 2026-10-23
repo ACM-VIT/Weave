@@ -26,6 +26,7 @@ import {
 import * as SecureStore from '../../utils/storage';
 import { fetchHomeFeed } from '@/api/home-feed';
 import { profileRepositoryInvalidationFilters } from '@/api/profile-section-queries';
+import type { ProfileRepositoryPage } from '@/api/profile-data';
 import { subscribeToHomeFeedInvalidations } from '@/utils/home-feed';
 import { type ActivityInput } from '@/api/activity';
 import { useAuth } from '@/store/AuthContext';
@@ -142,10 +143,6 @@ export default function HomeScreen() {
       isRepositoryOptimisticallyLiked(currentLikeOverrides, repository),
       event.action,
     );
-    queryClient.setQueryData<ProfileLikeOverrides>(
-      profileLikeOverridesQueryKey(user?.user_id),
-      patchProfileLikeOverrides(currentLikeOverrides, repository, event.action),
-    );
     queryClient.setQueryData<InfiniteData<FeedPage, string | null>>(
       feedQueryKey,
       (cachedFeed) => patchFeedReaction(cachedFeed, {
@@ -158,6 +155,10 @@ export default function HomeScreen() {
 
     const generation = authSessionLifecycle.currentGeneration();
     void activityOutbox.enqueue(event, (queuedActivity) => {
+      queryClient.setQueryData<ProfileLikeOverrides>(
+        profileLikeOverridesQueryKey(user?.user_id),
+        current => patchProfileLikeOverrides(current, repository, event.action, queuedActivity.event_id),
+      );
       if (likeDelta) adjustLikesGivenCount(queuedActivity.event_id, likeDelta);
     }).then(async () => {
       if (!authSessionLifecycle.isCurrent(generation)) return;
@@ -220,6 +221,13 @@ export default function HomeScreen() {
     }) => {
       if (!invalidatedFeed || !authSessionLifecycle.isCurrent(generation)) return;
       settleLikesGivenCountAdjustments(acknowledgedActivities.map((activity) => activity.event_id));
+      const overrides = queryClient.getQueryData<ProfileLikeOverrides>(
+        profileLikeOverridesQueryKey(user?.user_id),
+      );
+      queryClient.setQueriesData<InfiniteData<ProfileRepositoryPage, string | null>>(
+        profileRepositoryInvalidationFilters(user?.user_id, 'likes'),
+        cached => patchConfirmedProfileRepositories(cached, acknowledgedActivities, overrides),
+      );
       queryClient.setQueryData<ProfileLikeOverrides>(
         profileLikeOverridesQueryKey(user?.user_id),
         current => settleProfileLikeOverrides(current, acknowledgedActivities),
@@ -382,6 +390,28 @@ export default function HomeScreen() {
       </View>
     </View>
   );
+}
+
+function patchConfirmedProfileRepositories(
+  cached: InfiniteData<ProfileRepositoryPage, string | null> | undefined,
+  acknowledgedActivities: readonly { event_id: string; repo_id: string; action: string }[],
+  overrides: ProfileLikeOverrides | undefined,
+): InfiniteData<ProfileRepositoryPage, string | null> | undefined {
+  if (!cached) return cached;
+  let pages = cached.pages;
+  for (const activity of acknowledgedActivities) {
+    const override = overrides?.[activity.repo_id];
+    if (!override || override.eventId !== activity.event_id) continue;
+    const liked = activity.action === 'like';
+    pages = pages.map((page, index) => ({
+      ...page,
+      items: page.items.filter(item => item.id !== activity.repo_id),
+    }));
+    if (liked && pages.length > 0) {
+      pages = [{ ...pages[0], items: [override.repository, ...pages[0].items] }, ...pages.slice(1)];
+    }
+  }
+  return pages === cached.pages ? cached : { ...cached, pages };
 }
 
 const styles = StyleSheet.create({

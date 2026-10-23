@@ -2,6 +2,7 @@ import type { FeedbackAction } from '@/constants/feedbackActions';
 import type { RepositoryDetail } from '@/models/repository';
 
 export type ProfileLikeOverride = {
+  eventId?: string;
   liked: boolean;
   order: number;
   repository: RepositoryDetail;
@@ -33,6 +34,7 @@ export function patchProfileLikeOverrides(
   current: ProfileLikeOverrides | undefined,
   repository: RepositoryDetail,
   action: FeedbackAction,
+  eventId?: string,
 ): ProfileLikeOverrides | undefined {
   if (!['like', 'unlike', 'dislike'].includes(action)) return current;
 
@@ -53,6 +55,7 @@ export function patchProfileLikeOverrides(
   return {
     ...current,
     [repository.id]: {
+      eventId,
       liked,
       order: Math.max(0, ...Object.values(current ?? {}).map((override) => override.order)) + 1,
       repository: optimisticRepository,
@@ -62,7 +65,7 @@ export function patchProfileLikeOverrides(
 
 export function settleProfileLikeOverrides(
   current: ProfileLikeOverrides | undefined,
-  acknowledgedActivities: readonly Pick<{ repo_id: string; action: FeedbackAction }, 'repo_id' | 'action'>[],
+  acknowledgedActivities: readonly Pick<{ event_id: string; repo_id: string; action: FeedbackAction }, 'event_id' | 'repo_id' | 'action'>[],
 ): ProfileLikeOverrides | undefined {
   if (!current) return current;
   const next = { ...current };
@@ -70,8 +73,7 @@ export function settleProfileLikeOverrides(
   for (const activity of acknowledgedActivities) {
     if (!['like', 'unlike', 'dislike'].includes(activity.action)) continue;
     const override = next[activity.repo_id];
-    const acknowledgedLiked = activity.action === 'like';
-    if (override?.liked === acknowledgedLiked) delete next[activity.repo_id];
+    if (override?.eventId === activity.event_id) delete next[activity.repo_id];
   }
 
   return next;

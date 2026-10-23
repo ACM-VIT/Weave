@@ -61,7 +61,7 @@ function repository(id: string, viewerReaction: RepositoryDetail['viewerReaction
 test('a new like appears at the top of Likes Given immediately', () => {
   const existing = repository('existing', 'like');
   const newlyLiked = repository('new');
-  const overrides = patchProfileLikeOverrides(undefined, newlyLiked, 'like');
+  const overrides = patchProfileLikeOverrides(undefined, newlyLiked, 'like', 'event-new');
   const result = applyProfileLikeOverrides([existing], overrides);
 
   assert.deepEqual(result.map((item) => item.id), ['new', 'existing']);
@@ -107,13 +107,21 @@ test('multiple optimistic likes stay newest-first, including a relike', () => {
 
 test('acknowledgements remove only the optimistic state they confirm', () => {
   const target = repository('target');
-  const liked = patchProfileLikeOverrides(undefined, target, 'like');
-  const unliked = patchProfileLikeOverrides(liked, target, 'unlike');
+  const liked = patchProfileLikeOverrides(undefined, target, 'like', 'event-like');
+  const unliked = patchProfileLikeOverrides(liked, target, 'unlike', 'event-unlike');
 
-  const afterOldLike = settleProfileLikeOverrides(unliked, [{ repo_id: 'target', action: 'like' }]);
+  const afterOldLike = settleProfileLikeOverrides(unliked, [{ event_id: 'event-like', repo_id: 'target', action: 'like' }]);
   assert.equal(afterOldLike?.target.liked, false);
   assert.deepEqual(
-    settleProfileLikeOverrides(afterOldLike, [{ repo_id: 'target', action: 'unlike' }]),
+    settleProfileLikeOverrides(afterOldLike, [{ event_id: 'event-unlike', repo_id: 'target', action: 'unlike' }]),
     {},
   );
+});
+
+test('an older acknowledgement cannot clear a newer pending override', () => {
+  const target = repository('target');
+  const first = patchProfileLikeOverrides(undefined, target, 'like', 'event-1');
+  const newer = patchProfileLikeOverrides(first, target, 'unlike', 'event-2');
+  const stillPending = settleProfileLikeOverrides(newer, [{ event_id: 'event-1', repo_id: 'target', action: 'like' }]);
+  assert.equal(stillPending?.target.eventId, 'event-2');
 });
