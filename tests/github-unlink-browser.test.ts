@@ -18,9 +18,9 @@ test('actual disconnect UI and client flow preserve owner, cancellation and pend
     import{GithubUnlinkCallback}from'./src/components/onboarding/GithubUnlinkCallback';
     import{saveGithubUnlinkProof,takeGithubUnlinkProof}from'./src/services/githubUnlinkProof';
     import{authSessionLifecycle}from'./src/api/session-lifecycle';
-    window.fixture={mode:'none',owner:'A',saved:[],browserCalls:0,refreshes:0};
-    function Fixture(){const[owner,setOwner]=useState('A'),[view,setView]=useState('panel'),[,rerender]=useState(0);window.fixture.rerender=()=>rerender(x=>x+1);window.fixture.callback=async()=>{await saveGithubUnlinkProof(owner,'v'.repeat(64));setView('callback');};window.fixture.take=takeGithubUnlinkProof;window.fixture.switchAccount=()=>{authSessionLifecycle.retire(authSessionLifecycle.currentGeneration());window.fixture.owner='B';setOwner('B');};
-      if(view==='callback')return <GithubUnlinkCallback code='opaque-web-callback'/>;return <GitHubUnlinkPanel userId={owner} onSaved={async()=>{window.fixture.saved.push(owner);}}/>;}
+    window.fixture={mode:new URLSearchParams(location.search).get('initial')||'none',owner:'A',saved:[],browserCalls:0,refreshes:0};
+    function Fixture(){const[owner,setOwner]=useState('A'),[view,setView]=useState('panel'),[,rerender]=useState(0);window.fixture.rerender=()=>rerender(x=>x+1);window.fixture.panel=()=>setView('panel');window.fixture.callback=async()=>{await saveGithubUnlinkProof(owner,'v'.repeat(64));setView('callback');};window.fixture.take=takeGithubUnlinkProof;window.fixture.switchAccount=()=>{authSessionLifecycle.retire(authSessionLifecycle.currentGeneration());window.fixture.owner='B';setOwner('B');};
+      if(view==='callback')return <GithubUnlinkCallback code='opaque-web-callback'/>;return <GitHubUnlinkPanel userId={owner} onSaved={async()=>{window.fixture.saved.push(owner);window.fixture.rerender();}}/>;}
     createRoot(document.getElementById('panel-frame')).render(<React.StrictMode><Fixture/></React.StrictMode>);
   ` }, outfile: path.join(directory,'bundle.js'),bundle:true,platform:'browser',format:'iife',jsx:'automatic',
     alias:{'react-native':'react-native-web'},define:{'process.env.NODE_ENV':'"development"'},
@@ -49,7 +49,7 @@ test('actual disconnect UI and client flow preserve owner, cancellation and pend
     if(url.pathname.startsWith('/fixture/')){
       const action=url.pathname.split('/').pop()!,owner=url.searchParams.get('owner')!,mode=url.searchParams.get('mode')!;
       requests.push({owner,action,mode});res.setHeader('Content-Type','application/json');
-      res.end(JSON.stringify(action==='start'?{url:'http://provider.invalid/reauth'}:{status:action==='finish'?(mode==='pending'?'pending':mode==='refused'?'refused':'done'):'none'}));return;
+      res.end(JSON.stringify(action==='start'?{url:'http://provider.invalid/reauth'}:{status:action==='finish'?(mode==='pending'?'pending':mode==='refused'?'refused':'done'):mode==='initial-done'?'done':mode==='pending'?'pending':mode==='refused'?'refused':'none'}));return;
     }
     if(url.pathname==='/bundle.js'){res.setHeader('Content-Type','application/javascript');res.end(await readFile(path.join(directory,'bundle.js')));return;}
     if(url.pathname==='/font.ttf'){res.setHeader('Content-Type','font/ttf');res.end(await readFile('assets/fonts/NataSans-Regular.ttf'));return;}
@@ -114,8 +114,11 @@ test('actual disconnect UI and client flow preserve owner, cancellation and pend
     assert.equal(await evaluate('document.documentElement.scrollWidth<=innerWidth'),true);
     if(process.env.GITHUB_UNLINK_BROWSER_ARTIFACTS){await mkdir(process.env.GITHUB_UNLINK_BROWSER_ARTIFACTS,{recursive:true});const screenshot=await send('Page.captureScreenshot',{format:'png',captureBeyondViewport:true});await writeFile(path.join(process.env.GITHUB_UNLINK_BROWSER_ARTIFACTS,name+'.png'),Buffer.from(screenshot.result.data,'base64'));}
   }
-  await evaluate('window.fixture.mode="refused"');await click('Reauthenticate and disconnect GitHub');
+  assert.equal(await evaluate(`Boolean(document.querySelector('[aria-label="Reauthenticate and disconnect GitHub"]'))`),false,'pending intent cannot start a second provider mutation');
+  await evaluate('window.fixture.mode="refused"');await click('Check disconnect status');
   await until('document.body.innerText.includes("provider refused")');
+  await click('Reauthenticate and disconnect GitHub');
+  await until('window.fixture.saved.filter(x=>x==="A").length===3');
   await evaluate('window.fixture.mode="late"');await click('Reauthenticate and disconnect GitHub');
   await until('window.fixture.browserCalls===5');await evaluate('window.fixture.switchAccount()');
   await until('document.body.innerText.includes("Disconnect GitHub login")');await new Promise(resolve=>setTimeout(resolve,250));
@@ -123,12 +126,20 @@ test('actual disconnect UI and client flow preserve owner, cancellation and pend
   assert.equal(await evaluate('sessionStorage.getItem("github_unlink_client_pkce_v1")'),null);
   await click('Disconnect GitHub login');await evaluate('window.fixture.mode="done"');await click('Reauthenticate and disconnect GitHub');
   await until('document.body.innerText.includes("GitHub login disconnected.")');
-  assert.deepEqual(await evaluate('window.fixture.saved'),['B']);
+  assert.deepEqual(await evaluate('window.fixture.saved'),['A','A','A','B'],'pending/refused outcomes refresh revoked import context too');
   assert.deepEqual(requests.filter(x=>x.action==='finish').map(x=>x.owner),['A','A','B']);
   await evaluate('window.fixture.callback()');
   await until('document.body.innerText.includes("GitHub login disconnected.") && document.body.innerText.includes("Return to account")');
   assert.equal(requests.filter(x=>x.action==='finish').length,4,'StrictMode and profile refresh must not repeat one-shot completion');
   assert.equal(await evaluate('window.fixture.refreshes'),1);
   assert.equal(await evaluate('sessionStorage.getItem("github_unlink_client_pkce_v1")'),null);
+  await evaluate('window.fixture.panel()'); await until('document.body.innerText.includes("Disconnect GitHub login")');
+  await evaluate('window.fixture.mode="pending";window.fixture.callback()');
+  await until('document.body.innerText.includes("Return to account") && window.fixture.refreshes===2');
+  assert.equal(requests.filter(x=>x.action==='finish').length,5,'pending web callbacks refresh context without repeating their proof');
+  await send('Page.navigate',{url:`http://127.0.0.1:${address.port}?initial=initial-done`});
+  await until('document.body.innerText.includes("GitHub login disconnected.") && window.fixture.saved.length===1');
+  assert.deepEqual(await evaluate('window.fixture.saved'),['A'],'initial status reconciliation refreshes the current parent exactly once');
+  assert.equal(requests.filter(x=>x.action==='finish').length,5);
   t.diagnostic('Actual RN Web component, owner-checked client orchestration and sessionStorage proof; explicit browser/crypto/HTTP transport doubles. Native device/provider configuration not exercised.');
 });

@@ -243,7 +243,7 @@ export class PostgresFeedPersistence implements FeedPersistencePort, FeedReconci
   }
 
   /** Independent, viewer-scoped public-catalogue candidates; never infer ownership from a handle. */
-  async listSocialRepositoryCandidates(userId: string, limit: number): Promise<SocialCandidateProjection[]> {
+  async listSocialRepositoryCandidates(userId: string, limit: number, excludeRepoIds: string[] = []): Promise<SocialCandidateProjection[]> {
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) throw new Error('Invalid social candidate limit.');
     return sqlClient.begin('isolation level repeatable read read only', async tx => {
       await tx`SET LOCAL statement_timeout='1000ms'`;
@@ -277,6 +277,7 @@ export class PostgresFeedPersistence implements FeedPersistencePort, FeedReconci
             WHERE snapshot.repo_id=repo.repo_id ORDER BY snapshot.observed_at DESC LIMIT 1
           ) stats
           WHERE repo.owner_github_id=owners.owner_id::bigint AND repo.status='active'
+            AND NOT (repo.repo_id=ANY(${excludeRepoIds}::uuid[]))
           ORDER BY repo.updated_at DESC,repo.repo_id LIMIT 2
         ) candidate
         CROSS JOIN LATERAL unnest(owners.actors) AS actor(actor_key)
@@ -285,7 +286,7 @@ export class PostgresFeedPersistence implements FeedPersistencePort, FeedReconci
       `;
       const neighborhoods = await loadSocialNeighborhoodRows({
         query: async (text, parameters) => [...await tx.unsafe(text, [...parameters])],
-      }, userId);
+      }, userId, excludeRepoIds);
       const ownerRows = rows.map(row => ({
         repo_id: String(row.repo_id), owner_github_id: String(row.owner_github_id),
         source: 'followed_owner' as const, actor_key: String(row.actor_key), star_count: Number(row.star_count),

@@ -31,6 +31,20 @@ export function snapshotMetrics(): Record<string, unknown> {
   };
 }
 
+/** Fixed, label-free feedback metrics safe for the cross-process worker channel. */
+export function snapshotFeedbackDelivery() {
+  const values = (samples.get('outbox_feedback_events_per_request:[]') ?? [])
+    .filter(value => Number.isInteger(value) && value >= 1 && value <= 100);
+  return {
+    outbox_feedback_events_per_request: {
+      count: values.length, p50: percentile(values, 0.50), p95: percentile(values, 0.95),
+      p99: percentile(values, 0.99), max: values.length ? Math.max(...values) : 0,
+    },
+    outbox_feedback_unacknowledged_total: Math.min(Number.MAX_SAFE_INTEGER,
+      counters.get('outbox_feedback_unacknowledged_total:[]') ?? 0),
+  };
+}
+
 export type StageOutcome = 'success' | 'rejected' | 'failure' | 'timeout' | 'cancelled';
 const stageOperations = new Set(['http', 'recommendations', 'search', 'feedback', 'onboard', 'repo_index', 'repo_refresh', 'health', 'other']);
 const stageNames = new Set(['http_completion', 'ml_transport', 'outbox_delivery', 'outbox_age', 'other']);

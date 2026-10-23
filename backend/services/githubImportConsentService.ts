@@ -204,6 +204,19 @@ export class GitHubImportConsentService {
         // A later manual edit owns its whole field; never erase that edit on revoke.
         if (JSON.stringify(current[field]) === JSON.stringify(applied[field])) next[field] = baseline[field];
       }
+      if (state.accepted_at && !state.revoked_at) {
+        // Retire old preference deliveries in the same transaction that revokes
+        // consent, before enqueuing any restored manual-context version. Clearing
+        // the token also fences workers which claimed but have not admitted I/O.
+        await tx`UPDATE telemetry.ml_outbox
+          SET status='superseded',claim_token=NULL,claimed_at=NULL,
+            last_error='Onboarding context superseded by GitHub import revocation.'
+          WHERE aggregate_id=${userId}::uuid AND job_type='onboard'
+            AND status IN ('pending','claimed','dead')
+            AND CASE WHEN payload->>'profile_version' ~ '^[0-9]{1,19}$'
+              THEN (payload->>'profile_version')::numeric <= ${String(profile.profile_version)}::numeric
+              ELSE true END`;
+      }
       const meaningful = hasMlEmbeddingContext({ ...next, bio: profile.bio });
       const saved = state.accepted_at && !state.revoked_at
         ? await this.writeProfile(tx, userId, next, meaningful && profile.onboarding_completed)

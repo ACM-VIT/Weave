@@ -23,7 +23,9 @@ const canonicalUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]
 // boards x20 items;20 topics x10 neighbor repos xat most20 own positive seeds.
 // Membership samples are deterministic and may underfill rather than scan unbounded neighborhoods.
 export const PUBLIC_SOCIAL_NEIGHBORHOODS_SQL = `
-WITH viewer AS MATERIALIZED (
+WITH excluded AS MATERIALIZED (
+  SELECT jsonb_array_elements_text($2::jsonb)::uuid AS repo_id
+), viewer AS MATERIALIZED (
   SELECT user_id FROM app.users WHERE user_id=$1::uuid AND status='active'
 ), positive_rows AS (
   (SELECT reaction.repo_id,reaction.updated_at AS occurred_at
@@ -47,7 +49,8 @@ WITH viewer AS MATERIALIZED (
   FROM followed CROSS JOIN LATERAL (
     SELECT reaction.repo_id FROM app.reactions reaction JOIN app.repos repo USING(repo_id)
     WHERE reaction.user_id=followed.user_id AND reaction.reaction='like' AND repo.status='active'
-      AND repo.owner_github_id>0 AND NOT EXISTS(SELECT 1 FROM positives p WHERE p.repo_id=repo.repo_id)
+      AND repo.owner_github_id>0 AND NOT EXISTS(SELECT 1 FROM excluded e WHERE e.repo_id=repo.repo_id)
+      AND NOT EXISTS(SELECT 1 FROM positives p WHERE p.repo_id=repo.repo_id)
     ORDER BY reaction.updated_at DESC,reaction.repo_id LIMIT 20
   ) candidate
 ), co_users AS MATERIALIZED (
@@ -64,7 +67,8 @@ WITH viewer AS MATERIALIZED (
   FROM co_users actor CROSS JOIN LATERAL (
     SELECT reaction.repo_id FROM app.reactions reaction JOIN app.repos repo USING(repo_id)
     WHERE reaction.user_id=actor.user_id AND reaction.reaction='like' AND repo.status='active'
-      AND repo.owner_github_id>0 AND NOT EXISTS(SELECT 1 FROM positives p WHERE p.repo_id=repo.repo_id)
+      AND repo.owner_github_id>0 AND NOT EXISTS(SELECT 1 FROM excluded e WHERE e.repo_id=repo.repo_id)
+      AND NOT EXISTS(SELECT 1 FROM positives p WHERE p.repo_id=repo.repo_id)
     ORDER BY reaction.updated_at DESC,reaction.repo_id LIMIT 20
   ) candidate
 ), public_boards AS MATERIALIZED (
@@ -81,6 +85,7 @@ WITH viewer AS MATERIALIZED (
   FROM public_boards board CROSS JOIN LATERAL (
     SELECT member.repo_id FROM app.board_repos member JOIN app.repos repo USING(repo_id)
     WHERE member.board_id=board.board_id AND repo.status='active' AND repo.owner_github_id>0
+      AND NOT EXISTS(SELECT 1 FROM excluded e WHERE e.repo_id=repo.repo_id)
       AND NOT EXISTS(SELECT 1 FROM positives p WHERE p.repo_id=repo.repo_id)
     ORDER BY member.added_at DESC,member.repo_id LIMIT 20
   ) candidate
@@ -95,9 +100,11 @@ WITH viewer AS MATERIALIZED (
   FROM seed_topics topic CROSS JOIN LATERAL (
     SELECT repo.repo_id FROM (
       SELECT membership.repo_id FROM app.repo_topics membership WHERE membership.topic_id=topic.topic_id
+        AND NOT EXISTS(SELECT 1 FROM excluded e WHERE e.repo_id=membership.repo_id)
       ORDER BY membership.repo_id LIMIT 100
     ) member JOIN app.repos repo USING(repo_id)
     WHERE repo.status='active' AND repo.owner_github_id>0
+      AND NOT EXISTS(SELECT 1 FROM excluded e WHERE e.repo_id=repo.repo_id)
       AND NOT EXISTS(SELECT 1 FROM positives p WHERE p.repo_id=repo.repo_id)
     ORDER BY repo.updated_at DESC,repo.repo_id LIMIT 10
   ) candidate CROSS JOIN LATERAL unnest(topic.seeds) AS seed(repo_id)
@@ -113,9 +120,13 @@ WHERE repo.status='active' AND repo.owner_github_id>0
 ORDER BY signal.source,signal.repo_id,signal.actor_key LIMIT 10001
 `;
 
-export async function loadSocialNeighborhoodRows(reader: SocialNeighborhoodReader, viewerUserId: string): Promise<SocialNeighborhoodRow[]> {
+export async function loadSocialNeighborhoodRows(reader: SocialNeighborhoodReader, viewerUserId: string, excludeRepoIds: readonly string[] = []): Promise<SocialNeighborhoodRow[]> {
   if (!canonicalUuid.test(viewerUserId)) throw new Error('Social neighborhood viewer must be a canonical UUID.');
-  const rows = await reader.query(PUBLIC_SOCIAL_NEIGHBORHOODS_SQL, [viewerUserId]);
+  const exclusions = excludeRepoIds.map(id => id.toLowerCase());
+  if (exclusions.length > 1500 || exclusions.some(id => !canonicalUuid.test(id))) {
+    throw new Error('Social neighborhood exclusions must be bounded canonical UUIDs.');
+  }
+  const rows = await reader.query(PUBLIC_SOCIAL_NEIGHBORHOODS_SQL, [viewerUserId, JSON.stringify([...new Set(exclusions)])]);
   if (rows.length > 10000) throw new Error('Social neighborhood source exceeded its row budget.');
   return rows.map(row => {
     if (typeof row.repo_id !== 'string' || !canonicalUuid.test(row.repo_id)

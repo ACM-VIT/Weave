@@ -136,7 +136,7 @@ export class FeedGenerationService {
         console.error('[FeedGenerationService] Failed to load followed-owner repositories:', error);
       }
       const socialCandidates = this.socialCandidatesEnabled && this.persistence.listSocialRepositoryCandidates
-        ? await this.persistence.listSocialRepositoryCandidates(userId, 100) : undefined;
+        ? await this.persistence.listSocialRepositoryCandidates(userId, 100, [...excludedIds]) : undefined;
       if (leaseLost || !await current()) return { status: 'stale', feedVersion };
       const request = {
         schema_version: 2,
