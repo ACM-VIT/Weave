@@ -1,0 +1,26 @@
+{
+  "detector": {
+    "ignoreRules": [],
+    "ignoreFiles": [],
+    "ignoreValues": [
+      {
+        "rule": "design-system-font",
+        "value": "natasans-semibold",
+        "files": [
+          "src/app/(tabs)/home.tsx"
+        ],
+        "createdAt": "2026-10-23T09:54:12.272Z",
+        "reason": "Agent: preserve incumbent Home typography for this feedback-lifecycle-only change, as DESIGN.md Feed summary refinement explicitly requires; no font value was added or changed."
+      },
+      {
+        "rule": "design-system-font",
+        "value": "natasans-regular",
+        "files": [
+          "src/app/(tabs)/home.tsx"
+        ],
+        "createdAt": "2026-10-23T09:54:12.296Z",
+        "reason": "Agent: preserve incumbent Home typography for this feedback-lifecycle-only change, as DESIGN.md Feed summary refinement explicitly requires; no font value was added or changed."
+      }
+    ]
+  }
+}

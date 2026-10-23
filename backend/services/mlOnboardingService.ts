@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import { canonicalSkillNames } from './onboardingTaxonomy.js';
 
 import type { MlOnboardingJob } from '../contracts/ml.v2.js';
 
@@ -41,7 +42,7 @@ export function buildMlOnboardingJob(
       github_username: optionalString(input.githubUsername),
       avatar_url: optionalString(input.avatarUrl),
       interests: strings(input.interests),
-      skills: strings(input.skills),
+      skills: canonicalSkillNames(strings(input.skills)),
       tech_stack: strings(input.techStack),
     },
   };

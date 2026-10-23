@@ -9,18 +9,20 @@ import {
 test('onboarding sends legacy topics and structured persona fields with valid slugs', () => {
   const payload = buildOnboardingPayload({
     bio: 'dev',
-    interests: ['GitHub Actions', 'ci/cd', 'C++', 'GitHub Actions'],
-    skills: ['Web', 'DevOps'],
+    interests: ['github actions', 'ci/cd', 'c++', 'github actions'],
+    skills: ['web', 'devops'],
     tech_stack: ['Node.js'],
   });
 
   assert.deepEqual(payload.interests, ['github-actions', 'ci-cd', 'cpp']);
-  assert.deepEqual(payload.skills, ['web', 'devops']);
+  assert.deepEqual(payload.skills, ['web-frontend-frameworks', 'devops-infrastructure-and-security']);
   assert.deepEqual(payload.tech_stack, ['node-js']);
   assert.deepEqual(payload.topics, [
-    'github-actions', 'ci-cd', 'cpp', 'web', 'devops', 'node-js',
+    'github-actions', 'ci-cd', 'cpp', 'web-frontend-frameworks', 'devops-infrastructure-and-security', 'node-js',
   ]);
   assert.equal(payload.bio, 'dev');
+  assert.deepEqual(payload.taxonomy_selections.skills.map(entry => entry.id), ['web', 'devops']);
+  assert.equal(payload.taxonomy_selections.skills[0].label, 'Web / Frontend Frameworks');
 });
 
 test('onboarding normalization always produces the backend slug format', () => {

@@ -485,7 +485,11 @@ test('comment footer restarts a rejected cursor while retaining loaded rows unti
     await app.pressCommentFooter();
     assert.deepEqual(cursors,[null,'old-next','old-tail',null,'new-next']);
     assert.deepEqual(app.loadedCommentIds,['old-one','old-two'],'keep the previous pages during restart');
-    await act(async()=>{release();await new Promise(resolve=>setTimeout(resolve,0));});
+    await act(async()=>{release();});
+    // Query notifications and React commits need not share the first timer turn.
+    for(let attempt=0;attempt<100&&app.loadedCommentIds.join(',')!=='fresh-one,fresh-two';attempt++) {
+      await act(async()=>{await new Promise(resolve=>setTimeout(resolve,1));});
+    }
     assert.deepEqual(app.loadedCommentIds,['fresh-one','fresh-two']);
   } finally {release();await app.unmount();}
 });
