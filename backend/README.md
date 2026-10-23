@@ -667,12 +667,6 @@ enabling this backend worker. Apply `0024_repository_summary_artifacts` and run
 steps requiring the normal environment authorization; local tests do not run
 them against a deployed service.
 
-The [summary delivery acceptance runbook](../docs/runbooks/summary-delivery-acceptance.md)
-documents the guarded HTTP/worker/SQL/durable-feed integration command and its
-failure, replay, stale-content and artifact-validation checks. Its provider is
-an explicit deterministic HTTP double; model and deployed-service acceptance
-remain separate.
-
 Authenticated canonical ingestion accepts JSON bodies up to 8 MiB; other JSON
 routes retain 256 KB. Canonical README text and its source metadata are stored
 separately from summaries. Repository-index delivery commits the summary and
