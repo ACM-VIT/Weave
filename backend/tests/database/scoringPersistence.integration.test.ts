@@ -144,6 +144,23 @@ integration('private scoring persistence enforces exact bytes, atomic retries, r
     const [retained90]=await admin`SELECT created_at,expires_at FROM private_scoring.scoring_generations WHERE generation_id=${context90.generation_id}::uuid`;
     assert.equal(new Date(retained90.expires_at).getTime()-new Date(retained90.created_at).getTime(),90*86_400_000);
 
+    // The real storage function must classify engine/resource faults separately
+    // from malformed caller packets, while stripping their original details.
+    const faultFunction='capture_fault_'+suffix;
+    await admin.unsafe(`CREATE FUNCTION private_scoring.${faultFunction}() RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN RAISE EXCEPTION USING ERRCODE='40P01',MESSAGE='private engine fault',DETAIL='PRIVATE fault detail'; END $$`);
+    await admin.unsafe(`CREATE TRIGGER capture_fault BEFORE INSERT ON private_scoring.scoring_generations
+      FOR EACH ROW EXECUTE FUNCTION private_scoring.${faultFunction}()`);
+    try {
+      await assert.rejects(storage.persist(validated(),policy),(error:unknown)=>{
+        assert.ok(error instanceof ScoringPersistenceError);assert.equal(error.reason,'unavailable');
+        assert.equal(error.cause,undefined);assert.doesNotMatch(String(error)+JSON.stringify(error),/PRIVATE|engine fault/);return true;
+      });
+    } finally {
+      await admin.unsafe('DROP TRIGGER capture_fault ON private_scoring.scoring_generations');
+      await admin.unsafe(`DROP FUNCTION private_scoring.${faultFunction}()`);
+    }
+
     // Inject an actual server error whose DETAIL contains the private binding
     // parameter. The public adapter error must retain neither it nor its cause.
     const migration=readFileSync(new URL('../../../database/migrations/0042_private_scoring_provenance.sql',import.meta.url),'utf8');
