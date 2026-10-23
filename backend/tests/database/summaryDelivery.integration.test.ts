@@ -18,9 +18,11 @@ test.after(async () => { if (enabled) await sqlClient.end({ timeout: 1 }); });
 
 class RecordingOutbox extends OutboxService {
   readonly claims: OutboxRow[] = [];
+  afterClaim?: (rows: OutboxRow[]) => Promise<void>;
   override async claim(...args: Parameters<OutboxService['claim']>): Promise<OutboxRow[]> {
     const rows = await super.claim(...args);
     this.claims.push(...rows);
+    await this.afterClaim?.(rows);
     return rows;
   }
 }
@@ -160,7 +162,26 @@ test('repository index HTTP delivery commits its summary before ACK and durable 
     const failedClaim = outbox.claims.find(row => row.outbox_id === failedJob)!;
     await sqlClient`UPDATE telemetry.ml_outbox SET claimed_at=now()-interval '1 hour'
       WHERE outbox_id=${failedJob}::uuid`;
-    assert.equal(await worker.runOnce(), 1);
+    let staleClaimCheckedWhileClaimed = false;
+    outbox.afterClaim = async rows => {
+      const replacement = rows.find(row => row.outbox_id === failedJob);
+      if (!replacement) return;
+      const before = await state(failedJob);
+      assert.equal(before.status, 'claimed');
+      assert.notEqual(before.claim_token, failedClaim.claim_token);
+      assert.equal(await outbox.completeRepositoryIndex(
+        failedClaim, responses.get(String(failedClaim.payload.job_id))!), false,
+        'expired token must not complete work owned by a live replacement');
+      assert.deepEqual(await state(failedJob), before, 'stale completion changed replacement claim');
+      assert.equal((await summaries(failed)).length, 0, 'stale completion wrote a summary');
+      staleClaimCheckedWhileClaimed = true;
+    };
+    try {
+      assert.equal(await worker.runOnce(), 1);
+    } finally {
+      outbox.afterClaim = undefined;
+    }
+    assert.equal(staleClaimCheckedWhileClaimed, true);
     assert.equal((await state(failedJob)).status, 'delivered');
     assert.equal((await summaries(failed)).length, 1);
     assert.ok((await readFeed(failed)).summary);
