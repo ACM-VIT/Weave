@@ -185,11 +185,6 @@ export interface components {
              */
             durable: true;
         };
-        /** HTTPValidationError */
-        HTTPValidationError: {
-            /** Detail */
-            detail?: components["schemas"]["ValidationError"][];
-        };
         /** OnboardingJob */
         OnboardingJob: {
             /**
@@ -640,18 +635,41 @@ export interface components {
             /** Updated At */
             updated_at?: string | null;
         };
-        /** ValidationError */
-        ValidationError: {
-            /** Context */
-            ctx?: Record<string, never>;
-            /** Input */
-            input?: unknown;
-            /** Location */
-            loc: (string | number)[];
+        /** RequestValidationDetail */
+        RequestValidationDetail: {
             /** Message */
-            msg: string;
-            /** Error Type */
+            message: string;
+            /** Path */
+            path: string;
+            /** Type */
             type: string;
+        };
+        /**
+         * RequestValidationResponse
+         * @description Safe validation envelope emitted by the integrated application handler.
+         */
+        RequestValidationResponse: {
+            /**
+             * Code
+             * @constant
+             */
+            code: "REQUEST_VALIDATION_FAILED";
+            /** Detail */
+            detail: string;
+            /** Details */
+            details: components["schemas"]["RequestValidationDetail"][];
+            /** Message */
+            message: string;
+            /**
+             * Request Id
+             * Format: uuid
+             */
+            request_id: string;
+            /**
+             * Retryable
+             * @constant
+             */
+            retryable: false;
         };
     };
     responses: never;
@@ -684,13 +702,13 @@ export interface operations {
                     "application/json": components["schemas"]["FeedbackResponse"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["RequestValidationResponse"];
                 };
             };
         };
@@ -717,13 +735,13 @@ export interface operations {
                     "application/json": components["schemas"]["RecommendationResponse"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["RequestValidationResponse"];
                 };
             };
         };
@@ -750,13 +768,13 @@ export interface operations {
                     "application/json": components["schemas"]["RepositoryIndexResponse"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["RequestValidationResponse"];
                 };
             };
         };
@@ -783,13 +801,13 @@ export interface operations {
                     "application/json": components["schemas"]["RepositoryRefreshResponse"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["RequestValidationResponse"];
                 };
             };
         };
@@ -816,13 +834,13 @@ export interface operations {
                     "application/json": components["schemas"]["RepositorySearchResponse"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["RequestValidationResponse"];
                 };
             };
         };
@@ -849,13 +867,13 @@ export interface operations {
                     "application/json": components["schemas"]["OnboardingResponse"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["RequestValidationResponse"];
                 };
             };
         };
