@@ -1,0 +1,38 @@
+name: Broad short-query parity
+on:
+  pull_request:
+    paths: ['backend/**', 'database/**', '.github/workflows/short-query-policy.yml']
+permissions:
+  contents: read
+jobs:
+  lists:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: weave_short_query_policy_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U postgres -d weave_short_query_policy_test"
+          --health-interval 5s --health-timeout 5s --health-retries 12
+    defaults:
+      run:
+        working-directory: backend
+    env:
+      NODE_ENV: test
+      DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/weave_short_query_policy_test
+      BOOTSTRAP_SUPABASE_AUTH_STUB: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+      - run: npm ci
+      - run: npm run migrate
+      - run: RUN_SHORT_QUERY_INTEGRATION=1 node --import tsx --test tests/search/shortQueryLists.integration.test.ts

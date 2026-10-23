@@ -7,7 +7,7 @@
       "repo_stat_snapshots", "repo_topics", "repos", "saves", "topics",
       "oauth_codes", "refresh_tokens", "social_profile_follows", "social_profiles",
       "trending_snapshot_items", "trending_snapshots", "user_feed_state",
-      "user_stats", "user_topics", "users"
+      "user_stats", "user_topics", "users", "user_github_imports"
     ],
     "telemetry": [
       "counter_reconciliation_progress", "feed_prewarm_jobs", "feed_serve_items", "feed_serves", "generation_attempts", "interaction_events",

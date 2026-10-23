@@ -2,10 +2,12 @@ import { Router } from 'express';
 import { requireAuth } from '../middlewares/authMiddleware.js';
 import * as product from '../controllers/productV2Controller.js';
 import { search } from '../controllers/searchController.js';
+import { createGithubImportRouter } from './githubImportRoutes.js';
 
 const router = Router();
 router.get('/repositories/:repoId/share', product.getRepositoryShare);
 router.use(requireAuth);
+router.use('/onboarding/github-import', createGithubImportRouter());
 router.post('/search', search);
 router.get('/users/me', product.getMe);
 router.patch('/users/me', product.updateMe);
