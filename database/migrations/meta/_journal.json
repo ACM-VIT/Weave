@@ -287,6 +287,13 @@
       "when": 1793491200000,
       "tag": "0037_github_credential_unlink",
       "breakpoints": true
+    },
+    {
+      "idx": 43,
+      "version": "7",
+      "when": 1793750400000,
+      "tag": "0040_github_unlink_credential_target",
+      "breakpoints": true
     }
   ]
 }
