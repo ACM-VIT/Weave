@@ -46,6 +46,7 @@ app.use(
       callback(error);
     },
     credentials: true,
+    exposedHeaders: ['x-request-id', 'traceparent'],
   })
 );
 // The ingestion router applies its larger parser only after internal-secret

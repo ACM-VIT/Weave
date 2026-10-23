@@ -71,7 +71,7 @@ export async function fetchFeed(
     const result = await apiV2Raw<FeedResponseV2>('/feed', {
       method: 'POST', body: JSON.stringify(request), signal,
     }, token);
-    return result.data;
+    return { data: result.data, traceparent: result.response.headers.get('traceparent') };
   }, options.signal, undefined, options.retryUnavailable);
-  return decodeFeedPage(data, body.session_id);
+  return { ...decodeFeedPage(data.data, body.session_id), serverTraceparent: data.traceparent ?? undefined };
 }

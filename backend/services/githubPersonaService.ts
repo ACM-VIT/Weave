@@ -1,3 +1,4 @@
+import { withOutboxTrace } from '../observability/tracing.js';
 import type postgres from 'postgres';
 
 import { sqlClient } from '../db/index.js';
@@ -192,7 +193,7 @@ class PostgresGitHubPersonaTransactionStore implements GitHubPersonaTransactionS
   ): Promise<boolean> {
     const rows = await this.tx`
       INSERT INTO telemetry.ml_outbox(job_type,aggregate_id,idempotency_key,payload)
-      VALUES('onboard',${userId}::uuid,${`onboard:${userId}:${profileVersion}`},${JSON.stringify(job)}::jsonb)
+      VALUES('onboard',${userId}::uuid,${`onboard:${userId}:${profileVersion}`},${JSON.stringify(withOutboxTrace(job))}::jsonb)
       ON CONFLICT(idempotency_key) DO NOTHING RETURNING outbox_id
     `;
     return rows.length > 0;

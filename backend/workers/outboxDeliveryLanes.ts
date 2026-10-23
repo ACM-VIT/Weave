@@ -5,7 +5,7 @@ import type { OutboxLane } from '../runtime/outboxLanes.js';
 import { OutboxService, type OutboxClaimOptions, type OutboxRow } from '../services/outboxService.js';
 import { acknowledgedFeedbackIds } from '../services/mlFeedbackAcknowledgement.js';
 import { incrementMetric, observeMetric, observeStage } from '../observability/metrics.js';
-import { startSpan, httpOutcome } from '../observability/tracing.js';
+import { startSpan, httpOutcome, withoutOutboxTrace } from '../observability/tracing.js';
 import type { StageOutcome } from '../observability/metrics.js';
 import { OutboxWorker } from './outboxWorker.js';
 
@@ -47,26 +47,33 @@ export class OutboxDeliveryLanes {
   }
 
   private async feedback(rows: OutboxRow[]): Promise<boolean> {
-    const events = rows.map(row => row.payload as unknown as MlFeedbackBatch['events'][number]);
+    const events = rows.map(row => withoutOutboxTrace(row.payload) as unknown as MlFeedbackBatch['events'][number]);
     rows.forEach(row => observeStage('feedback', 'outbox_age', 'success', this.now() - Date.parse(row.created_at)));
     observeMetric('outbox_feedback_events_per_request', events.length);
-    const span = startSpan('feedback', 'outbox_delivery', true);
+    // A batched RPC carries its first member's context; every member keeps an
+    // attempt span under its own enqueue parent. Singleton retries are exact.
+    const spans = rows.map(row => startSpan('feedback', 'outbox_delivery', true, row.payload._traceparent));
+    const span = spans[0];
     let outcome: StageOutcome = 'failure';
+    let ids = new Set<string>();
+    let detail = 'Feedback delivery failed.';
     const result = await span.run(async () => {
       try {
         const delivery = await this.transport.deliverFeedback({ schema_version: 2, events });
         outcome = delivery.accepted ? 'success' : delivery.failure_kind === 'timeout' ? 'timeout'
           : delivery.status_code >= 400 ? httpOutcome(delivery.status_code) : 'failure';
+        detail = delivery.detail ?? `Feedback delivery status ${delivery.status_code}.`;
+        if (delivery.accepted) {
+          try { ids = acknowledgedFeedbackIds(delivery.response_body, events); }
+          catch (error) { detail = error instanceof Error ? error.message : 'Invalid feedback acknowledgement.'; }
+        }
         return delivery;
-      } finally { span.finish(outcome); }
+      } finally {
+        spans.forEach((attempt, index) => attempt.finish(outcome === 'success'
+          && !ids.has(String(events[index]!.event_id).toLowerCase()) ? 'failure' : outcome));
+      }
     });
     this.backpressure('feedback', result);
-    let ids = new Set<string>();
-    let detail = result.detail ?? `Feedback delivery status ${result.status_code}.`;
-    if (result.accepted) {
-      try { ids = acknowledgedFeedbackIds(result.response_body, events); }
-      catch (error) { detail = error instanceof Error ? error.message : 'Invalid feedback acknowledgement.'; }
-    }
     let delivered = false;
     for (const row of rows) {
       if (ids.has(String(row.payload.event_id).toLowerCase())) {

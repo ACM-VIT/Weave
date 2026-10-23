@@ -1,3 +1,4 @@
+import { withOutboxTrace } from '../observability/tracing.js';
 import {
   FEED_INVALIDATING_EVENTS,
   ML_RELEVANT_EVENTS,
@@ -197,7 +198,7 @@ export async function processInteractionBatchV2InTransaction(
       FROM jsonb_to_recordset(${JSON.stringify(feedback)}::jsonb) AS input(event_id uuid,feedback_version bigint) WHERE target.event_id=input.event_id`;
     await tx`INSERT INTO telemetry.ml_outbox(job_type,aggregate_id,idempotency_key,payload)
       SELECT 'feedback',${userId}::uuid,'feedback:' || event_id::text,payload
-      FROM jsonb_to_recordset(${JSON.stringify(feedback)}::jsonb) AS input(event_id uuid,payload jsonb)
+      FROM jsonb_to_recordset(${JSON.stringify(feedback.map(row => ({ ...row, payload: withOutboxTrace(row.payload) })))}::jsonb) AS input(event_id uuid,payload jsonb)
       ON CONFLICT (idempotency_key) DO NOTHING`;
   }
   if (invalidateFeed) feedVersion++;

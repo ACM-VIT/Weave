@@ -186,3 +186,55 @@ test('refresh transport excludes internal content-index dependency metadata', as
   } } as unknown as OutboxTransportPort;
   assert.equal(await new OutboxWorker(outbox, transport).runOnce(1), 1);
 });
+
+test('durable enqueue context links distinct delivery attempts without leaking internal metadata', async () => {
+  const { startSpan, withOutboxTrace, snapshotSpans } = await import('../../observability/tracing.js');
+  // Sampled trusted context makes parent/child evidence deterministic.
+  const parent = startSpan('http', 'http_completion', true,
+    '00-01111111111111111111111111111111-1111111111111111-01');
+  const job = row('00000000-0000-4000-8000-000000000030');
+  const original = job.payload;
+  job.payload = JSON.parse(JSON.stringify(parent.run(() => withOutboxTrace(original))));
+  assert.equal(original._traceparent, undefined);
+  const calls: string[] = [];
+  const worker = new OutboxWorker({
+    prepareOnboardingDelivery: async () => true,
+    markDelivered: async () => undefined,
+  } as unknown as OutboxService, {
+    deliverOnboarding: async (payload: object) => {
+      assert.deepEqual(payload, original);
+      const child = startSpan('onboard', 'ml_transport');
+      calls.push(child.traceparent);
+      child.finish('success');
+      return { accepted: true, retryable: false, status_code: 200 };
+    },
+  } as unknown as OutboxTransportPort);
+  await worker.deliverClaimed(job);
+  await worker.deliverClaimed(job);
+  assert.equal(calls[0].split('-')[1], parent.traceparent.split('-')[1]);
+  assert.notEqual(calls[0], calls[1]);
+  const attempts = snapshotSpans().filter(span => span.trace_id === parent.traceparent.split('-')[1]
+    && span.stage === 'outbox_delivery');
+  assert.equal(attempts.length, 2);
+  assert.ok(attempts.every(span => span.parent_span_id === parent.traceparent.split('-')[2]));
+  assert.equal(job.idempotency_key, 'onboard:00000000-0000-4000-8000-000000000030');
+});
+
+test('legacy and malformed outbox context produce fresh roots even inside unrelated ALS', async () => {
+  const { startSpan, withOutboxTrace } = await import('../../observability/tracing.js');
+  const ambient = startSpan('http', 'http_completion', true);
+  for (const invalid of [undefined, '', '00-' + '0'.repeat(32) + '-1111111111111111-01', { unexpected: true }]) {
+    const job = row('00000000-0000-4000-8000-000000000031');
+    job.payload._traceparent = invalid;
+    let deliveredTrace = '';
+    const worker = new OutboxWorker({ prepareOnboardingDelivery: async () => true,
+      markDelivered: async () => undefined } as unknown as OutboxService, {
+      deliverOnboarding: async () => {
+        deliveredTrace = withOutboxTrace({})._traceparent!;
+        return { accepted: true, retryable: false, status_code: 200 };
+      },
+    } as unknown as OutboxTransportPort);
+    await ambient.run(() => worker.deliverClaimed(job));
+    assert.notEqual(deliveredTrace.split('-')[1], ambient.traceparent.split('-')[1]);
+  }
+});

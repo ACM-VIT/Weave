@@ -1,3 +1,4 @@
+import { withOutboxTrace } from '../observability/tracing.js';
 import crypto from 'node:crypto';
 import type { Sql, TransactionSql } from 'postgres';
 import { sqlClient } from '../db/index.js';
@@ -147,7 +148,7 @@ export class GitHubImportConsentService {
       bio: profile.bio, githubUsername: profile.github_handle, avatarUrl: profile.avatar_url,
       interests: preferences.interests, skills: preferences.skills, techStack: preferences.tech_stack });
     if (hasMlEmbeddingContext(job.profile)) await tx`INSERT INTO telemetry.ml_outbox(job_type,aggregate_id,idempotency_key,payload)
-      VALUES('onboard',${userId}::uuid,${`onboard:${userId}:${version}`},${JSON.stringify(job)}::jsonb) ON CONFLICT DO NOTHING`;
+      VALUES('onboard',${userId}::uuid,${`onboard:${userId}:${version}`},${JSON.stringify(withOutboxTrace(job))}::jsonb) ON CONFLICT DO NOTHING`;
     return { profile_version: String(version), completed, profile_delivery: hasMlEmbeddingContext(job.profile) ? 'pending' : 'requires_manual_context' };
   }
 

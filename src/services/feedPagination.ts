@@ -1,3 +1,4 @@
+import type { FeedTiming } from './feedTiming';
 import { createUuid } from '../utils/uuid';
 import { assertFeedRequestActive } from './feedTransport';
 
@@ -7,6 +8,8 @@ export type FeedPage = {
   feedVersion: string;
   mode?: 'personalized' | 'discovery';
   sessionId?: string;
+  serverTraceparent?: string;
+  timing?: FeedTiming;
 };
 
 type Request = { cursor: string | null; id: string; recovery: boolean; initialCursor: string | null };
@@ -29,7 +32,7 @@ export class FeedPaginationController {
   private staged = new WeakMap<AbortSignal, { seen: Set<unknown>; nextCursor: string | null; replacement: boolean; mode: FeedPage['mode'] }>();
 
   constructor(
-    private readonly fetchPage: (cursor: string | null, signal: AbortSignal | undefined, requestId: string, sessionId: string) => Promise<FeedPage>,
+    private readonly fetchPage: (cursor: string | null, signal: AbortSignal | undefined, requestId: string, sessionId: string, initialPage: boolean) => Promise<FeedPage>,
     pages: FeedPage[] = [],
     private readonly getCommittedPages?: () => FeedPage[],
   ) {
@@ -124,7 +127,8 @@ export class FeedPaginationController {
       const revision = this.unversionedRevision;
       this.pending = request;
       try {
-        const page = await this.fetchPage(request.cursor, signal, request.id, this.sessionId);
+        // A continuation's internal cursor restart does not replace Home's first page.
+        const page = await this.fetchPage(request.cursor, signal, request.id, this.sessionId, cursor === null);
         check();
         if (continuationMode && (page.mode ?? 'personalized') !== continuationMode) {
           throw Object.assign(new Error('Personalized recommendations are unavailable. Try again or refresh Home.'), {
