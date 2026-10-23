@@ -192,14 +192,20 @@ export function createGithubUnlinkClients(options: { url: string; anonKey: strin
     global: { fetch: transport, ...(token ? { headers: { Authorization: `Bearer ${token}` } } : {}) },
     auth: { autoRefreshToken: false, persistSession: false, detectSessionInUrl: false },
   });
-  const normalize = (user: { id: string; identities?: Array<{ identity_id: string; provider: string; id: string; identity_data?: Record<string, unknown> }> }): GithubUnlinkUser => ({
-    userId: user.id, identities: (user.identities ?? []).map(identity => {
+  const normalize = (user: { id: string; identities?: Array<{ identity_id: string; provider: string; id: string; identity_data?: Record<string, unknown> }> }): GithubUnlinkUser => {
+    if (!isValidUuid(user.id) || !Array.isArray(user.identities) || user.identities.length > 100) throw fail('Provider identities could not be verified.', 503);
+    const seen = new Set<string>();
+    return { userId: user.id, identities: user.identities.map(identity => {
+      if (!isValidUuid(identity.identity_id) || seen.has(identity.identity_id) || !identity.provider) throw fail('Provider identities could not be verified.', 503);
+      seen.add(identity.identity_id);
       const raw = identity.identity_data?.provider_id ?? identity.identity_data?.sub ?? identity.id;
       const subject = typeof raw === 'number' && Number.isSafeInteger(raw) && raw > 0 ? String(raw)
         : typeof raw === 'string' && numeric.test(raw) ? raw : null;
+      if (identity.provider === 'github' && !subject) throw fail('Provider GitHub identity could not be verified.', 503);
       return { identityId: identity.identity_id, provider: identity.provider, subject };
     }),
-  });
+    };
+  };
   const provider: GithubUnlinkProvider = {
     async user(token) { const { data, error } = await client(token).auth.getUser(token); if (error || !data.user) throw error ?? fail('Provider identity unavailable.', 503); return normalize(data.user); },
     async unlink(token, identityId) {

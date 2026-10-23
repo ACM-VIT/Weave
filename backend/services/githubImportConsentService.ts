@@ -29,8 +29,12 @@ export class GitHubImportConsentService {
     private readonly cache: GitHubImportCache, private readonly db: Sql = sqlClient) {}
 
   private async owner(tx: TransactionSql, userId: string) {
-    const [profile] = await tx`SELECT u.*,EXISTS(SELECT 1 FROM app.user_github_unlinks x WHERE x.user_id=u.user_id AND x.status='prepared') AS unlink_pending FROM app.users u WHERE u.user_id=${userId}::uuid AND u.status='active' FOR UPDATE OF u`;
+    const [profile] = await tx`SELECT * FROM app.users WHERE user_id=${userId}::uuid AND status='active' FOR UPDATE`;
     if (!profile) throw failure('User profile not found.', 404);
+    // Read after acquiring the owner lock: an earlier statement snapshot could
+    // miss an unlink intent committed while this query waited for that lock.
+    const [intent] = await tx`SELECT status FROM app.user_github_unlinks WHERE user_id=${userId}::uuid AND status='prepared'`;
+    profile.unlink_pending = Boolean(intent);
     return profile;
   }
   private verified(profile: Record<string, unknown>) {

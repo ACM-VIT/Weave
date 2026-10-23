@@ -46,7 +46,7 @@ export class PostgresGithubUnlink implements GithubUnlinkPersistence {
         await tx`SELECT pg_advisory_xact_lock(hashtextextended(${'github-owner:' + owner.githubId},0))`;
         await tx`SELECT profile_id FROM app.social_profiles WHERE provider='github'
           AND ltrim(provider_subject,'0')=${owner.githubId} ORDER BY profile_id FOR UPDATE`;
-        await tx`UPDATE app.social_profiles SET claimed_by_user_id=NULL,profile_kind='unknown',updated_at=now()
+        await tx`UPDATE app.social_profiles SET claimed_by_user_id=NULL,updated_at=now()
           WHERE provider='github' AND ltrim(provider_subject,'0')=${owner.githubId} AND claimed_by_user_id=${owner.userId}::uuid`;
         const [updated] = await tx`UPDATE app.users SET github_id=NULL,github_handle=NULL,github_identity_verified_at=NULL,
           profile_version=profile_version+1,updated_at=now() WHERE user_id=${owner.userId}::uuid RETURNING *`;

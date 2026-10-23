@@ -43,7 +43,7 @@ test('registered unlink routes use actual scoped Supabase OAuth/session HTTP wit
   ]);
   const tokens = new Map<string, string>();
   const codes = new Map<string, { user: string; challenge: string }>();
-  let linked = true, alternatives = 1, deleteMode = 'success', deletes = 0, adminReads = 0;
+  let linked = true, alternatives = 1, deleteMode = 'success', deletes = 0, adminReads = 0, malformedAdmin = false;
   let now = Date.now();
   const providerUser = (id: string) => ({ id, aud: 'authenticated', email: 'fixture@invalid.test', created_at: new Date().toISOString(),
     app_metadata: { provider: 'github', providers: ['github', 'email'] }, user_metadata: { provider_id: ownerGithubId, user_name: 'fixture' },
@@ -62,7 +62,7 @@ test('registered unlink routes use actual scoped Supabase OAuth/session HTTP wit
     }
     if (url.pathname.startsWith('/auth/v1/admin/users/')) {
       assert.equal(req.headers.authorization, 'Bearer fixture-service-key'); adminReads++;
-      res.end(JSON.stringify({ user: providerUser(url.pathname.split('/').pop()!) })); return;
+      res.end(JSON.stringify({ user: { ...providerUser(url.pathname.split('/').pop()!), ...(malformedAdmin ? { identities: undefined } : {}) } })); return;
     }
     const access = req.headers.authorization?.replace(/^Bearer /, '')!;
     const id = tokens.get(access); assert.ok(id, 'every identity action must use the fresh Supabase user session');
@@ -158,6 +158,10 @@ test('registered unlink routes use actual scoped Supabase OAuth/session HTTP wit
       assert.equal(linked, false); assert.equal(persistence.githubId, ownerGithubId);
       assert.equal((await send('status', {}, peerId)).status, 200);
       persistence.failCompletion = false;
+      malformedAdmin = true;
+      assert.equal((await send('status')).status, 503, 'missing provider identities never proves a successful unlink');
+      assert.equal(persistence.githubId, ownerGithubId);
+      malformedAdmin = false;
       const status = await send('status'); assert.equal((await status.json() as { data: { status: string } }).data.status, 'done');
       assert.equal(persistence.githubId, null);
     }
@@ -202,11 +206,31 @@ test('registered unlink routes use actual scoped Supabase OAuth/session HTTP wit
       await sqlClient`INSERT INTO app.users(user_id,username,full_name,status,github_id,github_handle,github_identity_verified_at,interests,onboarding_completed)
         VALUES(${userId}::uuid,${'unlink_'+userId.replaceAll('-', '')},'Tarun','active',${ownerGithubId},'fixture',now(),'["databases"]'::jsonb,true)`;
       await sqlClient`INSERT INTO app.user_feed_state(user_id) VALUES(${userId}::uuid)`;
-      await sqlClient`INSERT INTO app.social_profiles(provider,provider_subject,handle,claimed_by_user_id)
-        VALUES('github',${ownerGithubId},${'unlink-'+ownerGithubId},${userId}::uuid)`;
+      await sqlClient`INSERT INTO app.social_profiles(provider,provider_subject,handle,profile_kind,claimed_by_user_id)
+        VALUES('github',${ownerGithubId},${'unlink-'+ownerGithubId},'user',${userId}::uuid)`;
       await sqlClient`INSERT INTO app.user_github_imports(user_id,github_id,consented_at,accepted_at,baseline,applied) VALUES(${userId}::uuid,${ownerGithubId},now(),now(),'{"interests":["databases"],"skills":[],"tech_stack":[]}'::jsonb,'{"interests":["databases"],"skills":[],"tech_stack":[]}'::jsonb)`;
       activeFlow = new GithubUnlinkFlow({ ...clients, redis: actualRedis, persistence: actual, secret: process.env.JWT_SECRET!, now: () => now,
         revokeImport: async id => { revocations.push(id); await imports.revoke(id); } });
+      // Hold the owner lock while a concurrent preview takes its statement
+      // snapshot, then commit an intent. Its post-lock read must see the fence.
+      let racedPreview: Promise<unknown> | undefined;
+      await sqlClient.begin(async tx => {
+        await tx`SELECT user_id FROM app.users WHERE user_id=${userId}::uuid FOR UPDATE`;
+        racedPreview = imports.preview(userId, true).then(() => new Error('Unexpected preview success'), error => error);
+        let waiting = false;
+        for (let attempt = 0; attempt < 100; attempt++) {
+          await tx`SELECT pg_stat_clear_snapshot()`;
+          const [blocked] = await tx`SELECT count(*) FROM pg_stat_activity WHERE datname=current_database()
+            AND pid<>pg_backend_pid() AND wait_event_type='Lock' AND query LIKE '%FROM app.users%FOR UPDATE%'`;
+          if (Number(blocked.count) > 0) { waiting = true; break; }
+          await new Promise(resolve => setTimeout(resolve, 10));
+        }
+        assert.ok(waiting, 'observe the concurrent preview actually waiting on the owner lock');
+        await tx`INSERT INTO app.user_github_unlinks(user_id,operation_id,github_id,status)
+          VALUES(${userId}::uuid,${crypto.randomUUID()}::uuid,${ownerGithubId},'prepared')`;
+      });
+      assert.match(String(await racedPreview), /disconnect needs verification/);
+      await sqlClient`DELETE FROM app.user_github_unlinks WHERE user_id=${userId}::uuid`;
       const target = await authorize();
       const proofKey = [...written].find(value => value.startsWith('oauth:github-unlink:proof:'))!;
       assert.ok((await realRedis.ttl(proofKey)) > 0);
@@ -232,6 +256,7 @@ test('registered unlink routes use actual scoped Supabase OAuth/session HTTP wit
       const [job] = await sqlClient`SELECT payload,status FROM telemetry.ml_outbox WHERE aggregate_id=${userId}::uuid AND job_type='onboard' ORDER BY created_at DESC`;
       assert.equal(job.status, 'pending'); assert.equal(job.payload.profile.github_username, null);
       assert.equal((await sqlClient`SELECT claimed_by_user_id FROM app.social_profiles WHERE provider='github' AND provider_subject=${ownerGithubId}`)[0].claimed_by_user_id, null);
+      assert.equal((await sqlClient`SELECT profile_kind FROM app.social_profiles WHERE provider='github' AND provider_subject=${ownerGithubId}`)[0].profile_kind, 'user');
       await send('status');
       assert.equal(Number((await sqlClient`SELECT profile_version FROM app.users WHERE user_id=${userId}::uuid`)[0].profile_version), 3);
       await sqlClient`UPDATE app.users SET github_id=${ownerGithubId},github_identity_verified_at=now() WHERE user_id=${userId}::uuid`;
