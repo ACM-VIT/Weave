@@ -235,7 +235,7 @@ export class PostgresFeedPersistence implements FeedPersistencePort, FeedReconci
   }
 
   /** Independent, viewer-scoped public-catalogue candidates; never infer ownership from a handle. */
-  async listSocialRepositoryCandidates(userId: string, limit: number): Promise<SocialCandidateProjection[]> {
+  async listSocialRepositoryCandidates(userId: string, limit: number, excludeRepoIds: string[] = []): Promise<SocialCandidateProjection[]> {
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) throw new Error('Invalid social candidate limit.');
     const rows = await sqlClient`
       WITH viewer AS (SELECT user_id FROM app.users WHERE user_id=${userId}::uuid AND status='active'), subjects AS (
@@ -267,6 +267,7 @@ export class PostgresFeedPersistence implements FeedPersistencePort, FeedReconci
           WHERE snapshot.repo_id=repo.repo_id ORDER BY snapshot.observed_at DESC LIMIT 1
         ) stats
         WHERE repo.owner_github_id=owners.owner_id::bigint AND repo.status='active'
+          AND NOT (repo.repo_id=ANY(${excludeRepoIds}::uuid[]))
         ORDER BY repo.updated_at DESC,repo.repo_id LIMIT 2
       ) candidate
       CROSS JOIN LATERAL unnest(owners.actors) AS actor(actor_key)

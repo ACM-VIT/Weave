@@ -38,7 +38,8 @@ test('real SQL social candidates preserve immutable identity, viewer scope, acti
           ${i === 2 || i === 4 ? new Date().toISOString() : null}::timestamptz,${i === 4 ? 'suspended' : 'active'})`;
     }
     for (const followed of [verified,unverified,suspended]) await sql`INSERT INTO app.follows(follower_id,following_id) VALUES(${viewer}::uuid,${followed}::uuid)`;
-    const expectedRegistered: string[] = [await repository('103'),await repository('103'),await repository('103')];
+    const expectedRegistered: string[] = [await repository('103'),await repository('103'),await repository('103'),await repository('103')];
+    for (const [index,repo] of expectedRegistered.entries()) await sql`UPDATE app.repos SET updated_at='2026-10-01'::timestamptz+${index}*interval '1 day' WHERE repo_id=${repo}::uuid`;
     await repository('104'); await repository('105'); await repository('103','blocked');
     await repository(null); await repository('999'); await repository('103','active',false);
     await profile('201'); const external = await repository('201');
@@ -50,6 +51,12 @@ test('real SQL social candidates preserve immutable identity, viewer scope, acti
     assert.equal(result.length, 3);
     assert.equal(result.filter(row => expectedRegistered.includes(row.repo_id)).length, 2);
     assert.ok(result.some(row => row.repo_id === external));
+    const excluded = expectedRegistered.slice(2);
+    const eligible = await persistence.listSocialRepositoryCandidates(viewer!,100,excluded);
+    assert.deepEqual(eligible.filter(row => row.owner_github_id === '103').map(row => row.repo_id).sort(),
+      expectedRegistered.slice(0,2).sort(), 'excluded newest repositories must not consume per-owner slots');
+    assert.ok(eligible.some(row => row.repo_id === external));
+    assert.ok(eligible.every(row => !excluded.includes(row.repo_id)));
     assert.ok(result.every(row => row.source === 'followed_owner' && row.support === 1 && row.source_score > 0));
     assert.ok(result.every(row => Object.keys(row).sort().join(',') === 'owner_github_id,repo_id,source,source_score,support'));
     assert.deepEqual(await persistence.listSocialRepositoryCandidates(stranger!,100), []);
