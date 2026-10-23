@@ -72,11 +72,25 @@ integration('real SQL precedes Redis publication and mixed generation provenance
         'SQL must commit before the real Redis append is called');
       publications++; return append(...args);
     };
-    // Actual SQL authorization failure after preflight cannot publish anything.
-    await service().generate(user,1);
+    // A private witness outage occurs AFTER actual Redis acceptance. It must
+    // not suppress independent product acknowledgement or report failed/zero.
+    await sql.unsafe('REVOKE EXECUTE ON FUNCTION private_scoring.record_generation_witness(uuid,uuid,text) FROM ghsocial_scoring_writer');
+    try {
+      assert.equal((await service().generate(user,1)).status,'generated');
+    } finally {
+      await sql.unsafe('GRANT EXECUTE ON FUNCTION private_scoring.record_generation_witness(uuid,uuid,text) TO ghsocial_scoring_writer');
+    }
+    const publishedAttempt=(await sql`SELECT status,result_count FROM telemetry.generation_attempts WHERE generation_id=${generations.at(-1)!}::uuid`)[0];
+    assert.equal(publishedAttempt.status,'completed');assert.equal(publishedAttempt.result_count,1);
+    assert.equal(await persistence.hasPublishedGeneration(user,feedVersion),true);
+    assert.equal(Number((await sql`SELECT count(*) FROM private_scoring.generation_witnesses WHERE generation_id=${generations.at(-1)!}::uuid AND event_type='published'`)[0].count),0);
+    assert.equal(await storage.reconcilePublicationWitnesses([user],1),1);
+    assert.equal(await storage.reconcilePublicationWitnesses([user],1),0,'repair is idempotent');
+    assert.equal(Number((await sql`SELECT count(*) FROM private_scoring.generation_witnesses WHERE generation_id=${generations.at(-1)!}::uuid AND event_type='published'`)[0].count),1);
     assert.equal(publications,1);
     const firstGeneration=generations.at(-1)!;
     const keys=await redis.keys(`*${user}*`); if(keys.length) await redis.del(...keys);
+    // Actual SQL authorization failure after preflight cannot publish anything.
     await sql.unsafe(`REVOKE ghsocial_scoring_writer FROM ${writerRole}`);
     await assert.rejects(service().generate(user,1),/SCORING_PERSISTENCE_UNAVAILABLE/);
     assert.equal(publications,1); assert.equal(await queue.depth(user,feedVersion),0);
@@ -86,6 +100,7 @@ integration('real SQL precedes Redis publication and mixed generation provenance
     // witness and no Redis publication; an old builder cannot cross namespaces.
     const raced: ScoringPersistencePort = {
       recordWitness: storage.recordWitness.bind(storage),
+      reconcilePublicationWitnesses: storage.reconcilePublicationWitnesses.bind(storage),
       async persist(...args) {
         const result=await storage.persist(...args);
         await sql`UPDATE app.user_feed_state SET feed_version=feed_version+1 WHERE user_id=${user}::uuid`;
@@ -99,6 +114,7 @@ integration('real SQL precedes Redis publication and mixed generation provenance
     await sql`UPDATE app.user_feed_state SET feed_version=${feedVersion.toString()}::bigint WHERE user_id=${user}::uuid`;
     const lostLease: ScoringPersistencePort = {
       recordWitness: storage.recordWitness.bind(storage),
+      reconcilePublicationWitnesses: storage.reconcilePublicationWitnesses.bind(storage),
       async persist(...args) {
         const result=await storage.persist(...args);
         await redis.del(`feed:v2:generation-lock:${user}:${feedVersion}`);
@@ -109,6 +125,7 @@ integration('real SQL precedes Redis publication and mixed generation provenance
     assert.equal(await queue.depth(user,feedVersion),0,'Redis itself fences a lock lost after SQL commit');
     assert.equal(Number((await sql`SELECT count(*) FROM private_scoring.generation_witnesses
       WHERE generation_id=${generations.at(-1)!}::uuid AND event_type='published'`)[0].count),0);
+    assert.equal(await storage.reconcilePublicationWitnesses([user],100),0,'a committed private orphan without publication proof stays unpublished');
     // Append two independently captured sets, then deliver one mixed page.
     await service().generate(user,1); const generationA=generations.at(-1)!;
     selected=1; await service().generate(user,1); const generationB=generations.at(-1)!;
@@ -131,6 +148,16 @@ integration('real SQL precedes Redis publication and mixed generation provenance
       assert.deepEqual((await sql`SELECT input_bytes FROM private_scoring.scoring_inputs WHERE generation_id=${generation}::uuid`)[0].input_bytes,
         Buffer.from(golden.packet.input_base64,'base64'));
       assert.equal(Number((await sql`SELECT count(*) FROM private_scoring.generation_witnesses WHERE generation_id=${generation}::uuid AND event_type='published'`)[0].count),1);
+    }
+    // Serve proof alone repairs a lost marker, without relying on generation
+    // attempt retention. The other captured marker proves the batch cap.
+    await sql`DELETE FROM private_scoring.generation_witnesses WHERE generation_id=ANY(${[generationA,generationB]}::uuid[]) AND event_type='published'`;
+    await sql`DELETE FROM telemetry.generation_attempts WHERE generation_id=ANY(${[generationA,generationB]}::uuid[])`;
+    assert.equal(await storage.reconcilePublicationWitnesses([user],1),1);
+    assert.equal(await storage.reconcilePublicationWitnesses([user],1),1);
+    assert.equal(await storage.reconcilePublicationWitnesses([user],1),0);
+    for(const role of ['ghsocial_backend','ghsocial_scoring_exporter','ghsocial_scoring_retention']) {
+      assert.equal((await sql`SELECT has_function_privilege(${role},'private_scoring.reconcile_publication_witnesses(uuid[],integer)','EXECUTE') AS allowed`)[0].allowed,false);
     }
     // A transient database lock failure inside reference validation is not a
     // permanent invalid packet: release the same queue entry for a later retry.

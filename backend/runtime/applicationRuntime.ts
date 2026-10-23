@@ -177,6 +177,11 @@ export class ApplicationRuntime {
       }
       const worker = new FeedReconciliationWorker(this.persistence, this.queue, reconcileWithin);
       this.supervisor.register('feed-reconciliation', interval, () => worker.runOnce());
+      if (this.scoringCapture.enabled && this.privateScoring) {
+        const owners = [...this.scoringCapture.userIds];
+        this.supervisor.register('scoring-publication-reconciliation', interval,
+          () => this.privateScoring!.port.reconcilePublicationWitnesses(owners, 100));
+      }
     }
     if ((role === 'maintenance' || role === 'all') && this.flags.DB_SCHEMA_V2_WRITES) {
       const data = new DataReconciliationWorker(new DataReconciliationService(sqlClient,

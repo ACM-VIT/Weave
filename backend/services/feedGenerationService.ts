@@ -310,12 +310,30 @@ export class FeedGenerationService {
       }
       // Publication has begun: finish durable acknowledgement even if the
       // budget expires now. Redis retains an eight-day crash recovery witness.
-      if (capture && capturedReferences.length) await capture.persistence.recordWitness(userId,generationId,published ? 'published' : 'stale');
-      if (published) await this.persistence.markGenerationPublished?.(userId, feedVersion);
-      await this.persistence.recordGenerationAttempt?.({
-        generation_id: generationId, user_id: userId, feed_version: feedVersion, mode,
-        status: published ? 'completed' : 'stale', latency_ms: Date.now() - started, result_count: count,
-      });
+      if (capture) {
+        // Each acknowledgement is independent once Redis has answered. In
+        // particular, private witness failure cannot suppress product completion
+        // or turn a known publication into a failed/zero attempt. The feed worker
+        // repairs missing private witnesses from durable completion/serve proof.
+        const acknowledgements = await Promise.allSettled([
+          this.persistence.recordGenerationAttempt?.({
+            generation_id: generationId, user_id: userId, feed_version: feedVersion, mode,
+            status: published ? 'completed' : 'stale', latency_ms: Date.now() - started, result_count: count,
+          }),
+          published ? this.persistence.markGenerationPublished?.(userId, feedVersion) : undefined,
+          capturedReferences.length
+            ? capture.persistence.recordWitness(userId,generationId,published ? 'published' : 'stale') : undefined,
+        ]);
+        for (const result of acknowledgements) if (result.status === 'rejected') {
+          incrementMetric('feed_v2_publication_acknowledgement_deferred_total');
+        }
+      } else {
+        if (published) await this.persistence.markGenerationPublished?.(userId, feedVersion);
+        await this.persistence.recordGenerationAttempt?.({
+          generation_id: generationId, user_id: userId, feed_version: feedVersion, mode,
+          status: published ? 'completed' : 'stale', latency_ms: Date.now() - started, result_count: count,
+        });
+      }
       return published ? { status: 'generated', feedVersion, count } : { status: 'stale', feedVersion };
     } catch (error) {
       await this.persistence.recordGenerationAttempt?.({

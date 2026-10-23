@@ -89,3 +89,39 @@ END $$;
 REVOKE ALL ON FUNCTION private_scoring.record_generation_witness(uuid,uuid,text) FROM PUBLIC,
   ghsocial_backend,ghsocial_scoring_exporter,ghsocial_scoring_retention;
 GRANT EXECUTE ON FUNCTION private_scoring.record_generation_witness(uuid,uuid,text) TO ghsocial_scoring_writer;
+
+-- Repair only a known publication. Private persistence alone, a page header,
+-- and a Redis queue's disappearance are never publication evidence. This
+-- writer-only operation reveals only a bounded count, not product/private rows.
+CREATE FUNCTION private_scoring.reconcile_publication_witnesses(owners uuid[], batch_limit integer)
+RETURNS integer LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog AS $$
+DECLARE repaired integer;
+BEGIN
+  IF owners IS NULL OR array_ndims(owners) IS DISTINCT FROM 1 OR cardinality(owners) NOT BETWEEN 1 AND 100 OR array_position(owners,NULL) IS NOT NULL
+    OR batch_limit IS NULL OR batch_limit NOT BETWEEN 1 AND 100 THEN RAISE EXCEPTION 'invalid'; END IF;
+  WITH candidates AS MATERIALIZED (
+    SELECT generation.generation_id FROM private_scoring.scoring_generations generation
+    WHERE generation.user_id=ANY(owners) AND generation.expires_at>clock_timestamp()
+      AND NOT EXISTS(SELECT 1 FROM private_scoring.generation_witnesses witness
+        WHERE witness.generation_id=generation.generation_id AND witness.event_type IN ('published','revoked'))
+      AND (EXISTS(SELECT 1 FROM telemetry.generation_attempts attempt
+        WHERE attempt.generation_id=generation.generation_id AND attempt.user_id=generation.user_id
+          AND attempt.feed_version=generation.feed_version AND attempt.status='completed'
+          AND attempt.mode IN ('live','prewarm') AND attempt.result_count>0)
+        OR EXISTS(SELECT 1 FROM telemetry.feed_item_provenance item
+          JOIN telemetry.feed_serves serve USING(serve_id)
+          WHERE item.generation_id=generation.generation_id AND item.user_id=generation.user_id
+            AND item.capture_status='captured' AND serve.feed_version=generation.feed_version))
+    ORDER BY generation.created_at,generation.generation_id LIMIT batch_limit
+    FOR UPDATE OF generation SKIP LOCKED
+  ), inserted AS (
+    INSERT INTO private_scoring.generation_witnesses(generation_id,event_type)
+      SELECT generation_id,'published' FROM candidates ON CONFLICT DO NOTHING RETURNING 1
+  ) SELECT count(*)::integer INTO repaired FROM inserted;
+  RETURN repaired;
+EXCEPTION WHEN OTHERS THEN
+  RAISE EXCEPTION USING ERRCODE='58000',MESSAGE='SCORING_WITNESS_UNAVAILABLE';
+END $$;
+REVOKE ALL ON FUNCTION private_scoring.reconcile_publication_witnesses(uuid[],integer) FROM PUBLIC,
+  ghsocial_backend,ghsocial_scoring_exporter,ghsocial_scoring_retention;
+GRANT EXECUTE ON FUNCTION private_scoring.reconcile_publication_witnesses(uuid[],integer) TO ghsocial_scoring_writer;
