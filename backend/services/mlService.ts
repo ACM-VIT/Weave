@@ -6,6 +6,9 @@ import type { RecommendationPort } from '../ports/recommendationPort.js';
 import type { OutboxTransportPort } from '../ports/outboxTransportPort.js';
 import type {
   DeliveryResult,
+  MlPostPath,
+  MlRequest,
+  MlDeliveryPath,
   MlFeedbackBatch,
   MlOnboardingJob,
   MlRecommendationRequest,
@@ -262,9 +265,9 @@ export class MlV2Client implements RecommendationPort, OutboxTransportPort {
     incrementMetric('ml_recommendation_circuit_transition_total', { from: previous, to: state, reason });
   }
 
-  private async request(
-    path: string,
-    payload: unknown,
+  private async request<Path extends MlPostPath>(
+    path: Path,
+    payload: MlRequest<NoInfer<Path>>,
     idempotencyKey: string,
     timeoutMs = this.config.timeoutMs,
     responseFormat: 'required-json' | 'optional-json' = 'required-json',
@@ -399,7 +402,7 @@ export class MlV2Client implements RecommendationPort, OutboxTransportPort {
     }
   }
 
-  private async deliver(path: string, payload: unknown, idempotencyKey: string): Promise<DeliveryResult> {
+  private async deliver<Path extends MlDeliveryPath>(path: Path, payload: MlRequest<NoInfer<Path>>, idempotencyKey: string): Promise<DeliveryResult> {
     try {
       const { status, body, retryAfterMs } = await this.request(
         path,
@@ -433,7 +436,7 @@ export class MlV2Client implements RecommendationPort, OutboxTransportPort {
     return this.deliver('/api/v2/users/onboard', { schema_version: 2, ...job }, job.job_id);
   }
 
-  async deliverRepositoryIndex(job: MlRepositoryIndexJob): Promise<DeliveryResult> {
+  async deliverRepositoryIndex(job: MlRepositoryIndexJob): Promise<DeliveryResult<MlRepositoryIndexResponse>> {
     try {
       const { status, body, retryAfterMs } = await this.request(
         '/api/v2/repositories/embed',

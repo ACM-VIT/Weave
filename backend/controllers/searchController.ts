@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import type { MlRequest } from '../contracts/ml.v2.js';
 import { startSpan, httpOutcome } from '../observability/tracing.js';
 import type { StageOutcome } from '../observability/metrics.js';
 import axios from 'axios';
@@ -21,7 +22,8 @@ export async function semanticSearch(request: SearchRequest, signal?: AbortSigna
     const span = startSpan('search', 'ml_transport');
     let outcome: StageOutcome = 'failure';
     try {
-      const response = await axios.post(`${config.baseUrl}/api/v2/search/repositories`, { ...contract, limit: 100 }, {
+      const payload = { ...contract, limit: 100 } satisfies MlRequest<'/api/v2/search/repositories'>;
+      const response = await axios.post<unknown>(`${config.baseUrl}/api/v2/search/repositories`, payload, {
         headers: { 'X-Internal-Secret': config.internalSecret, 'x-request-id': crypto.randomUUID(), traceparent: span.traceparent },
         timeout: 1800, signal: attemptSignal, maxContentLength: config.maxResponseBytes, maxBodyLength: 100_000,
         maxRedirects: 0,

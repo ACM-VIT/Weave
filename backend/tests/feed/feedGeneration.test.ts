@@ -87,6 +87,9 @@ class CapturingRecommendations implements RecommendationPort {
       user_id: input.user_id,
       feed_version: input.feed_version,
       model_version: 'test-model',
+      context_status: { cold_start_applied: false, locale: 'not_provided' },
+      embedding_versions: [], served_ranker: 'heavy', heavy_ranker_selected: true,
+      ranker_applied: true, fallback_code: null, fallback_reason: null, retrieval_mode: 'personalized',
       embedding_version: 'test-embedding',
       items: [
         { repo_id: socialRepoId, score: 0.8, source: 'semantic' },
@@ -278,7 +281,10 @@ test('prewarm recovers publication-before-SQL crash without replacing an empty s
   const queue = new GenerationQueue();
   const recommendations = new CapturingRecommendations();
   recommendations.generate = async input => ({ schema_version: 2, generation_id: input.generation_id,
-    user_id: input.user_id, feed_version: input.feed_version, model_version: 'test', embedding_version: 'test', items: [] });
+    user_id: input.user_id, feed_version: input.feed_version, model_version: 'test', embedding_version: 'test', items: [],
+    context_status: { cold_start_applied: false, locale: 'not_provided' },
+    embedding_versions: [], served_ranker: 'heavy', heavy_ranker_selected: true,
+    ranker_applied: true, fallback_code: null, fallback_reason: null, retrieval_mode: 'personalized' });
   const service = new FeedGenerationService(persistence, queue, recommendations);
   await assert.rejects(service.generate(userId,45,[],'prewarm'), /publication SQL unavailable/);
   assert.equal(queue.published, true);
