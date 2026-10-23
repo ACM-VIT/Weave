@@ -189,7 +189,7 @@ export function RepositoryScreen({
   onQueueActivity?: QueueActivity;
 }) {
   const insets = useSafeAreaInsets();
-  const { user, checkOnboardingStatus } = useAuth();
+  const { user } = useAuth();
   const queryClient = useQueryClient();
   const compact = pageWidth < 360 || pageHeight < 720;
   const serverReaction = repository.viewerReaction ?? null;
@@ -265,7 +265,7 @@ export function RepositoryScreen({
     if (!viewerUserId || (!ownerUserId && !ownerProfileId)) return;
     if (ownerUserId) {
       queryClient.setQueryData(
-        followStateQueryKey(getProfileFollowIdentity(null, ownerUserId)),
+        followStateQueryKey(getProfileFollowIdentity(null, ownerUserId), viewerUserId),
         following,
       );
     }
@@ -279,7 +279,6 @@ export function RepositoryScreen({
       exact: true,
       refetchType: 'none',
     });
-    void checkOnboardingStatus().catch(() => undefined);
   };
 
   const openGithubRepository = async () => {

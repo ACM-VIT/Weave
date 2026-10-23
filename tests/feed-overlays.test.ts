@@ -5,9 +5,11 @@ import { resolve } from 'node:path';
 import test from 'node:test';
 import React, { act } from 'react';
 import { create } from 'react-test-renderer';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { QueryClient, QueryClientProvider, QueryObserver } from '@tanstack/react-query';
 import ts from 'typescript';
 import type { RepositoryData } from '../src/data/repositories';
+import { authSessionLifecycle } from '../src/api/session-lifecycle';
+import { listRepositoryQueryKey } from '../src/services/accountQueryCache';
 import { subscribeToHomeFeedInvalidations } from '../src/utils/home-feed';
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
@@ -62,6 +64,7 @@ function feed(ids: string[], reducedMotion = false) {
   const gesture = new Proxy({}, {get: () => () => gesture});
   const mocks: Record<string, any> = {
     'react-native': native,
+    '@/api/session-lifecycle': { authSessionLifecycle },
     '@/api/client': {apiV2: async () => {throw new Error('Unexpected API call');}, apiV2Raw: async () => {throw new Error('Unexpected API call');}},
     './client': {apiV2: async () => {throw new Error('Unexpected API call');}, apiV2Raw: async () => {throw new Error('Unexpected API call');}},
     'react-native-safe-area-context': { useSafeAreaInsets: () => ({ top: 0, bottom: 0 }) },
@@ -146,6 +149,7 @@ function feed(ids: string[], reducedMotion = false) {
       saveRepository = value;
       saveCollections = [{ id: 'list', source: 'collection', name: 'List', repositoryCount: 0, selected: true }];
     },
+    clearSelectedLists(){saveCollections=saveCollections.map(list=>({...list,selected:false}));},
     setCreate(value: () => Promise<any>) { createCollection = value; },
     get pendingCloseAnimations() { return closeAnimations.length; },
     button(label: string) { return root.root.findAllByType('Modal').find(node => node.props.visible)!.findAllByType('Pressable').find(node => node.props.accessibilityLabel === label)!; },
@@ -400,4 +404,44 @@ test('share sheet scrolls on short screens and records GitHub opens only after s
     await act(async()=>{finish();await new Promise(resolve=>setTimeout(resolve,0));});
     assert.deepEqual(app.events,[{repo_id:repoId,action:'github_open',serve_id:repoId,position:3}]);
   } finally {await app.unmount();}
+});
+
+for (const outcome of ['success', 'failure'] as const) {
+  test(`retired save ${outcome} cannot restore cleared private cache`, async () => {
+    const app=feed([]); let finish!: (value: any)=>void; let fail!: (error: Error)=>void;
+    app.setSave(()=>new Promise((yes,no)=>{finish=yes;fail=no;}));
+    await app.mountStandaloneSave('00000000-0000-4000-8000-000000000010');
+    await app.press('Save repository to selected Lists');
+    await app.unmount();
+    authSessionLifecycle.retire(authSessionLifecycle.currentGeneration());
+    await act(async()=>{
+      if(outcome==='success')finish({saved:true,selectedListIds:['collection:list'],saveStateChanged:true});
+      else fail(new Error('Retired request'));
+      await new Promise(r=>setTimeout(r,10));
+    });
+    assert.equal(app.client.getQueryCache().getAll().length,0);
+  });
+}
+
+test('unchanged List membership does not refetch its contents or any loaded Home page',async()=>{
+  const app=feed([]);
+  app.setSave(async()=>({saved:true,selectedListIds:['collection:list'],saveStateChanged:false}));
+  let homeReads=0;let listReads=0;
+  const home=new QueryObserver(app.client,{queryKey:['feed','viewer'],queryFn:async()=>{homeReads++;return {pages:[{items:[],nextCursor:'keep'}],pageParams:[null]};},staleTime:Infinity});
+  const list=new QueryObserver(app.client,{queryKey:listRepositoryQueryKey('collection','viewer','list'),queryFn:async()=>{listReads++;return [];},staleTime:Infinity});
+  const stops=[home.subscribe(()=>{}),list.subscribe(()=>{})];
+  await home.refetch();await list.refetch();
+  const before=[homeReads,listReads];
+  try{await app.mountStandaloneSave('00000000-0000-4000-8000-000000000011');await app.press('Save repository to selected Lists');assert.deepEqual([homeReads,listReads],before);}
+  finally{for(const stop of stops)stop();await app.unmount();}
+});
+
+
+test('final unsave from stale empty selection refreshes known List contents without Home refetch',async()=>{
+ const app=feed([]); app.setSave(async()=>({saved:false,selectedListIds:[],saveStateChanged:true}));app.clearSelectedLists();
+ let reads=0;
+ const observer=new QueryObserver(app.client,{queryKey:listRepositoryQueryKey('collection','viewer','list'),queryFn:async()=>{reads++;return [];},staleTime:Infinity});
+ const stop=observer.subscribe(()=>{}); await observer.refetch(); const before=reads;
+ try {await app.mountStandaloneSave('00000000-0000-4000-8000-000000000011');await app.press('Save repository to selected Lists');assert.equal(reads,before+1);}
+ finally{stop();await app.unmount();}
 });
