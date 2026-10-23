@@ -50,6 +50,21 @@ test('feed and Trending cards delegate repository presses to internal navigation
   assert.doesNotMatch(trendingCard, /Linking\.openURL/);
 });
 
+test('profile repository sheets dismiss before navigating to repository details', async () => {
+  const list = await readFile(
+    new URL('../src/components/profile-repository-list.tsx', import.meta.url),
+    'utf8',
+  );
+  const sheet = await readFile(
+    new URL('../src/components/connection-sheet.tsx', import.meta.url),
+    'utf8',
+  );
+
+  assert.match(list, /onRepositoryPress\(repositoryHref\(item\.id\)\)/);
+  assert.match(sheet, /afterCloseRef\.current = \(\) => onRepositoryPress\(href\)/);
+  assert.match(sheet, /onClose\(\);\s*afterClose\?\.\(\)/);
+});
+
 test('every intentional GitHub escape has an explicit visible Open on GitHub action', async () => {
   for (const path of [
     'src/components/home/RepositoryScreen.tsx',

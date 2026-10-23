@@ -18,6 +18,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import type { ConnectionType } from '@/api/connections';
 import { REFERENCE_THEME } from '@/constants/theme';
+import type { RepositoryRouteHref } from '@/utils/repository-links';
 import { ConnectionList } from './connection-list';
 import {
   ProfileRepositoryList,
@@ -34,6 +35,7 @@ export type ConnectionSheetProps = {
   userId?: string;
   onClose: () => void;
   onFollowingCountChange?: (delta: 1 | -1) => void;
+  onRepositoryPress?: (href: RepositoryRouteHref) => void;
 };
 
 const OPEN_DURATION = 280;
@@ -48,6 +50,7 @@ export function ConnectionSheet({
   userId,
   onClose,
   onFollowingCountChange,
+  onRepositoryPress,
 }: ConnectionSheetProps) {
   const { height, width } = useWindowDimensions();
   const reducedMotion = useReducedMotion();
@@ -59,6 +62,7 @@ export function ConnectionSheet({
     [sheetHeight],
   );
   const closingRef = useRef(false);
+  const afterCloseRef = useRef<null | (() => void)>(null);
 
   useEffect(() => {
     if (!visible) return;
@@ -102,9 +106,19 @@ export function ConnectionSheet({
       }),
     ]).start(({ finished }) => {
       closingRef.current = false;
-      if (finished) onClose();
+      if (!finished) return;
+      const afterClose = afterCloseRef.current;
+      afterCloseRef.current = null;
+      onClose();
+      afterClose?.();
     });
   }, [onClose, overlayOpacity, sheetHeight, sheetTranslateY, reducedMotion]);
+
+  const openRepository = useCallback((href: RepositoryRouteHref) => {
+    if (!onRepositoryPress || closingRef.current) return;
+    afterCloseRef.current = () => onRepositoryPress(href);
+    closeAnimated();
+  }, [closeAnimated, onRepositoryPress]);
 
   const title = type === 'followers'
     ? 'Followers'
@@ -188,6 +202,7 @@ export function ConnectionSheet({
                 contentPaddingBottom={Math.max(insets.bottom, 20)}
                 type={type}
                 userId={userId}
+                onRepositoryPress={openRepository}
               />
             )}
           </Animated.View>

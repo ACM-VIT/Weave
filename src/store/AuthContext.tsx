@@ -38,6 +38,7 @@ interface AuthContextType {
   signOut: () => Promise<void>;
   checkOnboardingStatus: () => Promise<void>;
   updateUserProfile: (profile: EditableUserProfile) => void;
+  adjustLikesGivenCount: (delta: -1 | 1) => void;
 }
 
 type UserProfileRequestPolicy = {
@@ -186,6 +187,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setUser((current) => mergeSavedUserProfile(current, profile));
   }, []);
 
+  const adjustLikesGivenCount = useCallback((delta: -1 | 1) => {
+    setUser((current) => current ? {
+      ...current,
+      likes_given_count: Math.max(0, Number(current.likes_given_count ?? 0) + delta),
+    } : current);
+  }, []);
+
   const setSession = useCallback(async ({
     accessToken,
     sessionGeneration,
@@ -271,6 +279,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       signOut,
       checkOnboardingStatus,
       updateUserProfile,
+      adjustLikesGivenCount,
     }}>
       {children}
     </AuthContext.Provider>

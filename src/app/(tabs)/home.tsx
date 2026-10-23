@@ -41,6 +41,13 @@ import { authSessionLifecycle } from '@/api/session-lifecycle';
 import { createFeedItemMapper } from '@/utils/feed-items';
 import NetInfo from '@react-native-community/netinfo';
 import { startActivityOutboxLifecycle } from '@/services/activityOutboxLifecycle';
+import {
+  isRepositoryOptimisticallyLiked,
+  optimisticLikeDelta,
+  patchProfileLikeOverrides,
+  profileLikeOverridesQueryKey,
+  type ProfileLikeOverrides,
+} from '@/utils/profile-likes';
 
 const WEB_FEED_LIST_STYLE =
   Platform.OS === 'web'
@@ -50,7 +57,7 @@ const VIEWABILITY_CONFIG = { itemVisiblePercentThreshold: 50 } as const;
 const ACTIVITY_FLUSH_INTERVAL_MS = 8_000;
 
 export default function HomeScreen() {
-  const { user, checkOnboardingStatus } = useAuth();
+  const { user, checkOnboardingStatus, adjustLikesGivenCount } = useAuth();
   const queryClient = useQueryClient();
   const feedQueryKey = useMemo(() => getFeedQueryKey(user?.user_id), [user?.user_id]);
   const listRef = useRef<FlatList<{ feedId: string; repository: RepositoryData }> | null>(null);
@@ -120,7 +127,19 @@ export default function HomeScreen() {
     return feedProjection.mapPages(data?.pages);
   }, [data?.pages, feedProjection]);
 
-  const handleQueueActivity = useCallback((event: ActivityInput, flushNow?: boolean) => {
+  const handleQueueActivity = useCallback((repository: RepositoryData, event: ActivityInput, flushNow?: boolean) => {
+    const currentLikeOverrides = queryClient.getQueryData<ProfileLikeOverrides>(
+      profileLikeOverridesQueryKey(user?.user_id),
+    );
+    const likeDelta = optimisticLikeDelta(
+      isRepositoryOptimisticallyLiked(currentLikeOverrides, repository),
+      event.action,
+    );
+    queryClient.setQueryData<ProfileLikeOverrides>(
+      profileLikeOverridesQueryKey(user?.user_id),
+      patchProfileLikeOverrides(currentLikeOverrides, repository, event.action),
+    );
+    if (likeDelta) adjustLikesGivenCount(likeDelta);
     queryClient.setQueryData<InfiniteData<FeedPage, string | null>>(
       feedQueryKey,
       (cachedFeed) => patchFeedReaction(cachedFeed, {
@@ -138,7 +157,7 @@ export default function HomeScreen() {
         await flushActivityBatch();
       }
     }).catch(() => undefined);
-  }, [activityOutbox, feedQueryKey, flushActivityBatch, queryClient]);
+  }, [activityOutbox, adjustLikesGivenCount, feedQueryKey, flushActivityBatch, queryClient, user?.user_id]);
 
   const handleSavedChange = useCallback((
     repository: RepositoryData,
@@ -300,7 +319,7 @@ export default function HomeScreen() {
               boundary={index === feedItems.length - 1 ? boundary : undefined}
               pageWidth={pageWidth}
               pageHeight={pageHeight}
-              onQueueActivity={handleQueueActivity}
+              onQueueActivity={(event, flushNow) => handleQueueActivity(item.repository, event, flushNow)}
               onSavedChange={(saved, changed) => handleSavedChange(item.repository, saved, changed)}
               onOwnerPress={() => openOwnerProfile(item.repository)}
               onRepositoryPress={() => router.push(repositoryHref(item.repository.id))}
