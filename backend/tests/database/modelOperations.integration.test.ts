@@ -198,3 +198,25 @@ integration('only identity-bound applied proof suppresses historical profile wit
  assert.equal(typeof rows[0].withdrawal_json,'string');assert.equal(rows[1].withdrawal_json,null);assert.equal(rows[1].status,'delivered');
  assert.equal(typeof rows[2].withdrawal_json,'string');
 });
+
+integration('the backend role can withdraw a pending profile without gaining frozen-source write access',async()=>{
+ const owner=await fixture();
+ await sqlClient.begin(async tx=>{
+  await tx`SELECT user_id FROM app.users WHERE user_id=${owner}::uuid FOR KEY SHARE`;
+  const lane=await lockModelLane(tx,owner);assert.ok(lane);
+  await enqueueModelProfile(tx,lane,buildMlOnboardingJob(owner,2,{username:'Tarun',bio:'PRIVATE_ROLE_WITHDRAWAL'}));
+ });
+ const [before]=await sqlClient`SELECT outbox_id,operation_json,source_envelope_sha256 FROM telemetry.ml_outbox WHERE aggregate_id=${owner}::uuid`;
+ await sqlClient.begin(async tx=>{
+  await tx.unsafe('SET LOCAL ROLE ghsocial_backend');
+  await tx`SELECT user_id FROM app.users WHERE user_id=${owner}::uuid FOR KEY SHARE`;
+  const lane=await lockModelLane(tx,owner);assert.ok(lane);
+  await withdrawPendingProfiles(tx,lane,'2');
+ });
+ const [after]=await sqlClient`SELECT operation_json,source_envelope_sha256,withdrawal_json FROM telemetry.ml_outbox WHERE outbox_id=${before.outbox_id}::uuid`;
+ assert.equal(after.operation_json,before.operation_json);assert.equal(after.source_envelope_sha256,before.source_envelope_sha256);
+ assert.ok(after.withdrawal_json);assert.doesNotMatch(after.withdrawal_json,/PRIVATE_ROLE_WITHDRAWAL/);
+ const [privileges]=await sqlClient`SELECT has_column_privilege('ghsocial_backend','telemetry.ml_outbox','withdrawal_json','UPDATE') AS withdrawal,
+  has_column_privilege('ghsocial_backend','telemetry.ml_outbox','operation_json','UPDATE') AS frozen`;
+ assert.deepEqual({...privileges},{withdrawal:true,frozen:false});
+});

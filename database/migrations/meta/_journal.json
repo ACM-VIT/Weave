@@ -371,6 +371,13 @@
       "when": 1794528000000,
       "tag": "0049_scoring_retention_lock_bounds",
       "breakpoints": true
+    },
+    {
+      "idx": 53,
+      "version": "7",
+      "when": 1794614400000,
+      "tag": "0050_model_withdrawal_privilege",
+      "breakpoints": true
     }
   ]
 }
