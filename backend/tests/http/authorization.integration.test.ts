@@ -80,8 +80,11 @@ test('registered HTTP authorization matrix rejects impersonation and preserves d
     assert.equal(share.status, 200);
     const shareData = (await share.json() as { data: Record<string, unknown> }).data;
     assert.deepEqual(Object.keys(shareData).sort(), ['description', 'full_name', 'name', 'repo_id', 'url']);
-    for (const path of ['/api/activity', '/api/repos/import', '/api/repos/sync', `/api/users/id/${owner}`]) {
-      assert.equal((await request('POST', path, viewer, { user_id: owner })).status, 404);
+    for (const [method, path] of [
+      ['POST', '/api/activity'], ['POST', '/api/repos/import'], ['POST', '/api/repos/sync'],
+      ['GET', `/api/users/id/${owner}`], ['POST', `/api/repos/${repo}/sync`],
+    ] as const) {
+      assert.equal((await request(method, path, viewer, method === 'GET' ? undefined : { user_id: owner })).status, 404, `${method} ${path}`);
     }
     for (const path of ['/api/v2/collections', '/api/v2/boards', '/api/v2/repositories/saved']) {
       const response = await request('GET', `${path}?user_id=${owner}&userId=${owner}&viewerId=${owner}`, viewer);
@@ -112,13 +115,36 @@ test('registered HTTP authorization matrix rejects impersonation and preserves d
     await sqlClient`INSERT INTO telemetry.feed_serves(serve_id,feed_request_id,user_id,session_id,feed_version,source)
       VALUES(${served}::uuid,${randomUUID()}::uuid,${owner}::uuid,${session}::uuid,1,'authorization-test')`;
     await sqlClient`INSERT INTO telemetry.feed_serve_items(serve_id,position,repo_id,source) VALUES(${served}::uuid,0,${repo}::uuid,'authorization-test')`;
-    assert.equal((await request('POST', '/api/v2/interactions/batch', viewer, { events: [{ ...event('dislike'),
-      serve_id: served, session_id: session, position: 0, user_id: owner }] })).status, 409);
-    assert.equal((await request('POST', '/api/v2/interactions/batch', owner, { events: [ownEvent] })).status, 409, 'event IDs cannot be replayed as another actor');
+    // Compare durable state, rather than only HTTP status: a valid prefix must
+    // never commit when a later event belongs to another account.
+    const durableState = async () => {
+      const users = [owner, viewer];
+      const [events, reactions, counters, versions, jobs] = await Promise.all([
+        sqlClient`SELECT * FROM telemetry.interaction_events WHERE user_id=ANY(${users}::uuid[]) ORDER BY event_id`,
+        sqlClient`SELECT * FROM app.reactions WHERE user_id=ANY(${users}::uuid[]) ORDER BY user_id,repo_id`,
+        sqlClient`SELECT * FROM app.repo_engagement WHERE repo_id=${repo}::uuid`,
+        sqlClient`SELECT * FROM app.user_feed_state WHERE user_id=ANY(${users}::uuid[]) ORDER BY user_id`,
+        sqlClient`SELECT * FROM telemetry.ml_outbox WHERE aggregate_id=ANY(${users}::uuid[]) ORDER BY outbox_id`,
+      ]);
+      return { events: [...events], reactions: [...reactions], counters: [...counters], versions: [...versions], jobs: [...jobs] };
+    };
+    for (const [actor, valid, invalid] of [
+      [viewer, event('unlike'), { ...event('dislike'), serve_id: served, session_id: session, position: 0, user_id: owner }],
+      [owner, event('like'), ownEvent],
+    ] as const) {
+      const before = await durableState();
+      assert.equal((await request('POST', '/api/v2/interactions/batch', actor, { events: [valid, invalid] })).status, 409);
+      assert.deepEqual(await durableState(), before, 'rejected mixed batch rolls back events, reactions, counters, versions and outbox');
+      assert.equal(Number((await sqlClient`SELECT count(*) FROM telemetry.interaction_events WHERE event_id=${valid.event_id}::uuid`)[0]!.count), 0);
+    }
     const created = await request('POST', `/api/v2/repositories/${repo}/comments`, viewer, { body: 'Viewer comment', user_id: owner });
     assert.equal(created.status, 201); assert.equal((await created.json() as { data: { user_id: string } }).data.user_id, viewer);
     const publicLikes = await request('GET', `/api/v2/users/${viewer}/likes-given`, owner);
     assert.equal(publicLikes.status, 200, 'positive likes are public social profile activity to authenticated viewers');
+    const likedItems = (await publicLikes.json() as { data: { items: Array<{ repo_id: string }> } }).data.items;
+    assert.deepEqual(likedItems.map(item => item.repo_id), [repo]);
+    const actors = await sqlClient`SELECT user_id,reaction FROM app.reactions WHERE repo_id=${repo}::uuid ORDER BY user_id`;
+    assert.deepEqual(actors.map(row => [row.user_id, row.reaction]), [[viewer, 'like']], 'forged user fields cannot change the public like actor');
     const malformed = await request('POST', '/api/internal/v2/ingestion/repositories/upsert', undefined, {}, { 'x-internal-secret': 'éabc' });
     assert.equal(malformed.status, 401);
     const rotated = await request('POST', '/api/internal/v2/ingestion/repositories/upsert', undefined, {}, { 'x-internal-secret': 'rotated-local-secret' });
