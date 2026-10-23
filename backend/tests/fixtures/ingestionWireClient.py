@@ -83,6 +83,20 @@ def stats():
     return response.json()
 
 
+def expected_records(items):
+    # Expectations are independent of the production conversion under test.
+    return [{"github_id": item.payload["github_id"],
+             "readme_hash": hashlib.sha256(item.readme.raw_markdown.encode()).hexdigest(),
+             "readme_source_path": item.readme.source_path,
+             "readme_default_branch": item.readme.default_branch,
+             "readme_base_url": item.readme.base_url} for item in items]
+
+
+def assert_received(items, accepted_before):
+    received = [item for batch in stats()["accepted"][accepted_before:] for item in batch]
+    assert received == expected_records(items), "batch lost, repeated, reordered or changed source records"
+
+
 def send_and_check(items, expected_sizes):
     before = len(session.sent)
     accepted_before = len(stats()["accepted"])
@@ -92,13 +106,7 @@ def send_and_check(items, expected_sizes):
     bodies = session.sent[before:]
     assert [len(body) for body in bodies] == expected_sizes
     actual = [item for batch in stats()["accepted"][accepted_before:] for item in batch]
-    expected = []
-    for item in items:
-        record = transport.repository_upsert_record(item)
-        expected.append({"github_id": record["github_id"],
-                         "readme_hash": hashlib.sha256(record["readme"].encode()).hexdigest(),
-                         **{key: record[key] for key in ("readme_source_path", "readme_default_branch", "readme_base_url")}})
-    assert actual == expected, "canonical Markdown/media provenance changed across HTTP"
+    assert actual == expected_records(items), "canonical Markdown/media provenance changed across HTTP"
 
 
 for size in (LIMIT - 1, LIMIT):
@@ -134,17 +142,21 @@ assert len(session.sent) - attempts_before == 1
 
 items = exact_sources(LIMIT + 1)
 offset = len(session.sent)
+accepted_before = len(stats()["accepted"])
 result = client.upsert_repositories_detailed(items)
 assert result.count == len(items) and not result.failed
 assert len(session.sent) - offset == 2
 assert all(len(body) <= LIMIT for body in session.sent[offset:])
+assert_received(items, accepted_before)
 
 for count in (100, 101):
     items = [source(index + 100) for index in range(count)]
     offset = len(session.sent)
+    accepted_before = len(stats()["accepted"])
     result = client.upsert_repositories_detailed(items)
     assert result.count == count and not result.failed
     assert [len(json.loads(body)["repositories"]) for body in session.sent[offset:]] == ([100] if count == 100 else [100, 1])
+    assert_received(items, accepted_before)
 before = stats()
 response = session.post(origin + "/api/internal/v2/ingestion/repositories/upsert", data=encoded(items), headers=HEADERS, timeout=10)
 assert response.status_code == 400 and "1-100" in response.json()["error"]
@@ -152,10 +164,12 @@ assert stats()["accepted"] == before["accepted"]
 
 offset = len(session.sent)
 bad, good = source(500, "界" * (LIMIT // 3 + 1)), source(501)
+accepted_before = len(stats()["accepted"])
 result = client.upsert_repositories_detailed([bad, good])
 assert result.succeeded == [good.payload["full_name"]]
 assert "8 MiB" in result.failed[bad.payload["full_name"]]
 assert len(session.sent) - offset == 1
+assert_received([good], accepted_before)
 
 before = stats()
 response = session.post(origin + "/api/internal/v2/ingestion/repositories/upsert", data=above,
