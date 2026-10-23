@@ -179,6 +179,17 @@ test('registered unlink routes use actual scoped Supabase OAuth/session HTTP wit
     assert.equal((await finish(authorization.searchParams.get('unlink_code')!)).status,409);
     assert.equal(deletes,before); assert.equal(persistence.current.operationId,stable);
   });
+  await t.test('an older callback proof cannot disconnect a replacement same-subject credential', async () => {
+    reset(); const before = deletes, revocations = revoked.length;
+    const authorization = await authorize();
+    activeIdentity = '10000000-0000-4000-8000-000000000003';
+    const response = await finish(authorization.searchParams.get('unlink_code')!);
+    assert.equal(response.status, 409, await response.clone().text());
+    assert.equal(deletes, before, 'replacement credential cannot reach DELETE');
+    assert.equal(revoked.length, revocations, 'stale proof cannot revoke current preferences');
+    assert.equal(persistence.current, null, 'stale proof cannot prepare an unlink intent');
+    assert.equal(linked, true); assert.equal(persistence.githubId, ownerGithubId);
+  });
   await t.test('late old DELETE completion preserves a relinked same-subject new credential', async () => {
     reset(); const authorization = await authorize();
     const entered = new Promise<void>(resolve => { deleteEntered = resolve; });
