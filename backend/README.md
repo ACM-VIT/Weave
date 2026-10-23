@@ -56,14 +56,14 @@ All timestamps are ISO 8601 UTC. All IDs described as UUIDs must be valid UUID s
 | `GET /api/auth/callback` | provider redirect | Consumes the provider attempt, creates a five-minute client exchange code, and redirects to the app |
 | `POST /api/auth/exchange` | `{code,code_verifier}` | Verifies client PKCE, consumes the code, and returns the application access token/cookie |
 
-Signup/profile creation and ML onboarding enqueue are one backend transaction. OAuth callback verifies identity and ensures the product profile exists before issuing a code; it does not collect activity or accept preferences. ML downtime never blocks authentication because meaningful onboarding delivery uses the outbox.
+Signup/profile creation and ML onboarding enqueue are one backend transaction. OAuth callback ensures the product profile exists before issuing a code. ML downtime never blocks authentication because onboarding delivery uses the outbox.
 
 ### User and onboarding
 
 | Method and path | Body/query | Result |
 |---|---|---|
 | `GET /api/v2/users/me` | none | Private profile, stats, topic slugs, feed and feedback versions |
-| `PATCH /api/v2/users/me` | Any subset of `{username,full_name,date_of_birth,bio,avatar_url}` | Updated profile; unknown fields are rejected. GitHub identity fields are provider-managed and immutable through this endpoint. |
+| `PATCH /api/v2/users/me` | Any subset of `{username,full_name,bio,avatar_url}` | Updated profile; unknown fields are rejected. GitHub identity fields are provider-managed and immutable through this endpoint. |
 | `GET /api/v2/users/:userId` | none | Public active profile and stats |
 | `PUT /api/v2/users/:userId/follow` | none | Idempotently follows; `204` |
 | `DELETE /api/v2/users/:userId/follow` | none | Idempotently unfollows; `204` |
@@ -71,13 +71,9 @@ Signup/profile creation and ML onboarding enqueue are one backend transaction. O
 | `GET /api/v2/users/:userId/following` | `limit`, `offset` | Following users |
 | `GET /api/v2/users/:userId/likes-given` | `limit`, `offset` | Repositories liked by the user |
 | `GET /api/v2/onboarding/status` | none | `{completed,profile_version}` |
-| `PUT /api/v2/onboarding` | `{bio?,interests?,skills?,tech_stack?,taxonomy_selections?}`; legacy `topics` supported | Persists explicit choices and stable taxonomy separately, increments versions and enqueues semantic ML context |
-| `GET /api/v2/onboarding/github-import` | none | Owner's import status/provenance; no provider request |
-| `POST /api/v2/onboarding/github-import/preview` | `{consent:true}` | Owner-bound expiring public activity preview; no preference mutation |
-| `POST /api/v2/onboarding/github-import/accept` | `{snapshot_id}` | Atomic consent, profile, canonical discovery and outbox acceptance |
-| `DELETE /api/v2/onboarding/github-import` | none | Revokes import and fences late previews; preserves later manual edits |
+| `PUT /api/v2/onboarding` | `{bio?,topics:[slug,...]}` | Replaces interests, increments profile version, enqueues ML onboarding |
 
-Topic slugs are lowercase letters/numbers/hyphens, 1-50 characters. Each structured category is bounded to 50 values, with at most 100 distinct combined topic slugs. Validated taxonomy stores canonical semantic labels with separate stable IDs. Public activity import is optional; declining or unavailable activity uses explicit manual onboarding and the unchanged strict recommendation pipeline. Acceptance is not completed ML delivery. See [the import contract and acceptance runbook](../docs/runbooks/github-import.md), including provider unlink and judged-quality limitations.
+Topic slugs are lowercase letters/numbers/hyphens, 1-50 characters. Onboarding accepts 1-50 unique topics.
 
 ### Repositories
 
