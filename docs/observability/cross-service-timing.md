@@ -122,7 +122,7 @@ Outbox delivery carries an optional timeout failure kind from an aborted ML
 transport, preserving its timeout histogram instead of collapsing status zero
 into generic failure. This metadata does not change acceptance/retry behavior.
 Rejected Axios redirects (redirect following remains disabled) record failure,
-not HTTP success. Focused regression fixture source is supplied without execution.
+not HTTP success. The local backend regression suite exercises these cases.
 
 
 ## Home readiness and first visibility
@@ -152,8 +152,10 @@ histograms are device-local diagnostics, not automatically collected fleet metri
 
 The paired ML change adds `ml_stage_duration_seconds` to the existing `/metrics`.
 Its fixed ten operation, ten stage and five outcome domains cap stage families at
-500 (5,500 bucket/count/sum series). Bounds in seconds are .005,.025,.1,.5,1,5,30,120
-and +Inf. Existing metrics remain. ML outcome `ok` corresponds to backend success;
+500 (7,500 bucket/count/sum series). Bounds in seconds are
+.005,.025,.1,.5,1,4,5,8,12,30,45,120 and +Inf. The added 4/5/8/12/45-second
+boundaries resolve the default search/health/feedback/recommendation/refresh
+budgets. Existing metrics remain. ML outcome `ok` corresponds to backend success;
 `error` corresponds to failure. Keep rejected/timeout/cancelled separate.
 
 Existing executor `queue`, `service` and `late_work` measurements retain real worker
@@ -163,6 +165,10 @@ repository retrieval/search calls; `ranking` covers recommendation ranking;
 `response_build` measures recommendation dictionary/dataclass construction. The
 last stage excludes framework validation, JSON encoding and network flush. These
 nested stages overlap executor service time; never sum them as independent costs.
+Admission rejections have a separate `queue/rejected` series and never claim a
+service-time sample. Sampled stages record the remaining local deadline at entry
+without cancelling expired work, plus their wall-clock end time and monotonic
+duration. Never compare a process's absolute monotonic deadline with another clock.
 
 ## Reproduction and local evidence
 
@@ -172,24 +178,50 @@ Run from the corresponding worktree with its locked dependencies:
 # Weave: no services needed for the synthetic overhead measurement.
 node_modules/.bin/tsx scripts/measure-tracing.mts 20000
 node_modules/.bin/tsx --test tests/feed-timing.test.ts tests/feed-pagination.test.ts tests/home-feed.test.ts
-# Weave-ml: no model download or external service calls.
-.venv/bin/python scripts/benchmark_tracing.py --help
+# Weave-ml: prepare dependencies with uv sync --locked --group dev first.
+# The tracing microbenchmark requires no model download or external service.
+.venv/bin/python -m scripts.benchmark_tracing --iterations 20000 --scrapes 100
 .venv/bin/python -m pytest tests/ -m 'not integration and not benchmark' -q
 ```
 
-Local Node 26.11.1 sample: 20,000 sequential root+child pairs took 158 ms wall
-(7.9 us/pair), versus .31 ms for bare callbacks. Serializing 1,000 snapshots took
-169 ms with two populated families and 5,692 ms with all 225 families populated.
+The live loopback tracing contract has its own checkout selector because this
+instrumentation is additive to the pinned ML DTO release. It checks identical
+OpenAPI artifacts, then runs the actual Node HTTP client against FastAPI auth,
+feedback contracts, executor admission and copied worker context. Storage is a
+test double. It tests distinct attempt/request IDs and JSON-serialized outbox
+lineage; database durability is covered by the separate database fixtures.
+
+```sh
+# From Weave/backend; use the matching ML checkout and its Python environment.
+DATABASE_URL=postgresql://test:test@127.0.0.1:9/test \
+WEAVE_ML_TRACING_ROOT=/absolute/path/to/Weave-ml \
+WEAVE_ML_PYTHON=/absolute/path/to/Weave-ml/.venv/bin/python \
+node_modules/.bin/tsx --test tests/contracts/tracingCrossRepo.integration.test.ts
+```
+
+Local Node 26.11.1 sample on October 23: 20,000 sequential root+child pairs took
+403 ms wall (20.2 us/pair), versus 1.55 ms for bare callbacks. Serializing 1,000
+snapshots took 428 ms with two populated families and 10,329 ms with all 225
+families populated.
 Raw CPU and RSS deltas are emitted by the script; RSS deltas include GC/allocator
 noise and are not peak memory. The complete sampled synthetic root-minus-child
-residual was p50 .0055 ms, p95 .0092 ms across 128 traces. This is a local overhead
+residual was p50 .0112 ms, p95 .0241 ms across 128 traces. This is a local overhead
 fixture, not unexplained production latency or an HTTP endpoint scrape benchmark.
 
-Local ML sample with native thread limit one: 20,000 scopes took 4.5 ms baseline,
-90.9 ms unsampled and 168.8 ms sampled. One hundred full-domain metrics renders
-took 147–161 ms and emitted about 548 KB/render, versus 5.2 ms/100 empty renders.
-Peak Linux RSS was about 65–68 MiB. Sampling still records every histogram sample.
+Local Python 3.12.14 sample with native thread limit one: 20,000 scopes took
+13.7 ms baseline, 273 ms unsampled and 537 ms sampled. One hundred full-domain
+metrics renders took 550–553 ms and emitted 743,430 bytes/render, versus 14.1 ms
+for 100 empty renders. Peak Linux RSS was about 64–67 MiB. Sampling still records
+every histogram sample. Host load, CPU policy and allocator state affect results.
 These sequential microbenchmarks are not a production load or throughput claim.
+
+Local verification: frontend 313 passed/5 skipped; backend 380 passed/110 skipped
+with the tracing loopback fixture enabled; ML 1,745 passed/1 skipped/50 deselected
+(`not integration and not benchmark`). After moving service rejection accounting
+into native submit to also cover health coordinator calls, its runtime, API and
+metrics regressions passed again (53 tests). Backend build and both frontend and
+backend TypeScript checks passed. The earlier disposable-PostgreSQL tracing flow
+fixture passed two tests; the resumed run did not rerun database integrations.
 
 For real collection, join sampled parent/child span IDs and report missing spans;
 use local elapsed clocks only. To estimate unexplained backend time, subtract the
