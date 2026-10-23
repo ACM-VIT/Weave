@@ -95,6 +95,31 @@ responses lacking identities. No migration, event rewriting, queue reset or new
 listener is needed. Inspect pending/claimed/dead counts, oldest pending age,
 `outbox_feedback_events_per_request` and `outbox_feedback_unacknowledged_total`.
 
+The provider acknowledgement extension is tracked in Weave-ml PR131, after its
+generated-contract PR128. Deploy the compatible provider before the consumer;
+the consumer release manifest pins its exact schema and commit. The CI
+`ml-contract` job provisions disposable PostgreSQL/Redis and executes both the
+six-operation wire contract and real outbox-to-Redis feedback failure tests.
+The latter use actual registered Python routes, admission and atomic Redis
+scripts; only fixture-local middleware injects a failed middle script, delayed
+HTTP response after acceptance and downstream429. No fault switch is available
+in the application. Each fixture removes its own rows/stream after stopping
+the child server. Run locally only against explicitly selected disposable targets:
+
+```bash
+RUN_OUTBOX_LANES_INTEGRATION=1 RUN_OUTBOX_FEEDBACK_CONTRACT=1 \
+WEAVE_ML_CONTRACT_ROOT=/absolute/path/to/pinned/Weave-ml \
+npx --no-install tsx --test --test-concurrency=1 \
+  tests/database/outboxLanes.integration.test.ts \
+  tests/contracts/outboxFeedback.integration.test.ts
+```
+
+Use a migrated loopback database named `weave_scroll`, dedicated loopback Redis
+database15 and the pinned provider's locked Python environment. These tests do
+not load models or access Qdrant, GitHub, Supabase or production data. Local
+matched SQL/mock-transport measurements establish queue progress and RPC counts,
+not production throughput or recommendation quality.
+
 The backend test command runs files serially because database integration files
 share destructive fixtures. Use `RUN_DATABASE_INTEGRATION=1 npm test` only with
 an isolated disposable PostgreSQL database and isolated Redis test database;
