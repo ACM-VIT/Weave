@@ -10,6 +10,7 @@ test('authenticated ingestion accepts complete lifecycle evidence and rejects pa
     owner: 'owner', name: 'repo', url: 'https://github.com/owner/repo', observed_at: '2026-01-03T00:00:00Z' };
   validateRepositoryLifecycle(lifecycle);
   validateRepositoryLifecycle({ ...lifecycle, observed_at: '2026-01-02T05:30:00+05:30' });
+  validateRepositoryLifecycle({ ...lifecycle, observed_at: '0001-01-02T00:00:00.123456+23:59' });
   validateRepositoryLifecycle({ status: 'unavailable', source: lifecycle.source, observed_at: lifecycle.observed_at, archived: null, disabled: null });
   assert.equal(isRepositoryUpsert({ ...repository, lifecycle }), true);
   validateRepositoryLifecycle({ status: 'unavailable', source: lifecycle.source, observed_at: lifecycle.observed_at });
@@ -18,6 +19,9 @@ test('authenticated ingestion accepts complete lifecycle evidence and rejects pa
     { ...lifecycle, source: ['github-rest-repository'] },
     { ...lifecycle, source: 'push-recency' }, { ...lifecycle, observed_at: '2026-01-02T00:00:00' },
     { ...lifecycle, observed_at: '2999-01-01T00:00:00Z' },
+    { ...lifecycle, observed_at: '0000-01-01T00:00:00Z' },
+    { ...lifecycle, observed_at: '0001-01-01T00:00:00+23:59' },
+    { ...lifecycle, observed_at: '9999-12-31T23:59:59-23:59' },
     { ...lifecycle, observed_at: '2026-02-30T00:00:00Z' },
     { ...lifecycle, observed_at: '2026-01-02T24:00:00Z' },
     { ...lifecycle, status: 'unavailable' }, { ...lifecycle, injected: true },

@@ -15,7 +15,9 @@ export function validateRepositoryLifecycle(value: unknown): asserts value is Re
   const parsed = typeof item.observed_at === 'string' ? Date.parse(item.observed_at) : NaN;
   const offset = match && match[2] !== 'Z'
     ? (Number(match[4]) * 60 + Number(match[5])) * (match[3] === '+' ? 1 : -1) : 0;
-  if (!match || !Number.isFinite(parsed) || parsed > Date.now()
+  const utcYear = new Date(parsed).getUTCFullYear();
+  if (!match || Number(match[1].slice(0, 4)) < 1
+    || !Number.isFinite(parsed) || utcYear < 1 || utcYear > 9999 || parsed > Date.now()
     || new Date(parsed + offset * 60_000).toISOString().slice(0, 19) !== match[1]) {
     throw new Error('Invalid lifecycle observation time.');
   }
@@ -32,5 +34,8 @@ export function lifecycleForMl(value: RepositoryLifecycleObservation | null | un
   if (!['disabled', LIFECYCLE_POLICY].includes(mode)) throw new Error('Invalid ML_REPOSITORY_LIFECYCLE_OBSERVATIONS.');
   if (value == null) return undefined;
   validateRepositoryLifecycle(value);
-  return mode === LIFECYCLE_POLICY ? structuredClone(value) : undefined;
+  if (mode !== LIFECYCLE_POLICY) return undefined;
+  // Canonical nested field order keeps equivalent JSON replays idempotent.
+  return { status: value.status, source: value.source, observed_at: value.observed_at,
+    ...(value.status === 'verified' ? { archived: value.archived, disabled: value.disabled } : {}) };
 }

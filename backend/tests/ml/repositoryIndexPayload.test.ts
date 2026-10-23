@@ -231,6 +231,10 @@ test('lifecycle observations are gated, never content changes, and reach both du
   assert.deepEqual(buildMlRepositoryFeaturePatch(repository).lifecycle, lifecycle);
   assert.deepEqual(buildMlRepositorySource(repository, 'hash').lifecycle, lifecycle);
   assert.equal(repositoryContentHash(repository), originalHash, 'status-only transition must not reembed');
+  const reordered = { ...repository, lifecycle: { disabled: lifecycle.disabled, archived: lifecycle.archived,
+    observed_at: lifecycle.observed_at, source: lifecycle.source, status: lifecycle.status } };
+  assert.equal(repositoryRefreshIdempotencyKey('repo', 1, buildMlRepositoryFeaturePatch(repository), 1),
+    repositoryRefreshIdempotencyKey('repo', 1, buildMlRepositoryFeaturePatch(reordered), 1));
   const unavailable = { status: 'unavailable' as const, source: lifecycle.source, observed_at: '2026-01-03T00:00:00Z' };
   assert.deepEqual(buildMlRepositoryFeaturePatch({ ...repository, lifecycle: unavailable }).lifecycle, unavailable);
   assert.equal(repositoryContentHash({ ...repository, lifecycle: unavailable }), originalHash);

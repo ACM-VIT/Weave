@@ -25,8 +25,8 @@ completed ML status CAS; newer verified restoration revives; failed/partial/
 unavailable observations retain last verified status indefinitely; legacy unknown
 and stable low-activity repositories remain eligible. Lifecycle time is independent
 of content/feature versions; a delayed archive refresh cannot be discarded merely
-because unrelated counts were refreshed later. Same-content index replay alone is
-not the boundary: backend always emits refresh for each staged observation.
+because unrelated counts were refreshed later. Same-content index replay also applies
+a lifecycle-only CAS; backend always emits refresh for each staged observation.
 Existing materialized feeds and in-flight selections are outside this boundary.
 
 Rollback: disable ML serving policy first, then backend forwarding. Preserve
