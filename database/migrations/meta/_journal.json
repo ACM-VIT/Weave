@@ -357,6 +357,13 @@
       "when": 1794355200000,
       "tag": "0047_session_scoped_serving",
       "breakpoints": true
+    },
+    {
+      "idx": 51,
+      "version": "7",
+      "when": 1794441600000,
+      "tag": "0048_scoring_publication_lookup",
+      "breakpoints": true
     }
   ]
 }

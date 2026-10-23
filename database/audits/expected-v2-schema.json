@@ -35,7 +35,7 @@
     "repo_readme_summaries_active_uidx", "readme_summary_jobs_pkey",
     "readme_summary_jobs_repo_id_content_version_content_hash_pr_key", "readme_summary_jobs_pending_idx",
     "repo_card_summaries_repo_active_idx", "repos_full_name_key",
-    "repos_github_id_key", "trending_one_active_period_uidx", "export_snapshots_expiry_idx", "export_snapshots_principal_idx", "scoring_generations_expiry_idx", "feed_item_provenance_owner_created_idx", "feed_item_provenance_exposure_key"
+    "repos_github_id_key", "trending_one_active_period_uidx", "export_snapshots_expiry_idx", "export_snapshots_principal_idx", "scoring_generations_expiry_idx", "feed_item_provenance_owner_created_idx", "feed_item_provenance_generation_owner_idx", "feed_item_provenance_exposure_key"
   ],
   "functions": ["private_scoring.export_timestamp", "private_scoring.lock_subject", "private_scoring.enforce_subject_capture_barrier", "private_scoring.authorize_export", "private_scoring.create_export_snapshot", "private_scoring.seal_export_labels", "private_scoring.read_export_snapshot", "private_scoring.revoke_subject_capture", "private_scoring.purge_scoring_private","activate_repo_summary", "enforce_comment_parent_repo",
     "private_scoring.reconcile_publication_witnesses", "private_scoring.record_generation_witness", "private_scoring.validate_feed_item_provenance", "private_scoring.persist_generation", "private_scoring.exact_keys", "private_scoring.finite_input", "private_scoring.reject_update"],
