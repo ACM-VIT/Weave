@@ -673,6 +673,11 @@ separately from summaries. Repository-index delivery commits the summary and
 outbox acknowledgement together. `ML_REPOSITORY_INDEX_TIMEOUT_MS` defaults to
 240000, and `OUTBOX_LEASE_MS` must exceed it by at least 60000 milliseconds.
 
+The [ingestion transport runbook](../docs/runbooks/ingestion-transport.md) defines
+the complete UTF-8 byte/count contract, reverse-proxy compatibility settings and
+the real Python-to-registered-Express HTTP boundary test. That paired test runs
+separately in CI; it does not require product storage or model downloads.
+
 To backfill missing generated summaries, review a dry run with
 `npm run reindex:ml -- --campaign=<id> --summary-backfill`, then add `--execute`
 only after approving the counts and target ML collection. Description fallbacks
