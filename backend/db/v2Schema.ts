@@ -541,7 +541,7 @@ export const feedItemProvenance = telemetrySchema.table('feed_item_provenance', 
   generationId: uuid('generation_id'),
   recordDigest: text('record_digest'),
   captureStatus: text('capture_status').notNull(),
-  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().default(sql`clock_timestamp()`),
 }, table => [
   primaryKey({ columns: [table.serveId,table.position] }),
   uniqueIndex('feed_item_provenance_exposure_key').on(table.exposureId),
