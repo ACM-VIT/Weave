@@ -123,9 +123,63 @@ integration('registered product SQL/HTTP reaches actual ordered ML, captured ran
   assert.equal(retiredCursor.status,400);assert.equal(retiredCursor.body.code,'FEED_CURSOR_STALE');assert.equal(providerReads,beforeEndCursor);
   assert.equal((await call<FeedResponseV2>(0,'/feed',request)).body.serve_id,first.body.serve_id);
   assert.equal((await call(0,'/feed-sessions',{kind:'begin',request_id:crypto.randomUUID(),session_id:sessions[0][0]})).status,409);
+  // Hold an ACTUAL trained generation response across a registered Reset.
+  const generate=runtime.ml.generate.bind(runtime.ml);
+  let releaseGeneration!:()=>void,markGenerated!:()=>void;
+  const generated=new Promise<void>(resolve=>{markGenerated=resolve;});
+  const release=new Promise<void>(resolve=>{releaseGeneration=resolve;});
+  let held=false;
+  runtime.ml.generate=async(input,work)=>{const response=await generate(input,work);
+   if(!held&&input.model_context?.session_id===sessions[1][1]){held=true;markGenerated();await release;}return response;};
+  const inFlightRequest={...request,feed_request_id:crypto.randomUUID(),session_id:sessions[1][1]};
+  const inFlight=runtime.feed.getFeed(owners[1],inFlightRequest).then(value=>({value}),error=>({error}));
+  let generationDeadline:ReturnType<typeof setTimeout>|undefined;
+  try{await Promise.race([generated,new Promise<never>((_,reject)=>{generationDeadline=setTimeout(()=>reject(Error('Actual generation did not reach Reset barrier')),30000);})]);}
+  finally{clearTimeout(generationDeadline);}
+  assert.equal((await call(1,'/feed-sessions',{kind:'reset',request_id:crypto.randomUUID(),session_id:sessions[1][1],expected_epoch:'1'})).status,200);
+  await deliver();releaseGeneration();
+  const obsolete=await inFlight;assert.ok('error' in obsolete,'old generated epoch must not be served after Reset');
+  assert.equal((await sql`SELECT 1 FROM telemetry.feed_serves WHERE user_id=${owners[1]}::uuid AND feed_request_id=${inFlightRequest.feed_request_id}::uuid`).length,0);
+  runtime.ml.generate=generate;
+  // Real registered revoke before genuine genesis: no revoked context reaches ML.
+  const withdrawnOwner=crypto.randomUUID();owners.push(withdrawnOwner);
+  tokens.push(jwt.sign({userId:withdrawnOwner,email:'fixture@example.test'},process.env.JWT_SECRET!,{expiresIn:'10m'}));
+  await sql`INSERT INTO auth.users(id) VALUES(${withdrawnOwner}::uuid)`;
+  await sql`INSERT INTO app.users(user_id,username,full_name,date_of_birth,bio,interests,skills,tech_stack,onboarding_completed,status)
+   VALUES(${withdrawnOwner}::uuid,${'withdraw_'+withdrawnOwner.replaceAll('-','')},'Tarun','2000-01-01','Manual Rust systems','["REVOKED_IMPORTED_CONTEXT"]'::jsonb,'["rust"]'::jsonb,'["rust"]'::jsonb,true,'active')`;
+  await sql`INSERT INTO app.user_stats(user_id) VALUES(${withdrawnOwner}::uuid)`;
+  await sql`INSERT INTO app.user_feed_state(user_id,model_policy_sha256,model_policy_limits)
+   VALUES(${withdrawnOwner}::uuid,${receipt.policy_sha256},${JSON.stringify(registration.limits)}::jsonb)`;
+  const withdrawnSession=crypto.randomUUID();
+  assert.equal((await call(2,'/interactions/batch',{events:[{...preinit,event_id:crypto.randomUUID(),session_id:withdrawnSession}]})).status,202);
+  assert.equal((await call(2,'/feed-sessions',{kind:'begin',request_id:crypto.randomUUID(),session_id:withdrawnSession})).status,409);
+  const [originalProfile]=await sql`SELECT operation_json,source_envelope_sha256 FROM telemetry.ml_outbox WHERE aggregate_id=${withdrawnOwner}::uuid`;
+  assert.match(originalProfile.operation_json,/REVOKED_IMPORTED_CONTEXT/);
+  await sql`INSERT INTO app.user_github_imports(user_id,accepted_at,baseline,applied)
+   VALUES(${withdrawnOwner}::uuid,now(),' {"interests":["systems"],"skills":["rust"],"tech_stack":["rust"]}'::jsonb,
+    '{"interests":["REVOKED_IMPORTED_CONTEXT"],"skills":["rust"],"tech_stack":["rust"]}'::jsonb)`;
+  const revoked=await fetch(origin+'/api/v2/onboarding/github-import',{method:'DELETE',headers:{authorization:'Bearer '+tokens[2]}});
+  assert.equal(revoked.status,200);
+  const [withdrawnSource]=await sql`SELECT operation_json,source_envelope_sha256,withdrawal_json FROM telemetry.ml_outbox WHERE aggregate_id=${withdrawnOwner}::uuid ORDER BY model_operation_version LIMIT 1`;
+  assert.equal(withdrawnSource.operation_json,originalProfile.operation_json);assert.equal(withdrawnSource.source_envelope_sha256,originalProfile.source_envelope_sha256);
+  assert.doesNotMatch(withdrawnSource.withdrawal_json,/REVOKED_IMPORTED_CONTEXT/);
+  const deliveredProfiles:string[]=[];const acceptOperations=runtime.ml.deliverModelOperations.bind(runtime.ml);
+  runtime.ml.deliverModelOperations=async batch=>{for(const operation of batch.operations)deliveredProfiles.push(operation.operation_json);return acceptOperations(batch);};
+  await deliver();
+  await until(()=>runtime.orderedProfiles!.ensureProfileReady(withdrawnOwner).then(()=>true).catch(()=>false),value=>value);
+  assert.ok(deliveredProfiles.length>0);assert.ok(deliveredProfiles.every(raw=>!raw.includes('REVOKED_IMPORTED_CONTEXT')));
+  const originalEnvelope=JSON.parse(originalProfile.operation_json) as {operation_id:string;model_operation_version:string};
+  const withdrawalStatus=await runtime.ml.modelOperationStatus({schema_version:1,user_id:withdrawnOwner,
+   operation_id:originalEnvelope.operation_id,model_operation_version:originalEnvelope.model_operation_version,source_envelope_sha256:originalProfile.source_envelope_sha256});
+  assert.equal(withdrawalStatus.status,'withdrawn_profile');assert.equal(withdrawalStatus.basis_status,'ready');
+  assert.equal(withdrawalStatus.applied_profile_version,'2');assert.ok(withdrawalStatus.current_head);
+  assert.equal((await call(2,'/feed-sessions',{kind:'begin',request_id:crypto.randomUUID(),session_id:withdrawnSession})).status,200);await deliver();
+  const [drained]=await sql`SELECT count(*)::int AS count FROM telemetry.pending_model_feedback WHERE user_id=${withdrawnOwner}::uuid AND operation_id IS NULL`;
+  assert.equal(drained.count,0);
+  runtime.ml.deliverModelOperations=acceptOperations;
   if(process.env.MODEL_PAIR_OUTPUT)await writeFile(process.env.MODEL_PAIR_OUTPUT,JSON.stringify({owners,tokens,writerUrl:writerUrl.toString(),
     provider:receipt.source_commit,ml:receipt.api_url,secret:receipt.internal_secret,capability:receipt.scoring_capture_capability},null,2),{mode:0o600});
-  console.log(JSON.stringify({provider:receipt.source_commit,users:2,canonicalSessions:4,productPreinitFeedback:true,
+  console.log(JSON.stringify({provider:receipt.source_commit,users:3,canonicalSessions:5,resetDuringActualGenerationRejected:true,registeredPreGenesisRevoke:true,withdrawnPrefixCompensation:true,productPreinitFeedback:true,
    actualCaptured778:true,scopedPages:4,replicaContinuation:true,cursorAdmissionBeforeProvider:true,dwellSameVersionRestart:true,retiredCursorRestart:true,lateEpochInactive:true,resetEndReplay:true}));
  }finally{
   server.closeAllConnections();await new Promise<void>(resolve=>server.close(()=>resolve()));await runtime.supervisor.stop();redis.disconnect();
