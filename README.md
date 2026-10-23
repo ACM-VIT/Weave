@@ -57,6 +57,10 @@ Maintenance:         WORKER_ROLE=maintenance npm run worker
 
 Before a release, require the frontend lint/type checks, backend build/tests, schema audit, database and HTTP integration tests, healthy outbox/Redis/ML dependencies, and the cutover gates in the architecture plan. Do not enable a full production cohort from local test results alone.
 
+Home keeps at most 500 cards for back-scroll and in-memory offline history.
+The retention policy and local validation are documented in
+[Home feed history](docs/runbooks/home-feed-history.md).
+
 ## Contributing
 
 Read [CONTRIBUTING.md](CONTRIBUTING.md) and [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md). Backend/ML work must also follow the file ownership, contract-freeze, migration-numbering, and controlled-integration rules in the two-person work plan.
