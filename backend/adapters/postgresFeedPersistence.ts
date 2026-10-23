@@ -8,7 +8,7 @@ import type {
   StoredServeItem,
 } from '../contracts/feed.v2.js';
 import { loadNegativePreferenceEligibleIds } from '../services/negativePreferenceEligibility.js';
-import { FeedPreferenceChangedError, MAX_FEED_SERVE_LOOKUP_BATCH } from '../ports/feedPersistencePort.js';
+import { FeedServeOverlapError, FeedPreferenceChangedError, MAX_FEED_SERVE_LOOKUP_BATCH } from '../ports/feedPersistencePort.js';
 import type {
   FeedPersistencePort, FeedReconciliationPersistencePort, FeedServeRequest, RepositoryIdentityProjection,
 } from '../ports/feedPersistencePort.js';
@@ -175,6 +175,18 @@ export class PostgresFeedPersistence implements FeedPersistencePort, FeedReconci
     return rows.map(row => String(row.repo_id));
   }
 
+  async listServedRepositoryIds(userId: string, sessionId: string, repoIds: string[]): Promise<string[]> {
+    if (repoIds.length > 100) throw new Error('Session delivery lookup exceeds the bounded candidate batch.');
+    if (repoIds.length === 0) return [];
+    const rows = await sqlClient`
+      SELECT DISTINCT item.repo_id FROM telemetry.feed_serves serve
+      JOIN telemetry.feed_serve_items item ON item.serve_id=serve.serve_id
+      WHERE serve.user_id=${userId}::uuid AND serve.session_id=${sessionId}::uuid
+        AND item.repo_id=ANY(${repoIds}::uuid[])
+    `;
+    return rows.map(row => String(row.repo_id));
+  }
+
   async getMlOnboardingJob(userId: string) {
     const rows = await sqlClient`
       SELECT username,full_name,bio,github_handle,avatar_url,interests,skills,tech_stack,
@@ -203,6 +215,7 @@ export class PostgresFeedPersistence implements FeedPersistencePort, FeedReconci
     feedVersion: bigint,
     limit: number,
     excludeRepoIds: string[],
+    sessionId?: string,
   ) {
     const rows = await sqlClient`
       WITH candidates AS (
@@ -226,6 +239,12 @@ export class PostgresFeedPersistence implements FeedPersistencePort, FeedReconci
           AND serve.feed_version=${feedVersion.toString()}::bigint
           AND serve.source='personalized'
           AND NOT (item.repo_id=ANY(${excludeRepoIds}::uuid[]))
+          AND NOT EXISTS (
+            SELECT 1 FROM telemetry.feed_serves delivered
+            JOIN telemetry.feed_serve_items seen ON seen.serve_id=delivered.serve_id
+            WHERE delivered.user_id=${userId}::uuid AND delivered.session_id=${sessionId ?? null}::uuid
+              AND seen.repo_id=item.repo_id
+          )
           AND NOT EXISTS (
             SELECT 1 FROM app.reactions negative
             WHERE negative.user_id=serve.user_id AND negative.repo_id=item.repo_id
@@ -467,13 +486,26 @@ export class PostgresFeedPersistence implements FeedPersistencePort, FeedReconci
       await tx`SELECT user_id FROM app.users WHERE user_id=${input.user_id}::uuid FOR KEY SHARE`;
       await tx`INSERT INTO app.user_feed_state(user_id) VALUES(${input.user_id}::uuid) ON CONFLICT DO NOTHING`;
       await tx`SELECT user_id FROM app.user_feed_state WHERE user_id=${input.user_id}::uuid FOR UPDATE`;
+      // Serialize final delivery decisions within one viewer/session. A queued
+      // page and durable recovery may both pass their earlier exclusion read;
+      // only one may commit overlapping candidates. Retain the user-before-feed
+      // lock order above before acquiring this session delivery fence.
+      await tx`SELECT pg_advisory_xact_lock(hashtextextended(
+        'feed-serve:' || ${input.user_id}::uuid::text || ':' || ${input.session_id}::uuid::text,0))`;
       const headers = await tx`
         INSERT INTO telemetry.feed_serves (
           feed_request_id,user_id,session_id,feed_version,generation_id,source,model_version,next_cursor
-        ) VALUES (
+        ) SELECT
           ${input.feed_request_id}::uuid,${input.user_id}::uuid,${input.session_id}::uuid,
           ${input.feed_version.toString()}::bigint,${input.generation_id}::uuid,${input.source},${input.model_version},${input.next_cursor}
-        ) ON CONFLICT (feed_request_id) DO NOTHING RETURNING serve_id,created_at
+        WHERE ${input.source !== 'personalized'} OR NOT EXISTS (
+          SELECT 1 FROM telemetry.feed_serves delivered
+          JOIN telemetry.feed_serve_items seen ON seen.serve_id=delivered.serve_id
+          WHERE delivered.user_id=${input.user_id}::uuid AND delivered.session_id=${input.session_id}::uuid
+            AND delivered.feed_request_id<>${input.feed_request_id}::uuid
+            AND seen.repo_id=ANY(${input.items.map(item => item.repo_id)}::uuid[])
+        )
+        ON CONFLICT (feed_request_id) DO NOTHING RETURNING serve_id,created_at
       `;
       if (!headers.length) return null;
       const header = headers[0];
@@ -496,7 +528,7 @@ export class PostgresFeedPersistence implements FeedPersistencePort, FeedReconci
     });
     if (!created || input.items.some(item => item.summary_id !== item.repository.summary_id)) {
       const replay = await this.getServeByRequest(input.user_id, input.feed_request_id);
-      if (!replay) throw new Error('Serve was not persisted.');
+      if (!replay) throw new FeedServeOverlapError();
       return replay;
     }
     // Creation uses the canonical projections already hydrated for this serve.

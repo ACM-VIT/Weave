@@ -44,6 +44,20 @@ return 1
 
 export const REFILL_FEED_LUA = `${INDEX_RESERVATION_LUA}
 if redis.call('hget', KEYS[2], 'token') ~= ARGV[1] then return {err='RESERVATION_OWNED'} end
+local discarded = cjson.decode(ARGV[4])
+if #discarded > 100 then return {err='DISCARD_CAPACITY'} end
+if #discarded > 0 then
+  local held = redis.call('lrange', KEYS[3], 0, 100)
+  if #held > 100 then return {err='DISCARD_CAPACITY'} end
+  local seen = {}
+  for _, id in ipairs(discarded) do seen[id] = true end
+  -- Keep the owner/meta/index intact; no same-request retry can claim a gap
+  -- between retiring delivered items and reserving the next batch.
+  redis.call('del', KEYS[3])
+  for _, item in ipairs(held) do
+    if not seen[cjson.decode(item).repo_id] then redis.call('rpush', KEYS[3], item) end
+  end
+end
 for i = 1, tonumber(ARGV[2]) do
   local item = redis.call('lpop', KEYS[1])
   if not item then break end

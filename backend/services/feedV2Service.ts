@@ -1,11 +1,13 @@
 import { FeedPreferenceChangedError } from '../ports/feedPersistencePort.js';
 import crypto from 'node:crypto';
+import { performance } from 'node:perf_hooks';
 
 import type { FeedRequestV2, FeedResponseV2, FeedSource, RecommendationEntry, RepositoryProjection } from '../contracts/feed.v2.js';
 import type { FeedPersistencePort } from '../ports/feedPersistencePort.js';
-import type { FeedQueuePort } from '../redis/feedQueue.js';
+import { FeedServeOverlapError } from '../ports/feedPersistencePort.js';
+import type { FeedQueuePort, FeedReservation } from '../redis/feedQueue.js';
 import { ReservationOwnedError } from '../redis/feedQueue.js';
-import { incrementMetric } from '../observability/metrics.js';
+import { incrementMetric, observeMetric } from '../observability/metrics.js';
 import { FeedCursorCodec } from './feedCursor.js';
 import type { FeedGenerationOutcome } from './feedGenerationService.js';
 import { FeedWaitCoordinator } from './feedWaitCoordinator.js';
@@ -17,6 +19,22 @@ interface FeedRefillOptions {
 }
 
 const MAX_FOREGROUND_FEED_OPERATIONS = 256;
+const MAX_FEED_GENERATIONS = 128;
+
+class FeedGenerationWaitExpiredError extends Error {}
+
+interface GenerationObserver {
+  resolve: (outcome: FeedGenerationOutcome) => void;
+  reject: (error: unknown) => void;
+}
+interface GenerationWork {
+  work: Promise<FeedGenerationOutcome>;
+  observers: Set<GenerationObserver>;
+  sessionId: string;
+  firstExpiredAt?: number;
+  emptyResult?: FeedGenerationOutcome;
+  retryKeys: Set<string>;
+}
 
 export class FeedRequestInProgressError extends Error {
   constructor() {
@@ -74,6 +92,7 @@ export class FeedV2Service {
   private readonly generationWaits: FeedWaitCoordinator<true>;
   private readonly refillScheduler?: FeedRefillScheduler;
   private readonly foreground = new Set<Promise<FeedResponseV2>>();
+  private readonly generations = new Map<string, GenerationWork>();
   private stopping = false;
 
   async stop(): Promise<void> {
@@ -83,6 +102,7 @@ export class FeedV2Service {
       ...this.foreground,
       ...(this.refillScheduler ? [this.refillScheduler.stop()] : []),
     ]);
+    await Promise.allSettled([...this.generations.values()].map(record => record.work));
     // Aborted/expired observers can leave their shared physical probes running.
     await Promise.allSettled([this.serveWaits.drain(), this.generationWaits.drain()]);
   }
@@ -95,6 +115,108 @@ export class FeedV2Service {
     return JSON.stringify([userId, version.toString()]);
   }
 
+  private async excludeSessionDeliveries(userId: string, sessionId: string, entries: RecommendationEntry[]) {
+    if (!entries.length || !this.persistence.listServedRepositoryIds) return entries;
+    const delivered = new Set((await this.persistence.listServedRepositoryIds(userId, sessionId,
+      [...new Set(entries.map(entry => entry.repo_id))])).map(id => id.toLowerCase()));
+    return entries.filter(entry => !delivered.has(entry.repo_id.toLowerCase()));
+  }
+
+  private async unservedReservation(userId: string, version: bigint, request: FeedRequestV2, token: string,
+    initial: FeedReservation): Promise<FeedReservation> {
+    let reservation = initial;
+    // A late generation can contain IDs delivered by foreground recovery.
+    // Validate at consumption, against exact candidate membership, so neither
+    // publication races nor a 500-item generation-history window reintroduce them.
+    for (let batch = 0; batch < 4; batch++) {
+      const items = await this.excludeSessionDeliveries(userId, request.session_id, reservation.items);
+      if (!reservation.items.length || items.length) return { ...reservation, items };
+      incrementMetric('feed_v2_session_duplicate_batches_total');
+      // Every reserved item already has a durable delivery witness. Retire and
+      // refill atomically without opening a same-request ownership gap.
+      reservation = await this.queue.refill(userId, version, request.feed_request_id, request.limit, token,
+        reservation.items.map(item => item.repo_id));
+      // Filtering an old nonempty batch does not establish ML exhaustion.
+      if (!reservation.items.length) throw new FeedRequestInProgressError();
+    }
+    throw new FeedRequestInProgressError();
+  }
+
+  private readonly emptyCompletions = new Map<string, { result: FeedGenerationOutcome; expires: number }>();
+
+  private startGeneration(userId: string, version: bigint, limit: number, sessionId: string, requestId: string) {
+    const retryKey = JSON.stringify([userId, version.toString(), sessionId, requestId, limit]);
+    for (const [key, completion] of this.emptyCompletions) {
+      if (completion.expires <= performance.now()) this.emptyCompletions.delete(key);
+    }
+    const completed = this.emptyCompletions.get(retryKey);
+    if (completed) return { work: Promise.resolve(completed.result), observers: new Set<GenerationObserver>(),
+      sessionId, retryKeys: new Set<string>(), emptyResult: completed.result };
+    const key = this.generationKey(userId, version);
+    const existing = this.generations.get(key);
+    if (existing) {
+      // An empty result only proves exhaustion for the session whose delivery
+      // history was used to generate it. Other sessions may share nonempty
+      // work, but must retry empty work with their own exclusions.
+      if (existing.sessionId === sessionId) {
+        if (existing.retryKeys.size >= 128 && !existing.retryKeys.has(retryKey)) throw new FeedGenerationWaitExpiredError();
+        existing.retryKeys.add(retryKey);
+      }
+      return existing;
+    }
+    if (this.stopping || this.generations.size >= MAX_FEED_GENERATIONS) {
+      incrementMetric('feed_v2_generation_capacity_skips_total');
+      throw new FeedGenerationWaitExpiredError();
+    }
+    // The admission slot belongs to real work, including publication and lock
+    // release. Feed fallback or a disconnected observer cannot release it.
+    const work = Promise.resolve().then(() => this.generateOnMiss!(userId, limit, [], sessionId));
+    const record: GenerationWork = { work, observers: new Set(), sessionId, retryKeys: new Set([retryKey]) };
+    this.generations.set(key, record);
+    const finish = (result?: FeedGenerationOutcome, error?: unknown) => {
+      this.generations.delete(key);
+      if (result?.status === 'generated' && result.count === 0 && record.firstExpiredAt !== undefined) {
+        for (const retry of record.retryKeys) {
+          if (this.emptyCompletions.size >= 256) this.emptyCompletions.delete(this.emptyCompletions.keys().next().value!);
+          this.emptyCompletions.set(retry, { result, expires: performance.now() + 60_000 });
+        }
+      }
+      this.generationWaits.notify(key);
+      if (record.firstExpiredAt !== undefined) {
+        const labels = { outcome: result?.status ?? 'failed' };
+        incrementMetric('feed_v2_generation_after_wait_total', labels);
+        observeMetric('feed_v2_generation_after_wait_ms', performance.now() - record.firstExpiredAt, labels);
+      }
+      for (const observer of record.observers) {
+        if (result) observer.resolve(result);
+        else observer.reject(error);
+      }
+      record.observers.clear();
+    };
+    void work.then(result => finish(result), error => finish(undefined, error));
+    return record;
+  }
+
+  private async observeGeneration(record: GenerationWork, deadline: number) {
+    if (record.emptyResult) return record.emptyResult;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let observer: GenerationObserver | undefined;
+    try {
+      return await new Promise<FeedGenerationOutcome>((resolve, reject) => {
+        observer = { resolve, reject };
+        record.observers.add(observer);
+        timer = setTimeout(() => {
+          incrementMetric('feed_v2_generation_wait_expired_total');
+          record.firstExpiredAt ??= performance.now();
+          reject(new FeedGenerationWaitExpiredError());
+        }, Math.max(1, deadline - performance.now()));
+      });
+    } finally {
+      clearTimeout(timer);
+      if (observer) record.observers.delete(observer);
+    }
+  }
+
   private async waitForGeneratedReservation(
     userId: string,
     version: bigint,
@@ -102,8 +224,8 @@ export class FeedV2Service {
     limit: number,
     token: string,
     signal?: AbortSignal,
+    deadline = performance.now() + this.generationWaitMs,
   ) {
-    const deadline = Date.now() + this.generationWaitMs;
     do {
       signal?.throwIfAborted();
       const reservation = await this.queue.refill(userId, version, requestId, limit, token);
@@ -119,10 +241,10 @@ export class FeedV2Service {
         if (depth.status === 'rejected') throw depth.reason;
         if (currentVersion.value !== version) throw new FeedRequestInProgressError();
         return depth.value > 0 ? true : undefined;
-      }, deadline - Date.now(), signal);
+      }, deadline - performance.now(), signal);
       // Each owner refills its own reservation. A concurrent consumer may win
       // the available items, so rejoin the shared probe with the same deadline.
-    } while (Date.now() < deadline);
+    } while (performance.now() < deadline);
     throw new FeedRequestInProgressError();
   }
 
@@ -205,14 +327,23 @@ export class FeedV2Service {
 
     let generationError: unknown;
     if (queueAvailable && reservation.items.length === 0 && this.generateOnMiss) {
+      const deadline = performance.now() + this.generationWaitMs;
       try {
-        const outcome = await this.generateOnMiss(userId, request.limit, [], request.session_id);
+        const generation = this.startGeneration(
+          userId, version, request.limit, request.session_id, request.feed_request_id,
+        );
+        const outcome = await this.observeGeneration(generation, deadline);
+        if (outcome.status === 'generated' && outcome.count === 0
+          && generation.sessionId !== request.session_id) {
+          throw new FeedRequestInProgressError();
+        }
         if (outcome.status !== 'coalesced') this.generationWaits.notify(this.generationKey(userId, version));
         if (outcome.status === 'stale' || outcome.status === 'capacity'
           || outcome.feedVersion !== version) throw new FeedRequestInProgressError();
         reservation = outcome.status === 'coalesced'
           ? await this.waitForGeneratedReservation(
             userId, version, request.feed_request_id, request.limit, token,
+            undefined, deadline,
           )
           : await this.queue.refill(
             userId, version, request.feed_request_id, request.limit, token,
@@ -228,12 +359,22 @@ export class FeedV2Service {
           return this.waitForServe(userId, request.feed_request_id, signal);
         }
         await releaseReservation();
+        if (error instanceof FeedGenerationWaitExpiredError && request.cursor !== null) {
+          throw new FeedRequestInProgressError();
+        }
         if (error instanceof FeedRequestInProgressError || request.cursor !== null) throw error;
         generationError = error;
         reservation = { token, requestId: request.feed_request_id, items: [] };
       }
     }
 
+    try {
+      reservation = await this.unservedReservation(userId, version, request, token, reservation);
+    } catch (error) {
+      await releaseReservation();
+      if (error instanceof ReservationOwnedError) return this.waitForServe(userId, request.feed_request_id, signal);
+      throw error;
+    }
     let entries = reservation.items;
     // Only this request's fresh, same-viewer fallback projections are reusable.
     const byId = new Map<string, RepositoryProjection>();
@@ -246,7 +387,9 @@ export class FeedV2Service {
         version,
         request.limit,
         [],
+        request.session_id,
       );
+      entries = await this.excludeSessionDeliveries(userId, request.session_id, entries);
       if (entries.length > 0) incrementMetric('feed_v2_durable_personalized_reuse_total');
     }
     if (entries.length === 0 && request.cursor === null) {
@@ -349,6 +492,7 @@ export class FeedV2Service {
         return responseFromServe(replayAfterFailure);
       }
       if (queueAvailable) await this.queue.release(userId, version, request.feed_request_id, token);
+      if (error instanceof FeedServeOverlapError) throw new FeedRequestInProgressError();
       if (error instanceof FeedPreferenceChangedError) throw new FeedRequestInProgressError();
       throw error;
     }
