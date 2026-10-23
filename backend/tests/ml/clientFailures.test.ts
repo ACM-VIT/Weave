@@ -875,3 +875,21 @@ test('recommendation provenance accepts the supported mixed-version maximum', as
   body = { ...body, embedding_version: mixed + 'x' };
   await assert.rejects(client.generate(recommendationInput), { kind: 'contract' });
 });
+
+test('ML recommendation transport preserves bounded source scores and rejects malformed provenance', async () => {
+  const request = { schema_version: 2 as const, generation_id: '00000000-0000-4000-8000-000000000007',
+    user_id: feedback.events[0]!.user_id, feed_version: 1, limit: 10, context: { cold_start: false }, exclude_repo_ids: [] };
+  for (const [scores, valid] of [[{ followed_owner: 0.25, semantic: 0.8 },true], [null,false],
+    [[],false], [{'private:user-id': 1},false], [{ followed_owner: '0.2' },false],
+    [Object.fromEntries(Array.from({ length: 17 }, (_,i) => ['s'+'_'.repeat(i),0.1])),false]] as const) {
+    await withServer((_req, response) => {
+      response.writeHead(200, { 'content-type': 'application/json' });
+      response.end(JSON.stringify({ ...request, ...recommendationProvenance, model_version: 'test', embedding_version: 'test',
+        items: [{ repo_id: feedback.events[0]!.repo_id, score: 0.8, source: 'social', retrieval_scores: scores }] }));
+    }, async baseUrl => {
+      const client = new MlV2Client({ baseUrl, internalSecret: 'test', timeoutMs: 5000, maxResponseBytes: 100000 });
+      if (valid) assert.deepEqual((await client.generate(request)).items[0]!.retrieval_scores, scores);
+      else await assert.rejects(client.generate(request), /source scores/);
+    });
+  }
+});

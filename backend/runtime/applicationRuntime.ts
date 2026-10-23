@@ -65,6 +65,12 @@ function indexedFeedRefillConfiguration() {
   return { maxQueueDepth, lowWatermark };
 }
 
+function socialCandidatesConfiguration(): boolean {
+  const enabled = process.env.FEED_SOCIAL_CANDIDATES_ENABLED?.trim() ?? 'false';
+  if (enabled !== 'true' && enabled !== 'false') throw new Error('FEED_SOCIAL_CANDIDATES_ENABLED must be true or false.');
+  return enabled === 'true';
+}
+
 export class ApplicationRuntime {
   readonly flags = getV2FeatureFlags();
   readonly featureErrors = validateFeatureDependencies(this.flags);
@@ -86,6 +92,7 @@ export class ApplicationRuntime {
       15_000,
       new PersonaRepairService(this.persistence, this.ml),
       this.indexedFeedRefill,
+      socialCandidatesConfiguration(),
     )
     : null;
   readonly shadow = this.ml ? new FeedShadowService(this.persistence, this.ml) : null;

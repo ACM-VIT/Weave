@@ -276,6 +276,10 @@ export interface components {
              * Format: uuid
              */
             repo_id: string;
+            /** Retrieval Scores */
+            retrieval_scores?: {
+                [key: string]: number;
+            };
             /** Score */
             score: number;
             /** Source */
@@ -300,6 +304,8 @@ export interface components {
              * @constant
              */
             schema_version: 2;
+            /** Social Candidates */
+            social_candidates?: components["schemas"]["SocialCandidate"][];
             /** Social Repo Ids */
             social_repo_ids?: string[];
             /**
@@ -669,6 +675,25 @@ export interface components {
              * @constant
              */
             retryable: false;
+        };
+        /** SocialCandidate */
+        SocialCandidate: {
+            /** Owner Github Id */
+            owner_github_id: string;
+            /**
+             * Repo Id
+             * Format: uuid
+             */
+            repo_id: string;
+            /**
+             * Source
+             * @enum {string}
+             */
+            source: "followed_owner" | "followed_like" | "followed_save" | "co_like" | "co_save" | "board_topic" | "adjacent_interest";
+            /** Source Score */
+            source_score: number;
+            /** Support */
+            support: number;
         };
     };
     responses: never;

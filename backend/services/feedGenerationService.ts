@@ -29,6 +29,7 @@ export class FeedGenerationService {
     private readonly lockTtlMs = 15_000,
     private readonly personaRepair?: Pick<PersonaRepairService, 'repair'>,
     private readonly indexedRefill?: IndexedFeedRefillPolicy,
+    private readonly socialCandidatesEnabled = false,
   ) {
     if (indexedRefill && (!Number.isInteger(indexedRefill.maxQueueDepth)
       || indexedRefill.maxQueueDepth < 2 || indexedRefill.maxQueueDepth > 100)) {
@@ -134,6 +135,8 @@ export class FeedGenerationService {
       } catch (error) {
         console.error('[FeedGenerationService] Failed to load followed-owner repositories:', error);
       }
+      const socialCandidates = this.socialCandidatesEnabled && this.persistence.listSocialRepositoryCandidates
+        ? await this.persistence.listSocialRepositoryCandidates(userId, 100, [...excludedIds]) : undefined;
       if (leaseLost || !await current()) return { status: 'stale', feedVersion };
       const request = {
         schema_version: 2,
@@ -143,6 +146,7 @@ export class FeedGenerationService {
         limit: generationLimit,
         exclude_repo_ids: excluded,
         social_repo_ids: socialRepoIds,
+        ...(socialCandidates === undefined ? {} : { social_candidates: socialCandidates }),
         context: { cold_start: false },
       } as const;
       let response: Awaited<ReturnType<RecommendationPort['generate']>>;

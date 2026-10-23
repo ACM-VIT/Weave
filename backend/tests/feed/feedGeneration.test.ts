@@ -354,3 +354,52 @@ test('serve-only ambiguity does not falsely complete prewarm as ML success', asy
   assert.equal(persistence.published, false);
   assert.equal(recommendations.request, null);
 });
+
+test('social projection is disabled by default and enabled evidence reaches only the authenticated ML request', async () => {
+  const persistence = new GenerationPersistence();
+  let lookups = 0;
+  const evidence = [{ repo_id: socialRepoId, owner_github_id: '123', source: 'followed_owner' as const,
+    support: 1, source_score: 0.25 }];
+  const projected = Object.assign(persistence, { listSocialRepositoryCandidates: async (user: string, limit: number) => {
+    assert.equal(user, userId); assert.equal(limit, 100); lookups++; return evidence;
+  } });
+  const disabled = new CapturingRecommendations();
+  await new FeedGenerationService(projected, new GenerationQueue(), disabled).generate(userId);
+  assert.equal(lookups, 0);
+  assert.equal(disabled.request?.social_candidates, undefined);
+  const enabled = new CapturingRecommendations();
+  await new FeedGenerationService(projected, new GenerationQueue(), enabled, 600, 15000, undefined, undefined, true).generate(userId);
+  assert.equal(lookups, 1);
+  assert.deepEqual(enabled.request?.social_candidates, evidence);
+  assert.deepEqual(enabled.request?.social_repo_ids, [socialRepoId], 'Legacy boost remains compatible.');
+});
+
+test('social projection failure releases generation without publishing an invented candidate set', async () => {
+  const persistence = Object.assign(new GenerationPersistence(), {
+    listSocialRepositoryCandidates: async () => { throw new Error('social projection unavailable'); },
+  });
+  const queue = new GenerationQueue(); const ml = new CapturingRecommendations();
+  await assert.rejects(new FeedGenerationService(persistence, queue, ml, 600, 15000, undefined, undefined, true)
+    .generate(userId), /social projection unavailable/);
+  assert.equal(queue.released, true); assert.equal(queue.published, false); assert.equal(ml.request, null);
+});
+
+
+test('social lookup receives current history and request exclusions before candidate caps', async () => {
+  const persistence = new GenerationPersistence();
+  const history = '00000000-0000-4000-8000-000000000010';
+  const explicit = '00000000-0000-4000-8000-000000000011';
+  persistence.listExcludedRepositoryIds = async () => [history];
+  let lookedUp = false;
+  const projected = Object.assign(persistence, {
+    listSocialRepositoryCandidates: async (user: string, limit: number, excluded?: string[]) => {
+      assert.equal(user, userId); assert.equal(limit, 100);
+      assert.deepEqual(excluded, [explicit, history]); lookedUp = true; return [];
+    },
+  });
+  const ml = new CapturingRecommendations();
+  await new FeedGenerationService(projected, new GenerationQueue(), ml, 600, 15000, undefined, undefined, true)
+    .generate(userId,45,[explicit]);
+  assert.equal(lookedUp, true);
+  assert.deepEqual(ml.request?.exclude_repo_ids, [explicit,history]);
+});

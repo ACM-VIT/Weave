@@ -388,6 +388,15 @@ export class MlV2Client implements RecommendationPort, OutboxTransportPort {
           || typeof item.source !== 'string' || item.source.length === 0) {
           throw new MlRecommendationError('ML recommendation response contains an invalid or duplicate item.', 200, 'contract');
         }
+        if (item.retrieval_scores !== undefined) {
+          const scores = item.retrieval_scores;
+          if (!scores || typeof scores !== 'object' || Array.isArray(scores)
+            || Object.keys(scores).length > 16
+            || !Object.entries(scores).every(([key, score]) => /^[a-z_]{1,32}$/.test(key)
+              && typeof score === 'number' && Number.isFinite(score))) {
+            throw new MlRecommendationError('ML recommendation response contains invalid source scores.', 200, 'contract');
+          }
+        }
         ids.add(item.repo_id);
       }
       // A call admitted before a newer opening must not reset that circuit.
