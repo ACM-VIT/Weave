@@ -23,7 +23,9 @@
     "load:feed:v2": "node scripts/load-feed-v2.mjs",
     "test": "npm run typecheck:test && tsx --test --test-concurrency=1 tests/**/*.test.ts",
     "worker:readme": "node dist/scripts/process-readme-summaries.js",
-    "readme:regenerate": "tsx scripts/process-readme-summaries.ts"
+    "readme:regenerate": "tsx scripts/process-readme-summaries.ts",
+    "ml:generate": "node scripts/generate-ml-client.mjs",
+    "ml:check": "node scripts/generate-ml-client.mjs --check"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.107.0",
@@ -45,6 +47,7 @@
     "@types/jsonwebtoken": "^9.0.10",
     "@types/node": "^22.19.20",
     "drizzle-kit": "^0.31.10",
+    "openapi-typescript": "7.13.0",
     "tsx": "^4.22.4",
     "typescript": "~5.8.3"
   },
