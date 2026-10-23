@@ -79,6 +79,7 @@ test('registered Node feed -> registered Python capture -> actual ranker -> priv
       const context=JSON.parse(row.context_bytes.toString('utf8'));
       assert.equal(context.feed_version,version.toString());assert.equal(context.profile_version,'2');
       assert.equal(context.feedback_version,'3');assert.equal(context.feedback_state_revision,'4');
+      assert.equal(context.code_commit,fixture.provider_commit,'stored provenance must bind the baked provider release');
     }
     const stored=await sql`SELECT count(*) FROM telemetry.feed_item_provenance WHERE serve_id=${result.serve_id}::uuid AND capture_status='captured'`;
     assert.equal(Number(stored[0].count),5);

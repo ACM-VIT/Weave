@@ -1,3 +1,4 @@
+import type { MlRecommendationRequest } from '../contracts/ml.v2.js';
 import type { ScoringCaptureConfig } from '../config/scoringCapture.js';
 import type { ScoringPersistencePort } from '../ports/scoringPersistencePort.js';
 import { validateCapturedRecommendation } from './capturedRecommendation.js';
@@ -172,18 +173,19 @@ export class FeedGenerationService {
       if (leaseLost || !await current()) return { status: 'stale', feedVersion };
       requireBudget();
       const capture = this.scoringCapture?.config.userIds.has(userId) ? this.scoringCapture : undefined;
-      const request = {
+      const requestBase = {
         schema_version: 2,
         generation_id: generationId,
         user_id: userId,
-        feed_version: capture ? feedVersion.toString() : Number(feedVersion),
-        ...(capture ? { scoring_capture: { schema_version: 1 as const, encoding: 'float32-le-v1' as const } } : {}),
         limit: generationLimit,
         exclude_repo_ids: excluded,
         social_repo_ids: socialRepoIds,
         ...(socialCandidates === undefined ? {} : { social_candidates: socialCandidates }),
         context: { cold_start: false },
       } as const;
+      const request: MlRecommendationRequest = capture
+        ? { ...requestBase, feed_version: feedVersion.toString(), scoring_capture: {schema_version:1,encoding:'float32-le-v1'} }
+        : { ...requestBase, feed_version: Number(feedVersion) };
       let response: Awaited<ReturnType<RecommendationPort['generate']>>;
       try {
         response = await this.recommendations.generate(request, { deadline, ...(capture ? { scoringCaptureCapability: capture.config.capability } : {}) });

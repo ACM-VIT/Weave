@@ -416,7 +416,13 @@ export interface components {
              * Format: uuid
              */
             user_id: string;
-        };
+        } & ({
+            feed_version: number;
+            scoring_capture?: null;
+        } | {
+            feed_version: string;
+            scoring_capture: components["schemas"]["ScoringCaptureRequest"];
+        });
         /** RecommendationResponse */
         RecommendationResponse: {
             context_status: components["schemas"]["RecommendationContextStatus"];
