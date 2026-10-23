@@ -42,15 +42,30 @@ export async function settleFollowCache(
       },
     );
   }
-  client.setQueriesData<{pages: {items: Record<string, unknown>[] }[] }>(
-    {queryKey: ['connections']}, current => current ? {...current, pages: current.pages.map(page => ({...page,
-      items: page.items.map(item => {
+  type Connections = {pages: {items: Record<string, unknown>[] }[] };
+  for (const [queryKey, current] of client.getQueriesData<Connections>({ queryKey: ['connections'] })) {
+    if (!current) continue;
+    const ownFollowing = queryKey[1] === viewer && queryKey[2] === 'following';
+    let changed = false;
+    const pages = current.pages.map(page => {
+      let pageChanged = false;
+      const items = page.items.flatMap(item => {
         const matches = Boolean(target.userId && item.user_id === target.userId)
           || Boolean(target.profileId && item.profile_id === target.profileId);
-        return matches ? {...item, viewer_follows_user: following, viewer_follows_profile: following} : item;
-      }),
-    }))} : current,
-  );
+        if (!matches) return [item];
+        if (ownFollowing && !following) {
+          changed = pageChanged = true;
+          return [];
+        }
+        if (item.viewer_follows_user === following && item.viewer_follows_profile === following) return [item];
+        changed = pageChanged = true;
+        return [{...item, viewer_follows_user: following, viewer_follows_profile: following}];
+      });
+      return pageChanged ? {...page, items} : page;
+    });
+    // Do not manufacture a newer observation timestamp for unrelated rows.
+    if (changed) client.setQueryData(queryKey, {...current, pages});
+  }
   await Promise.all([
     client.invalidateQueries({ queryKey: key, exact: true, refetchType: 'none' }),
     client.invalidateQueries({ queryKey: ['connections', viewer, 'following'], exact: true }),

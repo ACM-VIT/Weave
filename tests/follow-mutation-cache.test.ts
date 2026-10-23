@@ -125,3 +125,16 @@ test('settled follow patches viewer flags in cached unrelated connection rows wi
  assert.equal(rows[0].viewer_follows_user,false);assert.equal(rows[0].viewer_follows_profile,false);
  assert.equal(rows[1].viewer_follows_user,true);client.clear();
 });
+
+test('unfollow settlement removes inactive own-Following membership after initiating control unmounts',async()=>{
+ const f=harness(); const client=f.client;
+ const key=['connections','alice','following'];
+ client.setQueryData(key,{pages:[{items:[{user_id:'target',profile_id:'profile',viewer_follows_user:true,viewer_follows_profile:true},{user_id:'other',viewer_follows_user:true}]}],pageParams:[0]});
+ const followKey=followStateQueryKey('target','alice');client.setQueryData(followKey,true);
+ await f.mount(2);await f.press();await f.removeInitiator();await f.succeed();
+ const data=client.getQueryData<any>(key);
+ assert.deepEqual(data.pages[0].items.map((item:any)=>item.user_id),['other']);
+ assert.deepEqual(data.pageParams,[0]);
+ assert.equal(client.getQueryData(followKey),false);
+ await f.close();
+});
