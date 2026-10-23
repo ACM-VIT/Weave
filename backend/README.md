@@ -77,7 +77,7 @@ Signup/profile creation and ML onboarding enqueue are one backend transaction. O
 | `POST /api/v2/onboarding/github-import/accept` | `{snapshot_id}` | Atomic consent, profile, canonical discovery and outbox acceptance |
 | `DELETE /api/v2/onboarding/github-import` | none | Revokes import and fences late previews; preserves later manual edits |
 
-Topic slugs are lowercase letters/numbers/hyphens, 1-50 characters. Each structured category is bounded to 50 values, with at most 100 distinct combined topic slugs. Validated taxonomy stores canonical semantic labels with separate stable IDs. Public activity import is optional; declining or unavailable activity uses explicit manual onboarding and the unchanged strict recommendation pipeline. Acceptance is not completed ML delivery. See [the import contract and acceptance runbook](../docs/runbooks/github-import.md), including provider unlink and judged-quality limitations.
+Topic slugs are lowercase letters/numbers/hyphens, 1-50 characters. Each structured category is bounded to 50 values, with at most 100 distinct combined topic slugs. Validated taxonomy stores canonical semantic labels with separate stable IDs. Public activity import is optional; declining or unavailable activity uses explicit manual onboarding and the unchanged strict recommendation pipeline. Acceptance is not completed ML delivery. See [the import contract and acceptance runbook](../docs/runbooks/github-import.md), including owner-bound recent reauthentication for credential unlink, pending-outcome recovery and judged-quality limits.
 
 ### Repositories
 

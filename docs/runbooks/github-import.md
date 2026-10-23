@@ -61,12 +61,41 @@ of an existing ML vector or completed ML delivery.
 
 ## Credential unlink and quality limits
 
-Import revocation is distinct from disconnecting a login provider. Supabase's
-supported `unlinkIdentity()` requires a live Supabase user session and at least
-two linked identities. This app currently brokers backend JWT sessions and has no
-owner-bound provider reauthentication/unlink flow. Clearing a product handle is
-not credential unlink. That separate flow remains an explicit issue #57 acceptance
-gap; no credentials/configuration were changed to hide it.
+Import revocation and disconnecting a login provider are separate actions. The
+profile's **GitHub login** controls require explicit confirmation and a fresh
+GitHub OAuth sign-in. Supabase must verify the same current owner, immutable
+GitHub ID and at least two identities. Single-identity accounts are refused with
+an explanation; no provider/deployment configuration is changed by this feature.
+
+`POST /api/v2/onboarding/github-unlink/start` accepts a client S256 challenge,
+existing allowlisted callback URI and `confirmation: "disconnect-github"`. It
+returns a public `/api/auth/github-unlink/continue` URL. The existing provider
+`/api/auth/callback` dispatches by a separate HttpOnly purpose cookie; ordinary
+login and unlink attempts use distinct Redis namespaces and retire each other's
+browser cookie. Callback verifies the fresh Supabase user session and returns an
+opaque completion code, without modifying credentials or the app's session.
+
+`POST /finish` additionally requires the current backend owner JWT, completion
+code, client verifier and repeated explicit confirmation. Only then does the
+backend revoke imported preferences and invoke actual Supabase `unlinkIdentity`
+with the fresh user session and public API key. Provider access credentials stay
+backend-only in a purpose/owner/PKCE-bound AES-GCM Redis capsule, expiring after
+five minutes; refresh credentials are never stored. The frontend stores only its
+purpose-specific verifier in native SecureStore or per-tab sessionStorage, clears
+it on account changes and never replaces the app session during unlink.
+
+A durable prepared intent is committed before revocation. New preview/accept and
+late collection publication read that fence after acquiring the owner lock.
+Provider refusal keeps the login linked. A lost provider response or failed SQL
+cleanup returns `202 pending`; authenticated `POST /status` checks the actual
+Supabase owner through read-only admin inspection. Missing/malformed provider
+identities cannot prove absence. After verified absence, idempotent SQL cleanup
+removes only the old verified identity/claim, preserves manual/social product
+state and external profile kind, advances versions and queues meaningful context
+asynchronously. A newer GitHub identity is preserved as `superseded`. Pending
+operations remain visibly pending until verification; there is no claim of a
+cross-provider/SQL atomic transaction or completed ML vector deletion/delivery.
+
 See [Supabase identity linking](https://supabase.com/docs/guides/auth/auth-identity-linking).
 
 The network-free comparison exporter produces onboarding-only, GitHub-only and
@@ -91,14 +120,15 @@ judged cold-start comparison remains pending representative data and actual runs
 ## Local acceptance
 
 Only guarded disposable loopback `/weave_scroll` SQL and Redis database 15 are
-allowed by these fixtures. After applying migrations through 0035 on that target:
+allowed by these fixtures. After applying migrations through 0037 on that target:
 
 ```sh
-RUN_DATABASE_INTEGRATION=1 node --import tsx --test \
+RUN_DATABASE_INTEGRATION=1 node --import tsx --test --test-concurrency=1 \
   tests/database/onboardingImport.integration.test.ts \
   tests/database/repositoryDiscovery.integration.test.ts \
   tests/database/githubConsent.integration.test.ts \
-  tests/database/oauthConsent.integration.test.ts
+  tests/database/oauthConsent.integration.test.ts \
+  tests/auth/githubUnlinkFlow.test.ts
 ```
 
 These exercise real SQL, Redis, registered route/auth/PKCE code and actual loopback
@@ -112,10 +142,20 @@ tests/github-import-browser.test.ts` exercises the actual React Native Web panel
 in isolated Chromium across failure/retry, partial preview, decline, expiry,
 accept/revoke and late account changes. Its HTTP API is a controlled boundary;
 it does not claim physical-device or production-provider acceptance. A standalone
-CI workflow enables the four real SQL/API fixtures; local results do not claim
+CI workflow enables the real SQL/API fixtures, including unlink; local results do not claim
 that remote CI has executed.
 
-Apply 0034/0035 before serving the new API. Drain old API processes that still
+The unlink browser fixture runs with `RUN_GITHUB_UNLINK_BROWSER=1 node --import
+tsx --test tests/github-unlink-browser.test.ts`. It exercises the actual RN Web
+controls, client orchestration, sessionStorage proof and callback under Strict
+Mode, including refusal, cancellation, pending outcomes and account changes.
+Platform browser/crypto and HTTP/provider transports are explicit doubles; native
+device, configured-provider and production acceptance remain separate.
+
+Apply 0034/0035, then 0036 (social prerequisite), then 0037 before serving the new
+unlink API. The unlink PR is based on an explicit integration of published PRs
+#200 and #201; both must land before final retargeting to dev. Keep the migration
+journal contiguous at indices37/38/39/40. Never renumber applied history. Drain old API processes that still
 perform automatic OAuth extraction before exposing consent controls. Roll back
 app/API together while retaining the additive schema; do not restore automatic
 collection as a consent substitute. No deployed migration or release is performed
