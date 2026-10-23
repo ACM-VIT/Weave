@@ -9,7 +9,8 @@ export function isCanonicalIngestionPath(request: Request): boolean {
 }
 
 export function isScoringExportPath(request:Request):boolean {
-  return request.path==='/api/v2/scoring-exports'||request.path.startsWith('/api/v2/scoring-exports/');
+  const path=request.path.toLowerCase();
+  return path==='/api/v2/scoring-exports'||path.startsWith('/api/v2/scoring-exports/');
 }
 
 export function scopedJsonBodyParser(req: Request, res: Response, next: NextFunction): void {

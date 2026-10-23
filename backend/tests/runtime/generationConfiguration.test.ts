@@ -93,3 +93,25 @@ test('publication repair is scheduled only by an enabled capture feed worker',as
     Object.assign(process.env,previous);
   }
 });
+
+test('enabled private retention refuses absent and whitespace-only operational cadences', async () => {
+  const previous = { ...process.env };
+  try {
+    configure(false, false);
+    Object.assign(process.env, { SCORING_CAPTURE_ENABLED: 'false', SCORING_RETENTION_ENABLED: 'true',
+      SCORING_RETENTION_DATABASE_URL: 'postgresql://retention@127.0.0.1:1/runtime_test',
+      SCORING_RETENTION_STATEMENT_TIMEOUT_MS: '1000', SCORING_RETENTION_BATCH_SIZE: '1' });
+    for (const cadence of [undefined, '', ' ', '\t\n']) {
+      if (cadence === undefined) delete process.env.SCORING_RETENTION_INTERVAL_MS;
+      else process.env.SCORING_RETENTION_INTERVAL_MS = cadence;
+      assert.throws(() => new ApplicationRuntime('maintenance'), /SCORING_RETENTION_INTERVAL_REQUIRED/);
+    }
+    process.env.SCORING_RETENTION_INTERVAL_MS = '1000';
+    const runtime = new ApplicationRuntime('maintenance');
+    try { assert.equal('private-scoring-retention' in runtime.supervisor.snapshot(), true); }
+    finally { await runtime.supervisor.stop(); }
+  } finally {
+    for (const key of Object.keys(process.env)) if (!(key in previous)) delete process.env[key];
+    Object.assign(process.env, previous);
+  }
+});

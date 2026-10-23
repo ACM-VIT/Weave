@@ -4,6 +4,7 @@ import type { Server } from 'node:http';
 import test from 'node:test';
 import express, { type ErrorRequestHandler } from 'express';
 
+import { createScoringExportRouter } from '../../routes/scoringExportRoutes.js';
 import { requireInternalSecret } from '../../middlewares/internalAuthMiddleware.js';
 import {
   canonicalIngestionJsonParser,
@@ -14,6 +15,11 @@ import {
 async function withBodyLimitServer(run: (baseUrl: string) => Promise<void>): Promise<void> {
   const app = express();
   app.use(scopedJsonBodyParser);
+  app.use('/api/v2', createScoringExportRouter(null, (req, res, next) => {
+    if (req.headers.authorization !== 'Bearer fixture') { res.status(401).end(); return; }
+    Object.assign(req, { user: { userId: '11111111-1111-4111-8111-111111111111', email: 'fixture@example.invalid' } });
+    next();
+  }));
   app.post('/api/v2/echo', (_req, res) => res.status(204).end());
   app.post(
     '/api/internal/v2/ingestion/repositories/upsert',
@@ -96,4 +102,20 @@ test('default JSON routes retain 256 KB while authenticated canonical ingestion 
     if (previousSecretPrevious === undefined) delete process.env.INTERNAL_API_SECRET_PREVIOUS;
     else process.env.INTERNAL_API_SECRET_PREVIOUS = previousSecretPrevious;
   }
+});
+
+test('scoring export case variants authenticate before parsing and retain the four KB limit', async () => {
+  await withBodyLimitServer(async baseUrl => {
+    const body = ' '.repeat(5000) + '{}';
+    for (const route of ['/api/v2/scoring-exports', '/API/V2/SCORING-EXPORTS', '/Api/V2/Scoring-Exports/users/11111111-1111-4111-8111-111111111111/revoke']) {
+      const unauthenticated = await fetch(baseUrl + route, { method: 'POST', headers: { 'content-type': 'application/json' }, body });
+      assert.equal(unauthenticated.status, 401, route);
+      const response = await fetch(baseUrl + route, { method: 'POST', headers: { 'content-type': 'application/json', authorization: 'Bearer fixture' }, body });
+      assert.equal(response.status, 413, route);
+      assert.deepEqual(await response.json(), { error: 'SCORING_EXPORT_INVALID' });
+    }
+    const lookalike = await fetch(baseUrl + '/api/v2/scoring-exports-evil', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ padding: 'x'.repeat(300 * 1024) }) });
+    assert.equal(lookalike.status, 413);
+    assert.deepEqual(await lookalike.json(), { error: 'Request payload exceeds 256 KB.' });
+  });
 });
