@@ -149,6 +149,7 @@ function feed(ids: string[], reducedMotion = false) {
       saveRepository = value;
       saveCollections = [{ id: 'list', source: 'collection', name: 'List', repositoryCount: 0, selected: true }];
     },
+    clearSelectedLists(){saveCollections=saveCollections.map(list=>({...list,selected:false}));},
     setCreate(value: () => Promise<any>) { createCollection = value; },
     get pendingCloseAnimations() { return closeAnimations.length; },
     button(label: string) { return root.root.findAllByType('Modal').find(node => node.props.visible)!.findAllByType('Pressable').find(node => node.props.accessibilityLabel === label)!; },
@@ -433,4 +434,14 @@ test('unchanged List membership does not refetch its contents or any loaded Home
   const before=[homeReads,listReads];
   try{await app.mountStandaloneSave('00000000-0000-4000-8000-000000000011');await app.press('Save repository to selected Lists');assert.deepEqual([homeReads,listReads],before);}
   finally{for(const stop of stops)stop();await app.unmount();}
+});
+
+
+test('final unsave from stale empty selection refreshes known List contents without Home refetch',async()=>{
+ const app=feed([]); app.setSave(async()=>({saved:false,selectedListIds:[],saveStateChanged:true}));app.clearSelectedLists();
+ let reads=0;
+ const observer=new QueryObserver(app.client,{queryKey:listRepositoryQueryKey('collection','viewer','list'),queryFn:async()=>{reads++;return [];},staleTime:Infinity});
+ const stop=observer.subscribe(()=>{}); await observer.refetch(); const before=reads;
+ try {await app.mountStandaloneSave('00000000-0000-4000-8000-000000000011');await app.press('Save repository to selected Lists');assert.equal(reads,before+1);}
+ finally{stop();await app.unmount();}
 });

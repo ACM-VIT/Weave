@@ -45,7 +45,6 @@ import { FollowButton } from './follow-button';
 
 const QUERY_STALE_TIME = 30_000;
 const ROW_GAP = 2;
-const EMPTY_FOLLOW_OVERRIDES = new Map<string, boolean>();
 
 export type ConnectionListProps = {
   active?: boolean;
@@ -103,6 +102,7 @@ const ConnectionRow = memo(function ConnectionRow({
   following,
   isSelf,
   stateKnown,
+  stateUpdatedAt,
   onFollowingChange,
 }: {
   person: ConnectionUser;
@@ -110,6 +110,7 @@ const ConnectionRow = memo(function ConnectionRow({
   following: boolean;
   isSelf: boolean;
   stateKnown: boolean;
+  stateUpdatedAt: number;
   onFollowingChange: (person: ConnectionUser, following: boolean) => void;
 }) {
   const handleFollowingChange = useCallback(
@@ -198,6 +199,7 @@ const ConnectionRow = memo(function ConnectionRow({
             followingLabelStyle={styles.followingActionLabel}
             followingStyle={styles.followingAction}
             isFollowing={following}
+            stateUpdatedAt={stateUpdatedAt}
             onFollowingChange={handleFollowingChange}
             stateKnown={stateKnown}
             style={styles.followAction}
@@ -262,14 +264,7 @@ export function ConnectionList({
   const viewerId = user?.user_id;
   const stateKey = `${type}:${userId ?? 'missing'}`;
   const [searchState, setSearchState] = useState({ key: stateKey, value: '' });
-  const [followOverrideState, setFollowOverrideState] = useState<{
-    key: string;
-    values: Map<string, boolean>;
-  }>({ key: stateKey, values: new Map() });
   const search = searchState.key === stateKey ? searchState.value : '';
-  const followOverrides = followOverrideState.key === stateKey
-    ? followOverrideState.values
-    : EMPTY_FOLLOW_OVERRIDES;
   const setSearch = useCallback((value: string) => {
     setSearchState({ key: stateKey, value });
   }, [stateKey]);
@@ -302,13 +297,6 @@ export function ConnectionList({
   const handleFollowingChange = useCallback((person: ConnectionUser, following: boolean) => {
     const identity = connectionIdentity(person);
     if (!identity) return;
-    setFollowOverrideState((current) => {
-      const next = current.key === stateKey
-        ? new Map(current.values)
-        : new Map<string, boolean>();
-      next.set(identity, following);
-      return { key: stateKey, values: next };
-    });
 
     if (viewerId) {
       const followingKey = connectionQueryKey(viewerId, 'following');
@@ -346,17 +334,13 @@ export function ConnectionList({
     onFollowingCountChange,
     queryClient,
     sameAsViewerFollowing,
-    stateKey,
     viewerId,
   ]);
 
   const renderPerson = useCallback(({ item }: { item: ConnectionUser }) => {
-    const identity = connectionIdentity(item);
-    const override = identity ? followOverrides.get(identity) : undefined;
     const { following, stateKnown } = connectionFollowState(
       item,
       sameAsViewerFollowing,
-      override,
     );
     return (
       <ConnectionRow
@@ -366,13 +350,14 @@ export function ConnectionList({
         onFollowingChange={handleFollowingChange}
         person={item}
         stateKnown={stateKnown}
+        stateUpdatedAt={peopleQuery.dataUpdatedAt}
       />
     );
   }, [
     compact,
-    followOverrides,
     handleFollowingChange,
     sameAsViewerFollowing,
+    peopleQuery.dataUpdatedAt,
     viewerId,
   ]);
 

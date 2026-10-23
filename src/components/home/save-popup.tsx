@@ -359,7 +359,7 @@ export function SavePopup({
       const staleMembership = !context?.previous
         || (result.saveStateChanged && Boolean(previouslySelectedLists.length) === result.saved);
       const changedLists = [...new Map(
-        [...previouslySelectedLists, ...selectedLists]
+        (staleMembership ? [...lists, ...(context?.previous ?? [])] : [...previouslySelectedLists, ...selectedLists])
           .filter(list => staleMembership || previousIds.has(listMembershipKey(list)) !== selectedIds.has(listMembershipKey(list)))
           .map((list) => [listMembershipKey(list), list]),
       ).values()];

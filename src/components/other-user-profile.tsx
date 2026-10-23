@@ -49,6 +49,7 @@ export type OtherUserProfileData = {
 type OtherUserProfileProps = {
   profile: OtherUserProfileData;
   loading?: boolean;
+  followStateUpdatedAt?: number;
   onBack: () => void;
   onFollowersPress?: () => void;
   onFollowingPress?: () => void;
@@ -68,6 +69,7 @@ function avatarInitial(profile: OtherUserProfileData) {
 
 export function OtherUserProfile({
   profile,
+  followStateUpdatedAt,
   loading = false,
   onBack,
   onFollowersPress,
@@ -212,6 +214,7 @@ export function OtherUserProfile({
                       compact={compact}
                       identityKey={profile.username}
                       isFollowing={profile.isFollowing}
+                      stateUpdatedAt={followStateUpdatedAt}
                       onError={onFollowError}
                       onFollowingChange={onFollowingChange}
                       stateKnown={profile.followStateKnown ?? Boolean(profile.userId || profile.profileId)}

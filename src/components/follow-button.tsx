@@ -34,6 +34,7 @@ export type FollowButtonProps = {
   followingLabelStyle?: StyleProp<TextStyle>;
   accentColor?: string;
   identityKey?: string | null;
+  stateUpdatedAt?: number;
 };
 
 export function FollowButton({
@@ -51,6 +52,7 @@ export function FollowButton({
   followingLabelStyle,
   accentColor = REFERENCE_THEME.accent,
   identityKey,
+  stateUpdatedAt,
 }: FollowButtonProps) {
   const queryClient = useQueryClient();
   const { user, checkOnboardingStatus } = useAuth();
@@ -69,6 +71,7 @@ export function FollowButton({
     queryKey,
     queryFn: async () => isFollowing,
     initialData: isFollowing,
+    initialDataUpdatedAt: stateUpdatedAt,
     enabled: false,
     staleTime: Infinity,
     gcTime: Infinity,
@@ -121,10 +124,14 @@ export function FollowButton({
     serverState.current = { identity, value: isFollowing };
     // A second mounted button's stale initial prop must not undo another
     // button's optimistic update or successful response.
-    if (previous.identity === identity && previous.value !== isFollowing) {
-      queryClient.setQueryData(queryKey, isFollowing);
+    const cachedAt = queryClient.getQueryState(queryKey)?.dataUpdatedAt ?? 0;
+    const freshServer = stateUpdatedAt !== undefined && stateUpdatedAt > cachedAt;
+    if (pending === 0 && (freshServer || (stateUpdatedAt === undefined
+      && previous.identity === identity && previous.value !== isFollowing))) {
+      queryClient.setQueryData(queryKey, isFollowing,
+        stateUpdatedAt === undefined ? undefined : { updatedAt: stateUpdatedAt });
     }
-  }, [isFollowing, queryClient, queryKey]);
+  }, [isFollowing, pending, stateUpdatedAt, queryClient, queryKey]);
 
   const targetAvailable = Boolean(targetId) && stateKnown;
   const buttonDisabled = disabled || !viewer || !targetAvailable || pending > 0;

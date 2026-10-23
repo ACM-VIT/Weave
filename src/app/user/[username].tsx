@@ -215,6 +215,7 @@ export default function OtherUserProfileRoute() {
       <OtherUserProfile
         key={profile.profileId || profile.userId || profile.username}
         loading={profileQuery.isLoading}
+        followStateUpdatedAt={profileQuery.dataUpdatedAt || undefined}
         onBack={goBack}
         onFollowersPress={profile.userId ? () => setConnectionType('followers') : undefined}
         onFollowingPress={profile.userId ? () => setConnectionType('following') : undefined}

@@ -16,6 +16,7 @@ function harness() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: Infinity }, mutations: { retry: false } } });
   let finish!: () => void; let fail!: (e: Error) => void;
   let viewer = 'alice'; let requests = 0;
+  let serverFollowing=false; let serverUpdatedAt: number | undefined;
   const filename = resolve('src/components/follow-button.tsx');
   const require = createRequire(filename);
   const mocks: Record<string, any> = {
@@ -35,10 +36,11 @@ function harness() {
   const Button = module.exports.FollowButton;
   let root!: ReturnType<typeof create>;
   const tree = (count = 1, offset = 0) => React.createElement(QueryClientProvider, { client },
-    Array.from({length:count}, (_, key) => React.createElement(Button, {key:key+offset, targetUserId:'target', isFollowing:false})));
+    Array.from({length:count}, (_, key) => React.createElement(Button, {key:key+offset, targetUserId:'target', isFollowing:serverFollowing, stateUpdatedAt:serverUpdatedAt})));
   return { client, get requests(){return requests;}, get buttons(){return root.root.findAllByType('Pressable');},
     async mount(count=1){ await act(async()=>{root=create(tree(count));}); },
     async update(count:number){await act(async()=>root.update(tree(count)));},
+    async freshRemount(following:boolean,updatedAt:number){serverFollowing=following;serverUpdatedAt=updatedAt;await act(async()=>{root.update(tree(1,100));await new Promise(r=>setTimeout(r,5));});},
     async removeInitiator(){await act(async()=>root.update(tree(1,1)));},
     async press(){await act(async()=>{this.buttons[0].props.onPress(); await new Promise(r=>setTimeout(r,5));});},
     async succeed(){await act(async()=>{finish(); await new Promise(r=>setTimeout(r,5));});},
@@ -100,4 +102,26 @@ test('failed follow rolls back the shared viewer state for every mounted control
 test('failed follow rolls back remaining screens after the initiating button unmounts',async()=>{
  const f=harness();await f.mount(2);await f.press();await f.removeInitiator();await f.reject();
  assert.equal(f.buttons[0].props.accessibilityState.selected,false);await f.close();
+});
+
+
+test('newly mounted control accepts fresher server relationship but ignores older props',async()=>{
+ const f=harness(); await f.mount();
+ const key=followStateQueryKey('target','alice');
+ f.client.setQueryData(key,true,{updatedAt:Date.now()-100});
+ await f.freshRemount(false,Date.now()+100);
+ assert.equal(f.buttons[0].props.accessibilityState.selected,false);
+ await f.freshRemount(true,Date.now()-1000);
+ assert.equal(f.buttons[0].props.accessibilityState.selected,false);
+ await f.close();
+});
+
+test('settled follow patches viewer flags in cached unrelated connection rows without a request',async()=>{
+ const client=new QueryClient();
+ const key=['connections','alice','followers'];
+ client.setQueryData(key,{pages:[{items:[{user_id:'target',profile_id:'profile',viewer_follows_user:true,viewer_follows_profile:true},{user_id:'other',viewer_follows_user:true}]}]});
+ await settleFollowCache(client,'alice',{userId:'target'},false,authSessionLifecycle.currentGeneration());
+ const rows=client.getQueryData<any>(key).pages[0].items;
+ assert.equal(rows[0].viewer_follows_user,false);assert.equal(rows[0].viewer_follows_profile,false);
+ assert.equal(rows[1].viewer_follows_user,true);client.clear();
 });

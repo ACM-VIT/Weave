@@ -42,6 +42,15 @@ export async function settleFollowCache(
       },
     );
   }
+  client.setQueriesData<{pages: {items: Record<string, unknown>[] }[] }>(
+    {queryKey: ['connections']}, current => current ? {...current, pages: current.pages.map(page => ({...page,
+      items: page.items.map(item => {
+        const matches = Boolean(target.userId && item.user_id === target.userId)
+          || Boolean(target.profileId && item.profile_id === target.profileId);
+        return matches ? {...item, viewer_follows_user: following, viewer_follows_profile: following} : item;
+      }),
+    }))} : current,
+  );
   await Promise.all([
     client.invalidateQueries({ queryKey: key, exact: true, refetchType: 'none' }),
     client.invalidateQueries({ queryKey: ['connections', viewer, 'following'], exact: true }),
