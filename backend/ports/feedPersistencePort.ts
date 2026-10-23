@@ -40,7 +40,7 @@ export interface FeedPersistencePort {
   markGenerationPublished?(userId: string, feedVersion: bigint): Promise<void>;
   getMlOnboardingJob?(userId: string): Promise<MlOnboardingJob | null>;
   listExcludedRepositoryIds(userId: string, sessionId: string | undefined, limit: number): Promise<string[]>;
-  listSocialRepositoryCandidates?(userId: string, limit: number): Promise<SocialCandidateProjection[]>;
+  listSocialRepositoryCandidates?(userId: string, limit: number, excludeRepoIds?: string[]): Promise<SocialCandidateProjection[]>;
   listFollowedRepositoryIds(userId: string, limit: number): Promise<string[]>;
   getServeByRequest(userId: string, feedRequestId: string): Promise<StoredServe | null>;
   createServe(input: CreateServeInput): Promise<StoredServe>;

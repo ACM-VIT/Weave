@@ -6,6 +6,7 @@ import { GithubUnlinkFlow, createGithubUnlinkClients, type GithubUnlinkPersisten
 
 const userId = crypto.randomUUID(), peerId = crypto.randomUUID();
 const ownerGithubId = String(crypto.randomInt(1_000_000_000, 2_000_000_000));
+const ownerHandle = 'unlink-'+ownerGithubId;
 const githubIdentity = '10000000-0000-4000-8000-000000000001', emailIdentity = '10000000-0000-4000-8000-000000000002';
 const verifier = 'v'.repeat(64), challenge = crypto.createHash('sha256').update(verifier, 'ascii').digest('base64url');
 
@@ -26,7 +27,7 @@ class MemoryPersistence implements GithubUnlinkPersistence {
   githubId: string | null = ownerGithubId; failCompletion = false;
   current: (GithubUnlinkOwner & { operationId: string; status: string }) | null = null;
   async owner(id: string) { if (id !== userId || !this.githubId) throw Object.assign(new Error('No verified GitHub identity.'), { statusCode: 409 }); return { userId: id, githubId: this.githubId }; }
-  async prepare(owner: GithubUnlinkOwner, operationId: string) { this.current = { ...owner, operationId, status: 'prepared' }; }
+  async prepare(owner: GithubUnlinkOwner, operationId: string) { if (this.current?.status === 'prepared') throw Object.assign(new Error('Already pending'), { statusCode: 409 }); this.current = { ...owner, operationId, status: 'prepared' }; }
   async complete(owner: GithubUnlinkOwner, operationId: string): Promise<'done'> {
     if (this.failCompletion) throw new Error('Explicit persistence boundary failure.');
     assert.equal(owner.userId, userId); assert.equal(this.current?.operationId, operationId);
@@ -43,11 +44,11 @@ test('registered unlink routes use actual scoped Supabase OAuth/session HTTP wit
   ]);
   const tokens = new Map<string, string>();
   const codes = new Map<string, { user: string; challenge: string }>();
-  let linked = true, alternatives = 1, deleteMode = 'success', deletes = 0, adminReads = 0, malformedAdmin = false;
+  let linked = true, alternatives = 1, deleteMode = 'success', deletes = 0, adminReads = 0, malformedAdmin = false, failRevocation = false;
   let now = Date.now();
   const providerUser = (id: string) => ({ id, aud: 'authenticated', email: 'fixture@invalid.test', created_at: new Date().toISOString(),
-    app_metadata: { provider: 'github', providers: ['github', 'email'] }, user_metadata: { provider_id: ownerGithubId, user_name: 'fixture' },
-    identities: [ ...(linked ? [{ id: ownerGithubId, identity_id: githubIdentity, provider: 'github', user_id: id, identity_data: { sub: ownerGithubId, provider_id: ownerGithubId } }] : []),
+    app_metadata: { provider: 'github', providers: ['github', 'email'] }, user_metadata: { provider_id: ownerGithubId, user_name: ownerHandle },
+    identities: [ ...(linked ? [{ id: ownerGithubId, identity_id: githubIdentity, provider: 'github', user_id: id, identity_data: { sub: ownerGithubId, provider_id: ownerGithubId, user_name: ownerHandle } }] : []),
       ...(alternatives ? [{ id: 'fixture@invalid.test', identity_id: emailIdentity, provider: 'email', user_id: id, identity_data: { email: 'fixture@invalid.test' } }] : []) ] });
   const provider = createServer(async (req, res) => {
     const url = new URL(req.url!, 'http://localhost');
@@ -82,7 +83,7 @@ test('registered unlink routes use actual scoped Supabase OAuth/session HTTP wit
   const persistence = new MemoryPersistence(), redis = new MemoryRedis(); const revoked: string[] = [];
   const clients = createGithubUnlinkClients({ url: `http://127.0.0.1:${providerAddress.port}`, anonKey: 'fixture-anon-key', serviceKey: 'fixture-service-key' });
   const flow = new GithubUnlinkFlow({ redis, persistence, ...clients, secret: process.env.JWT_SECRET!, now: () => now,
-    revokeImport: async owner => { revoked.push(owner); } });
+    revokeImport: async owner => { if (failRevocation) throw new Error('Controlled import revocation failure'); revoked.push(owner); } });
   const app = express(); app.use(express.json()); app.use(cookieParser());
   const server = app.listen(0, '127.0.0.1');
   await new Promise<void>(resolve => server.listening ? resolve() : server.once('listening', resolve));
@@ -90,7 +91,7 @@ test('registered unlink routes use actual scoped Supabase OAuth/session HTTP wit
   let origin = `http://127.0.0.1:${address.port}`;
   let activeFlow = flow;
   const dynamicFlow = new Proxy(flow, { get(_target, property) { const value = Reflect.get(activeFlow, property); return typeof value === 'function' ? value.bind(activeFlow) : value; } });
-  const routes = createGithubUnlinkRoutes({ flow: dynamicFlow, backendUrl: origin, clientUrl: `${origin}/callback`, nodeEnv: 'test' });
+  const routes = createGithubUnlinkRoutes({ flow: dynamicFlow, backendUrl: origin, clientUrl: `${origin}/callback`, clientRedirects: ['weave://callback'], nodeEnv: 'test' });
   app.use('/api/v2/onboarding/github-unlink', routes.authenticated);
   app.use('/api/auth/github-unlink', routes.publicRoutes);
   app.get('/api/auth/callback', routes.callback);
@@ -112,7 +113,7 @@ test('registered unlink routes use actual scoped Supabase OAuth/session HTTP wit
     return new URL(callback.headers.get('location')!);
   };
   const finish = (code: string, proof = verifier, owner = userId) => send('finish', { unlink_code: code, code_verifier: proof, confirmation: 'disconnect-github' }, owner);
-  const reset = () => { linked = true; alternatives = 1; deleteMode = 'success'; persistence.githubId = ownerGithubId; persistence.current = null; persistence.failCompletion = false; redis.values.clear(); now = Date.now(); };
+  const reset = () => { linked = true; alternatives = 1; deleteMode = 'success'; failRevocation = false; persistence.githubId = ownerGithubId; persistence.current = null; persistence.failCompletion = false; redis.values.clear(); now = Date.now(); };
   t.after(async () => {
     server.closeAllConnections(); provider.closeAllConnections();
     await Promise.all([new Promise<void>(resolve => server.close(() => resolve())), new Promise<void>(resolve => provider.close(() => resolve()))]);
@@ -129,6 +130,42 @@ test('registered unlink routes use actual scoped Supabase OAuth/session HTTP wit
     assert.equal((await response.json() as { data: { status: string } }).data.status, 'done');
     assert.equal(deletes, before + 1); assert.equal(persistence.githubId, null); assert.deepEqual(revoked, [userId]);
     assert.equal((await finish(code)).status, 400); assert.equal(deletes, before + 1);
+  });
+  await t.test('failed local revocation before provider admission does not strand a prepared intent', async () => {
+    reset(); const before = deletes;
+    const authorization = await authorize(); failRevocation = true;
+    const refused = await finish(authorization.searchParams.get('unlink_code')!);
+    assert.equal(deletes,before,'local revocation failure cannot reach the provider mutation');
+    assert.equal(persistence.current?.status,'refused','known pretransport abort releases only its own prepared operation');
+    assert.equal(refused.status,503);
+    failRevocation = false;
+    const retry = await authorize();
+    const completed = await finish(retry.searchParams.get('unlink_code')!);
+    assert.equal(completed.status,200); assert.equal(deletes,before+1);
+  });
+  await t.test('provider cancellation consumes only the owned purpose and returns to its approved native callback', async () => {
+    reset(); const before = deletes;
+    const started = await send('start', { confirmation: 'disconnect-github', code_challenge: challenge, redirect_uri: 'weave://callback' });
+    assert.equal(started.status,200);
+    const initial = await started.json() as { data: { url: string } };
+    const continuation = await fetch(initial.data.url,{redirect:'manual'});
+    const cookie = continuation.headers.getSetCookie().find(value=>value.startsWith('github_unlink_attempt='))!.split(';')[0];
+    const cancelled = await fetch(`${origin}/api/auth/callback?error=access_denied`,{headers:{Cookie:cookie},redirect:'manual'});
+    assert.equal(cancelled.status,302);
+    const target = new URL(cancelled.headers.get('location')!);
+    assert.equal(target.protocol+'//'+target.host+target.pathname,'weave://callback');
+    assert.equal(target.searchParams.get('unlink_error'),'reauthentication_failed');
+    assert.ok(cancelled.headers.getSetCookie().some(value=>value.startsWith('github_unlink_attempt=;')));
+    const replay = await fetch(`${origin}/api/auth/callback?error=access_denied`,{headers:{Cookie:cookie},redirect:'manual'});
+    assert.equal(new URL(replay.headers.get('location')!).origin,origin,'consumed/unknown purposes cannot supply a redirect');
+    assert.equal([...redis.values.keys()].filter(key=>key.startsWith('oauth:github-unlink:proof:')).length,0);
+    assert.equal(deletes,before);
+  });
+  await t.test('terminal intent does not hide controls after a verified same-subject relink', async () => {
+    reset(); persistence.current = { userId, githubId: ownerGithubId, operationId: crypto.randomUUID(), status: 'done' };
+    assert.equal((await (await send('status')).json() as { data: { status: string } }).data.status, 'none');
+    persistence.githubId = null;
+    assert.equal((await (await send('status')).json() as { data: { status: string } }).data.status, 'done');
   });
   await t.test('single identity refusal and account swaps never reach a provider mutation', async () => {
     reset(); const before = deletes; alternatives = 0;
@@ -204,7 +241,7 @@ test('registered unlink routes use actual scoped Supabase OAuth/session HTTP wit
       reset();
       await sqlClient`INSERT INTO auth.users(id) VALUES(${userId}::uuid)`;
       await sqlClient`INSERT INTO app.users(user_id,username,full_name,status,github_id,github_handle,github_identity_verified_at,interests,onboarding_completed)
-        VALUES(${userId}::uuid,${'unlink_'+userId.replaceAll('-', '')},'Tarun','active',${ownerGithubId},'fixture',now(),'["databases"]'::jsonb,true)`;
+        VALUES(${userId}::uuid,${'unlink_'+userId.replaceAll('-', '')},'Tarun','active',${ownerGithubId},${ownerHandle},now(),'["databases"]'::jsonb,true)`;
       await sqlClient`INSERT INTO app.user_feed_state(user_id) VALUES(${userId}::uuid)`;
       await sqlClient`INSERT INTO app.social_profiles(provider,provider_subject,handle,profile_kind,claimed_by_user_id)
         VALUES('github',${ownerGithubId},${'unlink-'+ownerGithubId},'user',${userId}::uuid)`;
@@ -244,6 +281,10 @@ test('registered unlink routes use actual scoped Supabase OAuth/session HTTP wit
       assert.equal(linked, false); assert.deepEqual(revocations, [userId]);
       assert.equal((await sqlClient`SELECT github_id FROM app.users WHERE user_id=${userId}::uuid`)[0].github_id, ownerGithubId);
       assert.equal((await actual.operation(userId))?.status, 'prepared');
+      const pendingOperation = (await actual.operation(userId))!.operationId;
+      await assert.rejects(actual.prepare({ userId, githubId: ownerGithubId }, crypto.randomUUID()), /already pending/);
+      assert.equal((await actual.operation(userId))!.operationId, pendingOperation);
+
       assert.equal((await imports.status(userId)).active, false);
       assert.equal((await imports.status(userId)).unlink_pending, true);
       await assert.rejects(imports.preview(userId, true), /disconnect needs verification/);
@@ -259,15 +300,37 @@ test('registered unlink routes use actual scoped Supabase OAuth/session HTTP wit
       assert.equal((await sqlClient`SELECT profile_kind FROM app.social_profiles WHERE provider='github' AND provider_subject=${ownerGithubId}`)[0].profile_kind, 'user');
       await send('status');
       assert.equal(Number((await sqlClient`SELECT profile_version FROM app.users WHERE user_id=${userId}::uuid`)[0].profile_version), 3);
+      const { ensureIdentityProfile, githubIdentityForProvisioning } = await import('../../services/identityService.js');
+      const staleProfile = { userId, username: 'unused', githubId: ownerGithubId,
+        githubHandle: ownerHandle, githubIdentityVerified: true, githubIdentityFence: null };
+      await ensureIdentityProfile(staleProfile);
+      assert.equal((await sqlClient`SELECT github_id FROM app.users WHERE user_id=${userId}::uuid`)[0].github_id, null,
+        'a login snapshot captured before unlink cannot restore the identity or claim');
+      const linkedAuthUser = providerUser(userId); linked = true;
+      const freshIdentity = await githubIdentityForProvisioning(linkedAuthUser, async () => providerUser(userId));
+      assert.equal(freshIdentity.githubId, ownerGithubId); assert.equal(freshIdentity.githubHandle, ownerHandle);
+      await ensureIdentityProfile({ ...staleProfile, githubId: freshIdentity.githubId, githubHandle: freshIdentity.githubHandle, githubIdentityFence: freshIdentity.fence });
+      assert.equal((await sqlClient`SELECT github_id FROM app.users WHERE user_id=${userId}::uuid`)[0].github_id, ownerGithubId);
+      assert.equal((await actual.operation(userId))!.status, 'superseded');
+      assert.equal((await activeFlow.reconcile(userId)).status, 'none');
+      // A changed state/generation invalidates even an originally fresh read.
+      await sqlClient`UPDATE app.users SET github_id=NULL,github_handle=NULL,github_identity_verified_at=NULL WHERE user_id=${userId}::uuid`;
+      await ensureIdentityProfile({ ...staleProfile, githubIdentityFence: freshIdentity.fence });
+      assert.equal((await sqlClient`SELECT github_id FROM app.users WHERE user_id=${userId}::uuid`)[0].github_id, null);
+      const absent = await githubIdentityForProvisioning(providerUser(userId), async () => ({ ...providerUser(userId), identities: [] }), 'github');
+      assert.equal(absent.githubId, null, 'retained provider metadata cannot manufacture a linked identity');
       await sqlClient`UPDATE app.users SET github_id=${ownerGithubId},github_identity_verified_at=now() WHERE user_id=${userId}::uuid`;
-      const operationId = crypto.randomUUID(); await actual.prepare({ userId, githubId: ownerGithubId }, operationId);
+      const attempts = await Promise.allSettled([crypto.randomUUID(), crypto.randomUUID()].map(id => actual.prepare({ userId, githubId: ownerGithubId }, id)));
+      assert.equal(attempts.filter(result => result.status === 'fulfilled').length, 1, 'only one concurrent preparation may own the provider mutation');
+      assert.equal(attempts.filter(result => result.status === 'rejected').length, 1);
+      const operationId = (await actual.operation(userId))!.operationId;
       await sqlClient`UPDATE app.users SET github_id='9' WHERE user_id=${userId}::uuid`;
       assert.equal(await actual.complete({ userId, githubId: ownerGithubId }, operationId), 'superseded');
       assert.equal((await sqlClient`SELECT github_id FROM app.users WHERE user_id=${userId}::uuid`)[0].github_id, '9');
       // Now traverse the actual production registration and lazy runtime wiring,
       // including the shared callback dispatch and real import revocation.
       linked = true;
-      await sqlClient`UPDATE app.users SET github_id=${ownerGithubId},github_handle='fixture',github_identity_verified_at=now() WHERE user_id=${userId}::uuid`;
+      await sqlClient`UPDATE app.users SET github_id=${ownerGithubId},github_handle=${ownerHandle},github_identity_verified_at=now() WHERE user_id=${userId}::uuid`;
       const wired = express(); wired.use(express.json()); wired.use(cookieParser());
       wiredServer = wired.listen(0, '127.0.0.1');
       await new Promise<void>(resolve => wiredServer!.listening ? resolve() : wiredServer!.once('listening', resolve));

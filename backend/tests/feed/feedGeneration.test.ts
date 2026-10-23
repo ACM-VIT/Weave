@@ -7,6 +7,7 @@ import type { FeedPersistencePort } from '../../ports/feedPersistencePort.js';
 import type { RecommendationPort } from '../../ports/recommendationPort.js';
 import type { FeedQueuePort } from '../../redis/feedQueue.js';
 import { FeedGenerationService } from '../../services/feedGenerationService.js';
+import { snapshotMetrics } from '../../observability/metrics.js';
 import { MlRecommendationError } from '../../services/mlService.js';
 
 const userId = '00000000-0000-4000-8000-000000000001';
@@ -399,8 +400,61 @@ test('current explicit negatives filter every ML source independently of bounded
 test('an entirely preference-filtered ML batch remains retryable rather than publishing exhaustion', async () => {
   const persistence=new GenerationPersistence();
   persistence.listPreferenceEligibleRepositoryIds=async ()=>[];
+  const records: Parameters<NonNullable<FeedPersistencePort['recordGenerationAttempt']>>[0][] = [];
+  const audited = Object.assign(persistence,{recordGenerationAttempt:async (record:typeof records[number])=>{records.push(record);}});
   const queue=new GenerationQueue();
-  const result=await new FeedGenerationService(persistence,queue,new CapturingRecommendations()).generate(userId);
+  const result=await new FeedGenerationService(audited,queue,new CapturingRecommendations()).generate(userId);
   assert.deepEqual(result,{status:'capacity',feedVersion:1n});
   assert.equal(queue.published,false); assert.equal(queue.released,true);
+  assert.equal(records.length,1,'filtered generation must have a durable attempt outcome');
+  assert.equal(records[0].status,'coalesced'); assert.equal(records[0].error_code,'FEED_PREFERENCE_FILTERED');
+  assert.equal(records[0].user_id,userId); assert.equal(records[0].feed_version,1n); assert.equal(records[0].result_count,0);
+});
+
+
+test('social lookup receives current history and request exclusions before candidate caps', async () => {
+  const persistence = new GenerationPersistence();
+  const history = '00000000-0000-4000-8000-000000000010';
+  const explicit = '00000000-0000-4000-8000-000000000011';
+  persistence.listExcludedRepositoryIds = async () => [history];
+  let lookedUp = false;
+  const projected = Object.assign(persistence, {
+    listSocialRepositoryCandidates: async (user: string, limit: number, excluded?: string[]) => {
+      assert.equal(user, userId); assert.equal(limit, 100);
+      assert.deepEqual(excluded, [explicit, history]); lookedUp = true; return [];
+    },
+  });
+  const ml = new CapturingRecommendations();
+  await new FeedGenerationService(projected, new GenerationQueue(), ml, 600, 15000, undefined, undefined, true)
+    .generate(userId,45,[explicit]);
+  assert.equal(lookedUp, true);
+  assert.deepEqual(ml.request?.exclude_repo_ids, [explicit,history]);
+});
+
+
+function invalidRecommendations() {
+  return Number((snapshotMetrics().counters as Record<string,number>)['feed_v2_invalid_repository_recommendations_total:[]'] ?? 0);
+}
+
+test('canonical invalid recommendations are counted and rejected before current preference filtering', async () => {
+  const persistence = new GenerationPersistence();
+  persistence.inactive = new Set([socialRepoId,otherRepoId]);
+  persistence.listPreferenceEligibleRepositoryIds=async (_user,ids)=>ids.filter(id=>!persistence.inactive.has(id));
+  const queue = new GenerationQueue(), before=invalidRecommendations();
+  await assert.rejects(new FeedGenerationService(persistence,queue,new CapturingRecommendations()).generate(userId),/no active canonical repositories/);
+  assert.equal(invalidRecommendations()-before,2);
+  assert.equal(queue.published,false); assert.equal(queue.released,true);
+});
+
+test('mixed inactive and disliked candidates retain invalid diagnostics and a filtered outcome', async () => {
+  const persistence = new GenerationPersistence(); persistence.inactive.add(socialRepoId);
+  const records: Parameters<NonNullable<FeedPersistencePort['recordGenerationAttempt']>>[0][]=[];
+  const audited=Object.assign(persistence,{recordGenerationAttempt:async (record:typeof records[number])=>{records.push(record);}});
+  persistence.listPreferenceEligibleRepositoryIds=async (_user,ids)=>{assert.deepEqual(ids,[otherRepoId]);return [];};
+  const queue=new GenerationQueue(),before=invalidRecommendations();
+  const result=await new FeedGenerationService(audited,queue,new CapturingRecommendations()).generate(userId);
+  assert.equal(result.status,'capacity'); assert.equal(queue.published,false);
+  assert.equal(invalidRecommendations()-before,1);
+  assert.equal(records.length,1); assert.equal(records[0].status,'coalesced');
+  assert.equal(records[0].error_code,'FEED_PREFERENCE_FILTERED');
 });

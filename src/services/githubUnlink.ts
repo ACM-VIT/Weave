@@ -17,7 +17,7 @@ export async function finishGithubUnlink(owner: string, code: string, signal: Ab
   await assertGithubUnlinkOwner(owner, generation, signal);
   const verifier = await takeGithubUnlinkProof(owner);
   await assertGithubUnlinkOwner(owner, generation, signal);
-  const result = await githubUnlinkApi.finish(code, verifier, signal);
+  const result = await githubUnlinkApi.finish(code, verifier, signal, owner);
   await assertGithubUnlinkOwner(owner, generation, signal);
   return result;
 }
@@ -30,7 +30,7 @@ export async function startGithubUnlink(owner: string, signal: AbortSignal): Pro
     await saveGithubUnlinkProof(owner, proof.verifier);
     await assertGithubUnlinkOwner(owner, generation, signal);
     const redirect = Linking.createURL('callback');
-    const { url } = await githubUnlinkApi.start(proof.challenge, redirect, signal);
+    const { url } = await githubUnlinkApi.start(proof.challenge, redirect, signal, owner);
     await assertGithubUnlinkOwner(owner, generation, signal);
     const response = await WebBrowser.openAuthSessionAsync(url, redirect);
     await assertGithubUnlinkOwner(owner, generation, signal);
