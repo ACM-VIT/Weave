@@ -37,6 +37,8 @@ test('current and previous secrets remain valid during rotation and absent confi
   try {
     assert.equal(await request('abcd'), 204); assert.equal(await request('old-secret'), 204);
     assert.equal(await request('wrong'), 401);
+    process.env.INTERNAL_API_SECRET_PREVIOUS = 'clé';
+    assert.equal(await request('clé'), 204);
     delete process.env.INTERNAL_API_SECRET; delete process.env.INTERNAL_API_SECRET_PREVIOUS;
     assert.equal(await request('abcd'), 503);
   } finally {
