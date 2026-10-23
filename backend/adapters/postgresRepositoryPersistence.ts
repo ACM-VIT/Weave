@@ -65,6 +65,32 @@ export class PostgresRepositoryPersistence implements RepositoryPersistencePort 
     });
   }
 
+  /** Public graph discovery may create missing records, never replace richer corpus content. */
+  async registerDiscoveredRepositories(input: RepositoryUpsert[], transaction?: TransactionSql): Promise<RepositoryUpsertResult[]> {
+    if (!input.length) return [];
+    if (input.length > 1_500) throw new Error('Public graph discovery exceeds its bounded repository limit.');
+    const ids = new Set(input.map(repo => BigInt(repo.github_id).toString()));
+    if (ids.size !== input.length) throw new Error('Public graph discovery requires unique canonical GitHub identities.');
+    const batches: RepositoryObservation[][] = [];
+    let order = 0;
+    for (let offset = 0; offset < input.length; offset += 100) {
+      for (const batch of planRepositoryObservationBatches(input.slice(offset, offset + 100))) {
+        batches.push(batch.map(item => ({ ...item, order: order++ })));
+      }
+    }
+    const apply = async (tx: TransactionSql) => {
+      // Acquire the complete sorted canonical lock set before checking absence.
+      // A preflight SELECT followed by ordinary upsert races with real ingestion.
+      await this.lockIngestion(tx, batches);
+      const existing = await tx`SELECT github_id::text FROM app.repos WHERE github_id=ANY(${[...ids]}::bigint[])`;
+      const known = new Set(existing.map(row => String(row.github_id)));
+      const missing = batches.map(batch => batch.filter(item => !known.has(BigInt(item.repository.github_id).toString())))
+        .filter(batch => batch.length > 0);
+      return this.upsertBatches(tx, missing);
+    };
+    return transaction ? apply(transaction) : this.db.begin(apply);
+  }
+
   private async lockIngestion(
     tx: TransactionSql,
     batches: RepositoryObservation[][],

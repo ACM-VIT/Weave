@@ -16,6 +16,8 @@ import { getStorageItem } from "@/utils/storage"
 import { formatCompactCount } from "@/utils/format-count"
 import { isValidUsername, USERNAME_GUIDANCE } from "@/utils/username"
 import { loadPinnedRepositories } from "@/services/pinnedRepositoryStorage"
+import { GitHubImportPanel } from '@/components/onboarding/GitHubImportPanel'
+import { APP_THEME, Fonts, Spacing } from '@/constants/theme'
 
 function requestError(error: unknown, fallback: string) {
   if (error instanceof TypeError) return `Unable to connect to the local backend at ${API_URL}.`
@@ -36,6 +38,7 @@ export default function ProfileScreen() {
   const isCompact = height < 750 || width < 360
   const reducedMotion = useReducedMotion()
   const [editVisible, setEditVisible] = useState(false)
+  const [githubPreferencesVisible, setGithubPreferencesVisible] = useState(false)
   const [logoutVisible, setLogoutVisible] = useState(false)
   const [loggingOut, setLoggingOut] = useState(false)
   const [logoutError, setLogoutError] = useState("")
@@ -182,6 +185,11 @@ export default function ProfileScreen() {
           </View>
 
           <View className="w-full" style={{ gap: isTablet ? 22 : 18 }}>
+            <Pressable accessibilityRole="button" accessibilityLabel="GitHub activity preferences" accessibilityState={{ expanded: githubPreferencesVisible }}
+              onPress={() => setGithubPreferencesVisible(value => !value)} style={{ minHeight: 48, justifyContent: 'center', paddingVertical: Spacing.two }}>
+              <Text style={{ fontFamily: Fonts.sans, color: APP_THEME.primary, fontSize: 15 }}>GitHub activity preferences</Text>
+            </Pressable>
+            {githubPreferencesVisible && user ? <GitHubImportPanel key={user.user_id} userId={user.user_id} onSaved={checkOnboardingStatus} /> : null}
             <Text className="text-white font-nataBold" style={{ fontSize: isCompact ? 18 : 22 }}>Lists</Text>
           </View>
         </View>

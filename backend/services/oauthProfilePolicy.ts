@@ -8,13 +8,6 @@ export function oauthLoginNeedsSignup(
   return authIntent === 'login' && !productProfileExists;
 }
 
-export function requiresGitHubPersona(
-  provider: OAuthProvider,
-  existingOnboardingCompleted: boolean | null | undefined,
-): boolean {
-  return provider === 'github' && existingOnboardingCompleted !== true;
-}
-
 export function loginOnboardingCompleted(
   existingOnboardingCompleted: boolean | null | undefined,
 ): boolean {
@@ -27,8 +20,7 @@ export function loginOnboardingCompleted(
 export function initialOAuthOnboardingCompleted(
   authIntent: OAuthIntent,
   existingOnboardingCompleted: boolean | null | undefined,
-  githubPersonaRequired: boolean,
 ): boolean {
-  if (authIntent !== 'login' || githubPersonaRequired) return false;
+  if (authIntent !== 'login') return false;
   return loginOnboardingCompleted(existingOnboardingCompleted);
 }

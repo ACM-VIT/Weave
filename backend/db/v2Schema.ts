@@ -49,6 +49,7 @@ export const appUsers = appSchema.table('users', {
   interests: jsonb('interests').$type<string[]>().notNull().default([]),
   skills: jsonb('skills').$type<string[]>().notNull().default([]),
   techStack: jsonb('tech_stack').$type<string[]>().notNull().default([]),
+  onboardingTaxonomy: jsonb('onboarding_taxonomy').$type<Record<string, unknown>>().notNull().default({}),
   onboardingCompleted: boolean('onboarding_completed').notNull().default(false),
   status: text('status').notNull().default('active'),
   profileVersion: bigint('profile_version', { mode: 'bigint' }).notNull().default(1n),
@@ -60,7 +61,21 @@ export const appUsers = appSchema.table('users', {
     .on(table.githubId)
     .where(sql`${table.githubIdentityVerifiedAt} IS NOT NULL AND ${table.githubId} IS NOT NULL`),
   check('app_users_status_check', sql`${table.status} IN ('active','suspended','deleted')`),
+  check('app_users_onboarding_taxonomy_object', sql`jsonb_typeof(${table.onboardingTaxonomy})='object' AND octet_length(${table.onboardingTaxonomy}::text)<=32768`),
 ]);
+
+export const userGithubImports = appSchema.table('user_github_imports', {
+  userId: uuid('user_id').primaryKey().references(() => appUsers.userId, { onDelete: 'cascade' }),
+  revision: bigint('revision', { mode: 'bigint' }).notNull().default(0n),
+  githubId: text('github_id'), snapshotId: uuid('snapshot_id'), snapshotHash: text('snapshot_hash'),
+  expiresAt: timestamp('expires_at', { withTimezone: true }),
+  collectToken: uuid('collect_token'), collectUntil: timestamp('collect_until', { withTimezone: true }),
+  lastCollectedAt: timestamp('last_collected_at', { withTimezone: true }),
+  consentedAt: timestamp('consented_at', { withTimezone: true }), acceptedAt: timestamp('accepted_at', { withTimezone: true }),
+  acceptedProfileVersion: bigint('accepted_profile_version', { mode: 'bigint' }),
+  revokedAt: timestamp('revoked_at', { withTimezone: true }),
+  provenance: jsonb('provenance').notNull().default({}), baseline: jsonb('baseline').notNull().default({}), applied: jsonb('applied').notNull().default({}),
+});
 
 export const userStats = appSchema.table('user_stats', {
   userId: uuid('user_id').primaryKey().references(() => appUsers.userId, { onDelete: 'cascade' }),
