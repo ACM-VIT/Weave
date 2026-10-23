@@ -18,7 +18,7 @@ const body = { schema_version: 2, generation_id: input.generation_id, user_id: i
   scoring_capture: { schema_version: 1, status: 'captured' }, scoring_context: fixture.context,
   scoring_metadata_complete: false, items: [{ repo_id: fixture.packet.snapshot.repo_id, score: 0.7,
     source: 'semantic', raw_heavy_score: 0.5, scored_input: fixture.packet }] };
-const capability = 'fixture-capture-capability-32-chars';
+const capability = '7'.repeat(64);
 
 async function exchange(bytes: Uint8Array, check: (client: MlV2Client) => Promise<void>, maximum = 1_000_000) {
   const server = createServer((request, response) => {
@@ -75,7 +75,7 @@ test('captured empty is explicit and ordinary output cannot downgrade a requeste
 test('captured failures omit private provider diagnostic text and retain retry classification', async () => {
   const server = createServer((_request, response) => {
     response.writeHead(503, { 'retry-after': '2' });
-    response.end(JSON.stringify({ detail: 'PRIVATE input_base64 fixture-capture-capability-32-chars' }));
+    response.end(JSON.stringify({ detail: `PRIVATE input_base64 ${capability}` }));
   });
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
   const address = server.address(); assert.ok(address && typeof address === 'object');
@@ -87,6 +87,7 @@ test('captured failures omit private provider diagnostic text and retain retry c
       assert.equal(error.kind, 'service_unavailable'); assert.equal(error.retryAfterMs, 2000);
       assert.equal(error.detail, undefined); assert.equal(error.cause, undefined);
       assert.doesNotMatch(String(error) + JSON.stringify(error), /PRIVATE|input_base64|fixture-capture/);
+      assert.equal((String(error)+JSON.stringify(error)).includes(capability),false);
       return true;
     });
   } finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); }
@@ -120,4 +121,20 @@ test('captured parser keeps escaped strings distinct from object structure and a
   const text = JSON.stringify(value);
   const bytes = Buffer.from(text + ' '.repeat(1_000_000 - Buffer.byteLength(text)));
   await exchange(bytes, async client => assert.deepEqual(await client.generate(input, work()), value), 1_000_001);
+});
+
+
+test('capture capability must be exactly 64 lowercase hex before any HTTP request',async()=>{
+  let requests=0;
+  const server=createServer((_request,response)=>{requests++;response.end(JSON.stringify(body));});
+  await new Promise<void>(resolve=>server.listen(0,'127.0.0.1',resolve));
+  const address=server.address();assert.ok(address&&typeof address==='object');
+  try {
+    const client=new MlV2Client({baseUrl:`http://127.0.0.1:${address.port}`,internalSecret:'fixture',timeoutMs:1500,maxResponseBytes:1_000_000});
+    for(const token of ['g'.repeat(64),'A'.repeat(64),'a'.repeat(63),'a'.repeat(65),'a'.repeat(64)+'\n']) {
+      await assert.rejects(client.generate(input,{...work(),scoringCaptureCapability:token}),
+        error=>error instanceof MlRecommendationError&&error.kind==='contract'&&error.status===0);
+    }
+    assert.equal(requests,0);
+  } finally {server.closeAllConnections();await new Promise<void>(resolve=>server.close(()=>resolve()));}
 });

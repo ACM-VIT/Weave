@@ -391,8 +391,8 @@ export class MlV2Client implements RecommendationPort, OutboxTransportPort {
       || input.scoring_capture.encoding !== 'float32-le-v1'
       || !/^[1-9][0-9]{0,18}$/.test(String(input.feed_version)) || typeof input.feed_version !== 'string'
       || BigInt(input.feed_version) > 9223372036854775807n
-      || !work?.scoringCaptureCapability || work.scoringCaptureCapability.length < 32
-      || work.scoringCaptureCapability.length > 512)) {
+      || !work?.scoringCaptureCapability || work.scoringCaptureCapability.length !== 64
+      || !/^[0-9a-f]{64}$/.test(work.scoringCaptureCapability))) {
       throw new MlRecommendationError('ML captured request configuration is invalid.', 0, 'contract');
     }
     const remaining = work ? Math.floor(work.deadline - performance.now()) : Infinity;

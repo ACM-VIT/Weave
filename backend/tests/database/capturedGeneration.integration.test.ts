@@ -47,7 +47,7 @@ integration('real SQL precedes Redis publication and mixed generation provenance
     writer=postgres(writerUrl.toString(),{prepare:false,max:2});
     const storage = new PostgresScoringPersistence(writer);
     const config: Extract<ScoringCaptureConfig,{enabled:true}> = {enabled:true,policy:{policyId:'fixture',policyVersion:'1',retentionDays:30},
-      userIds:new Set([user]),writerDatabaseUrl:writerUrl.toString(),capability:'fixture-scoped-capability-32-chars',writeTimeoutMs:1000};
+      userIds:new Set([user]),writerDatabaseUrl:writerUrl.toString(),capability:'7'.repeat(64),writeTimeoutMs:1000};
     const provider: RecommendationPort = { async generate(input,work) {
       assert.equal(input.feed_version,feedVersion.toString());assert.equal(work?.scoringCaptureCapability,config.capability);
       const context={...golden.context,user_id:user,generation_id:input.generation_id,feed_version:input.feed_version};
