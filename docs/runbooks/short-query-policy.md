@@ -1,55 +1,27 @@
 # Two-character search decision evidence
 
-Issue #118 explicitly requires a human decision. This document proposes a policy;
-it does not approve or activate one. Production validation, search SQL, semantic
-eligibility, authorization and throttling remain unchanged by this evidence tool.
+## Recorded product decision
 
-## Concrete choice
+On23October2026 the user chose **“Keep matching names, descriptions and bios
+(recommended).”** This resolves #118's short-query semantics decision. Preserve
+the current two-character broad matching, exact-name/prefix ranking, semantic
+eligibility, visibility rules and300ms typing delay. The earlier prefix-only,
+minimum-three and extra-delay alternatives below were diagnostic prototypes;
+none was selected or activated.
 
-Recommended candidate: retain two-character input, but use exact/name-prefix
-matches at length two. Repositories match `name` or `owner/name`; people match
-username, full name, verified handle and social-profile aliases; Lists match names
-within the existing owner/public visibility rules. Description/bio substring and
-semantic repository retrieval begin at three characters. Show “Name matches.
-Type 3 characters for broader search.” for the short-query response.
+Current frontend/API trim input, and lexical SQL lowercases and escapes wildcard
+characters. API/client minimum checks count UTF-16 units; the repository SQL
+branch counts code points to choose its access path. Those existing behaviors
+remain unchanged. No NFC/NFKC normalization, grapheme segmentation, new Unicode
+length check or semantic threshold was approved or inferred from this decision.
+A single `😀` and decomposed `e` + acute therefore keep their existing validation
+behavior. The tool's NFC/codepoint/grapheme values are diagnostic observations.
 
-This deliberately removes internal-substring, description-only and bio-only
-matches at length two. It must not be described as equivalent recall. A delayed
-substring query preserves that recall but still performs the same broad work
-when it runs; debounce only reduces how often intermediate input triggers it.
-Raising the minimum to three avoids all two-character retrieval, including useful
-two-character names and CJK input. That is the simplest alternative if those
-queries need not work.
-
-| Decision option | Two-character results | Expensive retrieval | Main tradeoff |
-| --- | --- | --- | --- |
-| Proposed exact/name-prefix | Names/handles only, existing visibility | At three or more | Loses internal substring and description/bio recall |
-| Keep substring after a longer delay | Current substring fields | Still executes at two | Preserves recall, does not bound each query's scan |
-| Minimum three | Validation message, no results | At three or more | Loses all two-character search |
-
-Length also needs an explicit definition. Verified current paths:
-`src/app/(tabs)/explore.tsx` and `src/api/search-query.ts` trim input for search
-and cache/session identity; `parseSearchRequest` trims again. Lexical matching
-lowercases and escapes SQL wildcard characters. These paths do not currently
-perform NFC/NFKC Unicode normalization. API/client length checks use UTF-16 units;
-repository SQL branch selection uses Unicode code points.
-
-`😀` currently passes the two-unit minimum despite being one code point/grapheme.
-Decomposed `e` + combining acute passes as two units/two code points/one grapheme.
-The proposed counting change is **Unicode code points after the same existing
-trim**, consistently on API and client. It preserves two-codepoint `数据`, `éé`
-and decomposed `e` + acute, but rejects a single emoji. Code points are not
-user-perceived graphemes: joined emoji sequences can contain several code points.
-No new normalization or accent stripping is bundled with the prefix proposal.
-
-**Separate optional decision:** NFC would reduce decomposed `e` + acute to one
-code point and make canonically equivalent spellings share a representation.
-That changes existing matching/cache behavior and would require its own explicit
-approval and compatibility tests. The tool reports NFC/grapheme diagnostics only;
-it does not apply them to measured queries or select a production policy. If the
-product instead means graphemes, verify matching segmenter behavior on supported
-native runtimes before adopting it. SQL case/collation behavior remains separate;
-this fixture uses en_US.utf8.
+The implementation may reduce proven unnecessary query work while preserving the
+same ordered references and hydrated product counts. In particular, List ranking
+needs only ID, name and searchable description; membership/nested-board counts
+belong to bounded page hydration. This does not weaken broad substring recall or
+remove visible product counters.
 
 ## Executed local comparison
 
@@ -131,25 +103,18 @@ unapproved. Row digests include the returned record shape and are not directly
 comparable across prototype/baseline shapes. Sentinel IDs expose specific recall
 differences; they are not genuine relevance judgments.
 
-## Implementation acceptance after the decision
+## Acceptance for the selected policy
 
-Record the chosen minimum, counting after existing trim (and any separately approved normalization), two-character fields,
-semantic eligibility and UI wording. Apply the same policy to all groups and
-filters. Preserve current authentication, request throttling, canonical identities,
-claimed-alias mapping, private/unlisted visibility and parameter escaping.
+Keep existing minimum, trim/lowercase/escape behavior, matching fields, exact and
+similarity ranking, all groups, filters and semantic eligibility. Preserve normal
+authentication, throttling, canonical identities, claimed aliases and private/
+unlisted/inactive visibility. The wire contract, search snapshot binding and
+120-second ranking lifetime do not change because result semantics do not change.
 
-Preserve the wire contract or explicitly version any changed response metadata.
-An additive server policy identifier would let upgraded clients label results
-honestly during mixed-version rollout. Old clients must receive an actionable
-validation response if the minimum changes. Include the approved policy version
-in search snapshot binding/namespace so an old120-second ranking is not silently
-reused under new semantics; expired cursors should follow the existing restart
-flow. An extra delay must remain cancellable and must not occupy admission while
-waiting. Changing semantic eligibility changes when the existing ML API is called,
-not the canonical-ID ML request/response ownership boundary.
-
-Then test one/two/three/long queries, all four groups, filters, Unicode and escaped
-wildcards, alias-only matches, private/inactive entities, cancellation, expired
-cursors, offline retained results and account changes. Repeat actual plans/timings
-on the approved path and verify its agreed recall examples. No issue completion,
-production latency target, deployment or approval is inferred from this toolkit.
+Verify one/two/three/long queries, Unicode and escaped wildcards, description/bio
+matches, filters and all four groups. Compare exact ordered List references with
+the pre-change query, then hydrate actual current counts and recheck visibility
+at subsequent pages. Compare actual server plans and local timings on equivalent
+fixtures without attributing unrelated prefix-prototype gains to this change.
+Browser checks must retain current typing delay, cancellation, offline results,
+pagination and account isolation. No production speedup or rollout is inferred.
