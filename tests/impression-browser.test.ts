@@ -48,7 +48,8 @@ test('rendered feed qualification, original IDs, durable retry/navigation and ac
  import{mapBackendToFrontend}from'./src/utils/feed-items';import{repositoryHref,buildRepositoryShareContent}from'./src/utils/repository-links';import{getActivityOutbox}from'./src/services/activityOutboxClient';import{authSessionLifecycle}from'./src/api/session-lifecycle';
  const owners=${JSON.stringify(owners)},serves=${JSON.stringify(serves)},sessions=${JSON.stringify(sessions)},repo=${JSON.stringify(repo)},tokens=${JSON.stringify(tokens)};
  const client=new QueryClient({defaultOptions:{queries:{retry:false}}});
- window.fixture={owner:owners[0],tokens,offline:true,prepared:[],github:[],route:{params:{}},cache:client};Linking.openURL=async url=>{window.fixture.github.push(url);};
+ window.fixture={owner:owners[0],tokens,offline:true,storageUnavailable:!sessionStorage.getItem('fixture-storage-recovered'),storageReadFailures:0,prepared:[],github:[],route:{params:{}},cache:client};
+ const nativeGet=Storage.prototype.getItem;Storage.prototype.getItem=function(key){if(window.fixture.storageUnavailable&&key.startsWith('ghsocial.activity-outbox.')){window.fixture.storageReadFailures++;throw new Error('Owned fixture initial storage read failure');}return nativeGet.call(this,key);};Linking.openURL=async url=>{window.fixture.github.push(url);};
  const data=owner=>{const index=owners.indexOf(owner);return JSON.parse(localStorage.getItem('fixture-cache-'+owner)||'null')||{pages:[{items:[{repo_id:repo,full_name:'fixture/project',serve_id:serves[index],position:0,feed_session_id:sessions[index],viewer_reaction:null,description:'Isolated browser attribution fixture',readme_md:'# Fixture README',client_original_impression:null}]}],pageParams:[null]};};
  for(const owner of owners)client.setQueryData(['feed',owner],data(owner));
  function Fixture(){const[owner,setOwner]=useState(owners[0]),[mounted,setMounted]=useState(true),[view,setView]=useState('feed');const root=useRef(null),card=useRef(null),[visible,setVisible]=useState(false);
@@ -120,6 +121,12 @@ test('rendered feed qualification, original IDs, durable retry/navigation and ac
  await click('Unlike repository');await evaluate('window.fixture.hide()');await wait(200);
  assert.equal(await evaluate('window.fixture.prepared.find(event=>event.action==="unlike").impression_event_id'),first.event_id);
  assert.equal(await evaluate('window.fixture.prepared.filter(event=>event.action==="dwell").length'),0,'quick passive dwell remains neutral');
+ assert.ok(await evaluate('window.fixture.storageReadFailures>0'),'actual localStorage initial read/import failed before the impression was retained');
+ await evaluate('window.fixture.storageUnavailable=false;sessionStorage.setItem("fixture-storage-recovered","1");window.fixture.flush().catch(()=>{})');
+ await until('window.fixture.pending().then(count=>count>=3)');
+ const durableFirst=await evaluate('Array.from({length:localStorage.length},(_,index)=>localStorage.key(index)).filter(key=>key?.startsWith("ghsocial.activity-outbox.")).map(key=>localStorage.getItem(key)).find(value=>value?.includes("'+first.event_id+'"))');
+ assert.ok(durableFirst&&durableFirst.includes(first.client_occurred_at),'the exact first UUID/time reach durable storage after recovery');
+
  await evaluate('window.fixture.unmount()');await wait(50);await evaluate('window.fixture.mount()');await wait(80);await evaluate('window.fixture.show()');await wait(1200);await click('Dislike repository');
  assert.equal(await evaluate('window.fixture.prepared.find(event=>event.action==="dislike").impression_event_id'),first.event_id,'remount/repeated impression retains the first original UUID');
  await until('(localStorage.getItem("fixture-cache-"+window.fixture.owner)||"").includes("'+first.event_id+'")');
@@ -145,5 +152,5 @@ test('rendered feed qualification, original IDs, durable retry/navigation and ac
  await until('window.fixture.pending().then(count=>count===0)');assert.deepEqual(proxyErrors,[],'unexpected proxy failures remain fatal during the test');
  const share=await evaluate('window.fixture.publicShare()');assert.doesNotMatch(JSON.stringify(share),new RegExp([first.event_id,serves[0],sessions[0],'feedNavigation'].join('|')));
  assert.ok(captured.some(request=>request.body.events?.some((event:any)=>event.impression_event_id===first.event_id)));
- t.diagnostic('Actual RNWeb card/detail, measured IntersectionObserver50percent/real1s timer, durable localStorage outbox and registered Express/PostgreSQL. Explicit native gesture/OS-share/auth-presentation boundaries; full FlatList/native acceptance remains separate.');
+ t.diagnostic('Actual initial localStorage read/import failure, exact original UUID/time recovery, RNWeb card/detail, measured IntersectionObserver50percent/real1s timer, durable localStorage outbox and registered Express/PostgreSQL. Explicit native gesture/OS-share/auth-presentation boundaries; full FlatList/native acceptance remains separate.');
 });
