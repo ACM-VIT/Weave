@@ -1,3 +1,4 @@
+import {parseOriginalFeedImpression} from '../services/feedImpressionAttribution';
 import { recommendationSource } from '@/models/recommendation';
 import { parseReadmeDigest } from '@/models/readme-digest';
 import type { RepositoryApiPayload } from '@/api/repositories';
@@ -171,6 +172,8 @@ export function mapRepositoryDetail(
     ...(payload.recommendation_source !== undefined
       ? { recommendationSource: recommendationSource(payload.recommendation_source) } : {}),
     serveId: nullableText(payload.serve_id),
+    feedSessionId:nullableText(payload.feed_session_id),
+    originalImpression:parseOriginalFeedImpression(payload.client_original_impression),
     feedPosition: Number.isInteger(payload.position) ? Number(payload.position) : null,
   };
 }

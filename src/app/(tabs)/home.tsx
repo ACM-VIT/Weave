@@ -365,7 +365,7 @@ export default function HomeScreen() {
               onQueueActivity={(event, flushNow) => handleQueueActivity(item.repository, event, flushNow)}
               onSavedChange={(saved, changed) => handleSavedChange(item.repository, saved, changed)}
               onOwnerPress={() => openOwnerProfile(item.repository)}
-              onRepositoryPress={() => router.push(repositoryHref(item.repository.id))}
+              onRepositoryPress={(navigationToken) => router.push(repositoryHref(item.repository.id,navigationToken))}
               isViewable={viewableItems.includes(item.feedId)}
             />
           )}

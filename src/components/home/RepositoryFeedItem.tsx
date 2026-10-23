@@ -19,7 +19,12 @@ import Animated, {
 import { scheduleOnRN } from 'react-native-worklets';
 
 import type { RepositoryData } from '../../data/repositories';
-import type { FeedbackAction } from '../../api/activity';
+import type { ActivityInput } from '../../api/activity';
+import {useQueryClient} from '@tanstack/react-query';
+import {useAuth} from '@/store/AuthContext';
+import {authSessionLifecycle} from '@/api/session-lifecycle';
+import {createUuid} from '@/utils/uuid';
+import {type OriginalFeedImpression,feedAttribution,parseOriginalFeedImpression,rememberOriginalFeedImpression,rememberFeedNavigation} from '@/services/feedImpressionAttribution';
 import { reconcileFeedItemSavedState } from '@/utils/feed-repository';
 import {
   DWELL_VISIBILITY_THRESHOLD_MS,
@@ -71,18 +76,9 @@ export function RepositoryFeedItem({
   isViewable?: boolean;
   boundary?: React.ReactNode;
   onOwnerPress?: () => void;
-  onRepositoryPress?: () => void;
+  onRepositoryPress?: (navigationToken?:string) => void;
   onSavedChange?: (saved: boolean, saveStateChanged: boolean) => void;
-  onQueueActivity?: (
-    event: {
-      repo_id: string;
-      action: FeedbackAction;
-      dwell_seconds?: number;
-      serve_id?: string | null;
-      position?: number | null;
-    },
-    flushNow?: boolean
-  ) => void;
+  onQueueActivity?: (event:ActivityInput,flushNow?:boolean)=>void;
 }) {
   const [isSaveVisible, setIsSaveVisible] = useState(false);
   const [saveMutations, setSaveMutations] = useState<SavePopupMutationState>({ save: false, create: false, error: null });
@@ -122,16 +118,46 @@ export function RepositoryFeedItem({
   const saveRevealHapticSent = useSharedValue(false);
   const overlaysOpen = isSaveVisible || isShareVisible || isReadmeVisible || isCommentsVisible;
   const measurementActive = isViewable && isAppActive && !overlaysOpen;
-  const queueRepositoryActivity = React.useCallback((
-    event: { repo_id: string; action: FeedbackAction; dwell_seconds?: number },
-    flushNow?: boolean,
-  ) => {
-    onQueueActivity?.({
-      ...event,
-      serve_id: repository.serveId ?? null,
-      position: repository.feedPosition ?? null,
-    }, flushNow);
-  }, [onQueueActivity, repository.feedPosition, repository.serveId]);
+  const {user}=useAuth();
+  const queryClient=useQueryClient();
+  const generation=authSessionLifecycle.currentGeneration();
+  const ownerId=user?.user_id;
+  const {id:repoId,serveId,feedPosition,feedSessionId}=repository;
+  const attribution=React.useMemo(()=>({
+    row:feedAttribution(ownerId,{id:repoId,serveId,feedPosition,feedSessionId} as RepositoryData),generation,
+  }),[ownerId,repoId,serveId,feedPosition,feedSessionId,generation]);
+  const attributionState=useRef(new WeakMap<object,{original:OriginalFeedImpression|null;deliver:typeof onQueueActivity}>());
+  // A row keeps its clock across optimistic callbacks; an old cleanup retains
+  // its own owner/row lease and callback rather than reading a replacement row.
+  React.useLayoutEffect(()=>{
+    const state=attributionState.current.get(attribution)??{original:null,deliver:onQueueActivity};
+    state.deliver=onQueueActivity;
+    state.original??=parseOriginalFeedImpression(repository.originalImpression);
+    if(attribution.row&&state.original&&authSessionLifecycle.isCurrent(attribution.generation)) {
+      state.original=rememberOriginalFeedImpression(queryClient,attribution.row,state.original);
+    }
+    attributionState.current.set(attribution,state);
+  },[attribution,onQueueActivity,queryClient,repository.originalImpression]);
+  const queueRepositoryActivity=React.useCallback((event:ActivityInput,flushNow?:boolean)=>{
+    const state=attributionState.current.get(attribution);
+    if(!state?.deliver||!authSessionLifecycle.isCurrent(attribution.generation))return;
+    const observed=event.action===FEEDBACK_ACTIONS.impression
+      ?{eventId:createUuid(),occurredAt:new Date().toISOString()}:null;
+    if(observed&&attribution.row&&!state.original) {
+      state.original=rememberOriginalFeedImpression(queryClient,attribution.row,observed);
+    }
+    state.deliver({
+      ...event,serve_id:repository.serveId??null,position:repository.feedPosition??null,
+      ...(attribution.row?{session_id:attribution.row.sessionId}:{}),
+      ...(observed?{event_id:observed.eventId,client_occurred_at:observed.occurredAt}:{}),
+      ...(!observed&&attribution.row&&state.original?{impression_event_id:state.original.eventId}:{}),
+    },flushNow);
+  },[attribution,queryClient,repository.serveId,repository.feedPosition]);
+  const openRepository=React.useCallback(()=>{
+    if(!onRepositoryPress||!authSessionLifecycle.isCurrent(attribution.generation))return;
+    const token=attribution.row?rememberFeedNavigation(queryClient,{...attribution.row,generation:attribution.generation,original:attributionState.current.get(attribution)?.original??null}):undefined;
+    onRepositoryPress(token);
+  },[attribution,onRepositoryPress,queryClient]);
 
   React.useEffect(() => {
     const subscription = AppState.addEventListener('change', (state) => {
@@ -307,7 +333,7 @@ export function RepositoryFeedItem({
               isSaved={isSaved}
               onCommentPress={() => setIsCommentsVisible(true)}
               onOwnerPress={onOwnerPress}
-              onRepositoryPress={onRepositoryPress}
+              onRepositoryPress={openRepository}
               onQueueActivity={queueRepositoryActivity}
               onReadFullPress={(digest) => {
                 setExpandedSummary(prepareReadmeSummaryDocument({ ...repository, readmeDigest: digest }));
@@ -347,6 +373,8 @@ export function RepositoryFeedItem({
         repoId={repository.id}
         repoName={repository.name}
         serveId={repository.serveId}
+        sessionId={attribution.row?.sessionId}
+        impressionEventId={attribution.row?repository.originalImpression?.eventId:undefined}
       /> : null}
       {isShareVisible ? <ShareRepositorySheet
         isVisible={isShareVisible}

@@ -8,6 +8,7 @@ export type { FeedbackAction } from '../constants/feedbackActions';
 
 export type QueuedActivity = {
   event_id: string;
+  impression_event_id?: string | null;
   session_id: string;
   client_occurred_at: string;
   repo_id: string;
@@ -22,6 +23,7 @@ export type ActivityInput = Omit<QueuedActivity, 'event_id' | 'session_id' | 'cl
 
 export type InteractionEventV2 = {
   event_id: string;
+  impression_event_id?: string | null;
   schema_version: 2;
   session_id: string;
   serve_id: string | null;
@@ -53,6 +55,10 @@ export function prepareQueuedActivity(event: ActivityInput): QueuedActivity {
     && (!Number.isInteger(event.position) || event.position < 0)) {
     throw new Error('Activity position must be a non-negative integer.');
   }
+  if(event.impression_event_id!==undefined&&event.impression_event_id!==null
+    &&(typeof event.impression_event_id!=='string'||!UUID_PATTERN.test(event.impression_event_id)||event.action==='impression'||!event.serve_id||event.position==null)) {
+    throw new Error('Activity impression_event_id requires a qualified feed impression reference.');
+  }
   return {
     ...event,
     event_id: event.event_id ?? createUuid(),
@@ -64,6 +70,7 @@ export function prepareQueuedActivity(event: ActivityInput): QueuedActivity {
 export function toInteractionEventV2(event: QueuedActivity): InteractionEventV2 {
   return {
     event_id: event.event_id,
+    ...('impression_event_id' in event?{impression_event_id:event.impression_event_id}:{}),
     schema_version: 2,
     session_id: event.session_id,
     serve_id: event.serve_id ?? null,

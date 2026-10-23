@@ -5,7 +5,7 @@ export const WEAVE_NATIVE_SCHEME = 'ghsocial';
 
 export type RepositoryRouteHref = Href & {
   pathname: typeof REPOSITORY_ROUTE_PATHNAME;
-  params: { repoId: string };
+  params: { repoId: string; feedNavigation?:string };
 };
 
 export type RepositoryShareContent = {
@@ -62,10 +62,10 @@ export function repositoryPath(repoId: string): `/repository/${string}` {
   return `/repository/${encodeURIComponent(repositoryId(repoId))}`;
 }
 
-export function repositoryHref(repoId: string): RepositoryRouteHref {
+export function repositoryHref(repoId: string,navigationToken?:string): RepositoryRouteHref {
   return {
     pathname: REPOSITORY_ROUTE_PATHNAME,
-    params: { repoId: repositoryId(repoId) },
+    params: { repoId: repositoryId(repoId),...(navigationToken?{feedNavigation:navigationToken}:{}) },
   } as RepositoryRouteHref;
 }
 

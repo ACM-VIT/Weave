@@ -116,3 +116,11 @@ test('writes rename a corrupt main snapshot before replacing it', async () => {
   assert.equal(fileSystem.files.get(`${MAIN}.corrupt-42`), 'not-json');
   assert.deepEqual(JSON.parse(fileSystem.files.get(MAIN) ?? ''), [event(3)]);
 });
+
+test('durable snapshots retain the original impression UUID without inventing absent legacy links',()=>{
+  const linked={...event(2),serve_id:'00000000-0000-4000-8000-000000000123',position:0,
+    impression_event_id:event(1).event_id};
+  assert.deepEqual(deserializeActivitySnapshot(JSON.stringify([linked])),[linked]);
+  assert.equal('impression_event_id' in deserializeActivitySnapshot(JSON.stringify([event(3)]))[0],false);
+  assert.throws(()=>deserializeActivitySnapshot(JSON.stringify([{...linked,impression_event_id:'invalid'}])),/impression_event_id/);
+});
