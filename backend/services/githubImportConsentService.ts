@@ -3,8 +3,7 @@ import type { Sql, TransactionSql } from 'postgres';
 import { sqlClient } from '../db/index.js';
 import { PostgresRepositoryPersistence } from '../adapters/postgresRepositoryPersistence.js';
 import type { GitHubActivityImportClient, GitHubActivitySnapshot } from './githubActivityImport.js';
-import { inferGitHubPersona } from './githubPersonaService.js';
-import { canonicalSkillNames } from './onboardingTaxonomy.js';
+import { importedPreferences, mergeImportedPreferences } from './githubPreferenceProjection.js';
 import { normalizeOnboardingTopic } from '../contracts/onboardingTaxonomy.js';
 import { buildMlOnboardingJob, hasMlEmbeddingContext } from './mlOnboardingService.js';
 
@@ -23,25 +22,6 @@ const arrays = (value: Record<string, unknown>): Preferences => ({
   skills: Array.isArray(value.skills) ? value.skills.map(String) : [],
   tech_stack: Array.isArray(value.tech_stack) ? value.tech_stack.map(String) : [],
 });
-export function importedPreferences(snapshot: GitHubActivitySnapshot): Preferences {
-  const inferred = inferGitHubPersona({ repositories: snapshot.repositories.map(repo => ({
-    private: false, visibility: 'public', fork: repo.fork, topics: repo.topics, language: repo.primary_language,
-  })) });
-  return { interests: inferred.interests, skills: canonicalSkillNames(inferred.skills), tech_stack: inferred.tech_stack };
-}
-function mergePreferences(baseline: Preferences, inferred: Preferences): Preferences {
-  const result = structuredClone(baseline);
-  const topics = new Set(fields.flatMap(field => baseline[field].map(normalizeOnboardingTopic)));
-  for (const field of fields) {
-    const known = new Set(result[field].map(normalizeOnboardingTopic));
-    for (const value of inferred[field]) {
-      const topic = normalizeOnboardingTopic(value);
-      if (known.has(topic) || result[field].length >= 50 || (!topics.has(topic) && topics.size >= 100)) continue;
-      result[field].push(value); known.add(topic); topics.add(topic);
-    }
-  }
-  return result;
-}
 
 export class GitHubImportConsentService {
   private collecting = 0;
@@ -187,7 +167,7 @@ export class GitHubImportConsentService {
       const inferred = importedPreferences(snapshot);
       if (!fields.some(field => inferred[field].length > 0)) throw failure('No public preference signals are available. Choose your interests manually.', 422);
       const baseline = arrays(profile);
-      const applied = mergePreferences(baseline, inferred);
+      const applied = mergeImportedPreferences(baseline, inferred);
       const created = await new PostgresRepositoryPersistence(this.db).registerDiscoveredRepositories(snapshot.repositories.map(repo => ({
         github_id: repo.github_id, owner_github_id: repo.owner_github_id, full_name: repo.full_name,
         owner: repo.owner, name: repo.name, url: repo.url, description: repo.description,
