@@ -128,6 +128,16 @@ test('real lineage migration reapplies and enforces observed identities without 
     assert.equal(unknownPayload.lineage_source,'github-rest-repository');
     const [cleared]=await sql`SELECT is_fork,fork_family_github_id FROM app.repos WHERE repo_id=${first.repo_id}::uuid`;
     assert.equal(cleared.is_fork,null);assert.equal(cleared.fork_family_github_id,null);
+
+    await Promise.all([
+      persistence.bulkUpsert([{...transferred,is_fork:true,fork_parent_github_id:'222',fork_family_github_id:'888',
+        lineage_source:'github-graphql-repository',lineage_observed_at:'2026-10-23T00:00:00.000006Z',observed_at:'2026-10-23T08:00:00Z'}]),
+      persistence.bulkUpsert([{...transferred,is_fork:true,fork_parent_github_id:'222',fork_family_github_id:'777',
+        lineage_source:'github-graphql-repository',lineage_observed_at:'2026-10-23T00:00:00.000004Z',observed_at:'2026-10-23T09:00:00Z'}]),
+    ]);
+    const [concurrent]=await sql`SELECT fork_family_github_id::text FROM app.repos WHERE repo_id=${first.repo_id}::uuid`;
+    assert.equal(concurrent.fork_family_github_id,'888','Existing ingestion locks serialize a concurrent stale observation behind the latest lineage.');
+
     const jobs=await sql`SELECT payload FROM telemetry.ml_outbox WHERE aggregate_id=${first.repo_id}::uuid AND job_type='repo_refresh'`;
     assert.ok(jobs.some(job=>job.payload.required_content_version===3));
     assert.ok(jobs.every(job=>!Object.hasOwn(job.payload.features,'fork_family_github_id')));
@@ -136,6 +146,8 @@ test('real lineage migration reapplies and enforces observed identities without 
     try{
       await sql`DELETE FROM telemetry.ml_outbox WHERE aggregate_id IN (SELECT repo_id FROM app.repos WHERE github_id=ANY(${ids}::bigint[]))`;
       await sql`DELETE FROM app.repos WHERE github_id=ANY(${ids}::bigint[])`;
+      await sql`DELETE FROM app.social_profiles WHERE provider='github' AND claimed_by_user_id IS NULL
+        AND provider_subject=ANY(${[(base+101n).toString(),(base+102n).toString()]}::text[])`;
     }finally{await sql.end({timeout:1});}
   }
 });

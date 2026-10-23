@@ -196,7 +196,7 @@ export const appRepos = appSchema.table('repos', {
   isFork: boolean('is_fork'),
   forkParentGithubId: bigint('fork_parent_github_id', { mode: 'bigint' }),
   forkFamilyGithubId: bigint('fork_family_github_id', { mode: 'bigint' }),
-  lineageObservedAt: timestamp('lineage_observed_at', { withTimezone: true }),
+  lineageObservedAt: timestamp('lineage_observed_at', { withTimezone: true, mode: 'string' }),
   lineageSource: text('lineage_source'),
   fullName: text('full_name').notNull(),
   owner: text('owner').notNull(),
