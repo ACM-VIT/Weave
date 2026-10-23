@@ -6,6 +6,7 @@ type CursorPayload = {
   session_id: string;
   feed_version: string;
   offset: number;
+  model_scope?:string;
 };
 
 export class InvalidFeedCursorError extends Error {
@@ -48,6 +49,7 @@ export class FeedCursorCodec {
         || !Number.isInteger(payload.offset) || Number(payload.offset) < 0 || Number(payload.offset) > 32_767) {
         throw new InvalidFeedCursorError();
       }
+      if(payload.model_scope!==expected.model_scope)throw new StaleFeedCursorError();
       if (payload.feed_version !== expected.feed_version) {
         if (BigInt(payload.feed_version) < BigInt(expected.feed_version)) throw new StaleFeedCursorError();
         throw new InvalidFeedCursorError();

@@ -1,3 +1,4 @@
+import type { FeedIntentScope } from '../contracts/feedIntent.js';
 import { FeedPreferenceChangedError } from '../ports/feedPersistencePort.js';
 import crypto from 'node:crypto';
 import { performance } from 'node:perf_hooks';
@@ -86,6 +87,7 @@ export class FeedV2Service {
     private readonly generationWaitMs = 5_000,
     refill?: FeedRefillOptions,
     private readonly captureRequired: (userId: string) => boolean = () => false,
+    private readonly intentScope?:FeedIntentScope,
   ) {
     this.cursorCodec = new FeedCursorCodec(cursorSecret);
     this.serveWaits = new FeedWaitCoordinator(reservationPollMs, () => new FeedRequestInProgressError());
@@ -308,6 +310,7 @@ export class FeedV2Service {
       user_id: userId,
       session_id: request.session_id,
       feed_version: version.toString(),
+      ...(this.intentScope?{model_scope:this.intentScope.queueScope}:{}),
     });
     // Before claiming ownership there is no shared writer to preserve.
     signal?.throwIfAborted();
@@ -463,6 +466,7 @@ export class FeedV2Service {
               session_id: request.session_id,
               feed_version: version.toString(),
               offset: pageOffset + usable.length,
+              ...(this.intentScope?{model_scope:this.intentScope.queueScope}:{}),
             });
           }
         } catch (error) {
@@ -470,6 +474,7 @@ export class FeedV2Service {
         }
       }
       const stored = await this.persistence.createServe({
+        ...(this.intentScope?{intent_scope:this.intentScope}:{}),
         feed_request_id: request.feed_request_id,
         user_id: userId,
         session_id: request.session_id,

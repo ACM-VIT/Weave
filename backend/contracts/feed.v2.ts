@@ -1,3 +1,4 @@
+import type { FeedIntentScope } from './feedIntent.js';
 import type { ScoringInputReference } from './scoringCapture.js';
 import type { ReadmeSummaryArtifact } from './readmeSummary.v2.js';
 export const FEED_SCHEMA_VERSION = 2 as const;
@@ -74,6 +75,7 @@ export interface StoredServe {
 }
 
 export interface CreateServeInput {
+  intent_scope?:FeedIntentScope;
   feed_request_id: string;
   user_id: string;
   session_id: string;

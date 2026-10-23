@@ -721,3 +721,12 @@ export const pendingModelFeedback = telemetrySchema.table('pending_model_feedbac
   originalFeedbackJson: text('original_feedback_json').notNull(), acceptedAtMs: bigint('accepted_at_ms',{mode:'bigint'}).notNull(),
   canonicalAttribution: jsonb('canonical_attribution'), operationId: uuid('operation_id').references(() => mlOutbox.outboxId),
 });
+
+export const feedModelGenerations = telemetrySchema.table('feed_model_generations', {
+  generationId: uuid('generation_id').primaryKey(),
+  userId: uuid('user_id').notNull().references(() => appUsers.userId,{onDelete:'cascade'}),
+  sessionId: uuid('session_id').notNull().references(() => feedIntentSessions.sessionId),
+  queueScope: text('queue_scope').notNull(), appliedContext: jsonb('applied_context').notNull(),
+  validUntilMs: bigint('valid_until_ms',{mode:'bigint'}).notNull(),
+  createdAt: timestamp('created_at',{withTimezone:true}).notNull().defaultNow(),
+},table=>[index('feed_model_generations_scope').on(table.userId,table.queueScope,table.validUntilMs)]);
