@@ -15,7 +15,6 @@ import {
   fallbackUsername,
   githubIdentityFromAuthUser,
 } from "../services/identityService.js";
-import { syncGitHubPersona } from "../services/githubPersonaService.js";
 import { RefreshUserLookupTimeoutError, withRefreshUserLookupDeadline } from '../services/refreshUserLookup.js';
 import { updatePasswordFromRecoverySession } from "../services/passwordRecoveryService.js";
 import {
@@ -41,7 +40,6 @@ import {
   initialOAuthOnboardingCompleted,
   loginOnboardingCompleted,
   oauthLoginNeedsSignup,
-  requiresGitHubPersona,
 } from "../services/oauthProfilePolicy.js";
 
 const CLIENT_URL = process.env.CLIENT_URL;
@@ -592,14 +590,8 @@ export async function handleOAuthCallback(
         error: "oauth_account_not_found",
       }));
     }
-    // GitHub can create an identity even when the user pressed "Log in". Any
-    // product profile that has never completed persona sync must fail closed;
-    // established GitHub accounts can still log in during a transient API
-    // outage because their durable persona already exists.
-    const githubPersonaRequired = requiresGitHubPersona(
-      attempt.provider,
-      existingProductProfile?.onboardingCompleted,
-    );
+    // OAuth verifies identity. Public-activity collection and preference import
+    // require their separate explicit consent and acceptance flow.
     await ensureIdentityProfile({
       userId: data.user.id,
       username: fallbackUsername(data.user.id, data.user.user_metadata),
@@ -615,39 +607,8 @@ export async function handleOAuthCallback(
       onboardingCompleted: initialOAuthOnboardingCompleted(
         attempt.authIntent,
         existingProductProfile?.onboardingCompleted,
-        githubPersonaRequired,
       ),
     });
-    if (attempt.provider === "github") {
-      if (!githubIdentity.githubHandle) {
-        console.error("GitHub OAuth response did not contain a GitHub handle.");
-        if (githubPersonaRequired) {
-          return res.redirect(withClientRedirectParams(clientRedirect, {
-            error: "github_identity_incomplete",
-          }));
-        }
-      }
-
-      if (githubIdentity.githubHandle) {
-        try {
-          await syncGitHubPersona(data.user.id, githubIdentity.githubHandle);
-        } catch (error) {
-          console.warn(
-            "GitHub persona sync failed:",
-            error instanceof Error ? error.message : "Unknown error",
-          );
-          // A GitHub signup promises to derive the persona from GitHub and skip
-          // manual onboarding. Do not issue an app session until that promise
-          // has actually been fulfilled. The incomplete profile is safe to
-          // retry on the next OAuth attempt.
-          if (githubPersonaRequired) {
-            return res.redirect(withClientRedirectParams(clientRedirect, {
-              error: "github_persona_sync_failed",
-            }));
-          }
-        }
-      }
-    }
     const [codeData] = await db
       .insert(oauthCodes)
       .values({

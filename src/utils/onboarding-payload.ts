@@ -1,3 +1,6 @@
+import { ONBOARDING_SKILLS, ONBOARDING_INTERESTS, ONBOARDING_TAXONOMY_VERSION } from '../../backend/contracts/onboardingTaxonomy';
+import { resolveOnboardingTaxonomy } from './onboardingTaxonomy';
+
 export type OnboardingSelections = {
   bio?: string;
   interests?: string[];
@@ -11,6 +14,7 @@ export type NormalizedOnboardingPayload = {
   interests: string[];
   skills: string[];
   tech_stack: string[];
+  taxonomy_selections: ReturnType<typeof resolveOnboardingTaxonomy>['taxonomy_selections'] & { version: number };
 };
 
 const SPECIAL_SLUGS: Readonly<Record<string, string>> = {
@@ -40,8 +44,9 @@ export function buildOnboardingPayload(data: OnboardingSelections): NormalizedOn
   const bio = data.bio ?? '';
   if (bio.length > 2_000) throw new Error('Bio can contain at most 2000 characters.');
 
-  const interests = normalize(data.interests);
-  const skills = normalize(data.skills);
+  const selections = resolveOnboardingTaxonomy(data, { skills: ONBOARDING_SKILLS, interests: ONBOARDING_INTERESTS });
+  const interests = normalize(selections.interests);
+  const skills = normalize(selections.skills);
   const techStack = normalize(data.tech_stack);
   const allTopics = [...new Set([...interests, ...skills, ...techStack])];
   if (allTopics.length === 0) {
@@ -57,5 +62,6 @@ export function buildOnboardingPayload(data: OnboardingSelections): NormalizedOn
     interests,
     skills,
     tech_stack: techStack,
+    taxonomy_selections: { version: ONBOARDING_TAXONOMY_VERSION, ...selections.taxonomy_selections },
   };
 }

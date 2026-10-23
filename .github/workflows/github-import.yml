@@ -1,0 +1,51 @@
+name: GitHub import acceptance
+on:
+  pull_request:
+    paths: ['backend/**', 'database/**', '.github/workflows/github-import.yml']
+permissions:
+  contents: read
+jobs:
+  consent:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: weave_scroll
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U postgres -d weave_scroll"
+          --health-interval 5s --health-timeout 5s --health-retries 12
+      redis:
+        image: redis:7-alpine
+        ports: ['6379:6379']
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s --health-timeout 5s --health-retries 12
+    defaults:
+      run:
+        working-directory: backend
+    env:
+      NODE_ENV: test
+      DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/weave_scroll
+      REDIS_DATABASE_TEST_URL: redis://127.0.0.1:6379/15
+      BOOTSTRAP_SUPABASE_AUTH_STUB: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+      - run: npm ci
+      - run: npm run migrate
+      - name: Exercise consent, taxonomy, discovery and OAuth boundaries
+        run: >-
+          RUN_DATABASE_INTEGRATION=1 node --import tsx --test
+          tests/database/onboardingImport.integration.test.ts
+          tests/database/repositoryDiscovery.integration.test.ts
+          tests/database/githubConsent.integration.test.ts
+          tests/database/oauthConsent.integration.test.ts

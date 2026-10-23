@@ -41,6 +41,10 @@ export class OutboxWorker {
       // sequential request while their database lease is already ticking.
       const [row] = await this.outbox.claim(1);
       if (!row) break;
+      if (row.job_type === 'onboard' && !await this.outbox.prepareOnboardingDelivery(row)) {
+        processed++;
+        continue;
+      }
       // A retry gets a fresh root: no durable enqueue trace is stored today.
       const span = startSpan(row.job_type, 'outbox_delivery', true);
       observeStage(row.job_type, 'outbox_age', 'success', Date.now() - Date.parse(row.created_at));
