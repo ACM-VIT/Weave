@@ -53,7 +53,16 @@ integration('consented public import uses actual HTTP/SQL/Redis, rolls back fail
     assert.equal(url.origin, 'https://api.github.com');
     return fetch(`http://127.0.0.1:${providerAddress.port}${url.pathname}${url.search}`, init);
   } });
-  const service = new GitHubImportConsentService(collector, redis);
+  let pauseSnapshot = false, snapshotEntered!: () => void, releaseSnapshot!: () => void;
+  let snapshotGate = Promise.resolve();
+  const cache = {
+    get: async (key: string) => {
+      if (pauseSnapshot) { pauseSnapshot = false; snapshotEntered(); await snapshotGate; }
+      return redis.get(key);
+    },
+    set: redis.set.bind(redis), del: redis.del.bind(redis),
+  };
+  const service = new GitHubImportConsentService(collector, cache);
   const app = express(); app.use(express.json()); app.use('/api/v2/onboarding/github-import', requireAuth, createGithubImportRouter(service));
   const server = app.listen(0, '127.0.0.1');
   await new Promise<void>(resolve => server.listening ? resolve() : server.once('listening', resolve));
@@ -109,7 +118,18 @@ integration('consented public import uses actual HTTP/SQL/Redis, rolls back fail
     assert.equal(Number((await sqlClient`SELECT count(*) FROM telemetry.ml_outbox WHERE aggregate_id=${user}::uuid`)[0].count), 0);
     await sqlClient.unsafe(`DROP TRIGGER ${functionName} ON app.user_github_imports; DROP FUNCTION app.${functionName}()`);
     triggerCreated = false;
+    // Pause a contender after its durable unaccepted read. The winner accepts
+    // and removes the expiring cache before the contender resumes its read.
+    snapshotGate = new Promise<void>(resolve => { releaseSnapshot = resolve; });
+    const snapshotReached = new Promise<void>(resolve => { snapshotEntered = resolve; });
+    pauseSnapshot = true;
+    const contender = send('/accept', 'POST', { snapshot_id: preview.snapshot_id });
+    await snapshotReached;
     const acceptedResponse = await send('/accept', 'POST', { snapshot_id: preview.snapshot_id });
+    releaseSnapshot();
+    const concurrentReplay = await contender;
+    assert.equal(concurrentReplay.status, 200, await concurrentReplay.clone().text());
+    assert.equal((await data<Accepted>(concurrentReplay)).replay, true);
     assert.equal(acceptedResponse.status, 200, await acceptedResponse.clone().text());
     const accepted = await data<Accepted>(acceptedResponse);
     assert.equal(accepted.repositories_created, 1);
@@ -150,7 +170,7 @@ integration('consented public import uses actual HTTP/SQL/Redis, rolls back fail
     assert.equal((await late).status, 409);
     assert.equal(Number((await sqlClient`SELECT count(*) FROM app.user_github_imports WHERE user_id=${user}::uuid AND snapshot_id IS NOT NULL`)[0].count), 0);
   } finally {
-    release?.();
+    releaseSnapshot?.(); release?.();
     server.closeAllConnections(); provider.closeAllConnections();
     await Promise.all([new Promise<void>(resolve => server.close(() => resolve())), new Promise<void>(resolve => provider.close(() => resolve()))]);
     if (triggerCreated) await sqlClient.unsafe(`DROP TRIGGER IF EXISTS ${functionName} ON app.user_github_imports; DROP FUNCTION IF EXISTS app.${functionName}()`);

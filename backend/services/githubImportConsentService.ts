@@ -50,8 +50,11 @@ export class GitHubImportConsentService {
     const [state] = await tx`SELECT * FROM app.user_github_imports WHERE user_id=${userId}::uuid FOR UPDATE`;
     return state;
   }
-  private async snapshot(userId: string, state: Record<string, unknown>): Promise<GitHubActivitySnapshot> {
+  private snapshot(userId: string, state: Record<string, unknown>): Promise<GitHubActivitySnapshot>;
+  private snapshot(userId: string, state: Record<string, unknown>, allowMissing: true): Promise<GitHubActivitySnapshot | null>;
+  private async snapshot(userId: string, state: Record<string, unknown>, allowMissing = false): Promise<GitHubActivitySnapshot | null> {
     const raw = await this.cache.get(key(userId, String(state.snapshot_id)));
+    if (raw === null && allowMissing) return null;
     if (!raw || Buffer.byteLength(raw, 'utf8') > 8_388_608 || hash(raw) !== state.snapshot_hash) {
       throw failure('The import preview expired. Preview public activity again.');
     }
@@ -157,7 +160,7 @@ export class GitHubImportConsentService {
     // waiting for its network I/O; recheck the durable hash/identity under lock.
     const [preview] = await this.db`SELECT * FROM app.user_github_imports WHERE user_id=${userId}::uuid AND snapshot_id=${snapshotId}::uuid`;
     if (!preview) throw failure('The import preview is not available for this account.');
-    const cached = preview.accepted_at ? null : await this.snapshot(userId, preview);
+    const cached = preview.accepted_at ? null : await this.snapshot(userId, preview, true);
     const result = await this.db.begin(async tx => {
       const profile = await this.owner(tx, userId);
       const identity = this.verified(profile);

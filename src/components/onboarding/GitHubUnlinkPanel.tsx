@@ -1,10 +1,11 @@
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, Pressable, Text, View } from 'react-native';
+import { ActivityIndicator, Pressable, ScrollView, Text, View } from 'react-native';
 import { APP_THEME, Fonts, REFERENCE_THEME, Spacing } from '../../constants/theme';
 import { githubUnlinkApi, type GithubUnlinkResult } from '../../api/githubUnlink';
 import { startGithubUnlink } from '../../services/githubUnlink';
 
-type Props = { userId: string; onSaved: () => Promise<unknown>; authorize?: typeof startGithubUnlink; api?: typeof githubUnlinkApi };
+type Props = { recoveryOnly?: boolean; userId: string; onSaved: () => Promise<unknown>; authorize?: typeof startGithubUnlink; api?: typeof githubUnlinkApi };
 function UnlinkAction({ label, onPress, disabled }: { label: string; onPress: () => void; disabled: boolean }) {
   return <Pressable accessibilityRole="button" accessibilityLabel={label} accessibilityState={{ disabled }} disabled={disabled}
     onPress={onPress} style={{ minHeight: 48, justifyContent: 'center', opacity: disabled ? 0.5 : 1 }}>
@@ -12,7 +13,8 @@ function UnlinkAction({ label, onPress, disabled }: { label: string; onPress: ()
   </Pressable>;
 }
 export function GitHubUnlinkPanel(props: Props) { return <UnlinkBody key={props.userId} {...props} />; }
-function UnlinkBody({ userId, onSaved, authorize = startGithubUnlink, api = githubUnlinkApi }: Props) {
+function UnlinkBody({ userId, onSaved, recoveryOnly = false, authorize = startGithubUnlink, api = githubUnlinkApi }: Props) {
+  const insets = useSafeAreaInsets();
   const [result, setResult] = useState<GithubUnlinkResult | null>(null);
   const [confirmed, setConfirmed] = useState(false), [busy, setBusy] = useState(false), [error, setError] = useState('');
   const alive = useRef(false), request = useRef<AbortController | null>(null), sequence = useRef(0);
@@ -41,12 +43,13 @@ function UnlinkBody({ userId, onSaved, authorize = startGithubUnlink, api = gith
     } catch (reason) { if (isCurrent()) setError(reason instanceof Error ? reason.message : 'Unable to verify disconnect. Check status again.'); }
     finally { if (isCurrent()) setBusy(false); }
   };
-  return <View style={{ gap: Spacing.two, paddingVertical: Spacing.three }}>
+  if (recoveryOnly && result?.status !== 'pending' && !error) return null;
+  const content = <View style={{ gap: Spacing.two, paddingVertical: Spacing.three }}>
     <Text style={{ color: REFERENCE_THEME.text, fontFamily: Fonts.sans, fontWeight: '600', fontSize: 17 }}>GitHub login</Text>
     <Text style={{ color: REFERENCE_THEME.textSecondary, fontFamily: Fonts.sans, fontSize: 14, lineHeight: 21 }}>
       Disconnecting requires another login identity and a fresh GitHub sign-in for this account. It also revokes imported activity preferences. Your manual preferences, saves and lists stay in Weave.
     </Text>
-    {result?.status === 'done' ? <Text style={{ color: REFERENCE_THEME.text, fontFamily: Fonts.sans }}>GitHub login disconnected.</Text> : <>
+    {recoveryOnly && result?.status !== 'pending' ? null : result?.status === 'done' ? <Text style={{ color: REFERENCE_THEME.text, fontFamily: Fonts.sans }}>GitHub login disconnected.</Text> : <>
       {result?.status === 'pending' ? <Text style={{ color: REFERENCE_THEME.textSecondary, fontFamily: Fonts.sans }}>{result.message ?? 'Disconnect is pending verification. Activity imports are paused.'}</Text> : null}
       {result?.status === 'refused' ? <Text style={{ color: REFERENCE_THEME.textSecondary, fontFamily: Fonts.sans }}>The provider refused the disconnect. GitHub remains linked; imported preferences were revoked.</Text> : null}
       {result?.status === 'superseded' ? <Text style={{ color: REFERENCE_THEME.textSecondary, fontFamily: Fonts.sans }}>Your GitHub identity changed. The newer login was preserved.</Text> : null}
@@ -58,4 +61,8 @@ function UnlinkBody({ userId, onSaved, authorize = startGithubUnlink, api = gith
     {busy ? <ActivityIndicator accessibilityLabel="Verifying GitHub disconnect" color={APP_THEME.primary} /> : null}
     {error ? <Text accessibilityRole="alert" style={{ color: REFERENCE_THEME.text, fontFamily: Fonts.sans }}>{error}</Text> : null}
   </View>;
+  return recoveryOnly ? <ScrollView keyboardShouldPersistTaps="handled" style={{ flexGrow: 0, maxHeight: '45%' }}
+    contentContainerStyle={{ paddingTop: insets.top, paddingHorizontal: Spacing.four, maxWidth: 450, width: '100%', alignSelf: 'center' }}>
+    {content}
+  </ScrollView> : content;
 }
