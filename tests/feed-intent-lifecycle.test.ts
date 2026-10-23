@@ -76,7 +76,7 @@ test('a rejected stale Reset reconciles another client epoch and End can drain a
  const deps={read:async()=>stored,write:async(value:string)=>{stored=value;},assertCurrent:()=>{},
   inspect:async():Promise<FeedSessionResult>=>({mode:'ordered',session:{session_id:session,epoch,status:active?'active':'retired'}}),
   send:async(control:FeedSessionControl):Promise<FeedSessionResult>=>{
-   sent.push(structuredClone(control));const prior=accepted.get(control.request_id);if(prior)return prior;
+   sent.push(structuredClone(control));const prior=accepted.get(control.request_id);if(prior)return {mode:'ordered',session:{session_id:session,epoch,status:active?'active':'retired'}};
    if(control.kind!=='begin'&&control.expected_epoch!==epoch)throw Object.assign(new Error('stale'),{status:409,code:'MODEL_SESSION_STALE'});
    if(control.kind==='reset')epoch=(BigInt(epoch)+1n).toString();if(control.kind==='end')active=false;
    const result:FeedSessionResult={mode:'ordered',session:{session_id:session,epoch,status:active?'active':'retired'}};
@@ -90,8 +90,16 @@ test('a rejected stale Reset reconciles another client epoch and End can drain a
  assert.equal((sent[0] as Extract<FeedSessionControl,{kind:'reset'|'end'}>).expected_epoch,'1');
  assert.equal((sent[1] as Extract<FeedSessionControl,{kind:'reset'|'end'}>).expected_epoch,'2');
  fail=true;await assert.rejects(client.reset(session),/lost response/);const uncertain=structuredClone(sent.at(-1));
- fail=false;await new FeedIntentLifecycle(owner,deps).endAll();
- assert.deepEqual(sent.at(-2),uncertain,'an uncertain accepted control retains its original request bytes');
+ fail=false;
+ await deps.send({kind:'reset',request_id:'00000000-0000-4000-8000-000000000099',session_id:session,expected_epoch:epoch});
+ assert.equal(epoch,'5','another live client advances after the lost Reset response');
+ const retryStart=sent.length;await new FeedIntentLifecycle(owner,deps).endAll();
+ const retried=sent.slice(retryStart);
+ assert.deepEqual(retried[0],uncertain,'an uncertain accepted control retains its original request bytes');
+ assert.equal(retried[1].kind,'end');assert.equal((retried[1] as Extract<FeedSessionControl,{kind:'end'}>).expected_epoch,'4');
+ assert.equal(retried[2].kind,'end');assert.equal((retried[2] as Extract<FeedSessionControl,{kind:'end'}>).expected_epoch,'5');
+ assert.notEqual(retried[1].request_id,retried[2].request_id,'only the proven stale End gets a new request ID');
+ assert.equal(epoch,'5','duplicate Reset does not execute again');
  assert.equal(active,false);assert.deepEqual(JSON.parse(stored!).entries,[]);
 });
 
