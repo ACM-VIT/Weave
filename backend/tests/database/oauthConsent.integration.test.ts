@@ -64,7 +64,9 @@ integration('registered GitHub OAuth callback verifies identity without collecti
     state = new URL(result.data.url).searchParams.get('oauth_attempt'); assert.ok(state);
     const continuation = await fetch(result.data.url, { redirect: 'manual' });
     assert.equal(continuation.status, 302);
-    const cookie = continuation.headers.get('set-cookie')?.split(';')[0]; assert.ok(cookie);
+    const cookie = continuation.headers.getSetCookie().find(value => value.startsWith('oauth_attempt='))?.split(';')[0]; assert.ok(cookie);
+    assert.ok(continuation.headers.getSetCookie().some(value => value.startsWith('github_unlink_attempt=;')),
+      'ordinary sign-in retires the separate unlink-purpose cookie');
     const callback = await fetch(`${origin}/api/auth/callback?code=fixture-provider-code`, { redirect: 'manual', headers: { Cookie: cookie } });
     assert.equal(callback.status, 302);
     assert.ok(new URL(callback.headers.get('location')!).searchParams.get('code'), callback.headers.get('location')!);
