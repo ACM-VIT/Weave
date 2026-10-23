@@ -23,6 +23,15 @@ async function withServer(handler: RequestListener, run: (url: string) => Promis
   try { await run(`http://127.0.0.1:${address.port}`); }
   finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); }
 }
+async function within<T>(value: Promise<T>, milliseconds: number, message: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([value, new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error(message)), milliseconds);
+    })]);
+  } finally { clearTimeout(timer); }
+}
+
 const client = (baseUrl: string, maxResponseBytes: number, timeoutMs = 500) =>
   new MlV2Client({ baseUrl, internalSecret: 'fixture', maxResponseBytes, timeoutMs,
     repositoryIndexTimeoutMs: timeoutMs }, { failureThreshold: 1 });
@@ -51,9 +60,7 @@ test('unending oversized success cancels HTTP body and preserves contract/delive
         assert.equal(result.failure_kind, undefined, 'overflow is not a transport timeout');
         assert.match(result.detail ?? '', /size limit/);
       }
-      await Promise.race([bodyClosed, new Promise<never>((_, reject) => {
-        const timer = setTimeout(() => reject(new Error('Oversized HTTP body was not cancelled')), 500); timer.unref();
-      })]);
+      await within(bodyClosed, 500, 'Oversized HTTP body was not cancelled');
     });
   }
 });
@@ -130,10 +137,17 @@ test('overflow does not open recommendation circuit; exact-cap required JSON rem
 test('deadline during body read closes socket and completed body does not leave an abort timer', async context => {
   let closed!: () => void;
   const bodyClosed = new Promise<void>(resolve => { closed = resolve; });
-  await withServer((_request, response) => { response.once('close', closed); response.writeHead(200); response.write('{'); }, async url => {
-    const result = await client(url, 128, 50).deliverFeedback(feedback);
+  let arrived!: () => void;
+  const bodyStarted = new Promise<void>(resolve => { arrived = resolve; });
+  await withServer((_request, response) => {
+    response.once('close', closed); response.writeHead(200); response.write('{'); arrived();
+  }, async url => {
+    const pending = client(url, 128, 1000).deliverFeedback(feedback);
+    // Establish an actual partial response before classifying body-read timeout.
+    await within(bodyStarted, 500, 'HTTP partial response did not arrive before the deadline');
+    const result = await within(pending, 1500, 'ML deadline did not settle');
     assert.equal(result.failure_kind, 'timeout'); assert.equal(result.retryable, true);
-    await bodyClosed;
+    await within(bodyClosed, 500, 'Timed-out HTTP body was not closed');
   });
   const signals: AbortSignal[] = [];
   const actualFetch = globalThis.fetch;
@@ -145,5 +159,20 @@ test('deadline during body read closes socket and completed body does not leave 
     assert.equal((await client(url, 128, 50).deliverFeedback(feedback)).accepted, true);
     await new Promise(resolve => setTimeout(resolve, 75));
     assert.equal(signals.at(-1)?.aborted, false, 'completed request timer was cleared');
+  });
+});
+
+test('deadline before request arrival settles without waiting for a nonexistent response body', async context => {
+  let arrivals = 0;
+  context.mock.method(globalThis, 'fetch', (_url: Parameters<typeof fetch>[0], options?: RequestInit) =>
+    new Promise<Response>((_resolve, reject) => {
+      const signal = options!.signal!;
+      if (signal.aborted) reject(signal.reason);
+      else signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+    }));
+  await withServer((_request, response) => { arrivals++; response.end('{}'); }, async url => {
+    const result = await within(client(url, 128, 50).deliverFeedback(feedback), 500, 'Pre-arrival deadline did not settle');
+    assert.equal(result.failure_kind, 'timeout'); assert.equal(result.retryable, true);
+    assert.equal(arrivals, 0, 'no response body exists to wait on');
   });
 });
