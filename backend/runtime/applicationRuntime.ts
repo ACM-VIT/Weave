@@ -7,7 +7,8 @@ import { MlV2Client } from '../services/mlService.js';
 import { FeedGenerationService } from '../services/feedGenerationService.js';
 import { FeedV2Service } from '../services/feedV2Service.js';
 import { OutboxService, resolveOutboxLeaseMs } from '../services/outboxService.js';
-import { OutboxWorker } from '../workers/outboxWorker.js';
+import { OutboxDeliveryLanes } from '../workers/outboxDeliveryLanes.js';
+import { OUTBOX_LANES, outboxTaskName } from './outboxLanes.js';
 import { FeedReconciliationWorker } from '../workers/feedReconciliationWorker.js';
 import { DataReconciliationWorker } from '../workers/dataReconciliationWorker.js';
 import { DataReconciliationService, DEFAULT_COUNTER_BATCH_SIZE } from '../services/dataReconciliationService.js';
@@ -115,13 +116,15 @@ export class ApplicationRuntime {
     this.supervisor.onStop(() => this.feed.stop());
     if ((role === 'outbox' || role === 'all') && this.flags.ML_FEEDBACK_OUTBOX && this.ml) {
       resolveOutboxLeaseMs();
-      const worker = new OutboxWorker(
+      const worker = new OutboxDeliveryLanes(
         this.outbox,
         this.ml,
       );
       const activeInterval = intervalFromEnvironment('OUTBOX_ACTIVE_INTERVAL_MS', 1_000, 100, 60_000);
       const idleInterval = intervalFromEnvironment('OUTBOX_IDLE_INTERVAL_MS', 30_000, 1_000, 300_000);
-      this.supervisor.registerAdaptive('ml-outbox', activeInterval, idleInterval, () => worker.runOnce());
+      for (const lane of OUTBOX_LANES) {
+        this.supervisor.registerAdaptive(outboxTaskName(lane), activeInterval, idleInterval, () => worker.runOnce(lane));
+      }
       if (this.generation) {
         // Capacity is one generation per process; PostgreSQL leases coordinate
         // multiple workers and the durable queue coalesces by user/version.
