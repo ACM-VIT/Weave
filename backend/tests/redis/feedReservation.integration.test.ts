@@ -140,3 +140,29 @@ integration('indexed reconciliation repairs missing tracking and only deletes ol
     await redis.quit();
   }
 });
+
+integration('discard and refill atomically retains owner and retires only delivered candidate IDs', async () => {
+  const redis = new Redis(process.env.REDIS_TEST_URL ?? 'redis://127.0.0.1:6379/15', { maxRetriesPerRequest: 1 });
+  const queue = new RedisFeedQueue(redis, 30_000);
+  const user = '00000000-0000-4000-8000-000000000071';
+  const request = '00000000-0000-4000-8000-000000000072';
+  const token = '00000000-0000-4000-8000-000000000073';
+  const other = '00000000-0000-4000-8000-000000000074';
+  const entries = [1, 2, 3].map(index => ({ repo_id: `00000000-0000-4000-8000-${String(index).padStart(12, '0')}`,
+    score: 1, source: 'semantic', model_version: 'test', summary_id: null }));
+  try {
+    await redis.flushdb();
+    await queue.replace(user, 1n, entries, 60);
+    await queue.reserve(user, 1n, request, 2, token);
+    await assert.rejects(queue.refill(user, 1n, request, 1, other, [entries[0].repo_id]), ReservationOwnedError);
+    const next = await queue.refill(user, 1n, request, 1, token, [entries[0].repo_id]);
+    assert.deepEqual(next.items.map(entry => entry.repo_id), [entries[1].repo_id, entries[2].repo_id]);
+    await assert.rejects(queue.reserve(user, 1n, request, 1, other), ReservationOwnedError,
+      'discard/refill cannot open a same-request claim window');
+    assert.equal(await queue.release(user, 1n, request, token), true);
+    const restored = await queue.reserve(user, 1n, request, 100, other);
+    assert.deepEqual(restored.items.map(entry => entry.repo_id), [entries[1].repo_id, entries[2].repo_id],
+      'discarded deliveries must not be restored by release or restart recovery');
+    await assert.rejects(queue.refill(user, 1n, request, 1, other, Array(101).fill(entries[0].repo_id)), /bounded/);
+  } finally { await redis.flushdb(); await redis.quit(); }
+});

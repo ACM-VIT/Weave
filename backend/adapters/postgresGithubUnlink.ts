@@ -1,3 +1,4 @@
+import { withOutboxTrace } from '../observability/tracing.js';
 import type { Sql } from 'postgres';
 import { isValidUuid } from '../utils/validators.js';
 import { sqlClient } from '../db/index.js';
@@ -82,7 +83,7 @@ export class PostgresGithubUnlink implements GithubUnlinkPersistence {
           fullName: updated.full_name, bio: updated.bio, githubUsername: null, avatarUrl: updated.avatar_url,
           interests: updated.interests, skills: updated.skills, techStack: updated.tech_stack });
         if (hasMlEmbeddingContext(job.profile)) await tx`INSERT INTO telemetry.ml_outbox(job_type,aggregate_id,idempotency_key,payload)
-          VALUES('onboard',${owner.userId}::uuid,${`onboard:${owner.userId}:${version}`},${JSON.stringify(job)}::jsonb) ON CONFLICT DO NOTHING`;
+          VALUES('onboard',${owner.userId}::uuid,${`onboard:${owner.userId}:${version}`},${JSON.stringify(withOutboxTrace(job))}::jsonb) ON CONFLICT DO NOTHING`;
         else await tx`UPDATE app.users SET onboarding_completed=false WHERE user_id=${owner.userId}::uuid`;
       }
       await tx`UPDATE app.user_github_unlinks SET status='done',updated_at=now() WHERE user_id=${owner.userId}::uuid AND operation_id=${operationId}::uuid`;

@@ -1,3 +1,4 @@
+import { withOutboxTrace } from '../observability/tracing.js';
 import { isValidUuid } from '../utils/validators.js';
 import { sqlClient } from '../db/index.js';
 import { buildMlOnboardingJob, hasMlEmbeddingContext } from './mlOnboardingService.js';
@@ -141,7 +142,7 @@ export async function ensureIdentityProfile(profile: IdentityProfile): Promise<v
     if (hasMlEmbeddingContext(onboardingJob.profile)) {
       await tx`
         INSERT INTO telemetry.ml_outbox (job_type,aggregate_id,idempotency_key,payload)
-        VALUES ('onboard',${profile.userId}::uuid,${`onboard:${profile.userId}:1`},${JSON.stringify(onboardingJob)}::jsonb)
+        VALUES ('onboard',${profile.userId}::uuid,${`onboard:${profile.userId}:1`},${JSON.stringify(withOutboxTrace(onboardingJob))}::jsonb)
         ON CONFLICT (idempotency_key) DO NOTHING
       `;
     }

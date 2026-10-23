@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import { mlTimeoutMs, resolveMlTimeouts } from '../config/ml.js';
 import { validateRepositoryCardSummary } from './mlService.js';
 import { isAcceptedStoredSummary } from './storedRepositorySummary.js';
 
@@ -49,32 +50,18 @@ export function retryDelayMs(attempt: number, random = Math.random): number {
   return Math.floor(random() * maximum);
 }
 
-type LeaseEnvironment = Partial<Record<
-  'ML_REPOSITORY_INDEX_TIMEOUT_MS' | 'OUTBOX_LEASE_MS',
-  string | undefined
->>;
-
-function positiveMilliseconds(name: string, value: string | undefined, fallback: number): number {
-  if (value === undefined || value.trim() === '') return fallback;
-  const parsed = Number(value);
-  if (!Number.isInteger(parsed) || parsed <= 0) {
-    throw new Error(`${name} must be a positive integer number of milliseconds.`);
-  }
-  return parsed;
-}
+type LeaseEnvironment = Readonly<Record<string, string | undefined>>;
 
 export function resolveOutboxLeaseMs(
   environment: LeaseEnvironment = process.env as LeaseEnvironment,
 ): number {
-  const repositoryTimeout = positiveMilliseconds(
-    'ML_REPOSITORY_INDEX_TIMEOUT_MS',
-    environment.ML_REPOSITORY_INDEX_TIMEOUT_MS,
-    240_000,
-  );
-  const minimumLease = repositoryTimeout + 60_000;
-  const lease = positiveMilliseconds('OUTBOX_LEASE_MS', environment.OUTBOX_LEASE_MS, minimumLease);
+  const budgets = resolveMlTimeouts(environment);
+  const minimumLease = Math.max(budgets.repositoryIndexTimeoutMs,
+    budgets.onboardingTimeoutMs, budgets.repositoryRefreshTimeoutMs, budgets.deliveryTimeoutMs) + 60_000;
+  if (minimumLease > 2_147_483_647) throw new Error('ML delivery budgets leave no timer-safe outbox recovery margin.');
+  const lease = mlTimeoutMs('OUTBOX_LEASE_MS', minimumLease, environment);
   if (lease < minimumLease) {
-    throw new Error('OUTBOX_LEASE_MS must be at least 60 seconds longer than ML_REPOSITORY_INDEX_TIMEOUT_MS.');
+    throw new Error('OUTBOX_LEASE_MS must be at least 60 seconds longer than every ML delivery timeout.');
   }
   return lease;
 }

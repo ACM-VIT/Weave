@@ -21,8 +21,28 @@ const context = new AsyncLocalStorage<Context>();
 const records: SpanRecord[] = [];
 export function snapshotSpans(): SpanRecord[] { return records.map(record => ({ ...record })); }
 
-export function startSpan(operation: string, stage: string, root = false) {
-  const parent = root ? undefined : context.getStore();
+function parseTraceparent(raw: unknown): Context | undefined {
+  if (typeof raw !== 'string') return;
+  const match = /^00-([0-9a-f]{32})-([0-9a-f]{16})-(00|01)$/.exec(raw);
+  if (!match || /^0+$/.test(match[1]) || /^0+$/.test(match[2])) return;
+  return { traceId: match[1], spanId: match[2], sampled: match[3] === '01' };
+}
+
+/** Capture only server-owned ALS context; metadata stays internal to the outbox. */
+export function withOutboxTrace<T extends object>(payload: T): T & { _traceparent?: string } {
+  const current = context.getStore();
+  const { _traceparent, ...dto } = payload as T & { _traceparent?: unknown };
+  return { ...dto, ...(current ? { _traceparent:
+    `00-${current.traceId}-${current.spanId}-${current.sampled ? '01' : '00'}` } : {}) } as T & { _traceparent?: string };
+}
+
+export function withoutOutboxTrace(payload: Record<string, unknown>): Record<string, unknown> {
+  const { _traceparent, ...dto } = payload;
+  return dto;
+}
+
+export function startSpan(operation: string, stage: string, root = false, durableParent?: unknown) {
+  const parent = durableParent !== undefined ? parseTraceparent(durableParent) : root ? undefined : context.getStore();
   const traceId = parent?.traceId ?? randomId(16);
   const value: Context = {
     traceId, spanId: randomId(8),

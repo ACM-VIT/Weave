@@ -1,3 +1,4 @@
+import { withOutboxTrace } from '../observability/tracing.js';
 import { getReadmeSummaryStatus, readmeSummaryProjection } from '../services/readmeSummaryService.js';
 import type { Response } from 'express';
 import { sqlClient } from '../db/index.js';
@@ -168,7 +169,7 @@ export async function updateMe(req: AuthRequest, res: Response): Promise<void> {
       if (hasMlEmbeddingContext(job.profile)) {
         await tx`
           INSERT INTO telemetry.ml_outbox(job_type,aggregate_id,idempotency_key,payload)
-          VALUES('onboard',${id}::uuid,${`onboard:${id}:${rows[0].profile_version}`},${JSON.stringify(job)}::jsonb)
+          VALUES('onboard',${id}::uuid,${`onboard:${id}:${rows[0].profile_version}`},${JSON.stringify(withOutboxTrace(job))}::jsonb)
           ON CONFLICT (idempotency_key) DO NOTHING
         `;
       }
@@ -259,7 +260,7 @@ export async function completeOnboarding(req: AuthRequest, res: Response): Promi
         techStack,
       });
       await tx`INSERT INTO telemetry.ml_outbox(job_type,aggregate_id,idempotency_key,payload)
-        VALUES('onboard',${id}::uuid,${`onboard:${id}:${version}`},${JSON.stringify(job)}::jsonb)
+        VALUES('onboard',${id}::uuid,${`onboard:${id}:${version}`},${JSON.stringify(withOutboxTrace(job))}::jsonb)
         ON CONFLICT (idempotency_key) DO NOTHING`;
       return { completed: true, profile_version: version, topics: uniqueTopics, interests, skills, tech_stack: techStack };
     });

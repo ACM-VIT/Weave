@@ -15,6 +15,7 @@ export function requestTelemetry(req: Request, res: Response, next: NextFunction
   // Never adopt a public caller's trace identity or sampling decision.
   const span = startSpan('http', 'http_completion', true);
   res.setHeader('x-request-id', requestId);
+  res.setHeader('traceparent', span.traceparent);
   let completed = false;
   const finish = (closed: boolean) => {
     if (completed) return;

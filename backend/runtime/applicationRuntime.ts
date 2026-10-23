@@ -18,7 +18,7 @@ import { WorkerWakeups } from './workerWakeups.js';
 import { workerErrorSummary } from './workerError.js';
 import { FeedPrewarmService } from '../services/feedPrewarmService.js';
 import { FeedPrewarmWorker } from '../workers/feedPrewarmWorker.js';
-import { getMlRuntimeConfig } from '../config/ml.js';
+import { feedGenerationBudget, mlTimeoutMs } from '../config/ml.js';
 import { FeedShadowService } from '../services/feedShadowService.js';
 import { validateProductionIntegrations } from '../config/runtimeConfig.js';
 import { applyMlReadinessGate } from './mlReadiness.js';
@@ -97,7 +97,7 @@ export class ApplicationRuntime {
     : null;
   readonly shadow = this.ml ? new FeedShadowService(this.persistence, this.ml) : null;
   readonly outbox = new OutboxService();
-  readonly prewarm = new FeedPrewarmService(sqlClient, this.ml ? getMlRuntimeConfig().timeoutMs + 60_000 : 60_000);
+  readonly prewarm = new FeedPrewarmService(sqlClient, this.generation ? feedGenerationBudget().timeoutMs + 60_000 : 60_000);
   readonly feed = new FeedV2Service(
     this.persistence,
     this.queue,
@@ -108,7 +108,7 @@ export class ApplicationRuntime {
     1_500,
     25,
     process.env.JWT_SECRET,
-    5_000,
+    this.generation ? mlTimeoutMs('FEED_FOREGROUND_WAIT_MS', 5_000) : 5_000,
     this.generation && this.indexedFeedRefill ? {
       lowWatermark: this.indexedFeedRefill.lowWatermark,
       generate: (userId, version, sessionId) => this.generation!.generate(

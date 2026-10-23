@@ -38,6 +38,8 @@ interface AuthContextType {
   signOut: () => Promise<void>;
   checkOnboardingStatus: () => Promise<void>;
   updateUserProfile: (profile: EditableUserProfile) => void;
+  adjustLikesGivenCount: (eventId: string, delta: -1 | 1) => void;
+  settleLikesGivenCountAdjustments: (eventIds: readonly string[]) => void;
 }
 
 type UserProfileRequestPolicy = {
@@ -56,6 +58,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [isLoading, setIsLoading] = useState(true);
   const [startupError, setStartupError] = useState<string | null>(null);
   const startupController = useRef<AbortController | null>(null);
+  const pendingLikesGivenEvents = useRef(new Map<string, -1 | 1>());
+  const likesGivenRevision = useRef(0);
+  const profileReadSequence = useRef(0);
+  const appliedCountReadSequence = useRef(0);
 
   const fetchUserProfile = useCallback(async (
     token: string,
@@ -67,6 +73,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       signal,
     }: UserProfileRequestPolicy = {},
   ) => {
+    const readSequence = ++profileReadSequence.current;
+    const likesRevisionAtStart = likesGivenRevision.current;
     const assertCurrent = () => {
       authSessionLifecycle.assertCurrent(sessionGeneration);
       if (signal?.aborted) throw new SessionChangedError();
@@ -80,12 +88,27 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         ? profile.onboarding_completed
         : (await apiV2<{ completed: boolean }>('/onboarding/status', { signal }, token, requestPolicy)).completed;
       assertCurrent();
-      setUser({
+      const serverLikesGivenCount = Number(profile.likes_given_count);
+      // Failed or still-pending requests cannot supersede a successful count.
+      if (pendingLikesGivenEvents.current.size === 0
+        && likesRevisionAtStart === likesGivenRevision.current) {
+        appliedCountReadSequence.current = Math.max(appliedCountReadSequence.current, readSequence);
+      }
+      setUser(current => ({
         ...profile,
         user_id: String(profile.user_id),
         username: String(profile.username),
         onboarding_completed: resolveOnboardingCompleted(profile, completionStatus),
-      });
+        // Aggregate counts cannot tell us which queued events have committed.
+        // Keep the optimistic display until the queue settles, then accept a
+        // fresh authoritative count. Older reads cannot undo newer reactions.
+        likes_given_count: current && (
+          pendingLikesGivenEvents.current.size > 0
+          || likesRevisionAtStart !== likesGivenRevision.current
+          || readSequence < appliedCountReadSequence.current
+        ) ? current.likes_given_count
+          : Math.max(0, Number.isFinite(serverLikesGivenCount) ? serverLikesGivenCount : 0),
+      }));
     } catch (error) {
       assertCurrent();
       const status = httpStatus(error);
@@ -186,6 +209,25 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setUser((current) => mergeSavedUserProfile(current, profile));
   }, []);
 
+  const adjustLikesGivenCount = useCallback((eventId: string, delta: -1 | 1) => {
+    if (pendingLikesGivenEvents.current.has(eventId)) return;
+    pendingLikesGivenEvents.current.set(eventId, delta);
+    likesGivenRevision.current += 1;
+    setUser((current) => current ? {
+      ...current,
+      likes_given_count: Math.max(0, Number(current.likes_given_count ?? 0) + delta),
+    } : current);
+  }, []);
+
+  const settleLikesGivenCountAdjustments = useCallback((eventIds: readonly string[]) => {
+    for (const eventId of eventIds) {
+      const delta = pendingLikesGivenEvents.current.get(eventId);
+      if (!delta) continue;
+      pendingLikesGivenEvents.current.delete(eventId);
+      likesGivenRevision.current += 1;
+    }
+  }, []);
+
   const setSession = useCallback(async ({
     accessToken,
     sessionGeneration,
@@ -198,6 +240,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     if (storedToken !== accessToken) throw new SessionChangedError();
 
     clearAccountQueryCache(queryClient);
+    pendingLikesGivenEvents.current.clear();
+    likesGivenRevision.current += 1;
     setStartupError(null);
     setUser(null);
     setIsLoading(true);
@@ -216,6 +260,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const logout = logoutRequest();
     const logoutGeneration = authSessionLifecycle.currentGeneration();
     clearAccountQueryCache(queryClient);
+    pendingLikesGivenEvents.current.clear();
+    likesGivenRevision.current += 1;
     setUser(null);
     setIsLoading(false);
 
@@ -243,13 +289,20 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => authSessionLifecycle.subscribe(() => {
     clearAccountQueryCache(queryClient);
+    pendingLikesGivenEvents.current.clear();
+    likesGivenRevision.current += 1;
     setUser(null);
     setIsLoading(false);
     setStartupError(null);
   }), [queryClient]);
 
   useEffect(() => {
-    setSessionExpiredHandler(() => { clearAccountQueryCache(queryClient); setUser(null); });
+    setSessionExpiredHandler(() => {
+      clearAccountQueryCache(queryClient);
+      pendingLikesGivenEvents.current.clear();
+      likesGivenRevision.current += 1;
+      setUser(null);
+    });
     return () => setSessionExpiredHandler(null);
   }, [queryClient]);
 
@@ -271,6 +324,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       signOut,
       checkOnboardingStatus,
       updateUserProfile,
+      adjustLikesGivenCount,
+      settleLikesGivenCountAdjustments,
     }}>
       {children}
     </AuthContext.Provider>

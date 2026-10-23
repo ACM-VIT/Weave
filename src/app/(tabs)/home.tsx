@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, useMemo, useRef } from 'react';
+import { useState, useCallback, useEffect, useLayoutEffect, useMemo, useRef } from 'react';
 import {
   ActivityIndicator,
   AppState,
@@ -24,7 +24,10 @@ import {
   type InfiniteData,
 } from '@tanstack/react-query';
 import * as SecureStore from '../../utils/storage';
+import { markFeedFirstVisible } from '@/services/feedTiming';
 import { fetchHomeFeed } from '@/api/home-feed';
+import { profileRepositoryInvalidationFilters } from '@/api/profile-section-queries';
+import type { ProfileRepositoryPage } from '@/api/profile-data';
 import { subscribeToHomeFeedInvalidations } from '@/utils/home-feed';
 import { type ActivityInput } from '@/api/activity';
 import { useAuth } from '@/store/AuthContext';
@@ -41,6 +44,14 @@ import { authSessionLifecycle } from '@/api/session-lifecycle';
 import { createFeedItemMapper } from '@/utils/feed-items';
 import NetInfo from '@react-native-community/netinfo';
 import { startActivityOutboxLifecycle } from '@/services/activityOutboxLifecycle';
+import {
+  isRepositoryOptimisticallyLiked,
+  optimisticLikeDelta,
+  patchProfileLikeOverrides,
+  profileLikeOverridesQueryKey,
+  settleProfileLikeOverrides,
+  type ProfileLikeOverrides,
+} from '@/utils/profile-likes';
 
 const WEB_FEED_LIST_STYLE =
   Platform.OS === 'web'
@@ -50,15 +61,20 @@ const VIEWABILITY_CONFIG = { itemVisiblePercentThreshold: 50 } as const;
 const ACTIVITY_FLUSH_INTERVAL_MS = 8_000;
 
 export default function HomeScreen() {
-  const { user, checkOnboardingStatus } = useAuth();
+  const {
+    user,
+    checkOnboardingStatus,
+    adjustLikesGivenCount,
+    settleLikesGivenCountAdjustments,
+  } = useAuth();
   const queryClient = useQueryClient();
   const feedQueryKey = useMemo(() => getFeedQueryKey(user?.user_id), [user?.user_id]);
   const listRef = useRef<FlatList<{ feedId: string; repository: RepositoryData }> | null>(null);
   const pagination = useMemo(() => {
-    const controller = new FeedPaginationController(async (cursor, signal, requestId, sessionId) => {
+    const controller = new FeedPaginationController(async (cursor, signal, requestId, sessionId, initialPage) => {
       const token = await SecureStore.getItemAsync('access_token');
       if (!token) throw new Error('No token');
-      return fetchHomeFeed(token, cursor, { signal, requestId, sessionId });
+      return fetchHomeFeed(token, cursor, { signal, requestId, sessionId, initialPage });
     }, queryClient.getQueryData<InfiniteData<FeedPage>>(feedQueryKey)?.pages,
     () => queryClient.getQueryData<InfiniteData<FeedPage>>(feedQueryKey)?.pages ?? []);
     return { controller, reset: () => controller.reset() };
@@ -120,7 +136,14 @@ export default function HomeScreen() {
     return feedProjection.mapPages(data?.pages);
   }, [data?.pages, feedProjection]);
 
-  const handleQueueActivity = useCallback((event: ActivityInput, flushNow?: boolean) => {
+  const handleQueueActivity = useCallback((repository: RepositoryData, event: ActivityInput, flushNow?: boolean) => {
+    const currentLikeOverrides = queryClient.getQueryData<ProfileLikeOverrides>(
+      profileLikeOverridesQueryKey(user?.user_id),
+    );
+    const likeDelta = optimisticLikeDelta(
+      isRepositoryOptimisticallyLiked(currentLikeOverrides, repository),
+      event.action,
+    );
     queryClient.setQueryData<InfiniteData<FeedPage, string | null>>(
       feedQueryKey,
       (cachedFeed) => patchFeedReaction(cachedFeed, {
@@ -132,13 +155,19 @@ export default function HomeScreen() {
     if (!activityOutbox) return;
 
     const generation = authSessionLifecycle.currentGeneration();
-    void activityOutbox.enqueue(event).then(async () => {
+    void activityOutbox.enqueue(event, (queuedActivity) => {
+      queryClient.setQueryData<ProfileLikeOverrides>(
+        profileLikeOverridesQueryKey(user?.user_id),
+        current => patchProfileLikeOverrides(current, repository, event.action, queuedActivity.event_id),
+      );
+      if (likeDelta) adjustLikesGivenCount(queuedActivity.event_id, likeDelta);
+    }).then(async () => {
       if (!authSessionLifecycle.isCurrent(generation)) return;
       if (flushNow || await activityOutbox.pendingCount() >= 10) {
         await flushActivityBatch();
       }
     }).catch(() => undefined);
-  }, [activityOutbox, feedQueryKey, flushActivityBatch, queryClient]);
+  }, [activityOutbox, adjustLikesGivenCount, feedQueryKey, flushActivityBatch, queryClient, user?.user_id]);
 
   const handleSavedChange = useCallback((
     repository: RepositoryData,
@@ -186,8 +215,25 @@ export default function HomeScreen() {
   useEffect(() => {
     if (!activityOutbox) return;
     const generation = authSessionLifecycle.currentGeneration();
-    const unsubscribe = activityOutbox.subscribe(({ invalidatedFeed, feedVersion }) => {
+    const unsubscribe = activityOutbox.subscribe(({
+      acknowledgedActivities = [],
+      invalidatedFeed,
+      feedVersion,
+    }) => {
       if (!invalidatedFeed || !authSessionLifecycle.isCurrent(generation)) return;
+      settleLikesGivenCountAdjustments(acknowledgedActivities.map((activity) => activity.event_id));
+      const overrides = queryClient.getQueryData<ProfileLikeOverrides>(
+        profileLikeOverridesQueryKey(user?.user_id),
+      );
+      queryClient.setQueriesData<InfiniteData<ProfileRepositoryPage, string | null>>(
+        profileRepositoryInvalidationFilters(user?.user_id, 'likes'),
+        cached => patchConfirmedProfileRepositories(cached, acknowledgedActivities, overrides),
+      );
+      queryClient.setQueryData<ProfileLikeOverrides>(
+        profileLikeOverridesQueryKey(user?.user_id),
+        current => settleProfileLikeOverrides(current, acknowledgedActivities),
+      );
+      void queryClient.invalidateQueries(profileRepositoryInvalidationFilters(user?.user_id, 'likes'));
       pagination.controller.markStale(feedVersion);
       void checkOnboardingStatus().catch(() => undefined);
     });
@@ -205,11 +251,27 @@ export default function HomeScreen() {
       stopLifecycle();
       unsubscribe();
     };
-  }, [activityOutbox, checkOnboardingStatus, flushActivityBatch, pagination]);
+  }, [
+    activityOutbox,
+    checkOnboardingStatus,
+    flushActivityBatch,
+    pagination,
+    queryClient,
+    settleLikesGivenCountAdjustments,
+    user?.user_id,
+  ]);
 
+  const visiblePages = useRef(data?.pages);
+  useLayoutEffect(() => { visiblePages.current = data?.pages; }, [data?.pages]);
   const [viewableItems, setViewableItems] = useState<string[]>([]);
   const onViewableItemsChanged = useCallback(({ viewableItems }: any) => {
     setViewableItems(viewableItems.map((v: any) => v.item.feedId));
+    for (const page of visiblePages.current ?? []) {
+      if (viewableItems.some((visible: any) => visible.isViewable !== false
+        && page.items.some(item => item.repo_id === visible.item.repository.id))) {
+        markFeedFirstVisible(page.timing);
+      }
+    }
   }, []);
 
   const handleLayout = useCallback((event: LayoutChangeEvent) => {
@@ -300,7 +362,7 @@ export default function HomeScreen() {
               boundary={index === feedItems.length - 1 ? boundary : undefined}
               pageWidth={pageWidth}
               pageHeight={pageHeight}
-              onQueueActivity={handleQueueActivity}
+              onQueueActivity={(event, flushNow) => handleQueueActivity(item.repository, event, flushNow)}
               onSavedChange={(saved, changed) => handleSavedChange(item.repository, saved, changed)}
               onOwnerPress={() => openOwnerProfile(item.repository)}
               onRepositoryPress={() => router.push(repositoryHref(item.repository.id))}
@@ -337,6 +399,28 @@ export default function HomeScreen() {
       </View>
     </View>
   );
+}
+
+function patchConfirmedProfileRepositories(
+  cached: InfiniteData<ProfileRepositoryPage, string | null> | undefined,
+  acknowledgedActivities: readonly { event_id: string; repo_id: string; action: string }[],
+  overrides: ProfileLikeOverrides | undefined,
+): InfiniteData<ProfileRepositoryPage, string | null> | undefined {
+  if (!cached) return cached;
+  let pages = cached.pages;
+  for (const activity of acknowledgedActivities) {
+    const override = overrides?.[activity.repo_id];
+    if (!override || override.eventId !== activity.event_id) continue;
+    const liked = activity.action === 'like';
+    pages = pages.map((page, index) => ({
+      ...page,
+      items: page.items.filter(item => item.id !== activity.repo_id),
+    }));
+    if (liked && pages.length > 0) {
+      pages = [{ ...pages[0], items: [override.repository, ...pages[0].items] }, ...pages.slice(1)];
+    }
+  }
+  return pages === cached.pages ? cached : { ...cached, pages };
 }
 
 const styles = StyleSheet.create({

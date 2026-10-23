@@ -51,6 +51,7 @@ test('durable outbox persists before sending, chunks at 50, and retains deferred
   assert.deepEqual(batchSizes, [50, 50, 21]);
   assert.equal(result.delivered, 121);
   assert.equal(result.invalidatedFeed, true);
+  assert.deepEqual(result.acknowledgedActivities?.map((queued) => queued.event_id), initial.map((queued) => queued.event_id));
   assert.deepEqual(stored, []);
 
   const retainedReset = new Promise<ActivityFlushResult>((resolve) => {
@@ -59,6 +60,7 @@ test('durable outbox persists before sending, chunks at 50, and retains deferred
   const retained = await retainedReset;
   assert.equal(retained.invalidatedFeed, true);
   assert.equal((retained as ActivityFlushResult & { feedVersion?: string }).feedVersion, '2');
+  assert.deepEqual(retained.acknowledgedActivities?.map((queued) => queued.event_id), initial.map((queued) => queued.event_id));
 });
 
 test('durable outbox shares a single network flush and keeps events after an offline failure', async () => {

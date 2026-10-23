@@ -19,10 +19,18 @@ test('outbox lease always exceeds the repository-index timeout by a recovery mar
   assert.throws(() => resolveOutboxLeaseMs({
     ML_REPOSITORY_INDEX_TIMEOUT_MS: '240000', OUTBOX_LEASE_MS: '299999',
   }), /at least 60 seconds longer/);
-  assert.throws(() => resolveOutboxLeaseMs({ OUTBOX_LEASE_MS: 'not-a-number' }), /positive integer/);
+  assert.throws(() => resolveOutboxLeaseMs({ OUTBOX_LEASE_MS: 'not-a-number' }), /integer between/);
   assert.throws(() => resolveOutboxLeaseMs({
     ML_REPOSITORY_INDEX_TIMEOUT_MS: '-1',
-  }), /positive integer/);
+  }), /integer between/);
+});
+
+test('outbox lease covers the longest configured durable operation and rejects overflow', () => {
+  for (const name of ['ML_DELIVERY_TIMEOUT_MS', 'ML_ONBOARDING_TIMEOUT_MS', 'ML_REPOSITORY_REFRESH_TIMEOUT_MS']) {
+    assert.equal(resolveOutboxLeaseMs({ [name]: '400000' }), 460_000);
+    assert.throws(() => resolveOutboxLeaseMs({ [name]: '400000', OUTBOX_LEASE_MS: '300000' }), /every ML delivery/);
+  }
+  assert.throws(() => resolveOutboxLeaseMs({ ML_REPOSITORY_INDEX_TIMEOUT_MS: '2147483647' }), /recovery margin/);
 });
 
 test('outbox shutdown grace covers an index request and completion cleanup', () => {

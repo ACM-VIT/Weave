@@ -1,4 +1,4 @@
-import { startSpan, httpOutcome } from '../observability/tracing.js';
+import { startSpan, httpOutcome, withoutOutboxTrace } from '../observability/tracing.js';
 import { observeStage, type StageOutcome } from '../observability/metrics.js';
 import type {
   DeliveryResult,
@@ -25,13 +25,14 @@ export class OutboxWorker {
   ) {}
 
   private deliver(row: OutboxRow) {
+    const payload = withoutOutboxTrace(row.payload);
     if (row.job_type === 'feedback') {
-      return this.transport.deliverFeedback({ schema_version: 2, events: [row.payload as unknown as MlFeedbackBatch['events'][number]] });
+      return this.transport.deliverFeedback({ schema_version: 2, events: [payload as unknown as MlFeedbackBatch['events'][number]] });
     }
-    if (row.job_type === 'onboard') return this.transport.deliverOnboarding(row.payload as unknown as MlOnboardingJob);
-    if (row.job_type === 'repo_index') return this.transport.deliverRepositoryIndex(row.payload as unknown as MlRepositoryIndexJob);
+    if (row.job_type === 'onboard') return this.transport.deliverOnboarding(payload as unknown as MlOnboardingJob);
+    if (row.job_type === 'repo_index') return this.transport.deliverRepositoryIndex(payload as unknown as MlRepositoryIndexJob);
     // Internal outbox dependency metadata is not part of the strict ML DTO.
-    const { job_id, repo_id, feature_version, features } = row.payload as unknown as MlRepositoryRefreshJob;
+    const { job_id, repo_id, feature_version, features } = payload as unknown as MlRepositoryRefreshJob;
     return this.transport.deliverRepositoryRefresh({ job_id, repo_id, feature_version, features });
   }
 
@@ -53,8 +54,8 @@ export class OutboxWorker {
     if (row.job_type === 'onboard' && !await this.outbox.prepareOnboardingDelivery(row)) {
       return { accepted: false, retryable: false, status_code: 0, detail: 'Onboarding context is no longer current.' };
     }
-    // A retry gets a fresh root: no durable enqueue trace is stored today.
-    const span = startSpan(row.job_type, 'outbox_delivery', true);
+    // Each attempt is a distinct child of the durable enqueue context.
+    const span = startSpan(row.job_type, 'outbox_delivery', true, row.payload._traceparent);
     observeStage(row.job_type, 'outbox_age', 'success', Date.now() - Date.parse(row.created_at));
     let outcome: StageOutcome = 'failure';
     const result = await span.run(async () => {

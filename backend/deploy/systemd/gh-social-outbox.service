@@ -16,9 +16,9 @@ Restart=on-failure
 RestartSec=5
 KillSignal=SIGTERM
 # Rows are claimed immediately before delivery; one call is bounded by
-# ML_REPOSITORY_INDEX_TIMEOUT_MS (240 seconds by default). Allow another
+# the longest ML delivery timeout (indexing: 240 seconds by default). Allow another
 # 60 seconds for completion and connection cleanup before Docker kills it.
-# Increase both stop limits when configuring a longer repository-index timeout.
+# Increase both stop limits when configuring any longer delivery timeout.
 TimeoutStopSec=330
 UMask=0077
 

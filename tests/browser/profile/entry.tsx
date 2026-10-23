@@ -8,6 +8,7 @@ import { profileSectionQueries } from '../../../src/api/profile-section-queries'
 import { mapLegacyBoardList } from '../../../src/models/list';
 const started = performance.now();
 (window as any).repositoryRequests = [];
+(window as any).repositoryNavigations = [];
 const boards = Array.from({ length: 10000 }, (_, i) => mapLegacyBoardList({ board_id: String(i), name: `Board ${String(i).padStart(5, '0')}`, description: null, repo_count: i }));
 let release!: (value: []) => void;
 const heldCollections = new Promise<[]>(resolve => { release = resolve; });
@@ -20,7 +21,7 @@ function Fixture() {
     const boardQuery = useQuery(options.boards), collectionQuery = useQuery(options.collections);
     return <><button onClick={() => setSheet(current => !current)}>Fixture: toggle saved repositories</button><View style={{ height: 600, width: '100%', maxWidth: 390, backgroundColor: '#000' }}>
    <View style={{ flex: 1, display: sheet ? 'none' : 'flex' }}><ProfileContentLists viewer="fixture-viewer" header={<View style={{ height: 100 }}><Text>Profile Lists</Text></View>} compact horizontalPadding={24} maxWidth={600} paddingTop={10} paddingBottom={20} boards={boardQuery} collections={collectionQuery} pinned={{ data: [], isPending: false, isError: false, refetch: () => { } }} openList={() => { }}/></View>
-   <View style={{ flex: 1, display: sheet ? 'flex' : 'none' }}><ProfileRepositoryList active={sheet} type="saved" userId="fixture-viewer"/></View>
+   <View style={{ flex: 1, display: sheet ? 'flex' : 'none' }}><ProfileRepositoryList active={sheet} type="saved" userId="fixture-viewer" onRepositoryPress={(href) => (window as any).repositoryNavigations.push(href)}/></View>
  </View></>;
 }
 createRoot(document.getElementById('root')!).render(<QueryClientProvider client={queryClient}><Fixture /></QueryClientProvider>);

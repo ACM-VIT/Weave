@@ -4,5 +4,6 @@ import type {
 } from '../contracts/ml.v2.js';
 
 export interface RecommendationPort {
-  generate(input: MlRecommendationRequest): Promise<MlRecommendationResponse>;
+  /** Local monotonic expiry shared across queueing, repair, and retries. */
+  generate(input: MlRecommendationRequest, work?: { deadline: number }): Promise<MlRecommendationResponse>;
 }
