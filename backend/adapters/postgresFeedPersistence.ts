@@ -1,3 +1,4 @@
+import { loadSocialNeighborhoodRows } from '../services/socialNeighborhoodProjection.js';
 import { projectSocialCandidates, type SocialCandidateProjection } from '../services/socialCandidateProjection.js';
 import { readmeSummaryProjection } from '../services/readmeSummaryService.js';
 import type {
@@ -237,48 +238,55 @@ export class PostgresFeedPersistence implements FeedPersistencePort, FeedReconci
   /** Independent, viewer-scoped public-catalogue candidates; never infer ownership from a handle. */
   async listSocialRepositoryCandidates(userId: string, limit: number): Promise<SocialCandidateProjection[]> {
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) throw new Error('Invalid social candidate limit.');
-    const rows = await sqlClient`
-      WITH viewer AS (SELECT user_id FROM app.users WHERE user_id=${userId}::uuid AND status='active'), subjects AS (
-        SELECT followed.github_id AS owner_id,'registered:' || followed.user_id::text AS actor_key,follow.created_at
-        FROM app.follows follow
-        JOIN app.users followed ON followed.user_id=follow.following_id
-        WHERE follow.follower_id IN (SELECT user_id FROM viewer) AND followed.status='active'
-          AND followed.github_identity_verified_at IS NOT NULL
-        UNION ALL
-        SELECT profile.provider_subject,'external:' || profile.profile_id::text,follow.created_at
-        FROM app.social_profile_follows follow
-        JOIN app.social_profiles profile ON profile.profile_id=follow.profile_id
-        WHERE follow.follower_id IN (SELECT user_id FROM viewer) AND profile.provider='github'
-          AND profile.status='active' AND profile.claimed_by_user_id IS NULL
-      ), owners AS MATERIALIZED (
-        SELECT owner_id,max(created_at) AS followed_at,array_agg(DISTINCT actor_key ORDER BY actor_key) AS actors
-        FROM subjects
-        WHERE owner_id ~ '^[1-9][0-9]{0,18}$'
-          AND CASE WHEN owner_id ~ '^[1-9][0-9]{0,18}$' THEN owner_id::numeric <= 9223372036854775807 ELSE false END
-        GROUP BY owner_id ORDER BY max(created_at) DESC,owner_id LIMIT 50
-      )
-      SELECT candidate.repo_id,candidate.owner_github_id::text AS owner_github_id,candidate.star_count,actor.actor_key
-      FROM owners
-      CROSS JOIN LATERAL (
-        SELECT repo.repo_id,repo.owner_github_id,stats.star_count
-        FROM app.repos repo
+    return sqlClient.begin('isolation level repeatable read read only', async tx => {
+      await tx`SET LOCAL statement_timeout='1000ms'`;
+      const rows = await tx`
+        WITH viewer AS (SELECT user_id FROM app.users WHERE user_id=${userId}::uuid AND status='active'), subjects AS (
+          SELECT followed.github_id AS owner_id,'registered:' || followed.user_id::text AS actor_key,follow.created_at
+          FROM app.follows follow
+          JOIN app.users followed ON followed.user_id=follow.following_id
+          WHERE follow.follower_id IN (SELECT user_id FROM viewer) AND followed.status='active'
+            AND followed.github_identity_verified_at IS NOT NULL
+          UNION ALL
+          SELECT profile.provider_subject,'external:' || profile.profile_id::text,follow.created_at
+          FROM app.social_profile_follows follow
+          JOIN app.social_profiles profile ON profile.profile_id=follow.profile_id
+          WHERE follow.follower_id IN (SELECT user_id FROM viewer) AND profile.provider='github'
+            AND profile.status='active' AND profile.claimed_by_user_id IS NULL
+        ), owners AS MATERIALIZED (
+          SELECT owner_id,max(created_at) AS followed_at,array_agg(DISTINCT actor_key ORDER BY actor_key) AS actors
+          FROM subjects
+          WHERE owner_id ~ '^[1-9][0-9]{0,18}$'
+            AND CASE WHEN owner_id ~ '^[1-9][0-9]{0,18}$' THEN owner_id::numeric <= 9223372036854775807 ELSE false END
+          GROUP BY owner_id ORDER BY max(created_at) DESC,owner_id LIMIT 50
+        )
+        SELECT candidate.repo_id,candidate.owner_github_id::text AS owner_github_id,candidate.star_count,actor.actor_key
+        FROM owners
         CROSS JOIN LATERAL (
-          SELECT snapshot.star_count FROM app.repo_stat_snapshots snapshot
-          WHERE snapshot.repo_id=repo.repo_id ORDER BY snapshot.observed_at DESC LIMIT 1
-        ) stats
-        WHERE repo.owner_github_id=owners.owner_id::bigint AND repo.status='active'
-        ORDER BY repo.updated_at DESC,repo.repo_id LIMIT 2
-      ) candidate
-      CROSS JOIN LATERAL unnest(owners.actors) AS actor(actor_key)
-      ORDER BY owners.followed_at DESC,owners.owner_id,candidate.repo_id,actor.actor_key
-      LIMIT 10001
-    `;
-    return projectSocialCandidates(rows.map(row => ({
-      repo_id: String(row.repo_id), owner_github_id: String(row.owner_github_id),
-      source: 'followed_owner', actor_key: String(row.actor_key), star_count: Number(row.star_count),
-      // Public catalogue, current active verified/unclaimed follow subjects only.
-      repo_status: 'active', viewer_can_access: true, actor_active: true, signal_allowed: true,
-    })), { maxCandidates: limit });
+          SELECT repo.repo_id,repo.owner_github_id,stats.star_count
+          FROM app.repos repo
+          CROSS JOIN LATERAL (
+            SELECT snapshot.star_count FROM app.repo_stat_snapshots snapshot
+            WHERE snapshot.repo_id=repo.repo_id ORDER BY snapshot.observed_at DESC LIMIT 1
+          ) stats
+          WHERE repo.owner_github_id=owners.owner_id::bigint AND repo.status='active'
+          ORDER BY repo.updated_at DESC,repo.repo_id LIMIT 2
+        ) candidate
+        CROSS JOIN LATERAL unnest(owners.actors) AS actor(actor_key)
+        ORDER BY owners.followed_at DESC,owners.owner_id,candidate.repo_id,actor.actor_key
+        LIMIT 10001
+      `;
+      const neighborhoods = await loadSocialNeighborhoodRows({
+        query: async (text, parameters) => [...await tx.unsafe(text, [...parameters])],
+      }, userId);
+      const ownerRows = rows.map(row => ({
+        repo_id: String(row.repo_id), owner_github_id: String(row.owner_github_id),
+        source: 'followed_owner' as const, actor_key: String(row.actor_key), star_count: Number(row.star_count),
+        // Public catalogue, current active verified/unclaimed follow subjects only.
+        repo_status: 'active', viewer_can_access: true, actor_active: true, signal_allowed: true,
+      }));
+      return projectSocialCandidates([...ownerRows, ...neighborhoods], { maxCandidates: limit });
+    });
   }
 
   async listFollowedRepositoryIds(userId: string, limit: number): Promise<string[]> {

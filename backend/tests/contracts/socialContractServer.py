@@ -20,11 +20,12 @@ def recommend(*args):
     candidate = evidence[0]
     assert str(candidate.repo_id) == '00000000-0000-4000-8000-000000000003'
     assert candidate.owner_github_id == '123'
-    assert candidate.source == 'followed_owner' and candidate.support == 1
+    assert candidate.source in {'followed_owner', 'followed_like', 'co_like', 'board_topic', 'adjacent_interest'}
+    assert candidate.support == (1 if candidate.source in {'followed_owner', 'adjacent_interest'} else 2)
     assert candidate.source_score == 0.25
     return RecommendationBatch(
         items=[RankedRepository(str(candidate.repo_id), .8, 'social',
-                                retrieval_scores={'followed_owner': candidate.source_score})],
+                                retrieval_scores={candidate.source: candidate.source_score})],
         model_version='contract-ranker-v2', embedding_version='contract-embedding-v2',
         ranker_applied=True, served_ranker='heavy', heavy_ranker_selected=True)
 

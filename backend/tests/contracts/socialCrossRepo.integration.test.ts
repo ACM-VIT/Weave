@@ -43,6 +43,11 @@ test('pinned Python HTTP accepts canonical social evidence and returns source sc
   assert.deepEqual(result.items.map(item => [item.repo_id,item.source,item.retrieval_scores]),
     [[request.social_candidates[0]!.repo_id,'social',{ followed_owner: 0.25 }]]);
   assert.equal(result.served_ranker,'heavy');
+  for (const source of ['followed_like','co_like','board_topic','adjacent_interest'] as const) {
+    const candidate={...request.social_candidates[0]!,source,support:source==='adjacent_interest'?1:2};
+    const response=await client.generate({...request,social_candidates:[candidate]});
+    assert.deepEqual(response.items[0]!.retrieval_scores,{[source]:0.25});
+  }
   const post = (body: unknown, secret = 'local-social-contract-secret') => fetch(`${origin}/api/v2/recommendations/generate`, {
     method: 'POST', headers: { 'content-type':'application/json','x-internal-secret':secret }, body: JSON.stringify(body),
   });
