@@ -70,3 +70,18 @@ jobs:
         env:
           RUN_DATABASE_INTEGRATION: '1'
           RUN_REDIS_INTEGRATION: '1'
+      - name: Exercise full-schema protected exports, concurrent grants and real API retention
+        run: >-
+          npx --no-install tsx --test --test-concurrency=1
+          tests/database/scoringExportConcurrency.integration.test.ts
+          tests/http/scoringExport.integration.test.ts
+        env:
+          RUN_DATABASE_INTEGRATION: '1'
+          RUN_REDIS_INTEGRATION: '1'
+          RUN_SCORING_EXPORT_INTEGRATION: '1'
+      - name: Prepare pinned isolated export fixture image
+        run: docker pull postgres@sha256:fe0737ba566a2c5b2a28f34433c0a423261900ec17b9bf7ad115e1aae7e57f1b
+      - name: Exercise export permissions, frozen cutoffs and revocation in an owned container
+        run: npx --no-install tsx --test tests/database/scoringExport.integration.test.ts
+        env:
+          RUN_SCORING_EXPORT_OWNED: '1'
