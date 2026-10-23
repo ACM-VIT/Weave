@@ -17,9 +17,6 @@ from embedding.repository_embedding import build_vector_payload, RepositoryEmbed
 def embed(request, deadline=None):
     source = request.repository
     assert source.owner_github_id == '9223372036854775807'
-    assert source.is_fork is True
-    assert source.fork_parent_github_id == '222'
-    assert source.fork_family_github_id == '333'
     assert source.lineage_source == 'github-graphql-repository'
     material = v2._repository_embedding_payload(request)
     payload = build_vector_payload(material, repo_id=str(request.repo_id),
@@ -27,13 +24,25 @@ def embed(request, deadline=None):
         source_hash='a' * 64, config=RepositoryEmbeddingConfig())
     assert payload['repo_id'] == str(request.repo_id)
     assert payload['owner_github_id'] == source.owner_github_id
-    assert payload['fork_parent_github_id'] == source.fork_parent_github_id
-    assert payload['fork_family_github_id'] == source.fork_family_github_id
-    assert payload['is_fork'] is True
+    if source.is_fork is None:
+        variant = 'unknown'
+        assert source.fork_parent_github_id is None and source.fork_family_github_id is None
+        assert all(key not in payload for key in ('is_fork', 'fork_parent_github_id', 'fork_family_github_id'))
+    elif source.is_fork is False:
+        variant = 'nonfork'
+        assert source.fork_parent_github_id is None and source.fork_family_github_id == source.github_id == '123'
+        assert payload['is_fork'] is False and 'fork_parent_github_id' not in payload
+        assert payload['fork_family_github_id'] == source.github_id
+    else:
+        variant = 'fork'
+        assert source.fork_parent_github_id == payload['fork_parent_github_id'] == '222'
+        assert source.fork_family_github_id == payload['fork_family_github_id'] == '333'
+        assert payload['is_fork'] is True
+    assert payload['lineage_source'] == source.lineage_source
     assert datetime.fromisoformat(payload['lineage_observed_at']).microsecond == 1
     return {'schema_version':2,'accepted':True,'status':'applied',
         'job_id':str(request.job_id),'repo_id':str(request.repo_id),'content_version':request.content_version,
-        'embedding_version':'contract-embedding-v2','card_summary':{
+        'embedding_version':f'contract-embedding-v2-{variant}','card_summary':{
             'summary':source.description,'highlights':[],'prompt_version':'repo-card-summary-v1',
             'model_version':'repository-description-fallback-v1','format_version':'repo-card-summary-json-v1',
             'source':'description_fallback'}}

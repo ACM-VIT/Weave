@@ -30,16 +30,27 @@ test('pinned real Python HTTP preserves observed lineage from canonical Node ind
     child.once('exit',()=>{clearTimeout(timer);reject(new Error('Lineage fixture exited before readiness.'));});
   });
   const origin=`http://127.0.0.1:${port}`;
-  const repository=buildMlRepositorySource({github_id:'123',owner_github_id:'9223372036854775807',
+  const observed={github_id:'123',owner_github_id:'9223372036854775807',
     owner:'fixture',name:'lineage',full_name:'fixture/lineage',url:'https://github.com/fixture/lineage',
     description:'This isolated library validates repository lineage and canonical owner identity. It preserves source metadata across a bounded transport contract.',observed_at:'2026-10-23T00:00:01Z',
-    is_fork:true,fork_parent_github_id:'222',fork_family_github_id:'333',
-    lineage_source:'github-graphql-repository',lineage_observed_at:'2026-10-23T00:00:00.000001Z'},'b'.repeat(64));
+    lineage_source:'github-graphql-repository',lineage_observed_at:'2026-10-23T00:00:00.000001Z'} as const;
+  const repository=buildMlRepositorySource({...observed,is_fork:true,fork_parent_github_id:'222',fork_family_github_id:'333'},'b'.repeat(64));
   const job={job_id:'00000000-0000-4000-8000-000000000005',repo_id:'00000000-0000-4000-8000-000000000003',
     content_version:1,repository};
   const client=new MlV2Client({baseUrl:origin,internalSecret:'local-lineage-contract-secret',timeoutMs:5000,
     repositoryIndexTimeoutMs:5000,maxResponseBytes:1_000_000});
-  const result=await client.deliverRepositoryIndex(job);assert.equal(result.accepted,true,result.detail);
+  const variants=[
+    ['fork',repository],
+    ['unknown',buildMlRepositorySource({...observed,is_fork:null},'b'.repeat(64))],
+    ['nonfork',buildMlRepositorySource({...observed,is_fork:false,fork_family_github_id:'123'},'b'.repeat(64))],
+  ] as const;
+  for(const[index,[variant,source]]of variants.entries()){
+    const result=await client.deliverRepositoryIndex({...job,job_id:`00000000-0000-4000-8000-${String(index+5).padStart(12,'0')}`,
+      content_version:index+1,repository:source});
+    assert.equal(result.accepted,true,`${variant}: ${result.detail}`);
+    assert.equal((result.response_body as {embedding_version:string}).embedding_version,`contract-embedding-v2-${variant}`,
+      'each valid variant must traverse the real registered route and payload builder');
+  }
   const post=(source:unknown,secret='local-lineage-contract-secret')=>fetch(`${origin}/api/v2/repositories/embed`,{
     method:'POST',headers:{'content-type':'application/json','x-internal-secret':secret},
     body:JSON.stringify({schema_version:2,...job,repository:source}),
