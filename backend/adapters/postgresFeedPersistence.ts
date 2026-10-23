@@ -178,9 +178,9 @@ export class PostgresFeedPersistence implements FeedPersistencePort, FeedReconci
           AND (serve.session_id=${sessionId ?? null}::uuid
             OR serve.created_at>=now()-(${this.recentExposureDays * 86400}::integer * interval '1 second'))
         UNION ALL
-        SELECT repo_id,last_event_at AS observed_at,1 AS priority
-        FROM telemetry.user_repo_engagement WHERE user_id=${userId}::uuid
-          AND last_event_at>=now()-(${this.recentExposureDays * 86400}::integer * interval '1 second')
+        SELECT repo_id,server_received_at AS observed_at,1 AS priority
+        FROM telemetry.interaction_events WHERE user_id=${userId}::uuid
+          AND server_received_at>=now()-(${this.recentExposureDays * 86400}::integer * interval '1 second')
       )
       SELECT repo_id FROM exposures GROUP BY repo_id
       ORDER BY min(priority),max(observed_at) DESC,repo_id LIMIT ${boundedLimit}
@@ -270,9 +270,9 @@ export class PostgresFeedPersistence implements FeedPersistencePort, FeedReconci
               AND recent_serve.created_at>=now()-(${this.recentExposureDays * 86400}::integer * interval '1 second')
           )
           AND NOT EXISTS (
-            SELECT 1 FROM telemetry.user_repo_engagement recent_event
+            SELECT 1 FROM telemetry.interaction_events recent_event
             WHERE recent_event.user_id=${userId}::uuid AND recent_event.repo_id=item.repo_id
-              AND recent_event.last_event_at>=now()-(${this.recentExposureDays * 86400}::integer * interval '1 second')
+              AND recent_event.server_received_at>=now()-(${this.recentExposureDays * 86400}::integer * interval '1 second')
           )
       )
       SELECT repo_id,score,source,model_version,summary_id,generation_id
@@ -681,9 +681,9 @@ export class PostgresFeedPersistence implements FeedPersistencePort, FeedReconci
             AND recent_serve.created_at>=now()-(${this.recentExposureDays * 86400}::integer * interval '1 second')
         )
         AND NOT EXISTS (
-          SELECT 1 FROM telemetry.user_repo_engagement recent_event
+          SELECT 1 FROM telemetry.interaction_events recent_event
           WHERE recent_event.user_id=${viewerUserId ?? null}::uuid AND recent_event.repo_id=item.repo_id
-            AND recent_event.last_event_at>=now()-(${this.recentExposureDays * 86400}::integer * interval '1 second')
+            AND recent_event.server_received_at>=now()-(${this.recentExposureDays * 86400}::integer * interval '1 second')
         )
       ORDER BY snapshot.activated_at DESC, item.position ASC LIMIT ${limit}
     `;

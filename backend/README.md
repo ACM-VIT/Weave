@@ -186,7 +186,11 @@ reuse this index contract rather than introduce competing reservation tracking.
 
 Fresh feed delivery excludes repositories served, impressed or interacted with during the last
 `FEED_RECENT_EXPOSURE_DAYS` elapsed days (default 7, integer 1–365), across browsing
-sessions and feed versions. A durable prepared serve counts as exposure before
+sessions and feed versions. Interaction exposure uses the server receipt time in
+`telemetry.interaction_events`, never the phone-supplied occurrence time or its
+aggregate `last_event_at`. Keep receipt events for at least the configured window.
+The existing viewer/receipt-time index supports these window queries.
+A durable prepared serve counts as exposure before
 HTTP completion; retries with the same request ID replay that immutable serve.
 The existing 500-ID exclusion list remains a bounded ML hint. Candidate checks
 and the transactional delivery fence inspect exact requested IDs against the

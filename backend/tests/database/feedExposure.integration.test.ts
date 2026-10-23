@@ -15,7 +15,7 @@ test('seven-day cross-session exposure fences delivery beyond bounded hints and 
   ]);
   const users = [randomUUID(), randomUUID()];
   const [viewer, peer] = users;
-  const repos = Array.from({ length: 506 }, () => randomUUID());
+  const repos = Array.from({ length: 509 }, () => randomUUID());
   const [recent, expired, impressed, concurrent, fresh] = [repos[0], ...repos.slice(501)];
   const snapshot = randomUUID();
   const persistence = new PostgresFeedPersistence();
@@ -45,10 +45,10 @@ test('seven-day cross-session exposure fences delivery beyond bounded hints and 
     FROM jsonb_to_recordset(${JSON.stringify(records)}::text::jsonb) AS row(repo_id text,github_id text)`;
   await sql`INSERT INTO app.repo_content(repo_id,description,content_hash)
     SELECT repo_id::uuid,'Exposure fixture','exposure-fixture' FROM jsonb_to_recordset(${JSON.stringify(records)}::text::jsonb) AS row(repo_id text)`;
-  async function history(ids: string[], days: number) {
+  async function history(ids: string[], days: number, user = viewer) {
     const id = randomUUID();
     await sql`INSERT INTO telemetry.feed_serves(serve_id,feed_request_id,user_id,session_id,feed_version,source,created_at)
-      VALUES(${id}::uuid,${randomUUID()}::uuid,${viewer}::uuid,${randomUUID()}::uuid,1,'personalized',now()-(${days * 86400}::integer * interval '1 second'))`;
+      VALUES(${id}::uuid,${randomUUID()}::uuid,${user}::uuid,${randomUUID()}::uuid,1,'personalized',now()-(${days * 86400}::integer * interval '1 second'))`;
     await sql`INSERT INTO telemetry.feed_serve_items(serve_id,position,repo_id,score,source,model_version)
       SELECT ${id}::uuid,position,repo_id::uuid,1,'semantic','fixture' FROM
       jsonb_to_recordset(${JSON.stringify(ids.map((repo_id, position) => ({ repo_id, position })))}::text::jsonb) AS row(repo_id text,position smallint)`;
@@ -56,8 +56,10 @@ test('seven-day cross-session exposure fences delivery beyond bounded hints and 
   await history([recent], 6);
   for (let offset = 1; offset < 501; offset += 100) await history(repos.slice(offset, offset + 100), 1);
   await history([expired], 8);
-  await sql`INSERT INTO telemetry.user_repo_engagement(user_id,repo_id,impressions)
-    VALUES(${viewer}::uuid,${impressed}::uuid,1)`;
+  const { processInteractionBatchV2 } = await import('../../services/activityV2Service.js');
+  await processInteractionBatchV2(viewer, [{ schema_version: 2, event_id: randomUUID(), session_id: randomUUID(),
+    serve_id: null, repo_id: impressed, position: null, event_type: 'impression', dwell_ms: null,
+    client_occurred_at: new Date().toISOString(), context: {} }]);
 
   async function serve(repo: string, user = viewer): Promise<CreateServeInput> {
     const [repository] = await persistence.listActiveRepositories([repo], user);
@@ -125,4 +127,33 @@ test('seven-day cross-session exposure fences delivery beyond bounded hints and 
     const empty = await service.getFeed(viewer, request);
     assert.deepEqual(empty.items, []); assert.equal(empty.next_cursor, null);
   });
+  await t.test('server receipt time fences slow and fast phone clocks consistently across every delivery source', async () => {
+    const { processInteractionBatchV2 } = await import('../../services/activityV2Service.js');
+    const [slow, fast, expiredEvent] = repos.slice(506);
+    const events = [slow, fast, expiredEvent].map((repo_id, index) => ({
+      schema_version: 2 as const, event_id: randomUUID(), session_id: randomUUID(), serve_id: null,
+      repo_id, position: null, event_type: 'impression' as const, dwell_ms: null,
+      client_occurred_at: new Date(Date.now() + (index === 0 ? -30 : 30) * 86400_000).toISOString(), context: {},
+    }));
+    await processInteractionBatchV2(peer, events);
+    await sql`UPDATE telemetry.interaction_events SET server_received_at=now()-interval '8 days'
+      WHERE event_id=${events[2].event_id}::uuid`;
+    assert.deepEqual(await persistence.listExposureEligibleRepositoryIds(peer, [slow, fast, expiredEvent]), [expiredEvent],
+      'receipt age governs exposure even when aggregate client times are thirty days off');
+    const hints = await persistence.listExcludedRepositoryIds(peer, randomUUID(), 500);
+    assert.ok(hints.includes(slow) && hints.includes(fast) && !hints.includes(expiredEvent));
+    for (const repo of [slow, fast]) {
+      const input = await serve(repo, peer);
+      await assert.rejects(persistence.createServe(input), errors.FeedExposureChangedError);
+      assert.equal(await persistence.getServeByRequest(peer, input.feed_request_id), null);
+    }
+    await history([slow, fast, expiredEvent], 8, peer);
+    assert.deepEqual((await persistence.getRecentPersonalizedEntries(peer, 1n, 100, []))
+      .map(row => row.repo_id).sort(), [expiredEvent]);
+    await sql`INSERT INTO app.trending_snapshot_items(snapshot_id,position,repo_id)
+      VALUES(${snapshot}::uuid,2,${slow}::uuid),(${snapshot}::uuid,3,${fast}::uuid),(${snapshot}::uuid,4,${expiredEvent}::uuid)`;
+    const fallback = (await persistence.getTrendingFallback(100, [], peer)).map(row => row.repo_id);
+    assert.ok(!fallback.includes(slow) && !fallback.includes(fast) && fallback.includes(expiredEvent));
+  });
+
 });
