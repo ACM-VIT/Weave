@@ -43,7 +43,6 @@ integration('indexed refill keeps reservations disjoint, returns atomic depth an
   const appended = await queue.append(user, 1n, generation, [...reserved, ...initial.slice(8, 10), ...fresh], 60, 25);
   assert.deepEqual(appended, { status: 'published', count: 11 });
   assert.deepEqual(await queue.append(user, 1n, generation, fresh, 60, 25), { status: 'capacity', count: 0 });
-  assert.equal(explicitDepthReads, 0, 'reservation/refill state must not add a standalone LLEN request');
   const queued = (await redis.lrange(`feed:v2:${user}:1`, 0, -1)).map(value => JSON.parse(value).repo_id as string);
   assert.equal(queued.length, 25);
   assert.equal(new Set([...queued, ...reserved.map(item => item.repo_id)]).size, 31,
@@ -52,6 +51,7 @@ integration('indexed refill keeps reservations disjoint, returns atomic depth an
     const replay = await queue.reserve(user, 1n, request, 3, tokens[i]);
     assert.deepEqual(replay.items, reservations[i].items, 'refill must not replace active reservations');
   }
+  assert.equal(explicitDepthReads, 0, 'reservation/refill and replay must not add a standalone LLEN request');
   assert.equal(await queue.commit(user, 1n, requests[0], tokens[0]), true);
   assert.equal(await queue.release(user, 1n, requests[1], tokens[1]), true);
   assert.equal(await queue.depth(user, 1n), 28);
@@ -61,6 +61,8 @@ integration('indexed refill keeps reservations disjoint, returns atomic depth an
   assert.equal(await queue.generationState(user, 1n, generation), null);
   assert.equal(await queue.append(user, 1n, generation, [entry()], 60, 45), null);
   assert.equal(await queue.depth(user, 1n), 28, 'a late publisher cannot alter the replacement owner queue');
+  assert.ok(await queue.generationState(user, 1n, newerToken));
+  assert.deepEqual(await queue.append(user, 1n, newerToken, [entry()], 60, 45), { status: 'published', count: 1 });
   await queue.replace(user, 2n, [entry(), entry()], 60);
   await queue.deleteStaleVersions(user, 2n);
   assert.equal(await queue.depth(user, 1n), 0);
