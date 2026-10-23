@@ -15,16 +15,16 @@ test('actual import panel renders consent/error/revoke and ignores late account 
   await build({ stdin: { resolveDir: process.cwd(), loader: 'tsx', contents: `
     import React,{useState} from 'react';import{createRoot}from'react-dom/client';
     import{GitHubImportPanel}from'./src/components/onboarding/GitHubImportPanel';
-    window.fixture={mode:'normal',saved:[],manual:0};
+    window.fixture={mode:'normal',saved:[],manual:0,unmountManual:false,holdCleanup:false,cleanupSettled:false};
     const apis={};for(const actor of ['A','B']){
       const call=async(action,signal)=>{const response=await fetch('/fixture/'+action+'?actor='+actor+'&mode='+window.fixture.mode,{signal});
         const result=await response.json();if(!response.ok)throw new Error(result.error);return result;};
       apis[actor]={status:s=>call('status',s),preview:s=>call('preview',window.fixture.mode==='late'?undefined:s),
-        accept:(id,s)=>call('accept',s),revoke:s=>call('revoke',s),saveIdentity:(draft,s)=>call('identity',s)};
+        accept:(id,s)=>call('accept',s),revoke:async s=>{if(window.fixture.holdCleanup){window.fixture.cleanupSignal=s;await new Promise(resolve=>{window.fixture.releaseCleanup=resolve;});}try{return await call('revoke',s);}finally{window.fixture.cleanupSettled=true;}},saveIdentity:(draft,s)=>call('identity',s)};
     }
-    function Fixture(){const[actor,setActor]=useState('A');window.fixture.switchAccount=()=>setActor('B');
-      return <GitHubImportPanel userId={actor} api={apis[actor]} identityDraft={{username:'Tarun',full_name:'Tarun',date_of_birth:'2005-01-01'}}
-        onManual={()=>{window.fixture.manual++;}} onSaved={async()=>{if(window.fixture.mode==='refresh-error')throw new Error('Account refresh unavailable');window.fixture.saved.push(actor);}}/>;}
+    function Fixture(){const[actor,setActor]=useState('A'),[manual,setManual]=useState(false);window.fixture.switchAccount=()=>setActor('B');
+      return manual?<p id='manual-view'>Manual preferences</p>:<GitHubImportPanel userId={actor} api={apis[actor]} identityDraft={{username:'Tarun',full_name:'Tarun',date_of_birth:'2005-01-01'}}
+        onManual={()=>{window.fixture.manual++;if(window.fixture.unmountManual)setManual(true);}} onSaved={async()=>{if(window.fixture.mode==='refresh-error')throw new Error('Account refresh unavailable');window.fixture.saved.push(actor);}}/>;}
     createRoot(document.getElementById('panel-frame')).render(<Fixture/>);
   ` }, outfile: path.join(directory, 'bundle.js'), bundle: true, platform: 'browser', format: 'iife', jsx: 'automatic',
     alias: { 'react-native': 'react-native-web' }, define: { 'process.env.NODE_ENV': '"development"' },
@@ -148,5 +148,19 @@ test('actual import panel renders consent/error/revoke and ignores late account 
   assert.equal(requests.filter(request => request.actor === 'B' && request.action === 'accept').length, 0);
   const saved = await evaluate('window.fixture.saved') as string[];
   assert.ok(saved.length >= 3 && saved.every(actor => actor === 'A'), 'only the current account refreshes after successful mutations');
+  // Match the real onboarding parent, which replaces this panel on manual
+  // choice. Hold token/transport admission until React has unmounted it.
+  await send('Page.navigate',{url:`http://127.0.0.1:${address.port}`});
+  await click('Preview public activity'); await until('document.body.innerText.includes("only-A-topic")');
+  const cleanupBefore=requests.filter(row=>row.action==='revoke').length;
+  await evaluate('window.fixture.unmountManual=true;window.fixture.holdCleanup=true');
+  await click('Choose preferences myself'); await until('Boolean(document.getElementById("manual-view"))');
+  assert.equal(await evaluate('window.fixture.manual'),1,'manual choice must not wait for cleanup');
+  assert.equal(await evaluate('window.fixture.cleanupSignal.aborted'),false,'view replacement cannot cancel owner-bound consent cleanup');
+  await evaluate('window.fixture.releaseCleanup()');
+  for(let n=0;n<100&&requests.filter(row=>row.action==='revoke').length===cleanupBefore;n++)await new Promise(resolve=>setTimeout(resolve,10));
+  assert.equal(requests.filter(row=>row.action==='revoke').length,cleanupBefore+1);
+  await until('window.fixture.cleanupSettled');
+  assert.deepEqual(await evaluate('window.fixture.saved'),[],'unmounted cleanup must not refresh the retired parent');
   t.diagnostic('Actual React Native Web panel: explicit consent, error/retry, partial provenance, decline, expiry, revoke and late-account isolation pass; HTTP API is a controlled boundary.');
 });
