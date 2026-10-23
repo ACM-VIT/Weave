@@ -576,6 +576,10 @@ export interface components {
              * @default 0
              */
             fork_count?: number;
+            /** Fork Family Github Id */
+            fork_family_github_id?: string | null;
+            /** Fork Parent Github Id */
+            fork_parent_github_id?: string | null;
             /** Full Name */
             full_name: string;
             /** Github Id */
@@ -584,8 +588,14 @@ export interface components {
             github_node_id?: string | null;
             /** Html Url */
             html_url?: string | null;
+            /** Is Fork */
+            is_fork?: boolean | null;
             /** Languages */
             languages?: string[];
+            /** Lineage Observed At */
+            lineage_observed_at?: string | null;
+            /** Lineage Source */
+            lineage_source?: ("github-graphql-repository" | "github-rest-repository") | null;
             /**
              * Mentionable Users Count
              * @default 0
@@ -602,6 +612,8 @@ export interface components {
             open_issues_count?: number;
             /** Owner */
             owner?: string | null;
+            /** Owner Github Id */
+            owner_github_id?: string | null;
             /** Primary Language */
             primary_language?: string | null;
             /** Pushed At */

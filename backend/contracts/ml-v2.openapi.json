@@ -1281,6 +1281,30 @@
             "title": "Fork Count",
             "type": "integer"
           },
+          "fork_family_github_id": {
+            "anyOf": [
+              {
+                "pattern": "^[1-9][0-9]{0,18}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fork Family Github Id"
+          },
+          "fork_parent_github_id": {
+            "anyOf": [
+              {
+                "pattern": "^[1-9][0-9]{0,18}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fork Parent Github Id"
+          },
           "full_name": {
             "maxLength": 256,
             "minLength": 3,
@@ -1325,6 +1349,17 @@
             ],
             "title": "Html Url"
           },
+          "is_fork": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Is Fork"
+          },
           "languages": {
             "items": {
               "maxLength": 128,
@@ -1334,6 +1369,33 @@
             "maxItems": 100,
             "title": "Languages",
             "type": "array"
+          },
+          "lineage_observed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lineage Observed At"
+          },
+          "lineage_source": {
+            "anyOf": [
+              {
+                "enum": [
+                  "github-graphql-repository",
+                  "github-rest-repository"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lineage Source"
           },
           "mentionable_users_count": {
             "default": 0,
@@ -1386,6 +1448,18 @@
               }
             ],
             "title": "Owner"
+          },
+          "owner_github_id": {
+            "anyOf": [
+              {
+                "pattern": "^[1-9][0-9]{0,18}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Owner Github Id"
           },
           "primary_language": {
             "anyOf": [
