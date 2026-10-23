@@ -6,7 +6,7 @@ export interface ScoringExportPolicy {
   labelHorizonSeconds: number;
   lateArrivalSeconds: number;
   clockSkewSeconds: number;
-  labelerVersion: 'scoring-labels-v1';
+  labelerVersion: 'scoring-labels-v1'|'scoring-labels-v2';
 }
 
 export interface ScoringExportSelection {
@@ -19,6 +19,8 @@ export interface FrozenScoringEvent {
   raw_session_id: string | null;
   session_attribution: 'matches_serve' | 'differs_from_serve' | 'not_recorded';
   event_id: string;
+  impression_event_id?: string|null;
+  impression_linkage?: 'not_recorded'|'resolved_exact'|'unresolved_at_cutoff'|'invalid_attribution';
   user_id: string;
   serve_id: string;
   repo_id: string;
@@ -47,9 +49,10 @@ export interface FrozenScoringExposure {
 }
 
 export interface TemporalScoringLabels {
-  labeler_version: 'scoring-labels-v1';
-  attribution_method: 'serve_tuple_v1';
-  original_client_impression_linkage: 'not_recorded';
+  labeler_version: 'scoring-labels-v1'|'scoring-labels-v2';
+  attribution_method: 'serve_tuple_v1'|'original_impression_v2';
+  original_client_impression_linkage: 'not_recorded'|'recorded_per_event';
+  impression_links?: readonly {event_id:string;impression_event_id:string|null;status:NonNullable<FrozenScoringEvent['impression_linkage']>}[];
   observation_completeness: 'cutoff_observed';
   observed_at: string;
   selected_impression_event_id: string | null;

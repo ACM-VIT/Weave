@@ -12,7 +12,7 @@ export function validateScoringExportPolicy(value: ScoringExportPolicy): void {
   if (Object.keys(value).sort().join(',') !== 'clockSkewSeconds,labelHorizonSeconds,labelerVersion,lateArrivalSeconds,policyId,policyVersion,snapshotTtlSeconds'
     || ![value.policyId,value.policyVersion].every(text => typeof text === 'string' && text.length >= 1
       && Buffer.byteLength(text) <= 128 && text === text.trim())
-    || value.labelerVersion !== 'scoring-labels-v1'
+    || !['scoring-labels-v1','scoring-labels-v2'].includes(value.labelerVersion)
     || !integer(value.snapshotTtlSeconds,60,86_400) || !integer(value.labelHorizonSeconds,1,604_800)
     || !integer(value.lateArrivalSeconds,0,604_800) || !integer(value.clockSkewSeconds,0,3_600)) invalid();
 }
@@ -44,12 +44,14 @@ export function getScoringExportConfig(environment: Readonly<Record<string,strin
   const enabled = environment.SCORING_EXPORT_ENABLED;
   if (enabled === undefined || enabled === '' || enabled === 'false') return { enabled: false };
   if (enabled !== 'true') return invalid();
+  const labelerVersion=environment.SCORING_EXPORT_LABELER_VERSION??'scoring-labels-v1';
+  if(labelerVersion!=='scoring-labels-v1'&&labelerVersion!=='scoring-labels-v2')return invalid();
   const policy: ScoringExportPolicy = {
     policyId: environment.SCORING_EXPORT_POLICY_ID ?? '', policyVersion: environment.SCORING_EXPORT_POLICY_VERSION ?? '',
     snapshotTtlSeconds: requiredInteger(environment,'SCORING_EXPORT_SNAPSHOT_TTL_SECONDS',60,86_400),
     labelHorizonSeconds: requiredInteger(environment,'SCORING_EXPORT_LABEL_HORIZON_SECONDS',1,604_800),
     lateArrivalSeconds: requiredInteger(environment,'SCORING_EXPORT_LATE_ARRIVAL_SECONDS',0,604_800),
-    clockSkewSeconds: requiredInteger(environment,'SCORING_EXPORT_CLOCK_SKEW_SECONDS',0,3_600), labelerVersion: 'scoring-labels-v1',
+    clockSkewSeconds: requiredInteger(environment,'SCORING_EXPORT_CLOCK_SKEW_SECONDS',0,3_600), labelerVersion,
   };
   validateScoringExportPolicy(policy);
   const exporterDatabaseUrl = environment.SCORING_EXPORT_DATABASE_URL ?? '';

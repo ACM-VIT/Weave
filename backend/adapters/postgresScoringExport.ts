@@ -169,7 +169,23 @@ export class PostgresScoringExport implements ScoringExportPort {
       const last=rows.at(-1)?.ordinal??after;
       if(exportTimestampMicros(new Date().toISOString())>=exportTimestampMicros(manifest.expires_at))throw new ScoringExportError('expired');
       return {manifest,rows,next_after:last<manifest.row_count?last:null};
-    } catch(error) {throw safeDatabaseError(error);}
+    } catch(error) {
+      const safe=safeDatabaseError(error);
+      // Technical format v2 can read a still-approved v1 job under the SAME
+      // configured operational policy. SQL reauthorizes its exact v1 digest;
+      // this grants no current-v2 caller authority over an unapproved v1 job.
+      if(this.policy.labelerVersion==='scoring-labels-v2'&&(safe.reason==='forbidden'||safe.reason==='expired')) {
+        try {
+          return await new PostgresScoringExport(this.exporter,{...this.policy,labelerVersion:'scoring-labels-v1'})
+            .page(principalId,jobId,after,limit);
+        } catch(legacyFailure) {
+          const legacy=safeDatabaseError(legacyFailure);
+          if(legacy.reason==='forbidden'||legacy.reason==='expired')throw safe;
+          throw legacy;
+        }
+      }
+      throw safe;
+    }
   }
   async revoke(principalId:string,subjectUserId:string):Promise<{revoked:true;purge_pending:true}> {
     if(!id(principalId)||!id(subjectUserId)) invalid();

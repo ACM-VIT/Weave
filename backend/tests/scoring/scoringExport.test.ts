@@ -95,3 +95,20 @@ test('different or absent raw event sessions are preserved and cannot create a p
     assert.equal(result.right_censored,true);
   }
 });
+
+test('v2 freezes explicit original-ID links and never guesses a target for early or unresolved actions',()=>{
+ const v2={...policy,labelerVersion:'scoring-labels-v2' as const};
+ const original={...event('impression',1,1),impression_event_id:null,impression_linkage:'not_recorded' as const};
+ const pending={...event('share',2,2),impression_event_id:original.event_id,impression_linkage:'unresolved_at_cutoff' as const};
+ const frozen=labelFrozenScoringExposure(row([pending]),timestamp(30),v2);
+ assert.equal(frozen.outcome_status,'attribution_uncertain');assert.equal(frozen.action_counts.share,0);
+ assert.deepEqual(frozen.impression_links,[{event_id:pending.event_id,impression_event_id:original.event_id,status:'unresolved_at_cutoff'}]);
+ const resolved={...pending,impression_linkage:'resolved_exact' as const};
+ const next=labelFrozenScoringExposure(row([original,resolved]),timestamp(30),v2);
+ assert.equal(next.outcome_status,'positive_observed');assert.equal(next.action_counts.share,1);
+ assert.equal(frozen.impression_links![0].status,'unresolved_at_cutoff');
+ const early={...event('github_open',0,3),impression_event_id:null,impression_linkage:'not_recorded' as const};
+ const earlyResult=labelFrozenScoringExposure(row([original,early]),timestamp(30),v2);
+ assert.equal(earlyResult.action_counts.github_open,0);assert.equal(earlyResult.outcome_status,'attribution_uncertain');
+ assert.throws(()=>labelFrozenScoringExposure(row([resolved]),timestamp(30),v2),/INPUT_INVALID/,'resolved status must have an actual compatible frozen impression');
+});
