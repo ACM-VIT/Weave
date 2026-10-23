@@ -69,10 +69,13 @@ test('revocation retires queued import deliveries and current-profile admission 
       }
     }
     const unexpected = async () => assert.fail('Revoked onboarding reached ML transport');
-    assert.equal(await new OutboxWorker(new PreviouslyClaimedOutbox(), {
+    const transport = {
       deliverOnboarding: unexpected, deliverFeedback: unexpected,
       deliverRepositoryIndex: unexpected, deliverRepositoryRefresh: unexpected,
-    }).runOnce(), 1);
+    };
+    assert.equal(await new OutboxWorker(new PreviouslyClaimedOutbox(), transport).runOnce(), 1);
+    const { OutboxDeliveryLanes } = await import('../../workers/outboxDeliveryLanes.js');
+    assert.equal((await new OutboxDeliveryLanes(new PreviouslyClaimedOutbox(), transport).runOnce('onboard')).processed, 1);
     const [restored] = await sqlClient`SELECT outbox_id,payload FROM telemetry.ml_outbox
       WHERE aggregate_id=${user}::uuid AND job_type='onboard' AND payload->>'profile_version'='3'`;
     assert.ok(restored);

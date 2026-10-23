@@ -1,5 +1,6 @@
 import postgres from 'postgres';
 import { WorkerSupervisor } from './workerSupervisor.js';
+import { OUTBOX_LANES, outboxTaskName } from './outboxLanes.js';
 
 /** LISTEN requires a direct/session PostgreSQL connection, never transaction pooling. */
 export class WorkerWakeups {
@@ -27,7 +28,9 @@ export class WorkerWakeups {
       connection: { application_name: 'weave-worker-wakeups',statement_timeout: 3000 },
       onnotify: (channel: string) => {
         if (!this.stopped && this.client === client) {
-          if (channel === 'weave_ml_outbox') this.supervisor.wake('ml-outbox');
+          if (channel === 'weave_ml_outbox') {
+            for (const lane of OUTBOX_LANES) this.supervisor.wake(outboxTaskName(lane));
+          }
           if (channel === 'weave_feed_prewarm') this.supervisor.wake('feed-prewarm');
         }
       },
@@ -48,7 +51,7 @@ export class WorkerWakeups {
       this.ready = true;
       // Drain durable work whose notification was lost before subscription.
       if (!this.stopped) {
-        this.supervisor.wake('ml-outbox');
+        for (const lane of OUTBOX_LANES) this.supervisor.wake(outboxTaskName(lane));
         this.supervisor.wake('feed-prewarm');
       }
     })().catch(async error => {

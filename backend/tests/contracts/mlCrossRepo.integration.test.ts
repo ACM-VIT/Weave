@@ -57,8 +57,9 @@ test('real Node client and Python HTTP routes share the pinned V2 contract', { s
   const batch: MlFeedbackBatch = { schema_version: 2, events: [{ event_id: '00000000-0000-4000-8000-000000000008',
     user_id: user, repo_id: repo, feedback_version: '9223372036854775807', event_type: 'like',
     dwell_ms: null, occurred_at: '2026-10-23T00:00:00Z' }] };
-  assert.deepEqual((await client.deliverFeedback(batch)).response_body, { accepted: 1, duplicates: 0, durable: true });
-  assert.deepEqual((await client.deliverFeedback(batch)).response_body, { accepted: 0, duplicates: 1, durable: true });
+  const acknowledged_event_ids = batch.events.map(event => event.event_id);
+  assert.deepEqual((await client.deliverFeedback(batch)).response_body, { accepted: 1, duplicates: 0, durable: true, acknowledged_event_ids });
+  assert.deepEqual((await client.deliverFeedback(batch)).response_body, { accepted: 0, duplicates: 1, durable: true, acknowledged_event_ids });
   // Impressions are backend telemetry and must never enter online learning.
   const impression = await fetch(`${origin}/api/v2/feedback/batch`, { method: 'POST',
     headers: { 'content-type': 'application/json', 'x-internal-secret': 'local-contract-secret' },
