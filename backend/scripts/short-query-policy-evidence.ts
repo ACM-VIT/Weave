@@ -19,6 +19,18 @@ export function describeQuery(value: string) {
     graphemes: [...new Intl.Segmenter(undefined, { granularity: 'grapheme' }).segment(query)].length };
 }
 
+export const EXPECTED_SHORT_QUERY_FIXTURE = {
+  repositories: 100008, repository_content: 100008, users: 20002, social_profiles: 20000,
+  boards: 20000, collections: 2000, repository_topics: 20000, sentinel_repositories: 8,
+  fixture_content: 100008,
+} as const;
+export function assertShortQueryFixture(actual: Record<string, number>) {
+  for (const [name, expected] of Object.entries(EXPECTED_SHORT_QUERY_FIXTURE)) {
+    if (actual[name] !== expected) throw new Error(
+      `Synthetic short-query fixture mismatch: ${name} expected ${expected}, received ${actual[name]}. Seed the empty dedicated database before measurement.`);
+  }
+}
+
 async function run() {
   assertShortQueryTarget(process.env.DATABASE_URL);
   const args = process.argv.slice(2);
@@ -73,6 +85,18 @@ async function run() {
       await sql.unsafe('ANALYZE app.repos; ANALYZE app.repo_content; ANALYZE app.users; ANALYZE app.social_profiles; ANALYZE app.boards; ANALYZE app.board_collections; ANALYZE app.repo_topics; ANALYZE app.topics').simple();
     }
     if (!args.includes('--measure')) return;
+    const [counts] = await sql`SELECT
+      (SELECT count(*) FROM app.repos) AS repositories,
+      (SELECT count(*) FROM app.repo_content) AS repository_content,
+      (SELECT count(*) FROM app.users) AS users,
+      (SELECT count(*) FROM app.social_profiles) AS social_profiles,
+      (SELECT count(*) FROM app.boards) AS boards,
+      (SELECT count(*) FROM app.board_collections) AS collections,
+      (SELECT count(*) FROM app.repo_topics) AS repository_topics,
+      (SELECT count(*) FROM app.repos WHERE repo_id::text LIKE '11800000-0000-4000-8000-%' AND owner='sentinel') AS sentinel_repositories,
+      (SELECT count(*) FROM app.repo_content WHERE content_hash='fixture-only') AS fixture_content`;
+    const actualFixture = Object.fromEntries(Object.entries(counts).map(([name, count]) => [name, Number(count)]));
+    assertShortQueryFixture(actualFixture);
     const [settings] = await sql`SELECT version(),datcollate AS lc_collate,current_setting('shared_buffers') AS shared_buffers FROM pg_database WHERE datname=current_database()`;
     await sql.unsafe('DROP INDEX IF EXISTS app.evidence_118_repo_name_prefix,app.evidence_118_repo_full_name_prefix,app.evidence_118_user_username_prefix,app.evidence_118_user_full_name_prefix,app.evidence_118_profile_handle_prefix,app.evidence_118_profile_display_prefix,app.evidence_118_board_prefix,app.evidence_118_collection_prefix').simple();
     const persistence = new PostgresSearchPersistence();
@@ -155,7 +179,7 @@ async function run() {
       records.push({policy:'prototype_name_prefix',...describeQuery(query),group,filtered:false,samples});
     }
     const source = await readFile(new URL('../adapters/postgresSearchPersistence.ts',import.meta.url));
-    console.log(JSON.stringify({ fixture: 'synthetic-local-v1', production_latency_claim: false, selected_policy: 'keep_broad_names_descriptions_bios', prototype_policy_approved: false,
+    console.log(JSON.stringify({ fixture: 'synthetic-local-v1', actual_fixture: actualFixture, production_latency_claim: false, selected_policy: 'keep_broad_names_descriptions_bios', prototype_policy_approved: false,
       baseline_path: 'actual PostgresSearchPersistence + searchSql lane', source_sha256: crypto.createHash('sha256').update(source).digest('hex'),
       measurement: 'first call plus 3 warm repeats; loopback and concurrent per-group SQL; not HTTP/ML/end-to-end latency',
       settings, records }, null, 2));

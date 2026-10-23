@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { assertShortQueryTarget, describeQuery } from '../../scripts/short-query-policy-evidence.js';
+import { assertShortQueryTarget, describeQuery, assertShortQueryFixture, EXPECTED_SHORT_QUERY_FIXTURE } from '../../scripts/short-query-policy-evidence.js';
 import { parseSearchRequest } from '../../services/searchService.js';
 
 test('short-query evidence refuses shared, remote and production targets before dynamic SQL imports', () => {
@@ -18,4 +18,14 @@ test('current validation and evidence expose UTF16/codepoint/grapheme difference
   assert.deepEqual(describeQuery('e\u0301'),{query:'e\u0301',utf16_units:2,code_points:2,nfc_code_points:1,graphemes:1});
   assert.equal(describeQuery('数据').code_points,2);
   assert.equal(request('go').query,'go');
+});
+
+
+test('measurement requires the actual complete synthetic fixture rather than an empty-database label', () => {
+  assert.doesNotThrow(() => assertShortQueryFixture({ ...EXPECTED_SHORT_QUERY_FIXTURE }));
+  assert.throws(() => assertShortQueryFixture({}), /fixture mismatch/);
+  for (const name of Object.keys(EXPECTED_SHORT_QUERY_FIXTURE)) {
+    assert.throws(() => assertShortQueryFixture({ ...EXPECTED_SHORT_QUERY_FIXTURE, [name]: 0 }), /fixture mismatch/);
+    assert.throws(() => assertShortQueryFixture({ ...EXPECTED_SHORT_QUERY_FIXTURE, [name]: Number.NaN }), /fixture mismatch/);
+  }
 });
