@@ -35,7 +35,7 @@ try {
 
   const tableRows = await client`
     SELECT table_schema, table_name FROM information_schema.tables
-    WHERE table_schema IN ('app', 'telemetry') AND table_type = 'BASE TABLE'
+    WHERE table_schema = ANY(${manifest.schemas}::text[]) AND table_type = 'BASE TABLE'
   `;
   const tables = new Set(tableRows.map((row) => `${row.table_schema}.${row.table_name}`));
   for (const [schema, names] of Object.entries(manifest.tables)) {
@@ -45,8 +45,7 @@ try {
   const columnRows = await client`
     SELECT table_schema,table_name,column_name
     FROM information_schema.columns
-    WHERE (table_schema='app' AND table_name IN ('users','oauth_codes','repo_content','repo_card_summaries','user_feed_state','user_github_unlinks'))
-       OR (table_schema='telemetry' AND table_name IN ('ml_outbox','counter_reconciliation_progress','feed_prewarm_jobs'))
+    WHERE table_schema = ANY(${manifest.schemas}::text[])
   `;
   const columns = new Set(columnRows.map(
     (row) => `${row.table_schema}.${row.table_name}.${row.column_name}`,
@@ -135,16 +134,19 @@ try {
   }
 
   const indexRows = await client`
-    SELECT indexname FROM pg_indexes WHERE schemaname IN ('app', 'telemetry')
+    SELECT indexname FROM pg_indexes WHERE schemaname = ANY(${manifest.schemas}::text[])
   `;
   const indexes = new Set(indexRows.map((row) => String(row.indexname)));
   for (const name of manifest.indexes) if (!indexes.has(name)) missing.push(`index:${name}`);
 
   const functionRows = await client`
-    SELECT p.proname FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname = 'app'
+    SELECT n.nspname,p.proname FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname = ANY(${manifest.schemas}::text[])
   `;
-  const functions = new Set(functionRows.map((row) => String(row.proname)));
-  for (const name of manifest.functions) if (!functions.has(name)) missing.push(`function:app.${name}`);
+  const functions = new Set(functionRows.map((row) => `${row.nspname}.${row.proname}`));
+  for (const name of manifest.functions) {
+    const qualified = name.includes('.') ? name : `app.${name}`;
+    if (!functions.has(qualified)) missing.push(`function:${qualified}`);
+  }
 
   const wakeTriggers = await client`
     SELECT relation.relname AS table_name,trigger.tgname AS name,procedure.proname AS function_name
