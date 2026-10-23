@@ -1,6 +1,14 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
+import { createRequire } from 'node:module';
+import { resolve } from 'node:path';
 import test from 'node:test';
+import React, { act } from 'react';
+import { create } from 'react-test-renderer';
+import ts from 'typescript';
+
+(globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
 const internalSurfaceFiles = [
   'src/models/search.ts',
@@ -50,19 +58,82 @@ test('feed and Trending cards delegate repository presses to internal navigation
   assert.doesNotMatch(trendingCard, /Linking\.openURL/);
 });
 
-test('profile repository sheets dismiss before navigating to repository details', async () => {
-  const list = await readFile(
-    new URL('../src/components/profile-repository-list.tsx', import.meta.url),
-    'utf8',
+test('profile repository sheets finish dismissing before navigating', async () => {
+  const filename = resolve('src/components/connection-sheet.tsx');
+  const nativeRequire = createRequire(filename);
+  const closeAnimations: ((result: { finished: boolean }) => void)[] = [];
+  const animation = () => ({
+    start: (callback?: (result: { finished: boolean }) => void) => {
+      if (callback) closeAnimations.push(callback);
+    },
+  });
+  class Value {
+    setValue() {}
+  }
+  const mocks: Record<string, any> = {
+    'react-native': {
+      Animated: { Value, View: 'AnimatedView', timing: animation, parallel: animation },
+      Easing: { bezier: () => 0, in: () => 0, out: () => 0, quad: 0 },
+      Keyboard: { dismiss() {} },
+      Modal: 'Modal',
+      Pressable: 'Pressable',
+      StyleSheet: { absoluteFill: {}, create: (value: unknown) => value, hairlineWidth: 1 },
+      Text: 'Text',
+      View: 'View',
+      useWindowDimensions: () => ({ height: 800, width: 400 }),
+    },
+    'react-native-reanimated': { useReducedMotion: () => false },
+    'react-native-safe-area-context': { useSafeAreaInsets: () => ({ bottom: 0, top: 0 }) },
+    'expo-blur': { BlurView: 'BlurView' },
+    'lucide-react-native': { X: 'X' },
+    '@/components/keyboard/keyboard-layout': { KeyboardSurface: 'KeyboardSurface' },
+    '@/constants/theme': { REFERENCE_THEME: {} },
+    './connection-list': { ConnectionList: 'ConnectionList' },
+    './profile-repository-list': {
+      ProfileRepositoryList: ({ onRepositoryPress }: any) => React.createElement('Pressable', {
+        accessibilityLabel: 'Open owner/repository',
+        onPress: () => onRepositoryPress('/repository/repository'),
+      }),
+    },
+  };
+  const source = ts.transpileModule(readFileSync(filename, 'utf8'), {
+    fileName: filename,
+    compilerOptions: { esModuleInterop: true, jsx: ts.JsxEmit.ReactJSX, module: ts.ModuleKind.CommonJS },
+  }).outputText;
+  const loaded = { exports: {} as any };
+  new Function('require', 'module', 'exports', source)(
+    (specifier: string) => mocks[specifier] ?? nativeRequire(specifier),
+    loaded,
+    loaded.exports,
   );
-  const sheet = await readFile(
-    new URL('../src/components/connection-sheet.tsx', import.meta.url),
-    'utf8',
-  );
+  const ConnectionSheet = loaded.exports.ConnectionSheet;
+  const calls: string[] = [];
+  let root!: ReturnType<typeof create>;
+  await act(async () => {
+    root = create(React.createElement(ConnectionSheet, {
+      visible: true,
+      type: 'likes',
+      userId: 'viewer',
+      onClose: () => calls.push('close'),
+      onRepositoryPress: () => calls.push('navigate'),
+    }));
+  });
 
-  assert.match(list, /onRepositoryPress\(repositoryHref\(item\.id\)\)/);
-  assert.match(sheet, /afterCloseRef\.current = \(\) => onRepositoryPress\(href\)/);
-  assert.match(sheet, /onClose\(\);\s*afterClose\?\.\(\)/);
+  const repositoryRow = root.root.findAllByType('Pressable')
+    .find((node) => node.props.accessibilityLabel === 'Open owner/repository')!;
+  await act(async () => repositoryRow.props.onPress());
+  assert.deepEqual(calls, [], 'navigation must wait for the close animation');
+  await act(async () => closeAnimations.shift()!({ finished: true }));
+  assert.deepEqual(calls, ['close', 'navigate']);
+
+  calls.length = 0;
+  await act(async () => repositoryRow.props.onPress());
+  await act(async () => closeAnimations.shift()!({ finished: false }));
+  assert.deepEqual(calls, [], 'an interrupted close must not navigate');
+  await act(async () => root.root.findByType('Modal').props.onRequestClose());
+  await act(async () => closeAnimations.shift()!({ finished: true }));
+  assert.deepEqual(calls, ['close'], 'a later ordinary close must not replay stale navigation');
+  await act(async () => root.unmount());
 });
 
 test('every intentional GitHub escape has an explicit visible Open on GitHub action', async () => {

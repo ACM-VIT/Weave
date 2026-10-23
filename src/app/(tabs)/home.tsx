@@ -25,6 +25,7 @@ import {
 } from '@tanstack/react-query';
 import * as SecureStore from '../../utils/storage';
 import { fetchHomeFeed } from '@/api/home-feed';
+import { profileRepositoryInvalidationFilters } from '@/api/profile-section-queries';
 import { subscribeToHomeFeedInvalidations } from '@/utils/home-feed';
 import { type ActivityInput } from '@/api/activity';
 import { useAuth } from '@/store/AuthContext';
@@ -46,6 +47,7 @@ import {
   optimisticLikeDelta,
   patchProfileLikeOverrides,
   profileLikeOverridesQueryKey,
+  settleProfileLikeOverrides,
   type ProfileLikeOverrides,
 } from '@/utils/profile-likes';
 
@@ -57,7 +59,12 @@ const VIEWABILITY_CONFIG = { itemVisiblePercentThreshold: 50 } as const;
 const ACTIVITY_FLUSH_INTERVAL_MS = 8_000;
 
 export default function HomeScreen() {
-  const { user, checkOnboardingStatus, adjustLikesGivenCount } = useAuth();
+  const {
+    user,
+    checkOnboardingStatus,
+    adjustLikesGivenCount,
+    settleLikesGivenCountAdjustments,
+  } = useAuth();
   const queryClient = useQueryClient();
   const feedQueryKey = useMemo(() => getFeedQueryKey(user?.user_id), [user?.user_id]);
   const listRef = useRef<FlatList<{ feedId: string; repository: RepositoryData }> | null>(null);
@@ -139,7 +146,6 @@ export default function HomeScreen() {
       profileLikeOverridesQueryKey(user?.user_id),
       patchProfileLikeOverrides(currentLikeOverrides, repository, event.action),
     );
-    if (likeDelta) adjustLikesGivenCount(likeDelta);
     queryClient.setQueryData<InfiniteData<FeedPage, string | null>>(
       feedQueryKey,
       (cachedFeed) => patchFeedReaction(cachedFeed, {
@@ -151,7 +157,9 @@ export default function HomeScreen() {
     if (!activityOutbox) return;
 
     const generation = authSessionLifecycle.currentGeneration();
-    void activityOutbox.enqueue(event).then(async () => {
+    void activityOutbox.enqueue(event, (queuedActivity) => {
+      if (likeDelta) adjustLikesGivenCount(queuedActivity.event_id, likeDelta);
+    }).then(async () => {
       if (!authSessionLifecycle.isCurrent(generation)) return;
       if (flushNow || await activityOutbox.pendingCount() >= 10) {
         await flushActivityBatch();
@@ -205,8 +213,18 @@ export default function HomeScreen() {
   useEffect(() => {
     if (!activityOutbox) return;
     const generation = authSessionLifecycle.currentGeneration();
-    const unsubscribe = activityOutbox.subscribe(({ invalidatedFeed, feedVersion }) => {
+    const unsubscribe = activityOutbox.subscribe(({
+      acknowledgedActivities = [],
+      invalidatedFeed,
+      feedVersion,
+    }) => {
       if (!invalidatedFeed || !authSessionLifecycle.isCurrent(generation)) return;
+      settleLikesGivenCountAdjustments(acknowledgedActivities.map((activity) => activity.event_id));
+      queryClient.setQueryData<ProfileLikeOverrides>(
+        profileLikeOverridesQueryKey(user?.user_id),
+        current => settleProfileLikeOverrides(current, acknowledgedActivities),
+      );
+      void queryClient.invalidateQueries(profileRepositoryInvalidationFilters(user?.user_id, 'likes'));
       pagination.controller.markStale(feedVersion);
       void checkOnboardingStatus().catch(() => undefined);
     });
@@ -224,7 +242,15 @@ export default function HomeScreen() {
       stopLifecycle();
       unsubscribe();
     };
-  }, [activityOutbox, checkOnboardingStatus, flushActivityBatch, pagination]);
+  }, [
+    activityOutbox,
+    checkOnboardingStatus,
+    flushActivityBatch,
+    pagination,
+    queryClient,
+    settleLikesGivenCountAdjustments,
+    user?.user_id,
+  ]);
 
   const [viewableItems, setViewableItems] = useState<string[]>([]);
   const onViewableItemsChanged = useCallback(({ viewableItems }: any) => {

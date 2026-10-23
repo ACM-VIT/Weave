@@ -38,7 +38,8 @@ interface AuthContextType {
   signOut: () => Promise<void>;
   checkOnboardingStatus: () => Promise<void>;
   updateUserProfile: (profile: EditableUserProfile) => void;
-  adjustLikesGivenCount: (delta: -1 | 1) => void;
+  adjustLikesGivenCount: (eventId: string, delta: -1 | 1) => void;
+  settleLikesGivenCountAdjustments: (eventIds: readonly string[]) => void;
 }
 
 type UserProfileRequestPolicy = {
@@ -57,6 +58,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [isLoading, setIsLoading] = useState(true);
   const [startupError, setStartupError] = useState<string | null>(null);
   const startupController = useRef<AbortController | null>(null);
+  const pendingLikesGivenDelta = useRef(0);
+  const pendingLikesGivenEvents = useRef(new Map<string, -1 | 1>());
 
   const fetchUserProfile = useCallback(async (
     token: string,
@@ -86,6 +89,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         user_id: String(profile.user_id),
         username: String(profile.username),
         onboarding_completed: resolveOnboardingCompleted(profile, completionStatus),
+        likes_given_count: Math.max(
+          0,
+          Number(profile.likes_given_count ?? 0) + pendingLikesGivenDelta.current,
+        ),
       });
     } catch (error) {
       assertCurrent();
@@ -187,11 +194,23 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setUser((current) => mergeSavedUserProfile(current, profile));
   }, []);
 
-  const adjustLikesGivenCount = useCallback((delta: -1 | 1) => {
+  const adjustLikesGivenCount = useCallback((eventId: string, delta: -1 | 1) => {
+    if (pendingLikesGivenEvents.current.has(eventId)) return;
+    pendingLikesGivenEvents.current.set(eventId, delta);
+    pendingLikesGivenDelta.current += delta;
     setUser((current) => current ? {
       ...current,
       likes_given_count: Math.max(0, Number(current.likes_given_count ?? 0) + delta),
     } : current);
+  }, []);
+
+  const settleLikesGivenCountAdjustments = useCallback((eventIds: readonly string[]) => {
+    for (const eventId of eventIds) {
+      const delta = pendingLikesGivenEvents.current.get(eventId);
+      if (!delta) continue;
+      pendingLikesGivenDelta.current -= delta;
+      pendingLikesGivenEvents.current.delete(eventId);
+    }
   }, []);
 
   const setSession = useCallback(async ({
@@ -206,6 +225,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     if (storedToken !== accessToken) throw new SessionChangedError();
 
     clearAccountQueryCache(queryClient);
+    pendingLikesGivenDelta.current = 0;
+    pendingLikesGivenEvents.current.clear();
     setStartupError(null);
     setUser(null);
     setIsLoading(true);
@@ -224,6 +245,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const logout = logoutRequest();
     const logoutGeneration = authSessionLifecycle.currentGeneration();
     clearAccountQueryCache(queryClient);
+    pendingLikesGivenDelta.current = 0;
+    pendingLikesGivenEvents.current.clear();
     setUser(null);
     setIsLoading(false);
 
@@ -251,13 +274,20 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => authSessionLifecycle.subscribe(() => {
     clearAccountQueryCache(queryClient);
+    pendingLikesGivenDelta.current = 0;
+    pendingLikesGivenEvents.current.clear();
     setUser(null);
     setIsLoading(false);
     setStartupError(null);
   }), [queryClient]);
 
   useEffect(() => {
-    setSessionExpiredHandler(() => { clearAccountQueryCache(queryClient); setUser(null); });
+    setSessionExpiredHandler(() => {
+      clearAccountQueryCache(queryClient);
+      pendingLikesGivenDelta.current = 0;
+      pendingLikesGivenEvents.current.clear();
+      setUser(null);
+    });
     return () => setSessionExpiredHandler(null);
   }, [queryClient]);
 
@@ -280,6 +310,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       checkOnboardingStatus,
       updateUserProfile,
       adjustLikesGivenCount,
+      settleLikesGivenCountAdjustments,
     }}>
       {children}
     </AuthContext.Provider>

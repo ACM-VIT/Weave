@@ -6,6 +6,7 @@ import {
   applyProfileLikeOverrides,
   optimisticLikeDelta,
   patchProfileLikeOverrides,
+  settleProfileLikeOverrides,
 } from '../src/utils/profile-likes';
 
 function repository(id: string, viewerReaction: RepositoryDetail['viewerReaction'] = null): RepositoryDetail {
@@ -91,4 +92,28 @@ test('rapid like then unlike restores the original count immediately', () => {
 test('unrelated activity leaves profile like overrides untouched', () => {
   const current = patchProfileLikeOverrides(undefined, repository('liked'), 'like');
   assert.equal(patchProfileLikeOverrides(current, repository('other'), 'share'), current);
+});
+
+test('multiple optimistic likes stay newest-first, including a relike', () => {
+  const first = repository('first');
+  const second = repository('second');
+  let overrides = patchProfileLikeOverrides(undefined, first, 'like');
+  overrides = patchProfileLikeOverrides(overrides, second, 'like');
+  assert.deepEqual(applyProfileLikeOverrides([], overrides).map((item) => item.id), ['second', 'first']);
+
+  overrides = patchProfileLikeOverrides(overrides, first, 'like');
+  assert.deepEqual(applyProfileLikeOverrides([], overrides).map((item) => item.id), ['first', 'second']);
+});
+
+test('acknowledgements remove only the optimistic state they confirm', () => {
+  const target = repository('target');
+  const liked = patchProfileLikeOverrides(undefined, target, 'like');
+  const unliked = patchProfileLikeOverrides(liked, target, 'unlike');
+
+  const afterOldLike = settleProfileLikeOverrides(unliked, [{ repo_id: 'target', action: 'like' }]);
+  assert.equal(afterOldLike?.target.liked, false);
+  assert.deepEqual(
+    settleProfileLikeOverrides(afterOldLike, [{ repo_id: 'target', action: 'unlike' }]),
+    {},
+  );
 });

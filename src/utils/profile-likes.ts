@@ -3,6 +3,7 @@ import type { RepositoryDetail } from '@/models/repository';
 
 export type ProfileLikeOverride = {
   liked: boolean;
+  order: number;
   repository: RepositoryDetail;
 };
 
@@ -51,8 +52,29 @@ export function patchProfileLikeOverrides(
 
   return {
     ...current,
-    [repository.id]: { liked, repository: optimisticRepository },
+    [repository.id]: {
+      liked,
+      order: Math.max(0, ...Object.values(current ?? {}).map((override) => override.order)) + 1,
+      repository: optimisticRepository,
+    },
   };
+}
+
+export function settleProfileLikeOverrides(
+  current: ProfileLikeOverrides | undefined,
+  acknowledgedActivities: readonly Pick<{ repo_id: string; action: FeedbackAction }, 'repo_id' | 'action'>[],
+): ProfileLikeOverrides | undefined {
+  if (!current) return current;
+  const next = { ...current };
+
+  for (const activity of acknowledgedActivities) {
+    if (!['like', 'unlike', 'dislike'].includes(activity.action)) continue;
+    const override = next[activity.repo_id];
+    const acknowledgedLiked = activity.action === 'like';
+    if (override?.liked === acknowledgedLiked) delete next[activity.repo_id];
+  }
+
+  return next;
 }
 
 export function applyProfileLikeOverrides(
@@ -64,7 +86,7 @@ export function applyProfileLikeOverrides(
   const merged = new Map(repositories.map((repository) => [repository.id, repository]));
   const optimisticLikes: RepositoryDetail[] = [];
 
-  for (const override of Object.values(overrides)) {
+  for (const override of Object.values(overrides).sort((left, right) => right.order - left.order)) {
     if (!override.liked) {
       merged.delete(override.repository.id);
       continue;

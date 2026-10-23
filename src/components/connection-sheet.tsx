@@ -106,7 +106,10 @@ export function ConnectionSheet({
       }),
     ]).start(({ finished }) => {
       closingRef.current = false;
-      if (!finished) return;
+      if (!finished) {
+        afterCloseRef.current = null;
+        return;
+      }
       const afterClose = afterCloseRef.current;
       afterCloseRef.current = null;
       onClose();
