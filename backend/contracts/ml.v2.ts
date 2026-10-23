@@ -10,7 +10,7 @@ export const ML_DESCRIPTION_FALLBACK_MODEL_VERSION = 'repository-description-fal
 
 export type MlRecommendationRequest = Schemas['RecommendationRequest'] & { exclude_repo_ids: string[] };
 export type MlRecommendationItem = Schemas['RecommendationItem'];
-export type MlRecommendationResponse = Schemas['RecommendationResponse'];
+export type MlRecommendationResponse = Schemas['RecommendationResponse'] | Schemas['CapturedRecommendationResponse'] | Schemas['UnscoredEmptyRecommendationResponse'];
 // The persisted decimal version is kept exact across JS and Python. Both wire
 // representations are accepted by the generated provider schema.
 export type MlFeedbackEvent = Omit<Schemas['FeedbackEvent'], 'feedback_version'> & { feedback_version: string };

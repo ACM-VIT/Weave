@@ -19,6 +19,12 @@ import {
   PersonalizedFeedUnavailableError,
 } from '../../services/feedV2Service.js';
 
+function ordinaryFeedVersion(value: string | number): number {
+  assert.equal(typeof value, 'number', 'This fixture implements only ordinary recommendation responses');
+  assert.ok(Number.isSafeInteger(value));
+  return value as number;
+}
+
 const repo: RepositoryProjection = {
   repo_id: '00000000-0000-4000-8000-000000000001', full_name: 'owner/repo', description: null,
   owner_user_id: null, owner_profile_id: null, owner_profile_claimed_user_id: null,
@@ -504,7 +510,7 @@ test('validated empty ML success ends continuation without opening the circuit',
       calls++;
       response.writeHead(200, { 'content-type': 'application/json' });
       response.end(JSON.stringify({ schema_version: 2, generation_id: input.generation_id,
-        user_id: input.user_id, feed_version: input.feed_version,
+        user_id: input.user_id, feed_version: ordinaryFeedVersion(input.feed_version),
         model_version: 'test-heavy', embedding_version: 'test-embedding', items: [],
         embedding_versions: [], served_ranker: 'heavy', heavy_ranker_selected: true, ranker_applied: true,
         fallback_code: null, fallback_reason: null, retrieval_mode: 'personalized',
@@ -727,7 +733,7 @@ for (const publishBeforeRecoveryCommit of [false, true]) {
       assert.deepEqual(input.exclude_repo_ids, [], 'the running generation predates recovery delivery');
       await modelGate;
       return { schema_version: 2, generation_id: input.generation_id, user_id: input.user_id,
-        feed_version: input.feed_version, model_version: 'new', embedding_version: 'test',
+        feed_version: ordinaryFeedVersion(input.feed_version), model_version: 'new', embedding_version: 'test',
         embedding_versions: ['test'], served_ranker: 'hybrid', heavy_ranker_selected: false, ranker_applied: false,
         fallback_code: null, fallback_reason: null, retrieval_mode: 'hybrid',
         context_status: { cold_start_applied: false, locale: 'not_provided' },
