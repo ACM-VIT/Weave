@@ -172,7 +172,7 @@ test('transactional persistence seeds persona topics, versions once, and enqueue
   const job = store.jobs.get(`onboard:${USER_ID}:2`);
   assert.ok(job);
   assert.deepEqual(job.profile.interests, ['react', 'graphql']);
-  assert.deepEqual(job.profile.skills, ['web', 'backend']);
+  assert.deepEqual(job.profile.skills, ['Web / Frontend Frameworks', 'Backend / APIs']);
   assert.deepEqual(job.profile.tech_stack, ['typescript']);
 
   const second = await persistGitHubPersona(store, USER_ID, source([]), persona);

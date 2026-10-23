@@ -86,6 +86,8 @@ export class OutboxService {
     delivered: number;
     dead: number;
     superseded: number;
+    retrying: number;
+    retry_attempts: number;
     oldest_pending_seconds: number;
   }> {
     const rows = await sqlClient`
@@ -95,12 +97,16 @@ export class OutboxService {
         count(*) FILTER (WHERE status='delivered')::int AS delivered,
         count(*) FILTER (WHERE status='dead')::int AS dead,
         count(*) FILTER (WHERE status='superseded')::int AS superseded,
+        count(*) FILTER (WHERE (status='pending' AND attempts>0)
+          OR (status='claimed' AND attempts>1))::int AS retrying,
+        COALESCE(sum(GREATEST(attempts-1,0)),0)::bigint AS retry_attempts,
         COALESCE(EXTRACT(EPOCH FROM now()-min(created_at) FILTER (WHERE status='pending')),0)::int AS oldest_pending_seconds
       FROM telemetry.ml_outbox
     `;
     return {
       pending: Number(rows[0].pending), claimed: Number(rows[0].claimed), delivered: Number(rows[0].delivered),
       dead: Number(rows[0].dead), superseded: Number(rows[0].superseded),
+      retrying: Number(rows[0].retrying), retry_attempts: Number(rows[0].retry_attempts),
       oldest_pending_seconds: Number(rows[0].oldest_pending_seconds),
     };
   }
@@ -207,7 +213,51 @@ export class OutboxService {
     return rows[0]?.delay_ms == null ? undefined : Math.max(0, Number(rows[0].delay_ms));
   }
 
+  /**
+   * Last local admission before onboarding transport. This transaction shares
+   * user -> outbox lock order with profile/consent changes and ends before I/O.
+   * Admission preceding revocation is already in flight: it cannot be unsent.
+   * Versioned ML application and current-version readiness remain authoritative.
+   */
+  async prepareOnboardingDelivery(row: OutboxRow): Promise<boolean> {
+    if (row.job_type !== 'onboard') return false;
+    return sqlClient.begin(async tx => {
+      const [profile] = await tx`SELECT profile_version,status FROM app.users
+        WHERE user_id=${row.aggregate_id}::uuid FOR UPDATE`;
+      const [claimed] = await tx`SELECT payload FROM telemetry.ml_outbox
+        WHERE outbox_id=${row.outbox_id}::uuid AND aggregate_id=${row.aggregate_id}::uuid
+          AND job_type='onboard' AND status='claimed' AND claim_token=${row.claim_token}::uuid
+        FOR UPDATE`;
+      if (!claimed) return false;
+      const payload = claimed.payload as Record<string, unknown>;
+      if (profile?.status === 'active'
+        && payload.user_id === row.aggregate_id && row.payload.user_id === row.aggregate_id
+        && String(payload.profile_version) === String(profile.profile_version)
+        && String(row.payload.profile_version) === String(profile.profile_version)) return true;
+      await tx`UPDATE telemetry.ml_outbox SET status='superseded',claim_token=NULL,claimed_at=NULL,
+          last_error='Onboarding context no longer matches the current active profile.'
+        WHERE outbox_id=${row.outbox_id}::uuid AND status='claimed'
+          AND claim_token=${row.claim_token}::uuid`;
+      return false;
+    });
+  }
+
   async markDelivered(row: OutboxRow): Promise<boolean> {
+    if (row.job_type === 'onboard') {
+      return sqlClient.begin(async tx => {
+        // Revocation/provisioning lock the user before touching onboarding jobs.
+        // The delivered trigger inserts a prewarm row whose FK also locks this
+        // user. Acquire that lock first, before the outbox UPDATE owns its row.
+        await tx`SELECT user_id FROM app.users WHERE user_id=${row.aggregate_id}::uuid FOR UPDATE`;
+        const delivered = await tx`
+          UPDATE telemetry.ml_outbox SET status='delivered',delivered_at=now(),claim_token=NULL,claimed_at=NULL,last_error=NULL
+          WHERE outbox_id=${row.outbox_id}::uuid AND claim_token=${row.claim_token}::uuid
+            AND status='claimed' AND job_type='onboard' AND aggregate_id=${row.aggregate_id}::uuid
+          RETURNING outbox_id
+        `;
+        return delivered.length === 1;
+      });
+    }
     const delivered = await sqlClient`
       UPDATE telemetry.ml_outbox SET status='delivered',delivered_at=now(),claim_token=NULL,claimed_at=NULL,last_error=NULL
       WHERE outbox_id=${row.outbox_id}::uuid AND claim_token=${row.claim_token}::uuid

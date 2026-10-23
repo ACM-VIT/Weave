@@ -19,6 +19,8 @@ import { normalizeUsername } from '../utils/username.js';
 import { isValidUuid } from '../utils/validators.js';
 import { sendControllerError, sendError, sendSuccess } from '../utils/response.js';
 import { readProductPage, productPageResult, type ProductPage, type ProductPageScope } from '../utils/productKeyset.js';
+import { validateOnboardingTaxonomy } from '../services/onboardingTaxonomy.js';
+import { normalizeOnboardingTopic } from '../contracts/onboardingTaxonomy.js';
 
 // Bind cursor timestamps as text before SQL casts: the driver's timestamptz
 // serializer passes strings through Date and would discard PostgreSQL microseconds.
@@ -85,7 +87,7 @@ export async function getMe(req: AuthRequest, res: Response): Promise<void> {
   const rows = await sqlClient`
     SELECT u.user_id,u.username,u.full_name,u.date_of_birth,u.bio,u.github_id,u.github_handle,u.avatar_url,u.status,
       u.onboarding_completed,
-      u.interests,u.skills,u.tech_stack,u.profile_version,u.created_at,u.updated_at,
+      u.interests,u.skills,u.tech_stack,u.onboarding_taxonomy,u.profile_version,u.created_at,u.updated_at,
       s.followers_count,s.following_count,s.likes_given_count,
       s.saved_repos_count,f.feed_version,f.feedback_version,
       COALESCE((SELECT json_agg(t.slug ORDER BY t.slug) FROM app.user_topics ut JOIN app.topics t USING(topic_id)
@@ -194,8 +196,8 @@ export async function completeOnboarding(req: AuthRequest, res: Response): Promi
   const bio = req.body?.bio === undefined ? null : text(req.body.bio, 2_000);
   const structured = ['interests', 'skills', 'tech_stack'].some((key) => Object.hasOwn(req.body ?? {}, key));
   const legacyTopics = structured ? [] : slugArray(req.body?.topics);
-  const interests = structured ? slugArray(req.body?.interests ?? []) : legacyTopics;
-  const skills = structured ? slugArray(req.body?.skills ?? []) : [];
+  let interests = structured ? slugArray(req.body?.interests ?? []) : legacyTopics;
+  let skills = structured ? slugArray(req.body?.skills ?? []) : [];
   const techStack = structured ? slugArray(req.body?.tech_stack ?? []) : [];
   if (bio === undefined) return sendError(res, 400, 'Bio can contain at most 2000 characters.');
   if (interests === null || skills === null || techStack === null) {
@@ -204,7 +206,15 @@ export async function completeOnboarding(req: AuthRequest, res: Response): Promi
   if (interests.length + skills.length + techStack.length < 1) {
     return sendError(res, 400, 'Choose at least one interest, skill, or technology.');
   }
-  const uniqueTopics = [...new Set([...interests, ...skills, ...techStack])];
+  let taxonomy;
+  try { taxonomy = validateOnboardingTaxonomy(req.body?.taxonomy_selections); }
+  catch (error) { sendControllerError(res, error); return; }
+  if (taxonomy) {
+    interests = taxonomy.interests.map(entry => entry.label);
+    skills = taxonomy.skills.map(entry => entry.label);
+  }
+  if (!interests.length && !skills.length && !techStack.length) return sendError(res, 400, 'Choose at least one interest, skill, or technology.');
+  const uniqueTopics = [...new Set([...interests, ...skills, ...techStack].map(normalizeOnboardingTopic))];
   if (uniqueTopics.length > 100) return sendError(res, 400, 'The combined onboarding profile may contain at most 100 unique slugs.');
   try {
     const result = await sqlClient.begin(async (tx) => {
@@ -223,7 +233,7 @@ export async function completeOnboarding(req: AuthRequest, res: Response): Promi
       }
       const updated = await tx`UPDATE app.users SET bio=COALESCE(${bio},bio),
         interests=${JSON.stringify(interests)}::jsonb,skills=${JSON.stringify(skills)}::jsonb,
-        tech_stack=${JSON.stringify(techStack)}::jsonb,onboarding_completed=true,
+        tech_stack=${JSON.stringify(techStack)}::jsonb,onboarding_taxonomy=${JSON.stringify(taxonomy ?? {})}::jsonb,onboarding_completed=true,
         profile_version=profile_version+1,updated_at=now()
         WHERE user_id=${id}::uuid RETURNING profile_version,username,full_name,bio,github_handle,avatar_url`;
       if (!updated[0]) throw Object.assign(new Error('User profile not found.'), { statusCode: 404 });
