@@ -29,15 +29,15 @@ function invariantConfiguration(value: unknown): Row {
   const configuration = structuredClone(object(value));
   if (configuration.runtime !== undefined) {
     const runtime = object(configuration.runtime);
-    // These two fields are measured observations captured after the run. Keep
-    // executor admission settings in the comparison; retain observations raw.
+    // Remove only known measured observations. Preserve every other field so
+    // newly added executor settings cannot silently compare as equivalent.
     delete runtime.shape_calls_by_profile;
     if (runtime.retrieval_executor !== undefined) {
       const executor = object(runtime.retrieval_executor);
       if (!Number.isInteger(executor.workers) || Number(executor.workers) < 1
         || !Number.isInteger(executor.capacity) || Number(executor.capacity) < 1)
         return invalid();
-      runtime.retrieval_executor = { workers: executor.workers, capacity: executor.capacity };
+      for (const key of ['outstanding', 'peak_running', 'running', 'stages', 'waiting_submitters']) delete executor[key];
     }
   }
   return configuration;

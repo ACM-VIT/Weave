@@ -7,6 +7,7 @@ import test from 'node:test';
 import { compareColdStartRuns } from '../../services/coldStartComparison.js';
 import { exportColdStartContexts } from '../../services/coldStartContextExport.js';
 import { coldStartComparisonInput as input } from '../fixtures/coldStartComparisonInput.js';
+const stageOrders = { retrieval: [[10, 11], [10, 12], [12, 11]], ranking: [[11, 10], [10, 11], [12, 10]], assembly: [[12, 10], [12, 11], [11, 10]] };
 const hash = '1'.repeat(64), otherHash = '2'.repeat(64), repo = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
 // Contract fixtures test report binding/arithmetic, not model execution/quality.
 function evidence() {
@@ -18,8 +19,8 @@ function evidence() {
         source_sha256: { 'actual.py': hash }, code_commit: 'a'.repeat(40), source_tree_dirty: false, as_of: input.cutoff, seed: 'fixed-source-fixture',
         configuration: { limit: 3, runtime: { retrieval_executor: { workers: 2, capacity: 4, running: 0, stages: {} }, shape_calls_by_profile: { fixture: 1 } } }, libraries: { qdrant_client: 'fixture' }, execution_scope: 'offline-local-qdrant-exact-cpu',
         run: { model_sha256: hash, scaler_sha256: hash, manifest_sha256: hash, code_commit: 'a'.repeat(40), timing_kind: 'measured', outputs: [{
-              profile_id: input.profile_id, latency_ms: { retrieval: 1, ranking: 2, assembly: 3 }, stages: Object.fromEntries(['retrieval', 'ranking', 'assembly'].map(stage => [stage,
-                [10 + index, 10 + (index + 1) % 3].map((id, position) => ({ repo_id: repo(id), score: 0.8 - position / 10, source: 'semantic' }))]))
+              profile_id: input.profile_id, latency_ms: { retrieval: 1, ranking: 2, assembly: 3 }, stages: Object.fromEntries((['retrieval', 'ranking', 'assembly'] as const).map(stage => [stage,
+                stageOrders[stage][index].map((id, position) => ({ repo_id: repo(id), score: 0.8 - position / 10, source: 'semantic' }))]))
             }] }
       } })), };
 }
@@ -29,9 +30,14 @@ test('three actual-input conditions retain canonical context/provenance and comp
   assert.equal(report.production_qualified, false);
   assert.equal(report.source_kind, 'controlled_fixture');
   assert.deepEqual(report.results.map(row => row.variant), ['onboarding_only', 'github_only', 'combined']);
-  assert.equal(report.pairwise[0].stages.assembly.shared_top_k, 1);
-  assert.equal(report.pairwise[0].stages.assembly.jaccard, 1 / 3);
-  assert.equal(report.pairwise[0].stages.assembly.same_rank_positions, 0);
+  assert.deepEqual(report.pairwise[0].stages, {
+    retrieval: { shared_top_k: 1, union_top_k: 3, jaccard: 1 / 3, same_rank_positions: 1 },
+    ranking: { shared_top_k: 2, union_top_k: 2, jaccard: 1, same_rank_positions: 0 },
+    assembly: { shared_top_k: 1, union_top_k: 3, jaccard: 1 / 3, same_rank_positions: 1 },
+  });
+  for (const stage of ['retrieval', 'ranking', 'assembly'] as const) {
+    assert.deepEqual(report.results[0].ranked[stage].map(row => row.repo_id), stageOrders[stage][0].map(repo));
+  }
   assert.equal(report.results[0].provenance.github_sources, null);
   assert.match(report.evidence_limit, /not real-user/);
 });
@@ -79,9 +85,18 @@ for (const mutation of ['context', 'corpus', 'artifact', 'source', 'time', 'seed
     assert.throws(() => compareColdStartRuns(input, value), /incomparable/);
   });
 }
+test('unknown executor settings remain part of the invariant configuration', () => {
+  const value = evidence();
+  for (const condition of value.conditions) Object.assign(condition.execution.configuration.runtime.retrieval_executor, { admission_policy: 'bounded' });
+  assert.equal(compareColdStartRuns(input, value).results.length, 3);
+  Object.assign(value.conditions[1].execution.configuration.runtime.retrieval_executor, { admission_policy: 'unbounded' });
+  assert.throws(() => compareColdStartRuns(input, value), /incomparable/);
+});
 test('measured executor counters vary without changing fixed worker/capacity settings', () => {
   const value = evidence();
-  value.conditions[1].execution.configuration.runtime.retrieval_executor.running = 1;
+  Object.assign(value.conditions[1].execution.configuration.runtime.retrieval_executor, {
+    outstanding: 2, peak_running: 3, running: 1, stages: { semantic: { calls_total: 2 } }, waiting_submitters: 1,
+  });
   value.conditions[1].execution.configuration.runtime.shape_calls_by_profile.fixture = 2;
   assert.equal(compareColdStartRuns(input, value).results.length, 3);
 });
