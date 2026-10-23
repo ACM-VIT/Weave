@@ -175,15 +175,27 @@ export class FeedGenerationService {
         if (excludedIds.has(item.repo_id) || seen.has(item.repo_id)) return false;
         seen.add(item.repo_id); return true;
       });
-      const projections = await this.persistence.listActiveRepositoryIdentities(items.map((item) => item.repo_id));
-      const summaries = new Map(projections.map((repo) => [repo.repo_id, repo.summary_id]));
-      const activeRepoIds = new Set(projections.map((repo) => repo.repo_id));
-      const usableItems = items.filter((item) => activeRepoIds.has(item.repo_id));
-      const invalidCount = items.length - usableItems.length;
+      // Canonical failures are provider diagnostics, distinct from current
+      // user preferences: the eligibility query intentionally rejects both.
+      const projections = await this.persistence.listActiveRepositoryIdentities(items.map(item => item.repo_id));
+      const summaries = new Map(projections.map(repo => [repo.repo_id, repo.summary_id]));
+      const activeRepoIds = new Set(projections.map(repo => repo.repo_id));
+      const canonicalItems = items.filter(item => activeRepoIds.has(item.repo_id));
+      const invalidCount = items.length - canonicalItems.length;
       for (let index = 0; index < invalidCount; index++) {
         incrementMetric('feed_v2_invalid_repository_recommendations_total');
       }
-      if (items.length > 0 && usableItems.length === 0) throw new Error('ML returned no active canonical repositories.');
+      if (items.length > 0 && canonicalItems.length === 0) throw new Error('ML returned no active canonical repositories.');
+      const eligible = new Set(await this.persistence.listPreferenceEligibleRepositoryIds(userId, canonicalItems.map(item => item.repo_id)));
+      const usableItems = canonicalItems.filter(item => eligible.has(item.repo_id));
+      if (canonicalItems.length > 0 && usableItems.length === 0) {
+        await this.persistence.recordGenerationAttempt?.({
+          generation_id: generationId, user_id: userId, feed_version: feedVersion, mode,
+          status: 'coalesced', latency_ms: Date.now() - started, result_count: 0,
+          error_code: 'FEED_PREFERENCE_FILTERED',
+        });
+        return { status: 'capacity', feedVersion };
+      }
       // Profile updates advance the feed namespace in their source transaction;
       // a racing old builder can publish only under the obsolete namespace.
       if (leaseLost || !await current()) return { status: 'stale', feedVersion };

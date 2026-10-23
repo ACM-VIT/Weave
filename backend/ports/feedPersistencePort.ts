@@ -25,7 +25,13 @@ export interface FeedReconciliationPersistencePort {
 
 export interface FeedGenerationContext { feedVersion: bigint; profileVersion: bigint; delivered: boolean }
 
+export class FeedPreferenceChangedError extends Error {
+  constructor() { super('Current repository preferences changed; retry the feed request.'); }
+}
+
 export interface FeedPersistencePort {
+  /** Current explicit negatives are independent of bounded exposure exclusions. */
+  listPreferenceEligibleRepositoryIds(userId: string, repoIds: string[]): Promise<string[]>;
   getGenerationContext?(userId: string): Promise<FeedGenerationContext | null>;
   recordMlProfileDelivered?(userId: string, profileVersion: bigint): Promise<boolean>;
   hasServedFeed?(userId: string, feedVersion: bigint): Promise<boolean>;
