@@ -31,6 +31,9 @@ test('unchanged and stats-only observations preserve content/topic tuples and de
         await sqlClient`DELETE FROM telemetry.ml_outbox WHERE aggregate_id=${repoId}::uuid`;
         await sqlClient`DELETE FROM app.repos WHERE repo_id=${repoId}::uuid`;
       }
+      await sqlClient`DELETE FROM app.topics topic
+        WHERE topic.slug::text=ANY(${[...first.topics!, `${suffix}-new-topic`]}::text[])
+          AND NOT EXISTS(SELECT 1 FROM app.repo_topics membership WHERE membership.topic_id=topic.topic_id)`;
       await sqlClient`DELETE FROM app.social_profiles WHERE provider='github'
         AND provider_subject=${first.owner_github_id} AND claimed_by_user_id IS NULL`;
     } finally { await sqlClient.end({ timeout: 1 }); }
@@ -67,6 +70,10 @@ test('unchanged and stats-only observations preserve content/topic tuples and de
   assert.deepEqual(observed.content, original.content);
   assert.deepEqual(observed.topics, original.topics);
   assert.equal(observed.snapshots, original.snapshots + 1);
+  const [savedStats] = await sqlClient`SELECT star_count FROM app.repo_stat_snapshots
+    WHERE repo_id=${repoId!}::uuid AND observed_at=${stats.observed_at}::timestamptz`;
+  assert.ok(savedStats, 'the exact observation timestamp must persist');
+  assert.equal(Number(savedStats.star_count), stats.star_count);
   assert.equal(observed.counts.indexes, original.counts.indexes);
   assert.equal(observed.counts.refreshes, Number(original.counts.refreshes) + 1);
   await persistence.bulkUpsert([stats]);
