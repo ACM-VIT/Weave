@@ -12,6 +12,7 @@ interface ScopedFeed { scope: FeedIntentScope; service: FeedService; active: num
 export class IntentFeedGateway {
   private readonly slots = new Map<string, ScopedFeed>();
   private stopping = false;
+  private readonly retiring = new Set<Promise<void>>();
   private readonly inFlight = new Set<Promise<FeedResponseV2>>();
   private readonly cursor: FeedCursorCodec;
   constructor(private readonly legacy: FeedService,
@@ -35,6 +36,22 @@ export class IntentFeedGateway {
     return [...this.slots.values()].find(slot => this.scopeKey(slot.scope) === key
       && BigInt(slot.scope.applied.valid_until_ms) > BigInt(Date.now()));
   }
+  private retire(key:string,slot:ScopedFeed):Promise<void> {
+    if(this.slots.get(key)!==slot||slot.active!==0)return Promise.resolve();
+    this.slots.delete(key);
+    const drain=Promise.resolve().then(()=>slot.service.stop()).finally(()=>this.retiring.delete(drain));
+    this.retiring.add(drain);
+    return drain;
+  }
+  private async makeRoom():Promise<void> {
+    while(this.slots.size+this.retiring.size>=128){
+      const idle=[...this.slots].find(([,slot])=>slot.active===0);
+      if(idle)await this.retire(...idle);
+      else if(this.retiring.size)await Promise.race(this.retiring);
+      else throw new ModelOperationError('MODEL_FEED_CAPACITY',503);
+      if(this.stopping)throw new ModelOperationError();
+    }
+  }
   private async prepare(userId: string, request: FeedRequestV2, signal?: AbortSignal): Promise<FeedResponseV2> {
     if (this.stopping) throw new ModelOperationError();
     // Historical authenticated replay precedes current epoch/expiry admission.
@@ -46,10 +63,9 @@ export class IntentFeedGateway {
       throw error;
     }
     if (!snapshot) return this.legacy.getFeed(userId, request, signal);
-    for (const [key, slot] of this.slots) {
+    for (const [key, slot] of [...this.slots]) {
       if (slot.active === 0 && BigInt(slot.scope.applied.valid_until_ms) <= BigInt(Date.now())) {
-        this.slots.delete(key);
-        await slot.service.stop();
+        await this.retire(key,slot);
       }
     }
     const base = this.scopeKey(snapshot);
@@ -67,10 +83,14 @@ export class IntentFeedGateway {
     slot = signedScope ? this.slots.get(signedScope) : this.currentSlot(this.scopeKey(scope));
     if (slot && (slot.scope.applied.head !== scope.applied.head || slot.scope.applied.state_sha256 !== scope.applied.state_sha256
       || BigInt(slot.scope.applied.valid_until_ms) <= BigInt(Date.now()))) throw new StaleFeedCursorError();
-    if (!slot) {
-      if (this.slots.size >= 128) throw new ModelOperationError('MODEL_FEED_CAPACITY', 503);
-      slot = { scope, service: this.create(scope), active: 0 };
-      this.slots.set(scope.queueScope, slot);
+    while (!slot) {
+      await this.makeRoom();
+      if(this.stopping)throw new ModelOperationError();
+      // A peer may restore this same durable scope while an idle service drains.
+      slot=this.slots.get(scope.queueScope);
+      if(!slot&&this.slots.size+this.retiring.size<128){
+        slot = { scope, service: this.create(scope), active: 0 };this.slots.set(scope.queueScope, slot);
+      }
     }
     slot.active++;
     try { return await slot.service.getFeed(userId, request, signal); }
@@ -79,7 +99,7 @@ export class IntentFeedGateway {
   async stop(): Promise<void> {
     this.stopping = true;
     await Promise.allSettled([...this.inFlight]);
-    await Promise.allSettled([this.legacy.stop(), ...[...this.slots.values()].map(slot => slot.service.stop())]);
+    await Promise.allSettled([this.legacy.stop(), ...this.retiring, ...[...this.slots.values()].map(slot => slot.service.stop())]);
     this.slots.clear();
   }
 }
