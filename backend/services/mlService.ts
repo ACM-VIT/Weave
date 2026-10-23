@@ -238,6 +238,45 @@ export function validateRepositoryCardSummary(
   }
 }
 
+/** Bound decoded transport bytes before UTF-8 decoding or JSON parsing. */
+async function readBoundedResponse(response: Response, maximum: number): Promise<{ text: string; oversized: boolean }> {
+  if (!response.body) return { text: '', oversized: false };
+  const reader = response.body.getReader();
+  let buffer = Buffer.alloc(0);
+  let size = 0;
+  let complete = false;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) {
+        complete = true;
+        return { text: new TextDecoder().decode(buffer.subarray(0, size)), oversized: false };
+      }
+      const retained = Math.min(value.byteLength, maximum - size);
+      const required = size + retained;
+      if (required > buffer.length) {
+        // Grow with actual work, without retaining one allocation per network
+        // chunk or a large backing buffer from an oversized chunk.
+        const grown = Buffer.allocUnsafe(Math.min(maximum, Math.max(required, buffer.length * 2, 16_384)));
+        buffer.copy(grown, 0, 0, size);
+        buffer = grown;
+      }
+      buffer.set(value.subarray(0, retained), size);
+      size = required;
+      if (retained < value.byteLength) {
+        // Diagnostics need only a small prefix. Streaming decode omits a final
+        // split UTF-8 sequence rather than inserting a replacement character.
+        return { text: new TextDecoder().decode(buffer.subarray(0, Math.min(size, 4_000)), { stream: true }), oversized: true };
+      }
+    }
+  } finally {
+    // Cancellation is initiated synchronously; do not wait for a remote peer's
+    // cancellation acknowledgement or convert overflow into deadline abort.
+    if (!complete) void reader.cancel().catch(() => undefined);
+    reader.releaseLock();
+  }
+}
+
 export class MlV2Client implements RecommendationPort, OutboxTransportPort {
   private consecutiveGenerateFailures = 0;
   private circuitState: RecommendationCircuitState = 'closed';
@@ -295,8 +334,7 @@ export class MlV2Client implements RecommendationPort, OutboxTransportPort {
         body: JSON.stringify(payload),
         signal: controller.signal,
       });
-      const text = await response.text();
-      const oversized = Buffer.byteLength(text) > this.config.maxResponseBytes;
+      const { text, oversized } = await readBoundedResponse(response, this.config.maxResponseBytes);
       if (oversized && response.ok) {
         if (responseFormat === 'required-json') {
           if (path === '/api/v2/recommendations/generate') {
@@ -535,7 +573,8 @@ export class MlV2Client implements RecommendationPort, OutboxTransportPort {
         },
         signal: controller.signal,
       });
-      const text = await response.text();
+      const { text, oversized } = await readBoundedResponse(response, this.config.maxResponseBytes);
+      if (oversized) throw new Error('ML response exceeded size limit.');
       let body: unknown = null;
       try { body = text ? JSON.parse(text) : null; } catch { body = text; }
       outcome = httpOutcome(response.status);
