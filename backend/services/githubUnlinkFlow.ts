@@ -14,12 +14,14 @@ const fail = (message: string, statusCode = 409, unlinkReason?: string) => Objec
 export interface GithubUnlinkOwner { userId: string; githubId: string }
 export interface GithubUnlinkIdentity { identityId: string; provider: string; subject: string | null }
 export interface GithubUnlinkUser { userId: string; identities: GithubUnlinkIdentity[] }
+export interface GithubUnlinkOperation extends GithubUnlinkOwner { operationId: string; status: string; providerIdentityId: string | null }
 export interface GithubUnlinkPersistence {
   owner(userId: string): Promise<GithubUnlinkOwner>;
-  prepare(owner: GithubUnlinkOwner, operationId: string): Promise<void>;
+  prepare(owner: GithubUnlinkOwner, operationId: string, providerIdentityId: string): Promise<string>;
+  supersede(owner: GithubUnlinkOwner, operationId: string): Promise<boolean>;
   complete(owner: GithubUnlinkOwner, operationId: string): Promise<'done' | 'superseded'>;
   refused(owner: GithubUnlinkOwner, operationId: string): Promise<void>;
-  operation(userId: string): Promise<(GithubUnlinkOwner & { operationId: string; status: string }) | null>;
+  operation(userId: string): Promise<GithubUnlinkOperation | null>;
 }
 export interface GithubUnlinkProvider {
   user(accessToken: string): Promise<GithubUnlinkUser>;
@@ -70,7 +72,7 @@ export class GithubUnlinkFlow {
   private readonly cipherKey: Buffer;
   constructor(private readonly options: {
     redis: GithubUnlinkRedis; clientFactory: OAuthSupabaseClientFactory; persistence: GithubUnlinkPersistence;
-    provider: GithubUnlinkProvider; revokeImport: (userId: string) => Promise<unknown>; secret: string; now?: () => number;
+    provider: GithubUnlinkProvider; revokeImport: (userId: string, operationId: string) => Promise<unknown>; secret: string; now?: () => number;
   }) {
     if (!options.secret) throw new Error('The backend authentication secret is required for unlink proofs.');
     this.cipherKey = Buffer.from(crypto.hkdfSync('sha256', options.secret, PURPOSE, 'supabase-session-capsule', 32));
@@ -80,11 +82,11 @@ export class GithubUnlinkFlow {
   private coordinator(store: OAuthAttemptStore) { return new OAuthPkceCoordinator(store, this.options.clientFactory, { attemptTtlSeconds: TTL, now: () => this.now() }); }
   private identity(user: GithubUnlinkUser, owner: GithubUnlinkOwner, requireAlternative: boolean) {
     if (user.userId !== owner.userId) throw fail('Reauthenticate the same Weave account.');
-    const identities = new Map(user.identities.filter(identity => isValidUuid(identity.identityId)).map(identity => [identity.identityId, identity]));
+    const identities = new Map(user.identities.filter(identity => isValidUuid(identity.identityId)).map(identity => [identity.identityId.toLowerCase(), identity]));
     if (requireAlternative && identities.size < 2) throw fail('GitHub is your only login identity. Add another login method before disconnecting it.', 409, 'last_identity');
     const github = [...identities.values()].find(identity => identity.provider === 'github' && identity.subject === owner.githubId);
     if (!github || !isValidUuid(github.identityId)) throw fail('The current verified GitHub identity does not match this authorization.');
-    return github;
+    return { ...github, identityId: github.identityId.toLowerCase() };
   }
   async start(userId: string, clientRedirect: string, callback: URL, challenge: string) {
     const owner = await this.options.persistence.owner(userId);
@@ -155,27 +157,44 @@ export class GithubUnlinkFlow {
     try { freshUser = await this.options.provider.user(proof.accessToken); }
     catch { throw fail('The recent provider session could not be verified. Reauthenticate again.', 409, 'reauthentication_required'); }
     const identity = this.identity(freshUser, owner, true);
-    const operationId = crypto.randomUUID();
-    await this.options.persistence.prepare(owner, operationId);
+    const operationId = await this.options.persistence.prepare(owner, crypto.randomUUID(), identity.identityId);
     // Persist the fence before revocation, so concurrent previews cannot restore consent.
-    try { await this.options.revokeImport(userId); }
+    try { await this.options.revokeImport(userId, operationId); }
     catch {
-      // No provider mutation has been admitted. Retire only this exact intent;
-      // a concurrent reconciliation or replacement remains fenced by its CAS.
-      await this.options.persistence.refused(owner, operationId);
-      throw fail('Activity preferences could not be revoked. No disconnect request was sent. Try again.', 503);
+      // Another fresh proof may be resuming this same exact target. Never
+      // terminalize shared work because only this attempt failed revocation.
+      return { status: 'pending', retryable: true, operation_id: operationId, message: 'Preference cleanup needs verification. Check disconnect status or reconfirm to retry.' };
     }
     try { await this.options.provider.unlink(proof.accessToken, identity.identityId); }
     catch (error) {
-      const status = error && typeof error === 'object' && 'status' in error ? Number(error.status) : 0;
-      if (status >= 400 && status < 500) {
-        await this.options.persistence.refused(owner, operationId);
-        return { status: 'refused', operation_id: operationId, message: 'Activity import was revoked, but the provider refused to disconnect GitHub. The login remains linked.' };
-      }
-      return { status: 'pending', operation_id: operationId, message: 'The provider outcome needs verification. Check unlink status before retrying.' };
+      // A duplicate exact-UUID DELETE may lose to another successful attempt.
+      // Even a 4xx cannot terminalize the shared operation. Status verifies it.
+      return { status: 'pending', retryable: true, operation_id: operationId, message: 'The provider outcome needs verification. Check status or reconfirm to retry.' };
     }
-    try { return { status: await this.options.persistence.complete(owner, operationId), operation_id: operationId }; }
-    catch { return { status: 'pending', operation_id: operationId, message: 'GitHub accepted the unlink. Product cleanup is pending verification.' }; }
+    try {
+      return await this.reconcilePrepared({ ...owner, operationId, status: 'prepared', providerIdentityId: identity.identityId }, true);
+    } catch { return { status: 'pending', retryable: true, operation_id: operationId, message: 'GitHub accepted the unlink. Product cleanup is pending verification.' }; }
+  }
+  private async reconcilePrepared(operation: GithubUnlinkOperation, alreadyRevoked = false) {
+    const user = await this.options.provider.inspect(operation.userId);
+    if (user.userId !== operation.userId) throw fail('Provider verification returned the wrong account.', 503);
+    const github = user.identities.filter(identity => identity.provider === 'github');
+    if (!operation.providerIdentityId && github.length) {
+      return { status: 'pending', retryable: false, operation_id: operation.operationId,
+        message: 'This older disconnect has no verified credential target. Its provider outcome must be verified before retrying.' };
+    }
+    if (github.some(identity => identity.identityId.toLowerCase() === operation.providerIdentityId)) {
+      return { status: 'pending', retryable: true, operation_id: operation.operationId, message: 'GitHub still reports this credential. Reconfirm to safely retry the same disconnect.' };
+    }
+    if (github.length) {
+      await this.options.persistence.supersede(operation, operation.operationId);
+      return { status: 'superseded', operation_id: operation.operationId,
+        message: 'A different GitHub credential is linked. This old disconnect will not remove it.' };
+    }
+    // A crash may precede the first revocation as well as the provider call.
+    // The callback checks this exact operation under the existing user lock.
+    if (!alreadyRevoked) await this.options.revokeImport(operation.userId, operation.operationId);
+    return { status: await this.options.persistence.complete(operation, operation.operationId), operation_id: operation.operationId };
   }
   async reconcile(userId: string) {
     const operation = await this.options.persistence.operation(userId);
@@ -189,12 +208,7 @@ export class GithubUnlinkFlow {
       }
       return { status: operation.status, operation_id: operation.operationId };
     }
-    const user = await this.options.provider.inspect(userId);
-    if (user.userId !== userId) throw fail('Provider verification returned the wrong account.', 503);
-    if (user.identities.some(identity => identity.provider === 'github' && identity.subject === operation.githubId)) {
-      return { status: 'pending', operation_id: operation.operationId, message: 'GitHub still reports this identity. Check disconnect status again; the pending provider outcome must be verified before another disconnect.' };
-    }
-    return { status: await this.options.persistence.complete(operation, operation.operationId), operation_id: operation.operationId };
+    return this.reconcilePrepared(operation);
   }
 }
 
@@ -217,13 +231,13 @@ export function createGithubUnlinkClients(options: { url: string; anonKey: strin
     if (!isValidUuid(user.id) || !Array.isArray(user.identities) || user.identities.length > 100) throw fail('Provider identities could not be verified.', 503);
     const seen = new Set<string>();
     return { userId: user.id, identities: user.identities.map(identity => {
-      if (!isValidUuid(identity.identity_id) || seen.has(identity.identity_id) || !identity.provider) throw fail('Provider identities could not be verified.', 503);
-      seen.add(identity.identity_id);
+      if (!isValidUuid(identity.identity_id) || seen.has(identity.identity_id.toLowerCase()) || !identity.provider) throw fail('Provider identities could not be verified.', 503);
+      seen.add(identity.identity_id.toLowerCase());
       const raw = identity.identity_data?.provider_id ?? identity.identity_data?.sub ?? identity.id;
       const subject = typeof raw === 'number' && Number.isSafeInteger(raw) && raw > 0 ? String(raw)
         : typeof raw === 'string' && numeric.test(raw) ? raw : null;
       if (identity.provider === 'github' && !subject) throw fail('Provider GitHub identity could not be verified.', 503);
-      return { identityId: identity.identity_id, provider: identity.provider, subject };
+      return { identityId: identity.identity_id.toLowerCase(), provider: identity.provider, subject };
     }),
     };
   };
@@ -232,9 +246,9 @@ export function createGithubUnlinkClients(options: { url: string; anonKey: strin
     async unlink(token, identityId) {
       const scoped = client(token); const { data, error } = await scoped.auth.getUser(token);
       if (error || !data.user) throw error ?? fail('Provider identity unavailable.', 503);
-      const identity = data.user.identities?.find(value => value.identity_id === identityId);
+      const identity = data.user.identities?.find(value => typeof value.identity_id === 'string' && value.identity_id.toLowerCase() === identityId.toLowerCase());
       if (!identity) throw fail('The provider identity changed.');
-      const outcome = await scoped.auth.unlinkIdentity(identity); if (outcome.error) throw outcome.error;
+      const outcome = await scoped.auth.unlinkIdentity({ ...identity, identity_id: identityId.toLowerCase() }); if (outcome.error) throw outcome.error;
     },
     async inspect(userId) {
       const admin = createClient(options.url, options.serviceKey, { global: { fetch: transport }, auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false } });

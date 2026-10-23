@@ -11,6 +11,7 @@ interface Manifest {
   indexes: string[];
   functions: string[];
   roles: string[];
+  columns?: string[];
 }
 
 const databaseUrl = process.env.DATABASE_URL;
@@ -44,13 +45,14 @@ try {
   const columnRows = await client`
     SELECT table_schema,table_name,column_name
     FROM information_schema.columns
-    WHERE (table_schema='app' AND table_name IN ('users','oauth_codes','repo_content','repo_card_summaries','user_feed_state'))
+    WHERE (table_schema='app' AND table_name IN ('users','oauth_codes','repo_content','repo_card_summaries','user_feed_state','user_github_unlinks'))
        OR (table_schema='telemetry' AND table_name IN ('ml_outbox','counter_reconciliation_progress','feed_prewarm_jobs'))
   `;
   const columns = new Set(columnRows.map(
     (row) => `${row.table_schema}.${row.table_name}.${row.column_name}`,
   ));
   for (const requiredColumn of [
+    ...(manifest.columns ?? []),
     'app.user_feed_state.last_published_feed_version',
     'app.users.interests',
     'app.users.skills',

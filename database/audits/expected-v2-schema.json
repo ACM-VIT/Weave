@@ -37,5 +37,6 @@
     "repos_github_id_key", "trending_one_active_period_uidx"
   ],
   "functions": ["activate_repo_summary", "enforce_comment_parent_repo"],
-  "roles": ["ghsocial_backend"]
+  "roles": ["ghsocial_backend"],
+  "columns": ["app.user_github_unlinks.provider_identity_id"]
 }

@@ -1,4 +1,5 @@
 import type { Sql } from 'postgres';
+import { isValidUuid } from '../utils/validators.js';
 import { sqlClient } from '../db/index.js';
 import type { GithubUnlinkOwner, GithubUnlinkPersistence } from '../services/githubUnlinkFlow.js';
 import { buildMlOnboardingJob, hasMlEmbeddingContext } from '../services/mlOnboardingService.js';
@@ -11,16 +12,36 @@ export class PostgresGithubUnlink implements GithubUnlinkPersistence {
     if (!profile?.github_identity_verified_at || !/^[1-9][0-9]{0,18}$/.test(String(profile.github_id))) throw fail('No verified GitHub login is linked to this account.');
     return { userId: String(profile.user_id), githubId: String(profile.github_id) };
   }
-  async prepare(owner: GithubUnlinkOwner, operationId: string) {
-    await this.db.begin(async tx => {
+  async prepare(owner: GithubUnlinkOwner, operationId: string, providerIdentityId: string): Promise<string> {
+    if (!isValidUuid(providerIdentityId)) throw fail('A verified provider credential UUID is required.');
+    return this.db.begin(async tx => {
       const [profile] = await tx`SELECT github_id,github_identity_verified_at,status FROM app.users WHERE user_id=${owner.userId}::uuid FOR UPDATE`;
       if (profile?.status !== 'active' || !profile.github_identity_verified_at || String(profile.github_id) !== owner.githubId) throw fail('The verified GitHub account changed.');
-      const [prepared] = await tx`INSERT INTO app.user_github_unlinks(user_id,operation_id,github_id,status)
-        VALUES(${owner.userId}::uuid,${operationId}::uuid,${owner.githubId},'prepared')
+      const [existing] = await tx`SELECT operation_id,github_id,status,provider_identity_id FROM app.user_github_unlinks
+        WHERE user_id=${owner.userId}::uuid FOR UPDATE`;
+      if (existing?.status === 'prepared') {
+        if (!existing.provider_identity_id) throw fail('This older pending disconnect has no verified credential target. Verify its provider outcome before retrying.');
+        if (String(existing.provider_identity_id) === providerIdentityId.toLowerCase()) {
+          if (String(existing.github_id) !== owner.githubId) throw fail('The pending credential owner changed.');
+          return String(existing.operation_id);
+        }
+        // A fresh owner-bound proof names a different immutable credential.
+        // Replace the current marker without deleting it; old op-ID callbacks
+        // are fenced and old UUID DELETEs cannot target this new credential.
+      }
+      await tx`INSERT INTO app.user_github_unlinks(user_id,operation_id,github_id,status,provider_identity_id)
+        VALUES(${owner.userId}::uuid,${operationId}::uuid,${owner.githubId},'prepared',${providerIdentityId}::uuid)
         ON CONFLICT(user_id) DO UPDATE SET operation_id=EXCLUDED.operation_id,github_id=EXCLUDED.github_id,
-          status='prepared',created_at=now(),updated_at=now()
-        WHERE app.user_github_unlinks.status <> 'prepared' RETURNING operation_id`;
-      if (!prepared) throw fail('A GitHub disconnect is already pending verification. Check its status before retrying.');
+          provider_identity_id=EXCLUDED.provider_identity_id,status='prepared',created_at=now(),updated_at=now()`;
+      return operationId;
+    });
+  }
+  async supersede(owner: GithubUnlinkOwner, operationId: string): Promise<boolean> {
+    return this.db.begin(async tx => {
+      await tx`SELECT user_id FROM app.users WHERE user_id=${owner.userId}::uuid FOR UPDATE`;
+      const changed = await tx`UPDATE app.user_github_unlinks SET status='superseded',updated_at=now()
+        WHERE user_id=${owner.userId}::uuid AND operation_id=${operationId}::uuid AND status='prepared' RETURNING operation_id`;
+      return changed.length === 1;
     });
   }
   async refused(owner: GithubUnlinkOwner, operationId: string) {
@@ -28,9 +49,10 @@ export class PostgresGithubUnlink implements GithubUnlinkPersistence {
       WHERE user_id=${owner.userId}::uuid AND operation_id=${operationId}::uuid AND status='prepared'`;
   }
   async operation(userId: string) {
-    const [operation] = await this.db`SELECT user_id,operation_id,github_id,status FROM app.user_github_unlinks WHERE user_id=${userId}::uuid`;
+    const [operation] = await this.db`SELECT user_id,operation_id,github_id,status,provider_identity_id FROM app.user_github_unlinks WHERE user_id=${userId}::uuid`;
     return operation ? { userId: String(operation.user_id), githubId: String(operation.github_id),
-      operationId: String(operation.operation_id), status: String(operation.status) } : null;
+      operationId: String(operation.operation_id), status: String(operation.status),
+      providerIdentityId: operation.provider_identity_id == null ? null : String(operation.provider_identity_id) } : null;
   }
   async complete(owner: GithubUnlinkOwner, operationId: string): Promise<'done' | 'superseded'> {
     return this.db.begin(async tx => {
