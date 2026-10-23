@@ -1,3 +1,6 @@
+import type { ScoringCaptureConfig } from '../config/scoringCapture.js';
+import type { ScoringPersistencePort } from '../ports/scoringPersistencePort.js';
+import { validateCapturedRecommendation } from './capturedRecommendation.js';
 import crypto from 'node:crypto';
 import { performance } from 'node:perf_hooks';
 import { FEED_REPAIR_ACK_MARGIN_MS, feedGenerationBudget } from '../config/ml.js';
@@ -37,6 +40,7 @@ export class FeedGenerationService {
     private readonly indexedRefill?: IndexedFeedRefillPolicy,
     private readonly socialCandidatesEnabled = false,
     private readonly budget = feedGenerationBudget(),
+    private readonly scoringCapture?: { config: Extract<ScoringCaptureConfig, {enabled:true}>; persistence: ScoringPersistencePort },
   ) {
     if (!Number.isSafeInteger(budget.timeoutMs) || budget.timeoutMs < 1
       || !Number.isSafeInteger(budget.repairTimeoutMs) || budget.repairTimeoutMs < 1) {
@@ -167,11 +171,13 @@ export class FeedGenerationService {
         ? await this.persistence.listSocialRepositoryCandidates(userId, 100, [...excludedIds]) : undefined;
       if (leaseLost || !await current()) return { status: 'stale', feedVersion };
       requireBudget();
+      const capture = this.scoringCapture?.config.userIds.has(userId) ? this.scoringCapture : undefined;
       const request = {
         schema_version: 2,
         generation_id: generationId,
         user_id: userId,
-        feed_version: Number(feedVersion),
+        feed_version: capture ? feedVersion.toString() : Number(feedVersion),
+        ...(capture ? { scoring_capture: { schema_version: 1 as const, encoding: 'float32-le-v1' as const } } : {}),
         limit: generationLimit,
         exclude_repo_ids: excluded,
         social_repo_ids: socialRepoIds,
@@ -180,7 +186,7 @@ export class FeedGenerationService {
       } as const;
       let response: Awaited<ReturnType<RecommendationPort['generate']>>;
       try {
-        response = await this.recommendations.generate(request, { deadline });
+        response = await this.recommendations.generate(request, { deadline, ...(capture ? { scoringCaptureCapability: capture.config.capability } : {}) });
       } catch (error) {
         if (!this.personaRepair || !isMissingPersonaRecommendationError(error)) throw error;
         requireBudget(this.budget.repairTimeoutMs + FEED_REPAIR_ACK_MARGIN_MS);
@@ -195,7 +201,7 @@ export class FeedGenerationService {
         response = await this.recommendations.generate({
           ...request,
           generation_id: generationId,
-        }, { deadline });
+        }, { deadline, ...(capture ? { scoringCaptureCapability: capture.config.capability } : {}) });
       }
       requireBudget();
       if (leaseLost || !await current()) {
@@ -204,6 +210,23 @@ export class FeedGenerationService {
           status: 'stale', latency_ms: Date.now() - started, result_count: response.items.length,
         });
         return { status: 'stale', feedVersion };
+      }
+      // Store the complete validated provider candidate set before filtering or
+      // publishing references. No private material is ever handed to Redis.
+      let capturedReferences: Awaited<ReturnType<ScoringPersistencePort['persist']>>['references'] = [];
+      if (capture) {
+        const validated = validateCapturedRecommendation(response, { ...request, generation_id: generationId });
+        if (validated) {
+          if (!('scoring_context' in response) || (context && response.scoring_context.profile_version !== context.profileVersion.toString())) {
+            return { status: 'stale', feedVersion };
+          }
+          capturedReferences = (await capture.persistence.persist(validated, capture.config.policy)).references;
+          requireBudget();
+          if (leaseLost || !await current()) {
+            await capture.persistence.recordWitness(userId,generationId,'stale');
+            return { status: 'stale', feedVersion };
+          }
+        }
       }
       const seen = new Set<string>();
       const items = response.items.filter(item => {
@@ -243,7 +266,12 @@ export class FeedGenerationService {
       }
       if (mode === 'prewarm' && await this.persistence.hasServedFeed?.(userId, feedVersion)) return { status: 'stale', feedVersion };
       const canonical = canonicalEntries(this.indexedRefill ? usableItems.slice(0, generationLimit) : usableItems,
-        response.model_version, summaries, response.generation_id);
+        response.model_version, summaries, response.generation_id).map(entry => {
+          if (!capture) return entry;
+          const reference = capturedReferences.find(reference => reference.repo_id === entry.repo_id);
+          if (!reference) throw new Error('SCORING_CAPTURE_REFERENCE_UNAVAILABLE');
+          return { ...entry, scoring_reference: reference };
+        });
       // A nonempty ML batch filtered entirely by existing exclusions is not
       // proof of exhaustion either. Never publish it as a terminal empty page.
       if (this.indexedRefill && response.items.length > 0 && canonical.length === 0) {
@@ -280,6 +308,7 @@ export class FeedGenerationService {
       }
       // Publication has begun: finish durable acknowledgement even if the
       // budget expires now. Redis retains an eight-day crash recovery witness.
+      if (capture && capturedReferences.length) await capture.persistence.recordWitness(userId,generationId,published ? 'published' : 'stale');
       if (published) await this.persistence.markGenerationPublished?.(userId, feedVersion);
       await this.persistence.recordGenerationAttempt?.({
         generation_id: generationId, user_id: userId, feed_version: feedVersion, mode,

@@ -1,3 +1,5 @@
+import { getScoringCaptureConfig } from '../config/scoringCapture.js';
+import { createPrivateScoringPersistence } from '../adapters/postgresScoringPersistence.js';
 import redisClient from '../config/redis.js';
 import { getV2FeatureFlags, validateFeatureDependencies } from '../config/features.js';
 import { sqlClient } from '../db/index.js';
@@ -79,6 +81,8 @@ export class ApplicationRuntime {
     redisClient,
     intervalFromEnvironment('FEED_RESERVATION_TTL_MS', 60_000, 30_000, 900_000),
   );
+  readonly scoringCapture = getScoringCaptureConfig();
+  readonly privateScoring = this.flags.ML_V2_RECOMMENDATIONS ? createPrivateScoringPersistence(this.scoringCapture) : null;
   readonly indexedFeedRefill = indexedFeedRefillConfiguration();
   readonly ml = this.flags.ML_V2_RECOMMENDATIONS || this.flags.ML_FEEDBACK_OUTBOX
     ? new MlV2Client()
@@ -93,6 +97,9 @@ export class ApplicationRuntime {
       new PersonaRepairService(this.persistence, this.ml),
       this.indexedFeedRefill,
       socialCandidatesConfiguration(),
+      feedGenerationBudget(),
+      this.scoringCapture.enabled && this.privateScoring
+        ? {config:this.scoringCapture,persistence:this.privateScoring.port} : undefined,
     )
     : null;
   readonly shadow = this.ml ? new FeedShadowService(this.persistence, this.ml) : null;
@@ -116,11 +123,14 @@ export class ApplicationRuntime {
         { expectedVersion: version, lowWatermark: this.indexedFeedRefill!.lowWatermark },
       ),
     } : undefined,
+    userId => this.scoringCapture.enabled && this.scoringCapture.userIds.has(userId),
   );
   readonly supervisor = new WorkerSupervisor();
 
   constructor(readonly role: 'api' | 'outbox' | 'feed' | 'maintenance' | 'all' = 'api') {
+    if (this.scoringCapture.enabled && !this.flags.ML_V2_RECOMMENDATIONS) throw new Error('SCORING_CAPTURE_REQUIRES_ML_RECOMMENDATIONS');
     this.supervisor.onStop(() => this.feed.stop());
+    if (this.privateScoring) this.supervisor.onStop(() => this.privateScoring!.close());
     if ((role === 'outbox' || role === 'all') && this.flags.ML_FEEDBACK_OUTBOX && this.ml) {
       resolveOutboxLeaseMs();
       const worker = new OutboxDeliveryLanes(
