@@ -155,7 +155,7 @@ jobs:
         working-directory: backend
         env:
           BOOTSTRAP_SUPABASE_AUTH_STUB: '1'
-      - run: npx --no-install tsx --test --test-concurrency=1 tests/contracts/mlCrossRepo.integration.test.ts tests/contracts/outboxFeedback.integration.test.ts tests/database/outboxLanes.integration.test.ts
+      - run: npx --no-install tsx --test --test-concurrency=1 tests/contracts/mlCrossRepo.integration.test.ts tests/contracts/socialCrossRepo.integration.test.ts tests/contracts/lineageCrossRepo.integration.test.ts tests/contracts/outboxFeedback.integration.test.ts tests/database/outboxLanes.integration.test.ts
         working-directory: backend
         env:
           WEAVE_ML_CONTRACT_ROOT: ${{ github.workspace }}/.contract-provider
