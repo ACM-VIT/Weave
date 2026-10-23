@@ -101,6 +101,22 @@ class CapturingRecommendations implements RecommendationPort {
   }
 }
 
+for (const remaining of [[otherRepoId], []]) {
+  test(`generation filters exact recent exposure before publication (${remaining.length} unseen)`, async () => {
+    const persistence = new GenerationPersistence();
+    Object.assign(persistence, { listExposureEligibleRepositoryIds: async () => remaining });
+    const queue = new GenerationQueue();
+    const result = await new FeedGenerationService(persistence, queue, new CapturingRecommendations()).generate(userId);
+    if (remaining.length) {
+      assert.deepEqual(result, { status: 'generated', feedVersion: 1n, count: 1 });
+      assert.deepEqual(queue.entries.map(item => item.repo_id), remaining);
+    } else {
+      assert.equal(result.status, 'capacity');
+      assert.equal(queue.published, false, 'filtering a nonempty provider batch must not publish false exhaustion');
+    }
+  });
+}
+
 test('feed generation sends followed-owner repositories as bounded ML context', async () => {
   const persistence = new GenerationPersistence();
   const queue = new GenerationQueue();

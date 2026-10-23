@@ -1,4 +1,4 @@
-import { FeedPreferenceChangedError } from '../ports/feedPersistencePort.js';
+import { FeedExposureChangedError, FeedPreferenceChangedError } from '../ports/feedPersistencePort.js';
 import crypto from 'node:crypto';
 
 import type { FeedRequestV2, FeedResponseV2, FeedSource, RecommendationEntry, RepositoryProjection } from '../contracts/feed.v2.js';
@@ -269,7 +269,14 @@ export class FeedV2Service {
     // to the immutable same-request replay returned above.
     try {
       const eligible = new Set(await this.persistence.listPreferenceEligibleRepositoryIds(userId, entries.map(entry => entry.repo_id)));
-      const allowed = entries.filter(entry => eligible.has(entry.repo_id));
+      const unexposed = this.persistence.listExposureEligibleRepositoryIds
+        ? new Set(await this.persistence.listExposureEligibleRepositoryIds(userId, entries.map(entry => entry.repo_id)))
+        : eligible;
+      const seen = new Set<string>();
+      const allowed = entries.filter(entry => {
+        if (!eligible.has(entry.repo_id) || !unexposed.has(entry.repo_id) || seen.has(entry.repo_id)) return false;
+        seen.add(entry.repo_id); return true;
+      });
       if (entries.length > 0 && allowed.length === 0) {
         if (queueAvailable) await this.queue.commit(userId, version, request.feed_request_id, token);
         throw new FeedRequestInProgressError();
@@ -347,6 +354,11 @@ export class FeedV2Service {
         this.serveWaits.notify(this.requestKey(userId, request.feed_request_id));
         if (queueAvailable) await this.queue.commit(userId, version, request.feed_request_id, token);
         return responseFromServe(replayAfterFailure);
+      }
+      if (error instanceof FeedExposureChangedError) {
+        // Returning this raced page to Redis would retry the same stale cards.
+        if (queueAvailable) await this.queue.commit(userId, version, request.feed_request_id, token);
+        throw new FeedRequestInProgressError();
       }
       if (queueAvailable) await this.queue.release(userId, version, request.feed_request_id, token);
       if (error instanceof FeedPreferenceChangedError) throw new FeedRequestInProgressError();

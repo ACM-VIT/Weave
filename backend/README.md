@@ -184,6 +184,33 @@ keys and scores are Redis-clock lease deadlines in milliseconds. Reserve/refill
 maintains the lease and commit/release removes membership. Reconciliation must
 reuse this index contract rather than introduce competing reservation tracking.
 
+Fresh feed delivery excludes repositories served, impressed or interacted with during the last
+`FEED_RECENT_EXPOSURE_DAYS` elapsed days (default 7, integer 1–365), across browsing
+sessions and feed versions. A durable prepared serve counts as exposure before
+HTTP completion; retries with the same request ID replay that immutable serve.
+The existing 500-ID exclusion list remains a bounded ML hint. Candidate checks
+and the transactional delivery fence inspect exact requested IDs against the
+full recent window, so falling outside that hint list never permits redelivery.
+The existing user/feed-state lock serializes competing fresh serves, while
+negative preferences remain independently authoritative regardless of age.
+
+Publication, queued delivery, durable recovery and configured fallback apply the
+window. Recovery/fallback SQL filters before its LIMIT. Raced stale reservations
+are discarded rather than recycled; filtering a nonempty batch remains retryable
+and never fabricates end-of-feed. Only a successful empty generation establishes
+personalized exhaustion. This can reduce available cards when a provider ignores
+exclusions; it preserves the existing bounded retry/unavailable behavior instead
+of returning recent cards. Expired exposure can be reused unless another current
+preference or eligibility rule excludes it. Existing telemetry indexes are used;
+no schema migration is introduced. All API writers must run compatible code to
+enforce this policy across processes; older writers do not perform the new fence.
+
+Run the scoped disposable PostgreSQL regression with
+`RUN_FEED_EXPOSURE_INTEGRATION=1 DATABASE_URL=postgresql://postgres@127.0.0.1:55420/weave_scroll npm exec -- tsx --test tests/database/feedExposure.integration.test.ts`
+from `backend/`. It creates and removes its own synthetic rows and exercises
+cross-session isolation beyond 500 hints, expiry, current dislikes, atomic
+concurrent creation, immutable replay and terminal empty generation.
+
 Reconciliation reuses that index with a bounded legacy repair pass, even while
 indexed refill is disabled or writers are mixed. Each cycle performs exactly two
 SCAN calls: up to 16 reservation indexes (8 members each), plus up to 128 legacy

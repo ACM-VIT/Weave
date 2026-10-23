@@ -86,6 +86,41 @@ class FakeQueue implements FeedQueuePort {
   async deleteStaleVersions() { return 0; }
 }
 
+test('fresh delivery drops recent and repeated queued cards without changing immutable replay', async () => {
+  const persistence = new FakePersistence();
+  const other = '00000000-0000-4000-8000-000000000002';
+  const checked: string[][] = [];
+  Object.assign(persistence, { listExposureEligibleRepositoryIds: async (_user: string, ids: string[]) => {
+    checked.push(ids); return ids.filter(id => id === other);
+  } });
+  const queue = new FakeQueue();
+  queue.reserve = async (_user, _version, requestId, _limit, token) => ({ requestId, token, remainingDepth: 0,
+    items: [repo.repo_id, other, other].map(repo_id => ({ repo_id, score: 1, source: 'semantic', model_version: 'm1', summary_id: null })) });
+  const service = new FeedV2Service(persistence, queue);
+  const request = { feed_request_id: '00000000-0000-4000-8000-000000000010',
+    session_id: '00000000-0000-4000-8000-000000000020', limit: 10, cursor: null };
+  const page = await service.getFeed('00000000-0000-4000-8000-000000000030', request);
+  assert.deepEqual(page.items.map(item => item.repo_id), [other]);
+  assert.equal(page.next_cursor, null);
+  await service.getFeed('00000000-0000-4000-8000-000000000030', request);
+  assert.equal(checked.length, 1, 'replay retains the durable serve without filtering it again');
+});
+
+test('a raced exposure discards its reservation and remains retryable without creating a duplicate serve', async () => {
+  const { FeedExposureChangedError } = await import('../../ports/feedPersistencePort.js');
+  const persistence = new FakePersistence();
+  persistence.createServe = async () => { throw new FeedExposureChangedError(); };
+  const queue = new FakeQueue();
+  const service = new FeedV2Service(persistence, queue);
+  await assert.rejects(service.getFeed('00000000-0000-4000-8000-000000000030', {
+    feed_request_id: '00000000-0000-4000-8000-000000000010',
+    session_id: '00000000-0000-4000-8000-000000000020', limit: 10, cursor: null,
+  }), FeedRequestInProgressError);
+  assert.equal(queue.committed, 1);
+  assert.equal(queue.released, 0, 'stale cards must not cycle back into the queue');
+  assert.equal(persistence.serve, null);
+});
+
 test('v2 feed reserves, persists, commits, and replays the same serve', async () => {
   const persistence = new FakePersistence();
   const queue = new FakeQueue();

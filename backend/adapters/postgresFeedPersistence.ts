@@ -8,7 +8,9 @@ import type {
   StoredServeItem,
 } from '../contracts/feed.v2.js';
 import { loadNegativePreferenceEligibleIds } from '../services/negativePreferenceEligibility.js';
-import { FeedPreferenceChangedError, MAX_FEED_SERVE_LOOKUP_BATCH } from '../ports/feedPersistencePort.js';
+import { loadRecentExposureEligibleIds } from '../services/feedExposureEligibility.js';
+import { feedRecentExposureDays } from '../config/feedExposure.js';
+import { FeedExposureChangedError, FeedPreferenceChangedError, MAX_FEED_SERVE_LOOKUP_BATCH } from '../ports/feedPersistencePort.js';
 import type {
   FeedPersistencePort, FeedReconciliationPersistencePort, FeedServeRequest, RepositoryIdentityProjection,
 } from '../ports/feedPersistencePort.js';
@@ -58,6 +60,14 @@ function projection(row: Record<string, unknown>): RepositoryProjection {
 }
 
 export class PostgresFeedPersistence implements FeedPersistencePort, FeedReconciliationPersistencePort {
+  private readonly recentExposureDays = feedRecentExposureDays();
+
+  async listExposureEligibleRepositoryIds(userId: string, repoIds: string[]): Promise<string[]> {
+    return loadRecentExposureEligibleIds({
+      query: async (text, parameters) => [...await sqlClient.unsafe(text, [...parameters])],
+    }, userId, repoIds, this.recentExposureDays);
+  }
+
   async listPreferenceEligibleRepositoryIds(userId: string, repoIds: string[]): Promise<string[]> {
     return loadNegativePreferenceEligibleIds({
       query: async (text, parameters) => [...await sqlClient.unsafe(text, [...parameters])],
@@ -164,10 +174,13 @@ export class PostgresFeedPersistence implements FeedPersistencePort, FeedReconci
         SELECT item.repo_id,serve.created_at AS observed_at,0 AS priority
         FROM telemetry.feed_serves serve
         JOIN telemetry.feed_serve_items item ON item.serve_id=serve.serve_id
-        WHERE serve.user_id=${userId}::uuid AND serve.session_id=${sessionId ?? null}::uuid
+        WHERE serve.user_id=${userId}::uuid
+          AND (serve.session_id=${sessionId ?? null}::uuid
+            OR serve.created_at>=now()-(${this.recentExposureDays * 86400}::integer * interval '1 second'))
         UNION ALL
         SELECT repo_id,last_event_at AS observed_at,1 AS priority
         FROM telemetry.user_repo_engagement WHERE user_id=${userId}::uuid
+          AND last_event_at>=now()-(${this.recentExposureDays * 86400}::integer * interval '1 second')
       )
       SELECT repo_id FROM exposures GROUP BY repo_id
       ORDER BY min(priority),max(observed_at) DESC,repo_id LIMIT ${boundedLimit}
@@ -230,6 +243,17 @@ export class PostgresFeedPersistence implements FeedPersistencePort, FeedReconci
             SELECT 1 FROM app.reactions negative
             WHERE negative.user_id=serve.user_id AND negative.repo_id=item.repo_id
               AND negative.reaction='dislike'
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM telemetry.feed_serves recent_serve
+            JOIN telemetry.feed_serve_items seen_item ON seen_item.serve_id=recent_serve.serve_id
+            WHERE recent_serve.user_id=${userId}::uuid AND seen_item.repo_id=item.repo_id
+              AND recent_serve.created_at>=now()-(${this.recentExposureDays * 86400}::integer * interval '1 second')
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM telemetry.user_repo_engagement recent_event
+            WHERE recent_event.user_id=${userId}::uuid AND recent_event.repo_id=item.repo_id
+              AND recent_event.last_event_at>=now()-(${this.recentExposureDays * 86400}::integer * interval '1 second')
           )
       )
       SELECT repo_id,score,source,model_version,summary_id,generation_id
@@ -481,6 +505,12 @@ export class PostgresFeedPersistence implements FeedPersistencePort, FeedReconci
         query: async (text, parameters) => [...await tx.unsafe(text, [...parameters])],
       }, input.user_id, input.items.map(item => item.repo_id)));
       if (input.items.some(item => !eligible.has(item.repo_id))) throw new FeedPreferenceChangedError();
+      // The existing per-user feed-state lock serializes this check with every
+      // fresh serve, including other sessions. Same-request replay exits above.
+      const unexposed = new Set(await loadRecentExposureEligibleIds({
+        query: async (text, parameters) => [...await tx.unsafe(text, [...parameters])],
+      }, input.user_id, input.items.map(item => item.repo_id), this.recentExposureDays));
+      if (input.items.some(item => !unexposed.has(item.repo_id))) throw new FeedExposureChangedError();
       if (input.items.length) {
         const items = input.items.map(item => ({ position: item.position,repo_id: item.repo_id,score: item.score,
           source: item.source,model_version: item.model_version,summary_id: item.summary_id }));
@@ -608,6 +638,21 @@ export class PostgresFeedPersistence implements FeedPersistencePort, FeedReconci
       JOIN app.repos repo ON repo.repo_id=item.repo_id
       WHERE snapshot.complete AND snapshot.active AND repo.status='active'
         AND NOT (item.repo_id = ANY(${excludeRepoIds}::uuid[]))
+        AND NOT EXISTS (
+          SELECT 1 FROM app.reactions negative WHERE negative.user_id=${viewerUserId ?? null}::uuid
+            AND negative.repo_id=item.repo_id AND negative.reaction='dislike'
+        )
+        AND NOT EXISTS (
+          SELECT 1 FROM telemetry.feed_serves recent_serve
+          JOIN telemetry.feed_serve_items seen_item ON seen_item.serve_id=recent_serve.serve_id
+          WHERE recent_serve.user_id=${viewerUserId ?? null}::uuid AND seen_item.repo_id=item.repo_id
+            AND recent_serve.created_at>=now()-(${this.recentExposureDays * 86400}::integer * interval '1 second')
+        )
+        AND NOT EXISTS (
+          SELECT 1 FROM telemetry.user_repo_engagement recent_event
+          WHERE recent_event.user_id=${viewerUserId ?? null}::uuid AND recent_event.repo_id=item.repo_id
+            AND recent_event.last_event_at>=now()-(${this.recentExposureDays * 86400}::integer * interval '1 second')
+        )
       ORDER BY snapshot.activated_at DESC, item.position ASC LIMIT ${limit}
     `;
     const ids = rows.map((row) => String(row.repo_id));
