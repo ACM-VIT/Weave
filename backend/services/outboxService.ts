@@ -236,11 +236,14 @@ export class OutboxService {
     });
   }
 
-  async markDelivered(row: OutboxRow): Promise<void> {
-    await sqlClient`
+  async markDelivered(row: OutboxRow): Promise<boolean> {
+    const delivered = await sqlClient`
       UPDATE telemetry.ml_outbox SET status='delivered',delivered_at=now(),claim_token=NULL,claimed_at=NULL,last_error=NULL
       WHERE outbox_id=${row.outbox_id}::uuid AND claim_token=${row.claim_token}::uuid
+        AND status='claimed'
+      RETURNING outbox_id
     `;
+    return delivered.length === 1;
   }
 
   /**
