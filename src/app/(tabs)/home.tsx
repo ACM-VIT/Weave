@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, useMemo, useRef } from 'react';
+import { useState, useCallback, useEffect, useLayoutEffect, useMemo, useRef } from 'react';
 import {
   ActivityIndicator,
   AppState,
@@ -24,6 +24,7 @@ import {
   type InfiniteData,
 } from '@tanstack/react-query';
 import * as SecureStore from '../../utils/storage';
+import { markFeedFirstVisible } from '@/services/feedTiming';
 import { fetchHomeFeed } from '@/api/home-feed';
 import { subscribeToHomeFeedInvalidations } from '@/utils/home-feed';
 import { type ActivityInput } from '@/api/activity';
@@ -207,9 +208,17 @@ export default function HomeScreen() {
     };
   }, [activityOutbox, checkOnboardingStatus, flushActivityBatch, pagination]);
 
+  const visiblePages = useRef(data?.pages);
+  useLayoutEffect(() => { visiblePages.current = data?.pages; }, [data?.pages]);
   const [viewableItems, setViewableItems] = useState<string[]>([]);
   const onViewableItemsChanged = useCallback(({ viewableItems }: any) => {
     setViewableItems(viewableItems.map((v: any) => v.item.feedId));
+    for (const page of visiblePages.current ?? []) {
+      if (viewableItems.some((visible: any) => visible.isViewable !== false
+        && page.items.some(item => item.repo_id === visible.item.repository.id))) {
+        markFeedFirstVisible(page.timing);
+      }
+    }
   }, []);
 
   const handleLayout = useCallback((event: LayoutChangeEvent) => {

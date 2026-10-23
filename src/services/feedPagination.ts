@@ -1,3 +1,4 @@
+import type { FeedTiming } from './feedTiming';
 import { createUuid } from '../utils/uuid';
 import { assertFeedRequestActive } from './feedTransport';
 
@@ -7,6 +8,8 @@ export type FeedPage = {
   feedVersion: string;
   mode?: 'personalized' | 'discovery';
   sessionId?: string;
+  serverTraceparent?: string;
+  timing?: FeedTiming;
 };
 
 type Request = { cursor: string | null; id: string; recovery: boolean; initialCursor: string | null };
