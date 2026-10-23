@@ -6,12 +6,14 @@ import { GitHubActivityImportClient, GitHubActivityImportError } from '../../ser
 function repository(id: number | string, overrides: Record<string, unknown> = {}) {
   return { id, owner: { id: '7', login: 'viewer' }, name: `repo${id}`, full_name: `viewer/repo${id}`,
     html_url: `https://github.com/viewer/repo${id}`, private: false, visibility: 'public', fork: false,
-    description: 'Public repository', language: 'TypeScript', topics: ['testing'], updated_at: '2026-10-01T00:00:00Z', ...overrides };
+    description: 'Public repository', language: 'TypeScript', topics: ['testing'], updated_at: '2026-10-01T00:00:00Z',
+    stargazers_count: 17, forks_count: 3, open_issues_count: 2, ...overrides };
 }
 function contribution(id: number) {
   return { databaseId: id, owner: { databaseId: 7, login: 'viewer' }, name: `repo${id}`, nameWithOwner: `viewer/repo${id}`,
     url: `https://github.com/viewer/repo${id}`, isPrivate: false, visibility: 'PUBLIC', isFork: false,
-    description: 'Public repository', updatedAt: '2026-10-01T00:00:00Z', primaryLanguage: { name: 'TypeScript' }, repositoryTopics: { nodes: [{ topic: { name: 'testing' } }] } };
+    description: 'Public repository', updatedAt: '2026-10-01T00:00:00Z', stargazerCount: 17, forkCount: 3, issues: { totalCount: 2 },
+    primaryLanguage: { name: 'TypeScript' }, repositoryTopics: { nodes: [{ topic: { name: 'testing' } }] } };
 }
 function graph(nodes: unknown[], hasNextPage = false, endCursor: string | null = null) {
   return { data: { user: { databaseId: 7, repositoriesContributedTo: { nodes, pageInfo: { hasNextPage, endCursor } } } } };
@@ -62,6 +64,7 @@ test('real HTTP paginates public owned/starred/contributed sources and merges ca
     assert.deepEqual(result.repositories[0].sources, ['owned', 'starred', 'contributed']);
     assert.equal(result.repositories[0].owner_github_id, '7');
     assert.equal(result.repositories[0].updated_at, '2026-10-01T00:00:00Z', 'source update time is distinct from collection time');
+    assert.equal(result.repositories[0].star_count, 17, 'canonical discovery receives actual observed statistics');
     assert.equal(result.sources.owned.pages, 2);
     assert.equal(result.sources.contributed.pages, 2);
     assert.equal(new Date(result.collected_at).toISOString(), result.collected_at);

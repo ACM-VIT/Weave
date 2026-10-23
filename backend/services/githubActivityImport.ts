@@ -10,6 +10,9 @@ export interface GitHubActivityRepository {
   primary_language: string | null;
   topics: string[];
   updated_at: string;
+  star_count: number;
+  fork_count: number;
+  open_issues_count: number;
   fork: boolean;
   sources: GitHubActivitySource[];
 }
@@ -79,6 +82,10 @@ function publicRepository(value: unknown, source: GitHubActivitySource): GitHubA
   if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?Z$/.test(updatedAt)
     || !Number.isFinite(Date.parse(updatedAt))) throw new GitHubActivityImportError('invalid_response');
   if (typeof (graphql ? row.isFork : row.fork) !== 'boolean') throw new GitHubActivityImportError('invalid_response');
+  const count = (value: unknown): number => {
+    if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) throw new GitHubActivityImportError('invalid_response');
+    return value;
+  };
   return {
     github_id: numericId(graphql ? row.databaseId : row.id),
     owner_github_id: numericId(graphql ? owner.databaseId : owner.id),
@@ -86,6 +93,9 @@ function publicRepository(value: unknown, source: GitHubActivitySource): GitHubA
     description: row.description == null || row.description === '' ? null : text(row.description, 10_000),
     primary_language: language == null ? null : text(language, 100),
     topics: [...new Set(topics)], updated_at: updatedAt, fork: (graphql ? row.isFork : row.fork) as boolean,
+    star_count: count(graphql ? row.stargazerCount : row.stargazers_count),
+    fork_count: count(graphql ? row.forkCount : row.forks_count),
+    open_issues_count: count(graphql ? object(row.issues).totalCount : row.open_issues_count),
     sources: [source],
   };
 }
@@ -171,7 +181,7 @@ export class GitHubActivityImportClient {
             let hasNext: boolean;
             if (source === 'contributed') {
               const payload = object(await this.request('/graphql', combined, {
-                query: `query PublicContributions($handle:String!,$first:Int!,$after:String){user(login:$handle){databaseId repositoriesContributedTo(first:$first,after:$after,privacy:PUBLIC,includeUserRepositories:false,contributionTypes:[COMMIT,ISSUE,PULL_REQUEST]){nodes{databaseId name nameWithOwner url description updatedAt isPrivate visibility isFork owner{login ... on User{databaseId} ... on Organization{databaseId}} primaryLanguage{name} repositoryTopics(first:20){nodes{topic{name}}}} pageInfo{hasNextPage endCursor}}}}`,
+                query: `query PublicContributions($handle:String!,$first:Int!,$after:String){user(login:$handle){databaseId repositoriesContributedTo(first:$first,after:$after,privacy:PUBLIC,includeUserRepositories:false,contributionTypes:[COMMIT,ISSUE,PULL_REQUEST]){nodes{databaseId name nameWithOwner url description updatedAt isPrivate visibility isFork stargazerCount forkCount issues(states:OPEN){totalCount} owner{login ... on User{databaseId} ... on Organization{databaseId}} primaryLanguage{name} repositoryTopics(first:20){nodes{topic{name}}}} pageInfo{hasNextPage endCursor}}}}`,
                 variables: { handle, first: this.pageSize, after: cursor },
               }));
               if (payload.errors !== undefined) throw new GitHubActivityImportError('provider_query_failed');
