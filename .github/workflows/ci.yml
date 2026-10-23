@@ -144,7 +144,7 @@ jobs:
           python-version: '3.12'
       - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b
         with:
-          version: '0.11.29'
+          version: '0.13.4'
       - run: uv sync --locked --dev
         working-directory: .contract-provider
       - run: npm ci
