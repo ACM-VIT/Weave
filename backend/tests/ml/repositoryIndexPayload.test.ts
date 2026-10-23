@@ -212,3 +212,28 @@ test('index identity includes canonical owner and observed fork family; observat
   assert.equal(Object.hasOwn(buildMlRepositoryFeaturePatch(source),'fork_family_github_id'),false,
     'Existing feature-refresh contract cannot carry index-only lineage.');
 });
+
+
+test('lifecycle observations are gated, never content changes, and reach both durable job projections', t => {
+  const previous = process.env.ML_REPOSITORY_LIFECYCLE_OBSERVATIONS;
+  t.after(() => {
+    if (previous === undefined) delete process.env.ML_REPOSITORY_LIFECYCLE_OBSERVATIONS;
+    else process.env.ML_REPOSITORY_LIFECYCLE_OBSERVATIONS = previous;
+  });
+  delete process.env.ML_REPOSITORY_LIFECYCLE_OBSERVATIONS;
+  const lifecycle = { status: 'verified' as const, source: 'github-graphql-repository' as const,
+    observed_at: '2026-01-02T00:00:00Z', archived: true, disabled: false };
+  const repository = { ...ingestionRecord, lifecycle };
+  assert.equal(buildMlRepositoryFeaturePatch(repository).lifecycle, undefined);
+  assert.equal(buildMlRepositorySource(repository, 'hash').lifecycle, undefined);
+  const originalHash = repositoryContentHash(ingestionRecord);
+  process.env.ML_REPOSITORY_LIFECYCLE_OBSERVATIONS = 'verified-status-v1';
+  assert.deepEqual(buildMlRepositoryFeaturePatch(repository).lifecycle, lifecycle);
+  assert.deepEqual(buildMlRepositorySource(repository, 'hash').lifecycle, lifecycle);
+  assert.equal(repositoryContentHash(repository), originalHash, 'status-only transition must not reembed');
+  const unavailable = { status: 'unavailable' as const, source: lifecycle.source, observed_at: '2026-01-03T00:00:00Z' };
+  assert.deepEqual(buildMlRepositoryFeaturePatch({ ...repository, lifecycle: unavailable }).lifecycle, unavailable);
+  assert.equal(repositoryContentHash({ ...repository, lifecycle: unavailable }), originalHash);
+  assert.notEqual(repositoryRefreshIdempotencyKey('repo', 1, { lifecycle }, 1),
+    repositoryRefreshIdempotencyKey('repo', 1, { lifecycle: unavailable }, 1));
+});

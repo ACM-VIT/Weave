@@ -358,7 +358,17 @@ export interface components {
              */
             user_id: string;
         };
-        /** RepositoryFeaturePatch */
+        /**
+         * RepositoryFeaturePatch
+         * @description Mutable observations plus optional, validated derived-score echoes.
+         *
+         *     ``pushed_days_ago`` is the producer's age at its observation anchor. The
+         *     refresh service never advances it from wall-clock time or infers it from
+         *     ``pushed_at``. Ranking scores are server-owned; callers may include them
+         *     for compatibility, but the refresh service requires exact agreement with
+         *     the effective score. It recomputes a score only when one of that score's
+         *     source observations changes.
+         */
         RepositoryFeaturePatch: {
             /** Activity Score */
             activity_score?: number | null;
@@ -378,6 +388,7 @@ export interface components {
             doc_quality?: number | null;
             /** Fork Count */
             fork_count?: number | null;
+            lifecycle?: components["schemas"]["RepositoryLifecycleObservation"] | null;
             /** Mentionable Users Count */
             mentionable_users_count?: number | null;
             /** Open Issues Count */
@@ -446,6 +457,34 @@ export interface components {
              * @constant
              */
             schema_version: 2;
+        };
+        /**
+         * RepositoryLifecycleObservation
+         * @description One backend-owned GitHub response, never inferred from push recency.
+         *
+         *     Unavailable includes permission errors, timeouts and ambiguous not-found
+         *     responses. It supplies no archive/disable evidence and cannot revive a repo.
+         */
+        RepositoryLifecycleObservation: {
+            /** Archived */
+            archived?: boolean | null;
+            /** Disabled */
+            disabled?: boolean | null;
+            /**
+             * Observed At
+             * Format: date-time
+             */
+            observed_at: string;
+            /**
+             * Source
+             * @enum {string}
+             */
+            source: "github-graphql-repository" | "github-rest-repository";
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "verified" | "unavailable";
         };
         /** RepositoryRefreshJob */
         RepositoryRefreshJob: {
@@ -592,6 +631,7 @@ export interface components {
             is_fork?: boolean | null;
             /** Languages */
             languages?: string[];
+            lifecycle?: components["schemas"]["RepositoryLifecycleObservation"] | null;
             /** Lineage Observed At */
             lineage_observed_at?: string | null;
             /** Lineage Source */

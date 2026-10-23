@@ -662,10 +662,12 @@
       },
       "RepositoryFeaturePatch": {
         "additionalProperties": false,
+        "description": "Mutable observations plus optional, validated derived-score echoes.\n\n``pushed_days_ago`` is the producer's age at its observation anchor. The\nrefresh service never advances it from wall-clock time or infers it from\n``pushed_at``. Ranking scores are server-owned; callers may include them\nfor compatibility, but the refresh service requires exact agreement with\nthe effective score. It recomputes a score only when one of that score's\nsource observations changes.",
         "properties": {
           "activity_score": {
             "anyOf": [
               {
+                "description": "Optional echo of the server-derived activity score.",
                 "maximum": 1.0,
                 "minimum": 0.0,
                 "type": "number"
@@ -679,6 +681,7 @@
           "code_health": {
             "anyOf": [
               {
+                "description": "Optional echo of the server-derived code health score.",
                 "maximum": 1.0,
                 "minimum": 0.0,
                 "type": "number"
@@ -780,6 +783,16 @@
             ],
             "title": "Fork Count"
           },
+          "lifecycle": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RepositoryLifecycleObservation"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "mentionable_users_count": {
             "anyOf": [
               {
@@ -821,6 +834,7 @@
           "pushed_days_ago": {
             "anyOf": [
               {
+                "description": "Repository push age at the producer's observation anchor.",
                 "maximum": 100000.0,
                 "minimum": 0.0,
                 "type": "integer"
@@ -847,6 +861,7 @@
           "trend_velocity": {
             "anyOf": [
               {
+                "description": "Optional echo of the server-derived trend velocity.",
                 "maximum": 1.0,
                 "minimum": 0.0,
                 "type": "number"
@@ -968,6 +983,62 @@
           "repository"
         ],
         "title": "RepositoryJob",
+        "type": "object"
+      },
+      "RepositoryLifecycleObservation": {
+        "additionalProperties": false,
+        "description": "One backend-owned GitHub response, never inferred from push recency.\n\nUnavailable includes permission errors, timeouts and ambiguous not-found\nresponses. It supplies no archive/disable evidence and cannot revive a repo.",
+        "properties": {
+          "archived": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Archived"
+          },
+          "disabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Disabled"
+          },
+          "observed_at": {
+            "format": "date-time",
+            "title": "Observed At",
+            "type": "string"
+          },
+          "source": {
+            "enum": [
+              "github-graphql-repository",
+              "github-rest-repository"
+            ],
+            "title": "Source",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "verified",
+              "unavailable"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "observed_at",
+          "source"
+        ],
+        "title": "RepositoryLifecycleObservation",
         "type": "object"
       },
       "RepositoryRefreshJob": {
@@ -1369,6 +1440,16 @@
             "maxItems": 100,
             "title": "Languages",
             "type": "array"
+          },
+          "lifecycle": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RepositoryLifecycleObservation"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "lineage_observed_at": {
             "anyOf": [
