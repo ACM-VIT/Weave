@@ -41,6 +41,6 @@
     "private_scoring.record_generation_witness", "private_scoring.validate_feed_item_provenance", "private_scoring.persist_generation", "private_scoring.exact_keys", "private_scoring.finite_input", "private_scoring.reject_update"],
   "roles": ["ghsocial_backend", "ghsocial_scoring_writer", "ghsocial_scoring_exporter", "ghsocial_scoring_retention"],
   "columns": ["app.user_github_unlinks.provider_identity_id", "telemetry.feed_item_provenance.exposure_id",
-    "telemetry.feed_item_provenance.generation_id", "telemetry.feed_item_provenance.record_digest",
+    "telemetry.feed_item_provenance.generation_id", "telemetry.feed_item_provenance.legacy_generation_hint", "telemetry.feed_item_provenance.record_digest",
     "private_scoring.scoring_inputs.input_bytes", "private_scoring.scoring_generations.context_bytes"]
 }

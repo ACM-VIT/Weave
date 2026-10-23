@@ -11,6 +11,8 @@ export interface RecommendationEntry {
   model_version: string;
   summary_id: string | null;
   generation_id?: string;
+  /** Legacy page-header association only; never proof of this item’s generation. */
+  legacy_generation_hint?: string;
   /** Private reference only; never part of the public card DTO. */
   scoring_reference?: ScoringInputReference;
 }

@@ -115,6 +115,7 @@ test('v2 feed omits private persistence fields from creation and durable replay'
     const stored = await originalCreate(input);
     Object.assign(stored.items[0], {
       scoring_reference: { generation_id: 'private', record_digest: 'private-digest' },
+      legacy_generation_hint: '00000000-0000-4000-8000-000000000090',
       scoring_context: { user_vector_sha256: 'private-context' },
       scored_input: { input_base64: 'PRIVATE_PACKET' },
     });

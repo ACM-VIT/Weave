@@ -7,6 +7,7 @@ CREATE TABLE telemetry.feed_item_provenance (
   user_id uuid NOT NULL REFERENCES app.users(user_id) ON DELETE CASCADE,
   repo_id uuid NOT NULL REFERENCES app.repos(repo_id),
   generation_id uuid,
+  legacy_generation_hint uuid,
   record_digest text,
   capture_status text NOT NULL CHECK(capture_status IN ('captured','not_captured')),
   created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
@@ -14,6 +15,7 @@ CREATE TABLE telemetry.feed_item_provenance (
   CONSTRAINT feed_item_provenance_exposure_key UNIQUE(exposure_id),
   CONSTRAINT feed_item_provenance_parent_fkey FOREIGN KEY(serve_id,position)
     REFERENCES telemetry.feed_serve_items(serve_id,position) ON DELETE CASCADE,
+  CONSTRAINT feed_item_provenance_legacy_check CHECK(capture_status<>'captured' OR legacy_generation_hint IS NULL),
   CONSTRAINT feed_item_provenance_capture_check CHECK(
     (capture_status='captured' AND generation_id IS NOT NULL AND record_digest IS NOT NULL AND record_digest ~ '^[a-f0-9]{64}$')
     OR (capture_status='not_captured' AND record_digest IS NULL))
