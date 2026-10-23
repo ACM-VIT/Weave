@@ -57,7 +57,7 @@ test('real SQL neighborhoods exclude private/unlisted discovery and other accoun
   const { sqlClient:sql } = await import('../../db/index.js');
   const users = Array.from({length:4},() => randomUUID());
   const [viewer,a,b,inactive] = users;
-  const repos = Array.from({length:6},() => randomUUID());
+  const repos: string[] = Array.from({length:6},() => randomUUID());
   const [seed,publicRepo,privateRepo,unlistedRepo,otherSaved,ownAdjacent] = repos;
   const boards:string[] = []; const topic = 'social-fixture-'+randomUUID();
   try {
