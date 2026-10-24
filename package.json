@@ -99,5 +99,14 @@
     "tailwindcss": {
       "postcss-selector-parser": "7.1.6"
     }
+  },
+  "expo": {
+    "doctor": {
+      "reactNativeDirectoryCheck": {
+        "exclude": [
+          "react-native-render-html"
+        ]
+      }
+    }
   }
 }
