@@ -3,11 +3,12 @@ import { confirmPasswordReset } from '@/api/auth';
 import LoginInput from '@/components/Auth/LoginInput';
 import PrimaryButton from '@/components/Auth/PrimaryButton';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Platform, Pressable, Text, View } from 'react-native';
 
 export default function ResetPasswordScreen() {
   const router = useRouter();
+  const isActive = useRef(false);
   const params = useLocalSearchParams<{
     access_token?: string;
     refresh_token?: string;
@@ -36,6 +37,11 @@ export default function ResetPasswordScreen() {
   const isValid = Boolean(accessToken && refreshToken) && validPassword && password === confirmation;
 
   useEffect(() => {
+    isActive.current = true;
+    return () => { isActive.current = false; };
+  }, []);
+
+  useEffect(() => {
     if (Platform.OS !== 'web' || typeof window === 'undefined') return;
     const cleanUrl = new URL(window.location.href);
     cleanUrl.hash = '';
@@ -45,6 +51,7 @@ export default function ResetPasswordScreen() {
   }, []);
 
   const returnToApp = async () => {
+    if (!isActive.current) return;
     if (Platform.OS !== 'web') {
       router.replace('/(auth)/login');
       return;
@@ -65,7 +72,9 @@ export default function ResetPasswordScreen() {
     setIsLoading(true);
     setError('');
     try {
-      setMessage(await confirmPasswordReset(accessToken, refreshToken, password));
+      const successMessage = await confirmPasswordReset(accessToken, refreshToken, password);
+      if (!isActive.current) return;
+      setMessage(successMessage);
       setAccessToken('');
       setRefreshToken('');
       setPassword('');
@@ -73,9 +82,10 @@ export default function ResetPasswordScreen() {
       setIsComplete(true);
       void returnToApp();
     } catch (caught) {
+      if (!isActive.current) return;
       setError(caught instanceof Error ? caught.message : 'Unable to reset your password.');
     } finally {
-      setIsLoading(false);
+      if (isActive.current) setIsLoading(false);
     }
   };
 
@@ -105,7 +115,10 @@ export default function ResetPasswordScreen() {
             <PrimaryButton label={isLoading ? 'Updating…' : 'Update password'} disabled={!isValid || isLoading} onPress={() => void submit()} />
           </View>
         </>}
-        <Pressable onPress={() => router.replace('/(auth)/login')} className="items-center py-5 mt-2">
+        <Pressable onPress={() => {
+          isActive.current = false;
+          router.replace('/(auth)/login');
+        }} className="items-center py-5 mt-2">
           <Text className="text-[#63E08A] font-nataSemiBold">{isComplete && Platform.OS === 'web' ? 'Continue in browser' : 'Go to login'}</Text>
         </Pressable>
       </View>

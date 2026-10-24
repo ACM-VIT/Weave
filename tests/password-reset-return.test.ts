@@ -9,7 +9,7 @@ import ts from 'typescript';
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
-function fixture(platform: 'web' | 'ios' | 'android', options: { updateFails?: boolean; blocked?: boolean; invalid?: boolean } = {}) {
+function fixture(platform: 'web' | 'ios' | 'android', options: { updateFails?: boolean; blocked?: boolean; invalid?: boolean; reply?: Promise<void> } = {}) {
   const events: string[] = [];
   const calls: string[][] = [];
   const filename = resolve('src/app/(auth)/reset-password.tsx');
@@ -21,6 +21,7 @@ function fixture(platform: 'web' | 'ios' | 'android', options: { updateFails?: b
     '@/components/Auth/PrimaryButton': { default: 'PrimaryButton', __esModule: true },
     '@/api/auth': { confirmPasswordReset: async (...args: string[]) => {
       calls.push(args);
+      await options.reply;
       if (options.updateFails) throw new Error('Reset expired');
       events.push('updated');
       return 'Password updated successfully.';
@@ -104,4 +105,42 @@ for (const options of [{ updateFails: true }, { invalid: true }]) {
 test('return scheme matches the installed application configuration', () => {
   const config = JSON.parse(readFileSync('app.json', 'utf8'));
   assert.equal(config.expo.scheme, 'ghsocial');
+});
+
+for (const platform of ['web', 'ios', 'android'] as const) {
+  for (const updateFails of [false, true]) {
+    test(`late ${platform} reset response after unmount has no navigation side effects (failure=${updateFails})`, async () => {
+      let finish!: () => void;
+      const reply = new Promise<void>(resolve => { finish = resolve; });
+      const f = fixture(platform, { reply, updateFails });
+      let screen!: ReturnType<typeof create>;
+      await act(async () => { screen = create(React.createElement(f.Screen)); });
+      await act(async () => {
+        for (const input of screen.root.findAllByType('LoginInput')) input.props.onChangeText('a-new-password-123');
+      });
+      await act(async () => { screen.root.findByType('PrimaryButton').props.onPress(); });
+      assert.equal(f.calls.length, 1);
+      assert.deepEqual(f.events, []);
+      await act(async () => screen.unmount());
+      await act(async () => { finish(); });
+      assert.deepEqual(f.events, updateFails ? [] : ['updated']);
+    });
+  }
+}
+
+test('choosing browser login suppresses handoff even before navigation unmounts the screen', async () => {
+  let finish!: () => void;
+  const reply = new Promise<void>(resolve => { finish = resolve; });
+  const f = fixture('web', { reply });
+  let screen!: ReturnType<typeof create>;
+  await act(async () => { screen = create(React.createElement(f.Screen)); });
+  await act(async () => {
+    for (const input of screen.root.findAllByType('LoginInput')) input.props.onChangeText('a-new-password-123');
+  });
+  await act(async () => { screen.root.findByType('PrimaryButton').props.onPress(); });
+  await act(async () => { screen.root.findByType('Pressable').props.onPress(); });
+  await act(async () => { finish(); });
+  assert.deepEqual(f.events, ['/(auth)/login', 'updated']);
+  assert.equal(screen.root.findByType('PrimaryButton').props.label, 'Updating…');
+  await act(async () => screen.unmount());
 });
