@@ -618,6 +618,27 @@ test('a failed background refresh retains the cached original README', async () 
   } finally { await app.unmount(); }
 });
 
+test('a failed background refresh retains cached summary media without a false error', async () => {
+  const app = feed(['repo'], true, { ownerId: 'viewer', repository: { readmeFull: null } });
+  const key = repositoryDetailQueryKey('repo', 'viewer');
+  const cached = '![Architecture](https://cdn.example.com/diagram.png)\n<video src="https://cdn.example.com/demo.mp4"></video>';
+  app.client.setQueryData(key, { ...repository('repo'), readmeFull: cached }, { updatedAt: Date.now() - 120_000 });
+  app.setReadme(async () => { throw new Error('Background refresh unavailable'); });
+  await app.mount();
+  try {
+    await app.open(0, 'onReadFullPress');
+    await waitForReadmeState(() => app.client.getQueryState(key)?.status === 'error');
+    assert.equal(app.client.getQueryData<any>(key)?.readmeFull, cached);
+    assert.ok(app.renderedReadmeHtml.includes('Summary.'));
+    assert.deepEqual(app.previewImages, ['https://cdn.example.com/diagram.png']);
+    assert.deepEqual(app.videoUrls, ['https://cdn.example.com/demo.mp4']);
+    assert.equal(app.readmePopupProps.mediaMessage, null);
+    assert.equal(app.readmePopupProps.errorMessage, null);
+    assert.equal(app.readmePopupProps.loading, false);
+    assert.ok(!app.messages.includes('Could not load README videos.'));
+  } finally { await app.unmount(); }
+});
+
 
 test('Read more keeps the summary and lazily hydrates original README videos', async () => {
   const app = feed(['repo'], true, { ownerId: 'viewer', repository: { readmeFull: null } });
