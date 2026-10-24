@@ -167,6 +167,7 @@ export function RepositoryScreen({
   isSaved,
   commentCount,
   onReadFullPress,
+  onOpenReadme,
   onSavePress,
   onSharePress,
   onCommentPress,
@@ -181,6 +182,7 @@ export function RepositoryScreen({
   isSaved?: boolean;
   commentCount?: number;
   onReadFullPress: (digest?: ReadmeDigest | null) => void;
+  onOpenReadme?: () => void;
   onSavePress: () => void;
   onSharePress: () => void;
   onCommentPress: () => void;
@@ -303,7 +305,7 @@ export function RepositoryScreen({
           isActive={isActive}
           repository={repository}
           onReadFullPress={onReadFullPress}
-          onOpenReadme={onRepositoryPress}
+          onOpenReadme={onOpenReadme}
           compact={compact}
         />
 

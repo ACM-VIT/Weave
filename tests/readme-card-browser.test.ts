@@ -96,5 +96,5 @@ test('README card remains visible without a digest and opens canonical README se
     assert.equal(await evaluate('window.fixture.summaries'),0,'canonical README action does not open summary popup');
     assert.equal(await evaluate('window.fixture.retries'),4);
   }
-  t.diagnostic('Actual RN Web ReadmeCard and CSS in isolated Chromium; explicit summary-network/motion doubles. RepositoryScreen supplies the existing canonical detail callback; no external URL is opened by this fixture.');
+  t.diagnostic('Actual RN Web ReadmeCard and CSS in isolated Chromium; explicit summary-network/motion doubles. The feed callback opens the original README separately from the summary; no external URL is opened by this fixture.');
 });

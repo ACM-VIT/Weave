@@ -321,7 +321,7 @@ export default function ReadmeCard({
         ) : null}
         {preview.source === 'pending' && onOpenReadme ? (
           <Pressable accessibilityRole="button" accessibilityLabel={`Open README for ${repository.name}`}
-            accessibilityHint="Opens the repository details to read the original README"
+            accessibilityHint="Opens the original README in a scrollable viewer"
             onPress={onOpenReadme} style={[styles.readFull, styles.readmeAction, compact && styles.readFullCompact]}>
             <Text style={[styles.readFullText, compact && styles.readFullTextCompact]}>Open README</Text>
             <ChevronRight size={compact ? 10 : 11} color={REFERENCE_THEME.accentLight} strokeWidth={2.4} />

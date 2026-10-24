@@ -36,6 +36,9 @@ interface ReadmePopupProps {
   title: string;
   readmeText: string | null;
   contentKind?: 'readme' | 'summary';
+  loading?: boolean;
+  errorMessage?: string | null;
+  onRetry?: () => void;
   readmeSource: ReadmeImageContext;
 }
 
@@ -168,6 +171,9 @@ export function ReadmePopup({
   readmeText,
   contentKind = 'readme',
   readmeSource,
+  loading = false,
+  errorMessage = null,
+  onRetry,
 }: ReadmePopupProps) {
   const { width, height } = useWindowDimensions();
   const insets = useSafeAreaInsets();
@@ -343,7 +349,12 @@ export function ReadmePopup({
           >
             <Animated.View style={contentAnimationStyle}>
               <Text style={styles.repoTitle}>{title}</Text>
-              <RenderHtml
+              {loading ? <Text style={styles.repoTitle} accessibilityLiveRegion="polite">Loading README…</Text>
+                : errorMessage ? <View>
+                  <Text style={styles.repoTitle} accessibilityRole="alert">{errorMessage}</Text>
+                  {onRetry ? <Pressable accessibilityRole="button" accessibilityLabel="Retry loading README"
+                    onPress={onRetry} style={styles.retryButton}><Text style={styles.headerText}>Retry</Text></Pressable> : null}
+                </View> : <RenderHtml
                 contentWidth={cardWidth - 44}
                 defaultTextProps={{ selectable: true }}
                 enableExperimentalMarginCollapsing
@@ -373,7 +384,7 @@ export function ReadmePopup({
                 source={{ html: markdownHtml }}
                 systemFonts={markdownFonts}
                 tagsStyles={markdownTagStyles}
-              />
+              />}
             </Animated.View>
           </ScrollView>
         </Animated.View>
@@ -383,6 +394,11 @@ export function ReadmePopup({
 }
 
 const styles = StyleSheet.create({
+  retryButton: {
+    minHeight: 44,
+    alignSelf: 'flex-start',
+    justifyContent: 'center',
+  },
   root: {
     flex: 1,
     alignItems: 'center',
