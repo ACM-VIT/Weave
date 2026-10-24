@@ -1,3 +1,4 @@
+import {retainOriginalFeedImpressions} from '@/services/feedImpressionAttribution';
 import { useState, useCallback, useEffect, useLayoutEffect, useMemo, useRef } from 'react';
 import {
   ActivityIndicator,
@@ -117,6 +118,7 @@ export default function HomeScreen() {
     isRefetching,
   } = useInfiniteQuery({
     queryKey: feedQueryKey,
+    structuralSharing: retainOriginalFeedImpressions,
     queryFn: ({ pageParam, signal }) => pagination.controller.load(pageParam, signal),
     retry: false,
     staleTime: Infinity,
@@ -365,7 +367,7 @@ export default function HomeScreen() {
               onQueueActivity={(event, flushNow) => handleQueueActivity(item.repository, event, flushNow)}
               onSavedChange={(saved, changed) => handleSavedChange(item.repository, saved, changed)}
               onOwnerPress={() => openOwnerProfile(item.repository)}
-              onRepositoryPress={() => router.push(repositoryHref(item.repository.id))}
+              onRepositoryPress={(navigationToken) => router.push(repositoryHref(item.repository.id,navigationToken))}
               isViewable={viewableItems.includes(item.feedId)}
             />
           )}

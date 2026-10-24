@@ -40,7 +40,8 @@ function scoreFor(event: InteractionEventV2): number {
 }
 
 function sameEvent(row: Record<string, unknown>, event: InteractionEventV2, userId: string): boolean {
-  return String(row.user_id) === userId && String(row.session_id) === event.session_id
+  return (row.impression_event_id==null?null:String(row.impression_event_id))===(event.impression_event_id??null)
+    && String(row.user_id) === userId && String(row.session_id) === event.session_id
     && (row.serve_id == null ? null : String(row.serve_id)) === event.serve_id
     && String(row.repo_id) === event.repo_id
     && (row.position == null ? null : Number(row.position)) === event.position
@@ -58,7 +59,8 @@ export async function processInteractionBatchV2InTransaction(
   const suppliedIds = events.map(event => event.event_id);
   userId = userId.toLowerCase();
   events = events.map(event => ({ ...event, event_id: event.event_id.toLowerCase(), repo_id: event.repo_id.toLowerCase(),
-    session_id: event.session_id.toLowerCase(), serve_id: event.serve_id?.toLowerCase() ?? null }));
+    session_id: event.session_id.toLowerCase(), serve_id: event.serve_id?.toLowerCase() ?? null,
+    ...('impression_event_id' in event?{impression_event_id:event.impression_event_id?.toLowerCase()??null}:{}) }));
   // Profile/persona changes lock user first, then feed: preserve that order.
   await tx`SELECT user_id FROM app.users WHERE user_id=${userId}::uuid FOR KEY SHARE`;
   await tx`INSERT INTO app.user_feed_state (user_id) VALUES (${userId}::uuid) ON CONFLICT (user_id) DO NOTHING`;
@@ -94,17 +96,17 @@ export async function processInteractionBatchV2InTransaction(
   // transitions and feedback versions below still follow original client order.
   const inserted = inputs.length ? await tx`
     INSERT INTO telemetry.interaction_events (
-      event_id,schema_version,user_id,session_id,serve_id,repo_id,position,event_type,dwell_ms,client_occurred_at,context
-    ) SELECT event_id,2,${userId}::uuid,session_id,serve_id,repo_id,position,event_type,dwell_ms,client_occurred_at,context
+      event_id,schema_version,user_id,session_id,serve_id,repo_id,position,event_type,dwell_ms,client_occurred_at,context,impression_event_id
+    ) SELECT event_id,2,${userId}::uuid,session_id,serve_id,repo_id,position,event_type,dwell_ms,client_occurred_at,context,impression_event_id
       FROM jsonb_to_recordset(${JSON.stringify(inputs)}::jsonb) AS input(
         event_id uuid,session_id uuid,serve_id uuid,repo_id uuid,position smallint,event_type text,
-        dwell_ms integer,client_occurred_at timestamptz,context jsonb
+        dwell_ms integer,client_occurred_at timestamptz,context jsonb,impression_event_id uuid
       ) ORDER BY event_id ON CONFLICT (event_id) DO NOTHING RETURNING event_id
   ` : [];
   const accepted = new Set(inserted.map(row => String(row.event_id)));
   const duplicateIds = inputs.filter(event => !accepted.has(event.event_id)).map(event => event.event_id);
   if (duplicateIds.length) {
-    const existing = await tx`SELECT event_id,user_id,session_id,serve_id,repo_id,position,event_type,dwell_ms,client_occurred_at,context
+    const existing = await tx`SELECT event_id,user_id,session_id,serve_id,repo_id,position,event_type,dwell_ms,client_occurred_at,context,impression_event_id
       FROM telemetry.interaction_events WHERE event_id=ANY(${duplicateIds}::uuid[])`;
     const byId = new Map(existing.map(row => [String(row.event_id), row]));
     for (const id of duplicateIds) {

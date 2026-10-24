@@ -25,7 +25,7 @@ function repository(id: string): RepositoryData {
 
 // Keep the real row, all four overlays, React state and QueryClient observers.
 // Replace only native rendering/animation and external I/O boundaries.
-function feed(ids: string[], reducedMotion = false) {
+function feed(ids: string[], reducedMotion = false, attribution?: { ownerId: string; repository: Partial<RepositoryData> }) {
   const client = new QueryClient({ defaultOptions: {
     queries: { retry: false, gcTime: Infinity }, mutations: { retry: false },
   } });
@@ -60,7 +60,7 @@ function feed(ids: string[], reducedMotion = false) {
     Share: { share: async () => ({ action: 'sharedAction' }) },
     ...Object.fromEntries(['ActivityIndicator', 'FlatList', 'Image', 'KeyboardAvoidingView', 'Modal', 'Pressable', 'ScrollView', 'Text', 'TextInput', 'View'].map(name => [name, name])),
   };
-  const auth = { useAuth: () => ({ user: { user_id: 'viewer', username: 'viewer' }, checkOnboardingStatus: async () => undefined }) };
+  const auth = { useAuth: () => ({ user: { user_id: attribution?.ownerId ?? 'viewer', username: 'viewer' }, checkOnboardingStatus: async () => undefined }) };
   const storage = { getItemAsync: async () => 'token', getStorageItem: async () => 'token' };
   const gesture = new Proxy({}, {get: () => () => gesture});
   const mocks: Record<string, any> = {
@@ -139,6 +139,10 @@ function feed(ids: string[], reducedMotion = false) {
     loadSource('src/components/home/CommentSheet.tsx').CommentSheet,
     loadSource('src/components/home/ReadmePopup.tsx').ReadmePopup,
   ];
+  const renderRows = () => React.createElement(QueryClientProvider, { client },
+    ids.map(id => React.createElement(Row, { key: id, repository: { ...repository(id), ...attribution?.repository }, pageWidth: 400, pageHeight: 800,
+      onQueueActivity: (event: unknown) => events.push(event) })),
+  );
   return {
     requests, events, client,
     setExternalOpen(value: () => Promise<void>) {openExternal=value;},
@@ -177,12 +181,8 @@ function feed(ids: string[], reducedMotion = false) {
       )); });
       await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)); });
     },
-    async mount() {
-      await act(async () => { root = create(React.createElement(QueryClientProvider, { client },
-        ids.map(id => React.createElement(Row, { key: id, repository: repository(id), pageWidth: 400, pageHeight: 800,
-          onQueueActivity: (event: unknown) => events.push(event) })),
-      )); });
-    },
+    async mount() { await act(async () => { root = create(renderRows()); }); },
+    async rerender() { await act(async () => { root.update(renderRows()); }); },
     async open(index: number, action: string) {
       await act(async () => { root.root.findAllByType('RepositoryScreen')[index].props[action](); });
       await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)); });
@@ -492,4 +492,20 @@ test('comment footer restarts a rejected cursor while retaining loaded rows unti
     }
     assert.deepEqual(app.loadedCommentIds,['fresh-one','fresh-two']);
   } finally {release();await app.unmount();}
+});
+
+test('callback-only row renders do not rescan retained feed history after the original is cached', async t => {
+  const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
+  const original = { eventId: id(5), occurredAt: '2026-10-24T00:00:01.000Z' };
+  const app = feed([id(2)], false, { ownerId: id(1), repository: { serveId: id(3), feedPosition: 0, feedSessionId: id(4), originalImpression: original } });
+  app.client.setQueryData(['feed', id(1)], { pages: [{ items: Array.from({ length: 10000 }, (_, index) => ({ repo_id: index ? id(index + 10) : id(2),
+    serve_id: id(3), feed_session_id: id(4), position: index, ...(index ? {} : { client_original_impression: original }) })) }] });
+  const get = app.client.getQueryData.bind(app.client); let reads = 0;
+  app.client.getQueryData = ((...args: Parameters<typeof get>) => { reads++; return get(...args); }) as typeof app.client.getQueryData;
+  await app.mount();
+  try {
+    for (let render = 0; render < 10; render++) await app.rerender();
+    t.diagnostic(`10 callback changes,10000 retained rows: cache reads=${reads}`);
+    assert.equal(reads, 0, 'cached row attribution requires no history reconciliation');
+  } finally { await app.unmount(); }
 });

@@ -52,7 +52,7 @@ test('feed and Trending cards delegate repository presses to internal navigation
     'utf8',
   );
 
-  assert.match(feedItem, /onRepositoryPress=\{onRepositoryPress\}/);
+  assert.match(feedItem, /onRepositoryPress=\{openRepository\}/);
   assert.doesNotMatch(feedItem, /Linking\.openURL/);
   assert.match(trendingCard, /onPress=\{onPress\}/);
   assert.doesNotMatch(trendingCard, /Linking\.openURL/);

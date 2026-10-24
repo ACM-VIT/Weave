@@ -69,6 +69,8 @@ export type RepositoryDetail = {
   recommendationSource?: RecommendationSource;
   serveId: string | null;
   feedPosition: number | null;
+  feedSessionId?: string | null;
+  originalImpression?: {eventId:string;occurredAt:string} | null;
 };
 
 export type RepositoryCardData = RepositoryDetail;

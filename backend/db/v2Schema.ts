@@ -555,6 +555,7 @@ export const feedItemProvenance = telemetrySchema.table('feed_item_provenance', 
 
 export const interactionEvents = telemetrySchema.table('interaction_events', {
   eventId: uuid('event_id').primaryKey(),
+  impressionEventId: uuid('impression_event_id'),
   schemaVersion: smallint('schema_version').notNull(),
   userId: uuid('user_id').notNull().references(() => appUsers.userId, { onDelete: 'cascade' }),
   sessionId: uuid('session_id').notNull(),
@@ -568,6 +569,7 @@ export const interactionEvents = telemetrySchema.table('interaction_events', {
   serverReceivedAt: timestamp('server_received_at', { withTimezone: true }).notNull().defaultNow(),
   context: jsonb('context').$type<Record<string, unknown>>().notNull().default({}),
 }, (table) => [
+  check('interaction_events_impression_ref_check',sql`${table.impressionEventId} IS NULL OR(${table.eventType}<>'impression' AND ${table.serveId} IS NOT NULL AND ${table.position} IS NOT NULL)`),
   index('interaction_events_user_received_idx').on(table.userId, table.serverReceivedAt),
   index('interaction_events_serve_repo_idx').on(table.serveId, table.repoId),
 ]);
