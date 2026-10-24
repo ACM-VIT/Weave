@@ -3,6 +3,7 @@ import postgres from 'postgres';
 import * as schema from './schema.js';
 import dotenv from 'dotenv';
 import { Socket } from 'node:net';
+import { Duplex } from 'node:stream';
 
 // Load .env explicitly if it hasn't been loaded
 dotenv.config();
@@ -72,16 +73,29 @@ export function createSearchSqlClient() {
       });
       sockets.add(socket); // Own even sockets whose connect has not completed.
       void socket.transportClosed.then(() => sockets.delete(socket));
-      return new Promise<Socket>((resolve, reject) => {
+      return new Promise<Duplex>((resolve, reject) => {
         const timer = setTimeout(() => socket.destroy(new Error('Search SQL connect timed out.')), 2_000);
+        const closedBeforeConnect = () => {
+          clearTimeout(timer);
+          reject(new Error('Search SQL connection closed before connecting.'));
+        };
+        socket.once('close', closedBeforeConnect);
         socket.once('error', error => { clearTimeout(timer); reject(error); });
         socket.once('connect', () => {
           clearTimeout(timer);
+          socket.removeListener('close', closedBeforeConnect);
           if (retired) {
             const error = new Error('Search SQL slot is retired.');
             socket.destroy(error);
             reject(error);
-          } else resolve(socket);
+          } else {
+            // Keep the driver's TLS wrapper on a duplex transport rather than
+            // transferring the raw fd. Cancellation then closes the owned TCP
+            // stream without leaving TLS with an invalid native descriptor.
+            resolve(Object.assign(Duplex.from({ readable: socket, writable: socket }), {
+              host: parsed.host[0], port: parsed.port[0], ssl: parsed.ssl,
+            }));
+          }
         });
         // The driver still performs its normal TLS negotiation/authentication.
         // host is retained for SNI, and parsed.path retains Unix-socket semantics.
@@ -111,12 +125,17 @@ export function createSearchSqlClient() {
     destroy(): Promise<void> {
       if (disposal) return disposal;
       retired = true;
-      const closed = [...sockets].map(socket => {
-        socket.destroy(new Error('Search SQL operation cancelled.'));
-        return socket.transportClosed;
-      });
-      // end(0) rejects queued driver work, but alone does not await socket close.
-      return disposal = Promise.allSettled([sql.end({ timeout: 0 }), ...closed]).then(() => undefined);
+      return disposal = (async () => {
+        // The driver owns the TLS wrapper. Let it terminate that wrapper before
+        // closing its underlying transport, otherwise TLS can write to a dead fd.
+        try { await sql.end({ timeout: 0 }); }
+        finally {
+          await Promise.all([...sockets].map(socket => {
+            socket.destroy();
+            return socket.transportClosed;
+          }));
+        }
+      })();
     },
   };
 }
