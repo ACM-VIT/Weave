@@ -185,7 +185,10 @@ export class ConfiguredReadmeSummaryGenerator implements ReadmeSummaryGenerator 
     return [`${baseUrl}/chat/completions`, {
       method: 'POST', signal: AbortSignal.timeout(45000),
       headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model, temperature: 0.1, max_tokens: 1400,
+      body: JSON.stringify({ model, temperature: 0.1,
+        ...(provider === 'openai-compatible' && /^gpt-6-luna(?:-|$)/.test(model)
+          ? { max_completion_tokens: 1400, reasoning_effort: 'none' }
+          : { max_tokens: 1400 }),
         ...(provider === 'openrouter' ? { provider: { require_parameters: true, zdr: true } } : {}),
         response_format: { type: 'json_schema', json_schema: { name: 'readme_digest_v1', strict: true, schema: README_SUMMARY_JSON_SCHEMA } },
         messages: [{ role: 'system', content: README_SUMMARY_SYSTEM_PROMPT }, { role: 'user', content: input }],
