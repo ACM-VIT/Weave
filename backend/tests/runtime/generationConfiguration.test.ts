@@ -3,24 +3,29 @@ import test from 'node:test';
 
 // Exercise the real runtime constructor with no external dependency work.
 // Each test file runs in its own process; do not inherit deployment knobs.
-for (const key of Object.keys(process.env)) {
-  if (key.startsWith('ML_') || key.startsWith('OUTBOX_') || key.startsWith('FEED_')) delete process.env[key];
+function isolateConfiguration() {
+  for (const key of Object.keys(process.env)) {
+    if (key.startsWith('ML_') || key.startsWith('OUTBOX_') || key.startsWith('FEED_')) delete process.env[key];
+  }
+  Object.assign(process.env, {
+    NODE_ENV: 'test',
+    DATABASE_URL: 'postgresql://test:test@127.0.0.1:1/runtime_test',
+    REDIS_URL: 'redis://127.0.0.1:1/0',
+    JWT_SECRET: 'runtime-configuration-test-only',
+    ML_SERVICE_URL: 'http://127.0.0.1:1',
+    INTERNAL_API_SECRET: 'runtime-configuration-test-only',
+    ML_DELIVERY_TIMEOUT_MS: '60000',
+  });
 }
-Object.assign(process.env, {
-  NODE_ENV: 'test',
-  DATABASE_URL: 'postgresql://test:test@127.0.0.1:1/runtime_test',
-  REDIS_URL: 'redis://127.0.0.1:1/0',
-  JWT_SECRET: 'runtime-configuration-test-only',
-  ML_SERVICE_URL: 'http://127.0.0.1:1',
-  INTERNAL_API_SECRET: 'runtime-configuration-test-only',
-  ML_DELIVERY_TIMEOUT_MS: '60000',
-});
+isolateConfiguration();
 
 const [{ ApplicationRuntime }, { default: redis }, { sqlClient }] = await Promise.all([
   import('../../runtime/applicationRuntime.js'),
   import('../../config/redis.js'),
   import('../../db/index.js'),
 ]);
+// Database imports load dotenv; remove deployment defaults again before exercising budgets.
+isolateConfiguration();
 redis.disconnect();
 test.after(async () => { await sqlClient.end({ timeout: 1 }); });
 
