@@ -1,4 +1,6 @@
 import type { FeedIntentScope } from '../contracts/feedIntent.js';
+import type { RepositoryLabelLoader } from '../contracts/repositoryLabel.js';
+import { withRepositoryLabels } from './repositoryLabelService.js';
 import { FeedExposureChangedError, FeedPreferenceChangedError } from '../ports/feedPersistencePort.js';
 import crypto from 'node:crypto';
 import { performance } from 'node:perf_hooks';
@@ -88,6 +90,7 @@ export class FeedV2Service {
     refill?: FeedRefillOptions,
     private readonly captureRequired: (userId: string) => boolean = () => false,
     private readonly intentScope?:FeedIntentScope,
+    private readonly labelLoader?: RepositoryLabelLoader,
   ) {
     this.cursorCodec = new FeedCursorCodec(cursorSecret);
     this.serveWaits = new FeedWaitCoordinator(reservationPollMs, () => new FeedRequestInProgressError());
@@ -278,7 +281,11 @@ export class FeedV2Service {
       throw new FeedRequestInProgressError();
     }
     // Register admission before starting any work; there is no pending queue.
-    const operation = Promise.resolve().then(() => this.prepareFeed(userId, request, signal));
+    const operation = Promise.resolve().then(() => this.prepareFeed(userId, request, signal)).then(async response => {
+      if (!this.labelLoader) return response;
+      const repositories = await withRepositoryLabels(response.items.map(item => item.repository), this.labelLoader);
+      return { ...response, items: response.items.map((item, index) => ({ ...item, repository: repositories[index] })) };
+    });
     this.foreground.add(operation);
     const finish = () => this.foreground.delete(operation);
     void operation.then(finish, finish);

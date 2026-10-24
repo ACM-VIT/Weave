@@ -310,7 +310,7 @@ export function RepositoryScreen({
         />
 
         <View style={[styles.repoDetails, compact && styles.repoDetailsCompact]}>
-          <RecommendationReason source={repository.recommendationSource} />
+          <RecommendationReason source={repository.recommendationSource} label={repository.label} />
           <View style={[styles.ownerRow, compact && styles.ownerRowCompact]}>
             <View
               style={[

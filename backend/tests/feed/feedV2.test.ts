@@ -92,6 +92,31 @@ class FakeQueue implements FeedQueuePort {
   async deleteStaleVersions() { return 0; }
 }
 
+test('public labels refresh on replay without mutating durable serve identity, source or repository', async () => {
+  const persistence = new FakePersistence();
+  const queue = new FakeQueue();
+  let unavailable = false;
+  const service = new FeedV2Service(persistence, queue, undefined, false, 1500, 25, 'label-test-cursor-secret',
+    5000, undefined, undefined, undefined, async ids => {
+      assert.deepEqual(ids, [repo.repo_id]);
+      if (unavailable) throw new Error('optional labels offline');
+      return new Map([[repo.repo_id, { kind: 'trending' as const, rank: 3, period: 'daily' as const,
+        source: 'github-trending' as const, observed_at: '2026-10-24T00:00:00Z', expires_at: '2026-10-25T12:00:00Z' }]]);
+    });
+  const request = { feed_request_id: '00000000-0000-4000-8000-000000000010',
+    session_id: '00000000-0000-4000-8000-000000000020', limit: 10, cursor: null };
+  const first = await service.getFeed('00000000-0000-4000-8000-000000000030', request);
+  assert.equal(first.items[0].repository.label?.kind, 'trending');
+  assert.equal(persistence.serve!.items[0].repository.label, undefined, 'decorations never alter stored serve projections');
+  unavailable = true;
+  const replay = await service.getFeed('00000000-0000-4000-8000-000000000030', request);
+  assert.equal(replay.serve_id, first.serve_id);
+  assert.equal(replay.items[0].repository.label, null);
+  assert.equal(replay.items[0].position, first.items[0].position);
+  assert.equal(replay.items[0].source, 'semantic');
+  assert.equal(queue.committed, 1, 'replay never consumes another reservation');
+});
+
 test('fresh delivery drops recent and repeated queued cards without changing immutable replay', async () => {
   const persistence = new FakePersistence();
   const other = '00000000-0000-4000-8000-000000000002';

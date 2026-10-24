@@ -233,7 +233,7 @@ export default function ReadmeCard({
           onLayout={(event) => setPreviewHeight(event.nativeEvent.layout.height)}
           style={[
             styles.markdownViewport,
-            preview.source === 'pending' && { flex: 0, minHeight: (compact ? 17 : 21) * fontScale * 2 },
+            preview.source === 'pending' && { flex: 0, minHeight: (compact ? 17 : 42) * fontScale },
           ]}
         >
           <Animated.View
@@ -312,21 +312,24 @@ export default function ReadmeCard({
             color={REFERENCE_THEME.accentLight}
             strokeWidth={2.4}
           />
-        </AnimatedPressable> : summaryQuery.isError || summaryQuery.data?.status==='failed' ? (
-          <Pressable accessibilityRole="button" accessibilityLabel="Check README summary again"
-            accessibilityHint="Checks whether a summary is available" onPress={() => void summaryQuery.refetch()}
-            style={[styles.readFull,compact && styles.readFullCompact]}>
-            <Text style={[styles.readFullText,compact && styles.readFullTextCompact]}>Check again</Text>
-          </Pressable>
-        ) : null}
-        {preview.source === 'pending' && onOpenReadme ? (
-          <Pressable accessibilityRole="button" accessibilityLabel={`Open README for ${repository.name}`}
-            accessibilityHint="Opens the original README in a scrollable viewer"
-            onPress={onOpenReadme} style={[styles.readFull, styles.readmeAction, compact && styles.readFullCompact]}>
-            <Text style={[styles.readFullText, compact && styles.readFullTextCompact]}>Open README</Text>
-            <ChevronRight size={compact ? 10 : 11} color={REFERENCE_THEME.accentLight} strokeWidth={2.4} />
-          </Pressable>
-        ) : null}
+        </AnimatedPressable> : null}
+        {preview.source === 'pending' ? <View style={[styles.pendingActions, compact && styles.pendingActionsCompact]}>
+          {summaryQuery.isError || summaryQuery.data?.status === 'failed' ? (
+            <Pressable accessibilityRole="button" accessibilityLabel="Check README summary again"
+              accessibilityHint="Checks whether a summary is available" onPress={() => void summaryQuery.refetch()}
+              style={[styles.readFull, compact && styles.readFullCompact]}>
+              <Text style={[styles.readFullText, compact && styles.readFullTextCompact]}>Check again</Text>
+            </Pressable>
+          ) : null}
+          {onOpenReadme ? (
+            <Pressable accessibilityRole="button" accessibilityLabel={`Open README for ${repository.name}`}
+              accessibilityHint="Opens the original README in a scrollable viewer"
+              onPress={onOpenReadme} style={[styles.readFull, compact && styles.readFullCompact]}>
+              <Text style={[styles.readFullText, compact && styles.readFullTextCompact]}>Open README</Text>
+              <ChevronRight size={compact ? 10 : 11} color={REFERENCE_THEME.accentLight} strokeWidth={2.4} />
+            </Pressable>
+          ) : null}
+        </View> : null}
       </View>
     </Animated.View>
   );
@@ -466,8 +469,11 @@ const styles = StyleSheet.create({
     borderRadius: 999,
     backgroundColor: 'rgba(48,209,88,0.09)',
   },
-  readmeAction: {
-    marginTop: 8,
+  pendingActions: {
+    marginTop: 8, gap: 8, alignItems: 'flex-start',
+  },
+  pendingActionsCompact: {
+    flexDirection: 'row', flexWrap: 'wrap',
   },
   readFullCompact: {
     minHeight: 44,

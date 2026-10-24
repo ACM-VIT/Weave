@@ -1,6 +1,7 @@
 import type { FeedIntentScope } from './feedIntent.js';
 import type { ScoringInputReference } from './scoringCapture.js';
 import type { ReadmeSummaryArtifact } from './readmeSummary.v2.js';
+import type { RepositoryLabel } from './repositoryLabel.js';
 export const FEED_SCHEMA_VERSION = 2 as const;
 
 export type FeedSource = 'personalized' | 'trending' | 'popular' | 'fresh' | 'fallback';
@@ -19,6 +20,7 @@ export interface RecommendationEntry {
 }
 
 export interface RepositoryProjection {
+  label?: RepositoryLabel | null;
   repo_id: string;
   full_name: string;
   owner_user_id: string | null;

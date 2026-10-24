@@ -1,4 +1,5 @@
 import {parseOriginalFeedImpression} from '../services/feedImpressionAttribution';
+import { parseRepositoryLabel } from '@/models/repository-label';
 import { recommendationSource } from '@/models/recommendation';
 import { parseReadmeDigest } from '@/models/readme-digest';
 import type { RepositoryApiPayload } from '@/api/repositories';
@@ -171,6 +172,7 @@ export function mapRepositoryDetail(
       : null,
     ...(payload.recommendation_source !== undefined
       ? { recommendationSource: recommendationSource(payload.recommendation_source) } : {}),
+    label: parseRepositoryLabel(payload.label),
     serveId: nullableText(payload.serve_id),
     feedSessionId:nullableText(payload.feed_session_id),
     originalImpression:parseOriginalFeedImpression(payload.client_original_impression),

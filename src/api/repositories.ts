@@ -7,6 +7,7 @@ export { repositoryDetailQueryKey } from '@/models/repository';
 
 export type RepositoryApiPayload = {
   recommendation_source?: unknown;
+  label?: unknown;
   repo_id?: unknown;
   id?: unknown;
   github_id?: unknown;
