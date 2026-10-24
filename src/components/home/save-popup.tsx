@@ -370,7 +370,7 @@ export function SavePopup({
       ).values()];
       setMessage({
         type: 'success',
-        text: result.saved
+        text: result.selectedListIds.length > 0
           ? `Saved to ${result.selectedListIds.length} ${result.selectedListIds.length === 1 ? 'List' : 'Lists'}.`
           : 'Removed from Lists.',
       });

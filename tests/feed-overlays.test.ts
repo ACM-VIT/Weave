@@ -765,3 +765,15 @@ test('a failed complete membership load can retry in the save sheet without allo
     assert.deepEqual(app.requests, ['save:repo', 'save:repo', 'save:repo']);
   } finally {await app.unmount();}
 });
+
+test('removing current memberships never reports Saved to zero Lists when an older save remains', async () => {
+  const app = feed([]);
+  app.setSave(async () => ({saved:true,selectedListIds:[],saveStateChanged:false}));
+  app.clearSelectedLists();
+  try {
+    await app.mountStandaloneSave('00000000-0000-4000-8000-000000000011');
+    await app.press('Save repository to selected Lists');
+    assert.ok(app.messages.includes('Removed from Lists.'));
+    assert.ok(!app.messages.includes('Saved to 0 Lists.'));
+  } finally {await app.unmount();}
+});
