@@ -130,7 +130,12 @@ integration('registered onboarding and profile edits persist canonical context w
       const latest=(await patch({})).body.data;
       assert.equal(latest.full_name,'Concurrent name');assert.equal(latest.avatar_url,'https://example.invalid/concurrent.png');
       const sameBefore=await frontier();
-      const identical=await Promise.all([patch({bio:'Same concurrent edit'}),patch({bio:'Same concurrent edit'})]);
+      await gate`BEGIN`;locked=true;
+      await gate`SELECT user_id FROM app.users WHERE user_id=${userId}::uuid FOR UPDATE`;
+      pending.push(patch({bio:'Same concurrent edit'}));await waitForBlocked(1);
+      pending.push(patch({bio:'Same concurrent edit'}));await waitForBlocked(2);
+      await gate`ROLLBACK`;locked=false;
+      const identical=await Promise.all(pending.slice(2));
       identical.forEach(result=>assert.equal(result.status,200));
       assert.equal(identical[0].body.data.profile_version,identical[1].body.data.profile_version);
       const sameAfter=await frontier();
