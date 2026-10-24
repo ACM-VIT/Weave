@@ -26,3 +26,19 @@ test('preserves commit pinned relative paths and decodes HTML entities', () => {
     ...context, readmeBaseUrl: `https://raw.githubusercontent.com/org/repo/${'a'.repeat(40)}/docs/`,
   }), [`https://raw.githubusercontent.com/org/repo/${'a'.repeat(40)}/demo.mp4?x=1&y=2`]);
 });
+
+test('GitHub file pages remain links rather than unplayable video previews', () => {
+  const markdown = [
+    '[file](https://github.com/org/repo/blob/main/demo.mp4)',
+    '[directory](https://github.com/org/repo/tree/main/demo.webm)',
+    '<video src="https://github.com/org/repo/blob/main/demo.mov?raw=true"></video>',
+    '[raw](https://raw.githubusercontent.com/org/repo/main/demo.mp4)',
+    '[attachment](https://github.com/user-attachments/assets/1234-abcd)',
+    '[cdn](https://cdn.example.com/demo.webm)',
+  ].join('\n');
+  assert.deepEqual(extractReadmeVideos(markdown, context), [
+    'https://raw.githubusercontent.com/org/repo/main/demo.mp4',
+    'https://github.com/user-attachments/assets/1234-abcd',
+    'https://cdn.example.com/demo.webm',
+  ]);
+});

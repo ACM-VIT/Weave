@@ -9,7 +9,10 @@ export function extractReadmeVideos(markdown: string | null | undefined, context
     const url = resolveReadmeImageUrl(source, context);
     if (!url) return;
     const parsed = new URL(url);
-    const direct = /\.(?:mp4|webm|mov|m4v|ogv)$/i.test(parsed.pathname);
+    // GitHub repository URLs serve HTML file pages even when they end in a
+    // media extension. Canonical raw/CDN files remain playable sources.
+    const direct = parsed.hostname !== 'github.com'
+      && /\.(?:mp4|webm|mov|m4v|ogv)$/i.test(parsed.pathname);
     const attachment = parsed.hostname === 'github.com'
       && /^\/user-attachments\/assets\/[a-z0-9-]+\/?$/i.test(parsed.pathname);
     if (direct || attachment) videos.add(url);
