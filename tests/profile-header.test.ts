@@ -40,6 +40,10 @@ test('long profile identity remains readable and every header action retains its
     assert.ok(text, 'the complete username remains available');
     assert.ok(text.props.style.fontSize >= 16, 'long usernames must not shrink into unreadable text');
     assert.equal(text.props.adjustsFontSizeToFit, undefined);
+    const texts = root.root.findAllByType('Text');
+    const nameText = texts.find(node => node.props.children === 'Krishang Zinzuwadia')!;
+    assert.ok(nameText.props.style.fontSize > text.props.style.fontSize, 'display name is the primary identity');
+    assert.ok(texts.indexOf(nameText) < texts.indexOf(text), 'the name precedes the secondary handle');
     const buttons = root.root.findAllByType('Pressable');
     assert.equal(buttons.length, 6);
     for (const button of buttons) await act(async () => {button.props.onPress();});

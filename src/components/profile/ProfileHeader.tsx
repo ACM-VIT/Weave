@@ -33,8 +33,8 @@ export function ProfileHeader({ username, name, job, isTablet, isCompact, stats,
         </View>
       </View>
       <View style={styles.identity}>
-        {username ? <Text selectable numberOfLines={2} className="font-nataBold" style={styles.username}>@{username}</Text> : null}
-        {name ? <Text selectable className="font-nataSemiBold" style={styles.name}>{name}</Text> : null}
+        {name ? <Text selectable className="font-nataBold" style={styles.name}>{name}</Text> : null}
+        {username ? <Text selectable numberOfLines={2} className="font-nata" style={styles.username}>@{username}</Text> : null}
         {job ? <Text numberOfLines={4} className="font-nata" style={styles.bio}>{job}</Text> : null}
       </View>
       <View style={styles.stats}>
@@ -57,8 +57,8 @@ const styles = StyleSheet.create({
   actions: { flexDirection: 'row', flexShrink: 0, gap: 4 },
   action: { width: 48, height: 48, alignItems: 'center', justifyContent: 'center' },
   identity: { width: '100%', minWidth: 0, gap: 5 },
-  username: { color: '#F7F7F8', fontSize: 20, lineHeight: 26, flexShrink: 1 },
-  name: { color: '#C2C1C7', fontSize: 16, lineHeight: 23 },
+  username: { color: '#8A898F', fontSize: 16, lineHeight: 22, flexShrink: 1 },
+  name: { color: '#F7F7F8', fontSize: 22, lineHeight: 29 },
   bio: { color: '#8A898F', fontSize: 14, lineHeight: 21 },
   stats: { width: '100%', flexDirection: 'row', alignItems: 'stretch' },
   stat: { flex: 1, minWidth: 0, minHeight: 70, paddingVertical: 10, paddingHorizontal: 2, alignItems: 'center', justifyContent: 'flex-start', gap: 4, borderRadius: 10 },
