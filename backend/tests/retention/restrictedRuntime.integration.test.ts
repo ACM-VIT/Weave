@@ -9,8 +9,16 @@ const integration = process.env.RUN_RESTRICTED_RUNTIME_INTEGRATION === '1' ? tes
 test.after(async () => { if (process.env.RUN_RESTRICTED_RUNTIME_INTEGRATION === '1') await sqlClient.end({timeout:1}); });
 integration('restricted runtime allocates topics and prunes history without journal DELETE authority', async () => {
   const target = new URL(process.env.DATABASE_URL!);
-  assert.ok(['127.0.0.1','localhost'].includes(target.hostname) && target.pathname === '/weave_runtime_grants');
-  const admin = postgres(process.env.TEST_ADMIN_DATABASE_URL!, {max:1,prepare:false});
+  const adminTarget = new URL(process.env.TEST_ADMIN_DATABASE_URL!);
+  for (const candidate of [target,adminTarget]) {
+    assert.ok(process.env.NODE_ENV !== 'production'
+      && ['postgres:','postgresql:'].includes(candidate.protocol)
+      && ['127.0.0.1','localhost'].includes(candidate.hostname)
+      && candidate.pathname === '/weave_runtime_grants' && !candidate.search && !candidate.hash,
+    'Use the owned loopback weave_runtime_grants fixture database');
+  }
+  assert.equal(adminTarget.port || '5432',target.port || '5432','Admin must target the same owned fixture port');
+  const admin = postgres(adminTarget.href, {max:1,prepare:false});
   const aggregate = crypto.randomUUID();
   const older = crypto.randomUUID(), checkpoint = crypto.randomUUID(), feedback = crypto.randomUUID(), journal = crypto.randomUUID();
   const slug = `runtime-${crypto.randomUUID()}`;
