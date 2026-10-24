@@ -16,6 +16,7 @@ integration('registered onboarding persists stable taxonomy and batches topic wr
     import('express'), import('jsonwebtoken'), import('../../db/index.js'), import('../../routes/productV2Routes.js'), import('../../config/redis.js'),
   ]);
   const userId = crypto.randomUUID(), peerId = crypto.randomUUID();
+  const generatedTopics = new Set<string>();
   const app = express(); app.use(express.json()); app.use('/api/v2', router);
   const server = app.listen(0, '127.0.0.1');
   await new Promise<void>(resolve => server.listening ? resolve() : server.once('listening', resolve));
@@ -53,6 +54,7 @@ integration('registered onboarding persists stable taxonomy and batches topic wr
     const measurements: Array<{ topics: number; statements: number; milliseconds: number }> = [];
     for (const count of [1, 20, 100]) {
       const slugs = Array.from({ length: count }, (_, index) => `batch-${userId.slice(0, 8)}-${index}`);
+      for (const slug of slugs) generatedTopics.add(slug);
       if (count === 1) await sqlClient`INSERT INTO app.topics(slug,display_name) VALUES(${slugs[0]},'Existing display label')`;
       let statements = 0;
       const previousDebug = sqlClient.options.debug;
@@ -79,10 +81,39 @@ integration('registered onboarding persists stable taxonomy and batches topic wr
     await sqlClient`INSERT INTO app.user_stats(user_id) VALUES(${peerId}::uuid)`;
     await sqlClient`INSERT INTO app.user_feed_state(user_id) VALUES(${peerId}::uuid)`;
     const peerToken = jwt.sign({ userId: peerId, email: 'peer@invalid.test' }, process.env.JWT_SECRET!, { expiresIn: '1m' });
-    const shared = Array.from({ length: 100 }, (_, index) => `shared-${userId.slice(0, 8)}-${index}`);
+    const shared = Array.from({ length: 50 }, (_, index) => `shared-${userId.slice(0, 8)}-${index}`);
+    for (const slug of shared) generatedTopics.add(slug);
     const bodyFor = (topics: string[]) => ({ skills: topics.slice(0, 50), interests: topics.slice(50), tech_stack: [] });
-    const concurrent = await Promise.all([send(bodyFor(shared)), send(bodyFor([...shared].reverse()), peerToken)]);
-    for (const result of concurrent) assert.equal(result.status, 200, await result.text());
+    // Hold the first canonical topic row until both HTTP transactions are
+    // blocked inside their topic upsert. Merely starting requests together can
+    // miss lock contention; this also exposes inconsistent topic lock ordering.
+    await sqlClient`INSERT INTO app.topics(slug,display_name) VALUES(${shared[0]},${shared[0]})`;
+    const gate = await sqlClient.reserve();
+    let concurrent: Promise<Response[]> | undefined;
+    try {
+      await gate`BEGIN`;
+      await gate`SELECT topic_id FROM app.topics WHERE slug=${shared[0]} FOR UPDATE`;
+      const deadline = Date.now() + 5_000;
+      const waitForBlocked = async (count: number) => {
+        while (true) {
+          const [{ blocked }] = await sqlClient`SELECT count(*)::int AS blocked FROM pg_stat_activity
+            WHERE datname=current_database() AND wait_event_type='Lock' AND query ILIKE '%INSERT INTO app.topics%'`;
+          if (blocked === count) return;
+          assert.ok(Date.now() < deadline, 'both requests must reach the blocked topic write');
+          await new Promise(resolve => setTimeout(resolve, 5));
+        }
+      };
+      const first = send(bodyFor(shared));
+      concurrent = Promise.all([first]); void concurrent.catch(() => undefined);
+      await waitForBlocked(1);
+      concurrent = Promise.all([first, send(bodyFor([...shared].reverse()), peerToken)]);
+      void concurrent.catch(() => undefined);
+      await waitForBlocked(2);
+    } finally {
+      try { await gate`ROLLBACK`; } finally { gate.release(); }
+      if (concurrent) await Promise.allSettled([concurrent]);
+    }
+    for (const result of await concurrent!) assert.equal(result.status, 200, await result.text());
     for (const id of [userId, peerId]) {
       const rows = await sqlClient`SELECT topic.slug FROM app.user_topics membership JOIN app.topics topic USING(topic_id)
         WHERE membership.user_id=${id}::uuid ORDER BY topic.slug`;
@@ -95,6 +126,7 @@ integration('registered onboarding persists stable taxonomy and batches topic wr
       await sqlClient`DELETE FROM app.users WHERE user_id=${id}::uuid`;
       await sqlClient`DELETE FROM auth.users WHERE id=${id}::uuid`;
     }
+    await sqlClient`DELETE FROM app.topics WHERE slug=ANY(${[...generatedTopics]}::text[])`;
     redis.disconnect(); await sqlClient.end({ timeout: 1 });
   }
 });

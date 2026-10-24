@@ -184,6 +184,7 @@ integration('consented public import uses actual HTTP/SQL/Redis, rolls back fail
     await sqlClient`DELETE FROM app.social_profiles WHERE provider='github' AND provider_subject=${githubId}`;
     await sqlClient`DELETE FROM app.users WHERE user_id=ANY(${[user, peer]}::uuid[])`;
     await sqlClient`DELETE FROM auth.users WHERE id=ANY(${[user, peer]}::uuid[])`;
+    await sqlClient`DELETE FROM app.topics WHERE slug=${importTopic}`;
     redis.disconnect(); await sqlClient.end({ timeout: 1 });
   }
 });
