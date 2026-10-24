@@ -162,6 +162,10 @@ test('request pacing includes consecutive repair attempts without real waits',as
   now+=10000;
   await limiter.wait();
   assert.equal(delays.length,2,'No wait is needed after the request interval has elapsed');
+  const concurrentDelays:number[]=[];
+  const shared=new ReadmeRequestLimiter(1,()=>0,async milliseconds=>{concurrentDelays.push(milliseconds);});
+  await Promise.all(Array.from({length:4},()=>shared.wait()));
+  assert.deepEqual(concurrentDelays,[60000,120000,180000],'concurrent attempts and repairs reserve distinct RPM slots');
 });
 
 test('Gemini distinguishes exhausted daily quota from a retryable minute limit',async()=>{

@@ -10,6 +10,7 @@ import { PostgresRepositoryPersistence } from '../../adapters/postgresRepository
 import type { ReadmeSummaryContent } from '../../contracts/readmeSummary.v2.js';
 import { ReadmeSummaryService, enqueueReadmeSummary, readmeSummaryProjection, getReadmeSummaryStatus } from '../../services/readmeSummaryService.js';
 import { ReadmeSummaryError, type ReadmeSummaryGenerator } from '../../services/readmeSummaryGenerator.js';
+import { runReadmeSummaryWorker } from '../../workers/readmeSummaryWorker.js';
 
 const integration=process.env.RUN_README_SUMMARY_INTEGRATION==='1'?test:test.skip;
 const content:ReadmeSummaryContent={
@@ -91,6 +92,45 @@ integration('V2 jobs are idempotent, fenced, regenerable, and retried without to
 
 
 test.after(async () => { if (process.env.RUN_README_SUMMARY_INTEGRATION === '1') await sqlClient.end({ timeout: 1 }); });
+
+integration('bounded digest processing improves ready latency while retaining real SQL lease and publication ownership',async t=>{
+  const url=new URL(process.env.README_SUMMARY_TEST_DATABASE_URL??'');
+  assert.ok(['127.0.0.1','localhost','[::1]'].includes(url.hostname));assert.equal(url.pathname,'/weave_scroll');
+  const db=postgres(url.toString(),{max:4,prepare:false}),ids=Array.from({length:6},()=>crypto.randomUUID());
+  try {
+    for(const [index,id] of ids.entries()){
+      const name=`worker-pool-${index}`,githubId=String(BigInt(Date.now())*100n+BigInt(index));
+      await db`INSERT INTO app.repos(repo_id,github_id,full_name,owner,name,url)
+        VALUES(${id}::uuid,${githubId}::bigint,${'test/'+name},'test',${name},${'https://github.com/test/'+name})`;
+      await db`INSERT INTO app.repo_content(repo_id,content_hash,content_version,readme)
+        VALUES(${id}::uuid,'pool-v1',1,${'Canonical source document. '.repeat(30)})`;
+    }
+    for(const concurrency of [1,2]){
+      let active=0,maximum=0;const ready:{id:string;milliseconds:number}[]=[];
+      const service=new ReadmeSummaryService({modelVersion:'pool-test',async generate(source){
+        active++;maximum=Math.max(maximum,active);
+        try {await delay(source.full_name.endsWith('-0')?120:20);return content;}
+        finally {active--;}
+      }},db);
+      await service.enqueueMissing(ids,concurrency===2);
+      await db`UPDATE telemetry.readme_summary_jobs job SET created_at=now()-interval '1 hour'+ordered.ordinal*interval '1 millisecond'
+        FROM unnest(${ids}::uuid[]) WITH ORDINALITY AS ordered(repo_id,ordinal) WHERE job.repo_id=ordered.repo_id`;
+      const started=performance.now();
+      const observe=(result:Awaited<ReturnType<ReadmeSummaryService['processOne']>>)=>{
+        assert.equal(result.status,'completed');ready.push({id:result.repo_id!,milliseconds:performance.now()-started});
+      };
+      if(concurrency===1){for(let count=0;count<ids.length;count++)observe(await service.processOne(ids));}
+      else assert.deepEqual(await runReadmeSummaryWorker(service,{limit:ids.length,concurrency,once:true,repoIds:ids,onResult:observe}),{processed:6,failures:0});
+      t.diagnostic(JSON.stringify({concurrency,milliseconds:Math.round((performance.now()-started)*100)/100,
+        secondRepositoryReadyMs:Math.round(ready.find(value=>value.id===ids[1])!.milliseconds*100)/100,maximumProviders:maximum}));
+      assert.equal(maximum,concurrency);assert.equal(new Set(ready.map(value=>value.id)).size,ids.length);
+      if(concurrency===2)assert.notEqual(ready[0].id,ids[0],'the slow first provider must not hold every later digest');
+      const artifacts=await db`SELECT repo_id FROM app.repo_readme_summaries WHERE repo_id=ANY(${ids}::uuid[]) AND active`;
+      assert.equal(artifacts.length,ids.length);assert.equal(new Set(artifacts.map(row=>row.repo_id)).size,ids.length);
+      assert.equal(Number((await db`SELECT count(*) FROM telemetry.readme_summary_jobs WHERE repo_id=ANY(${ids}::uuid[]) AND status='claimed'`)[0].count),0);
+    }
+  } finally {await db`DELETE FROM app.repos WHERE repo_id=ANY(${ids}::uuid[])`;await db.end({timeout:1});}
+});
 
 integration('README and card-summary completions serialize on repository before content', async () => {
   const url = new URL(process.env.README_SUMMARY_TEST_DATABASE_URL ?? '');
