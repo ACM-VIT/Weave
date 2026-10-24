@@ -23,6 +23,17 @@ integration('restricted runtime allocates topics and prunes history without jour
   const older = crypto.randomUUID(), checkpoint = crypto.randomUUID(), feedback = crypto.randomUUID(), journal = crypto.randomUUID();
   const slug = `runtime-${crypto.randomUUID()}`;
   try {
+    const functions = await admin`
+      SELECT p.proname,p.proconfig FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
+      WHERE p.prosecdef AND (n.nspname='private_scoring' OR
+        (n.nspname='telemetry' AND p.proname IN ('prune_runtime_history','prune_model_transients')))
+    `;
+    assert.equal(functions.length,12);
+    for (const row of functions) {
+      const setting = (row.proconfig as string[]).find(value => value.startsWith('search_path='));
+      assert.deepEqual(setting?.slice('search_path='.length).split(',').map(value => value.trim()),
+        ['pg_catalog','pg_temp'],`${row.proname} must resolve trusted built-in types before temporary schemas`);
+    }
     assert.equal((await sqlClient`SELECT current_user AS role`)[0].role,'ghsocial_backend');
     await sqlClient`INSERT INTO app.topics(slug,display_name) VALUES(${slug},'Restricted runtime')`;
     for (const [id,kind,version] of [[older,'repo_index',1],[checkpoint,'repo_index',2],[feedback,'feedback',0],[journal,'model_operation',0]] as const) {
@@ -51,10 +62,13 @@ integration('restricted runtime allocates topics and prunes history without jour
       WHERE p.oid='telemetry.prune_runtime_history(integer,integer)'::regprocedure
         AND acl.grantee=0 AND acl.privilege_type='EXECUTE') AS allowed`)[0].allowed,false);
   } finally {
-    await admin`DELETE FROM telemetry.ml_outbox WHERE aggregate_id=${aggregate}::uuid`;
-    await admin`DELETE FROM app.users WHERE user_id=${aggregate}::uuid`;
-    await admin`DELETE FROM auth.users WHERE id=${aggregate}::uuid`;
-    await admin`DELETE FROM app.topics WHERE slug=${slug}`;
-    await admin.end({timeout:1});
+    try {
+      await admin`DELETE FROM telemetry.ml_outbox WHERE aggregate_id=${aggregate}::uuid`;
+      await admin`DELETE FROM app.users WHERE user_id=${aggregate}::uuid`;
+      await admin`DELETE FROM auth.users WHERE id=${aggregate}::uuid`;
+      await admin`DELETE FROM app.topics WHERE slug=${slug}`;
+    } finally {
+      await admin.end({timeout:1});
+    }
   }
 });
