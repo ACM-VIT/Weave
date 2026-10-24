@@ -1,3 +1,6 @@
+import { runReadmeSummaryWorker } from '../../workers/readmeSummaryWorker.js';
+import { ReadmeSummaryService, getReadmeSummaryStatus } from '../../services/readmeSummaryService.js';
+import { digestFixture } from '../fixtures/readmeDigest.js';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import crypto from 'node:crypto';
@@ -629,4 +632,62 @@ integration('legacy refreshes require the current canonical version, not any old
     await sqlClient`DELETE FROM telemetry.ml_outbox WHERE aggregate_id=${aggregateId}::uuid`;
     await sqlClient`DELETE FROM app.repos WHERE repo_id=${aggregateId}::uuid`;
   }
+});
+
+
+integration('bounded digest processing improves ready latency while retaining real SQL lease and publication ownership',async t=>{
+  assertDisposableDatabase();
+  const url=new URL(process.env.README_SUMMARY_TEST_DATABASE_URL??'');
+  assert.ok(['127.0.0.1','localhost','[::1]'].includes(url.hostname));assert.equal(url.pathname,'/weave_scroll');
+  assert.equal(url.toString(),new URL(process.env.DATABASE_URL!).toString());
+  const db=postgres(url.toString(),{max:4,prepare:false}),ids=Array.from({length:6},()=>crypto.randomUUID());
+  try {
+    for(const [index,id] of ids.entries()){
+      const name=`worker-pool-${index}`,githubId=String(BigInt(Date.now())*100n+BigInt(index));
+      await db`INSERT INTO app.repos(repo_id,github_id,full_name,owner,name,url)
+        VALUES(${id}::uuid,${githubId}::bigint,${'test/'+name},'test',${name},${'https://github.com/test/'+name})`;
+      await db`INSERT INTO app.repo_content(repo_id,content_hash,content_version,readme)
+        VALUES(${id}::uuid,'pool-v1',1,${'Canonical source document. '.repeat(30)})`;
+    }
+    for(const concurrency of [1,2]){
+      let active=0,maximum=0;const ready:{id:string;milliseconds:number}[]=[];
+      const service=new ReadmeSummaryService({modelVersion:'pool-test',async generate(source){
+        active++;maximum=Math.max(maximum,active);
+        try {await delay(source.full_name.endsWith('-0')?120:20);return digestFixture;}
+        finally {active--;}
+      }},db);
+      await service.enqueueMissing(ids,concurrency===2);
+      if(concurrency===1){
+        const first=await service.claim([ids[0]]);assert.ok(first);
+        assert.equal(await service.complete({...first,claim_token:crypto.randomUUID()},digestFixture),false);
+        await db`UPDATE telemetry.readme_summary_jobs SET claimed_at=now()-interval '6 minutes' WHERE job_id=${first.job_id}::uuid`;
+        const recovered=await service.claim([ids[0]]);assert.ok(recovered);assert.notEqual(recovered.claim_token,first.claim_token);
+        assert.equal(await service.complete(first,digestFixture),false,'expired owner cannot publish after recovery');
+        assert.equal(await service.complete(recovered,digestFixture),true);
+        assert.equal(await service.complete(recovered,digestFixture),false,'completion replay cannot publish twice');
+        await service.enqueueMissing(ids,true);
+      }
+      await db`UPDATE telemetry.readme_summary_jobs job SET created_at=now()-interval '1 hour'+ordered.ordinal*interval '1 millisecond'
+        FROM unnest(${ids}::uuid[]) WITH ORDINALITY AS ordered(repo_id,ordinal) WHERE job.repo_id=ordered.repo_id`;
+      const started=performance.now();
+      const observe=(result:Awaited<ReturnType<ReadmeSummaryService['processOne']>>)=>{
+        assert.equal(result.status,'completed');ready.push({id:result.repo_id!,milliseconds:performance.now()-started});
+      };
+      if(concurrency===1){for(let count=0;count<ids.length;count++)observe(await service.processOne(ids));}
+      else assert.deepEqual(await runReadmeSummaryWorker(service,{limit:ids.length,concurrency,once:true,repoIds:ids,onResult:observe}),{processed:6,failures:0});
+      t.diagnostic(JSON.stringify({concurrency,milliseconds:Math.round((performance.now()-started)*100)/100,
+        secondRepositoryReadyMs:Math.round(ready.find(value=>value.id===ids[1])!.milliseconds*100)/100,maximumProviders:maximum}));
+      assert.equal(maximum,concurrency);assert.equal(new Set(ready.map(value=>value.id)).size,ids.length);
+      if(concurrency===2)assert.notEqual(ready[0].id,ids[0],'the slow first provider must not hold every later digest');
+      const artifacts=await db`SELECT repo_id FROM app.repo_readme_summaries WHERE repo_id=ANY(${ids}::uuid[]) AND active`;
+      assert.equal(artifacts.length,ids.length);assert.equal(new Set(artifacts.map(row=>row.repo_id)).size,ids.length);
+      assert.equal(Number((await db`SELECT count(*) FROM telemetry.readme_summary_jobs WHERE repo_id=ANY(${ids}::uuid[]) AND status='claimed'`)[0].count),0);
+    }
+    const verifier=new ReadmeSummaryService({modelVersion:'pool-test',async generate(){return digestFixture;}},db);
+    await verifier.enqueueMissing([ids[0]],true);
+    const stale=await verifier.claim([ids[0]]);assert.ok(stale);
+    await db`UPDATE app.repo_content SET content_version=2,content_hash='pool-v2' WHERE repo_id=${ids[0]}::uuid`;
+    assert.equal(await verifier.complete(stale,digestFixture),false,'an edit during generation prevents stale publication');
+    assert.equal((await getReadmeSummaryStatus(ids[0],db))?.summary,null);
+  } finally {await db`DELETE FROM app.repos WHERE repo_id=ANY(${ids}::uuid[])`;await db.end({timeout:1});}
 });

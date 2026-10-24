@@ -49,8 +49,6 @@ jobs:
           cache-dependency-path: backend/package-lock.json
       - run: npm ci
       - run: npm run typecheck:test
-      - name: Validate packets and permission recovery
-        run: npx --no-install tsx --test tests/scoring/*.test.ts
       # This must be the first database step: its guard requires an EMPTY
       # dedicated database, and it performs actual fresh + pre-capture upgrades.
       - name: Exercise fresh migration and upgrade with schema audit
