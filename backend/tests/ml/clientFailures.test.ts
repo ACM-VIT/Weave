@@ -430,7 +430,7 @@ test('description fallback may repeat its canonical description even when README
     repository: {
       ...repositoryJob.repository,
       description,
-      readme: `# Project\n\n${description}`,
+      readme: `# Project\n\n${description}\n\nAdditional reference material follows the description.`,
     },
   };
   const fallback = repositoryResponse({
@@ -442,6 +442,13 @@ test('description fallback may repeat its canonical description even when README
     },
   });
   assert.deepEqual(parseMlRepositoryIndexResponse(fallback, fallbackJob), fallback);
+  const readmeOnly = 'Additional README context describes detailed internal routing and worker behavior beyond the canonical project description.';
+  assert.throws(() => parseMlRepositoryIndexResponse(repositoryResponse({
+    card_summary: { ...fallback.card_summary, summary: `${description} ${readmeOnly}` },
+  }), {
+    ...fallbackJob,
+    repository: { ...fallbackJob.repository, readme: `${description} ${readmeOnly}` },
+  }), /invalid bounded content/, 'Description provenance must not allow adjacent README-only text');
   assert.throws(() => parseMlRepositoryIndexResponse(repositoryResponse({
     card_summary: {
       ...fallback.card_summary,

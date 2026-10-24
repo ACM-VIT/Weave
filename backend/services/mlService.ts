@@ -142,7 +142,9 @@ function containsCopiedPassage(
   if (!readme) return false;
   const candidate = normalizedProse(summary);
   const source = normalizedProse(readme);
-  const allowed = allowedSource ? normalizedProse(allowedSource) : '';
+  // Windows retain word-boundary spaces inside the README/summary. Preserve
+  // those same boundaries around the independently trimmed allowed source.
+  const allowed = allowedSource ? ` ${normalizedProse(allowedSource)} ` : '';
   if (candidate.length < 80 || source.length < 80) return false;
   for (let index = 0; index <= candidate.length - 80; index++) {
     const passage = candidate.slice(index, index + 80);
