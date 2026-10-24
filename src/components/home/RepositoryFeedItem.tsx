@@ -224,7 +224,8 @@ export function RepositoryFeedItem({
       SAVE_SWIPE_VERTICAL_FAIL_DISTANCE,
     ])
     .maxPointers(1)
-    .onEnd((event) => {
+    .onEnd((event, success) => {
+      if (!success) return;
       if (shouldOpenSavePicker(event.translationX, event.translationY)) {
         scheduleOnRN(openSaveFromSwipe);
       }

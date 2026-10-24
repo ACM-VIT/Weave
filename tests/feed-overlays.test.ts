@@ -161,14 +161,14 @@ function feed(ids: string[], reducedMotion = false, attribution?: { ownerId: str
     requests, events, client,
     get swipe() {return root.root.findByType('GestureDetector').props;},
     get saveRevealed() {return root.root.findAllByType('Pressable').some(node => node.props.accessibilityLabel === 'Close Save actions');},
-    async swipeRight(x = 100, y = 0) {
+    async swipeRight(x = 100, y = 0, success = true) {
       const config = this.swipe.gesture.config;
       assert.equal(config.enabled, true, 'right-swipe must be available on web');
       await act(async () => {
         config.onStart?.();
         config.onUpdate?.({translationX: x, translationY: y});
-        config.onEnd({translationX: x, translationY: y});
-        config.onFinalize?.({}, true);
+        config.onEnd({translationX: x, translationY: y}, success);
+        config.onFinalize?.({}, success);
       });
     },
     setExternalOpen(value: () => Promise<void>) {openExternal=value;},
@@ -726,6 +726,19 @@ test('one web right-swipe opens the complete List picker without a reveal or sav
     assert.deepEqual(app.requests, ['save:repo']);
     assert.equal(app.swipe.gesture.config.enabled, false, 'an open picker blocks underlying gestures');
     assert.equal(app.events.filter(event => event.action === 'save').length, 0);
+  } finally {await app.unmount();}
+});
+
+test('a cancelled swipe beyond the threshold does not open or load Lists', async () => {
+  const app = feed(['repo'], true, {ownerId: 'viewer', repository: {}, platform: 'web', viewable: true});
+  await app.mount();
+  try {
+    await app.swipeRight(150, 0, false);
+    assert.equal(app.mountedOverlays, 0);
+    assert.deepEqual(app.requests, []);
+    await app.swipeRight(150, 0, true);
+    assert.equal(app.mountedOverlays, 1, 'the next completed swipe still works');
+    assert.deepEqual(app.requests, ['save:repo']);
   } finally {await app.unmount();}
 });
 
