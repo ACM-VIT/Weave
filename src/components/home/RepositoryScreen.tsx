@@ -346,6 +346,10 @@ export function RepositoryScreen({
                 isFollowing={repository.viewerFollowsOwner === true}
                 neutral
                 onFollowingChange={handleOwnerFollowingChange}
+                onFollowingCommitted={(following) => onQueueActivity?.({
+                  repo_id: repository.id,
+                  action: following ? FEEDBACK_ACTIONS.follow : FEEDBACK_ACTIONS.unfollow,
+                }, true)}
                 stateKnown={ownerFollowStateKnown}
                 targetProfileId={repository.ownerProfileId}
                 targetUserId={repository.ownerUserId}
@@ -454,7 +458,7 @@ export function RepositoryScreen({
           onPress={toggleLike}
         />
         <ActionButton
-          accessibilityLabel={disliked ? 'Remove dislike' : 'Dislike repository'}
+          accessibilityLabel={disliked ? 'Undo not interested' : 'Not interested in this repository'}
           active={disliked}
           activeColor={REFERENCE_THEME.danger}
           dense={veryShort}

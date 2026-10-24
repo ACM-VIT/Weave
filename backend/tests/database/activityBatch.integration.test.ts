@@ -153,3 +153,24 @@ integration('commutative batches use bounded SQL statements rather than per-even
     assert.ok(row.statements <= 16, `${row.type}: ${row.statements} statements`);
   }
 });
+
+integration('follow observations are attributed and idempotent without product or ML mutations', async () => {
+  const f = await fixture();
+  const before = (await sqlClient`SELECT feed_version,feedback_version FROM app.user_feed_state WHERE user_id=${f.users[0]}::uuid`)[0];
+  const events = [f.event('follow'), f.event('unfollow')];
+  const result = await processInteractionBatchV2(f.users[0], events);
+  assert.equal(result.accepted, 2);
+  assert.ok(result.results.every(row => row.feedback_version === undefined));
+  const recorded = await sqlClient`SELECT event_type FROM telemetry.interaction_events
+    WHERE user_id=${f.users[0]}::uuid ORDER BY event_type`;
+  assert.deepEqual(recorded.map(row => row.event_type), ['follow', 'unfollow']);
+  const replay = await processInteractionBatchV2(f.users[0], events);
+  assert.equal(replay.accepted, 0);
+  assert.equal(replay.duplicates, 2);
+  assert.equal((await sqlClient`SELECT 1 FROM telemetry.ml_outbox WHERE aggregate_id=${f.users[0]}::uuid`).length, 0);
+  const after = (await sqlClient`SELECT feed_version,feedback_version FROM app.user_feed_state WHERE user_id=${f.users[0]}::uuid`)[0];
+  assert.deepEqual(after, before);
+  const stats = (await sqlClient`SELECT following_count,followers_count FROM app.user_stats WHERE user_id=${f.users[0]}::uuid`)[0];
+  assert.deepEqual(stats, { following_count: 0, followers_count: 0 });
+  await assert.rejects(processInteractionBatchV2(f.users[1], [f.event('follow')]), /does not match its serve item/);
+});

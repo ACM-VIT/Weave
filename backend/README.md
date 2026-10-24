@@ -815,3 +815,50 @@ empty disposable `weave_scroll` database. It rolls back its own minimal schema.
 It intentionally does not run under the migrated-suite `RUN_DATABASE_INTEGRATION`
 flag. Operator logs classify unavailable inventory as configuration, timeout,
 missing schema or unexpected failure without recording cursors or error text.
+
+
+## Recommendation action observations
+
+Card owner Follow/Unfollow records `follow`/`unfollow` through the existing durable
+interaction outbox after the authoritative follow request succeeds. These are
+client observations: recording one does not change follow state, engagement
+counters, preference versions, or ML feedback. The existing follow endpoints
+remain authoritative. Initial follow-status reads do not create action events.
+The explicit Not interested action uses the existing `dislike` signal; Undo uses
+`undislike`, preserving the current preference and ML contract. Save, share,
+README open and GitHub open retain their separate event types. No List names,
+categories or dismissal reasons are collected by this change.
+
+Deploy the backend event allowlist before distributing the app that emits the
+new observations. Old apps continue to work against the new backend; an older
+backend rejects unknown event types, so app-first deployment can block a batch.
+No ML schema update or database migration is needed.
+
+For feed action counts by public recommendation source, an authorized analyst
+can use the existing serve attribution without returning identities or scores:
+
+```sql
+WITH observations AS (
+  SELECT CASE WHEN item.source IN ('semantic','personalized','trending','popular',
+    'fresh','fallback') THEN item.source ELSE 'unknown' END AS source,
+    event.event_type, count(*) AS observations
+  FROM telemetry.interaction_events event
+  JOIN telemetry.feed_serves serve ON serve.serve_id=event.serve_id
+    AND serve.user_id=event.user_id AND serve.session_id=event.session_id
+  JOIN telemetry.feed_serve_items item ON item.serve_id=serve.serve_id
+    AND item.repo_id=event.repo_id AND item.position=event.position
+  WHERE event.server_received_at >= now()-interval '7 days'
+  GROUP BY 1,2
+), impressions AS (
+  SELECT source,observations FROM observations WHERE event_type='impression'
+)
+SELECT event.source,event.event_type,event.observations,
+  round(event.observations::numeric/nullif(impressions.observations,0),4)
+    AS actions_per_recorded_impression
+FROM observations event LEFT JOIN impressions USING(source)
+ORDER BY source,event_type;
+```
+
+This is an observation ratio, not a unique-user conversion rate; repeated actions
+may exceed one per impression. Missing impressions yield NULL. Product-detail
+actions without feed attribution are outside this query.
