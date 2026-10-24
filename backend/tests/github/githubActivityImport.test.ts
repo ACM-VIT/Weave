@@ -150,16 +150,25 @@ test('one overall deadline aborts a stalled source while independent channels re
 test('source concurrency is bounded, pagination stays sequential and metadata precedence survives response order',async t=>{
   let active=0,maximum=0;
   const inSource=new Map<string,number>();const completionOrder:string[]=[];
+  const firstReplies=new Map<string,()=>void>();
   const f=await fixture((url,body,response)=>{
     const source=url.pathname==='/graphql'?'contributed':url.pathname.endsWith('/repos')?'owned':'starred';
     const page=source==='contributed'?(body.variables as {after:string|null}).after===null?1:2:Number(url.searchParams.get('page'));
     active++;maximum=Math.max(maximum,active);
     inSource.set(source,(inSource.get(source)??0)+1);assert.equal(inSource.get(source),1,'pages within a source must not overlap');
-    setTimeout(()=>{
+    const reply=()=>{
       active--;inSource.set(source,inSource.get(source)!-1);completionOrder.push(`${source}:${page}`);
       const rows=page===1?[source==='contributed'?{...contribution(1),description:'contributed'}:repository(1,{description:source})]:[];
       response.end(JSON.stringify(source==='contributed'?graph(rows,page===1,page===1?'next':null):rows));
-    },source==='owned'?60:source==='starred'?40:20);
+    };
+    if(page===1){
+      firstReplies.set(source,reply);
+      if(firstReplies.size===3){
+        const replies=['contributed','starred','owned'].map(source=>firstReplies.get(source)!);firstReplies.clear();
+        const emit=(index:number)=>{if(index<replies.length)setTimeout(()=>{replies[index]();emit(index+1);},20);};
+        emit(0);
+      }
+    } else setTimeout(reply,source==='owned'?60:source==='starred'?40:20);
   });
   try {
     const started=performance.now();
@@ -171,7 +180,7 @@ test('source concurrency is bounded, pagination stays sequential and metadata pr
     assert.deepEqual(result.repositories[0].sources,['owned','starred','contributed']);
     assert.ok(Object.values(result.sources).every(source=>source.pages===2&&source.count===1));
     assert.equal(f.requests.length,7,'profile plus two sequential pages per source');
-    assert.equal(completionOrder[0],'contributed:1');
+    assert.deepEqual(completionOrder.filter(value=>value.endsWith(':1')),['contributed:1','starred:1','owned:1']);
   } finally {await f.stop();}
 });
 
