@@ -59,9 +59,11 @@ export class FeedPaginationController {
     if (!version) this.unversionedRevision++;
   }
 
-  reset() {
+  getSessionId():string{return this.sessionId;}
+
+  reset(options:{preserveSession?:boolean}={}) {
     this.epoch++;
-    this.sessionId = createUuid();
+    if(!options.preserveSession)this.sessionId = createUuid();
     this.seen.clear();
     this.committedPages = [];
     this.version = this.minimumVersion = '0';
@@ -137,6 +139,7 @@ export class FeedPaginationController {
         // A continuation's internal cursor restart does not replace Home's first page.
         const page = await this.fetchPage(request.cursor, signal, request.id, this.sessionId, cursor === null);
         check();
+        if(page.sessionId)this.sessionId=page.sessionId;
         if (continuationMode && (page.mode ?? 'personalized') !== continuationMode) {
           throw Object.assign(new Error('Personalized recommendations are unavailable. Try again or refresh Home.'), {
             status: 503, code: 'PERSONALIZED_FEED_UNAVAILABLE',

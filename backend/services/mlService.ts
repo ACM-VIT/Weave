@@ -1,4 +1,8 @@
+import type { MlModelOperationBatch, MlModelOperationResponse, MlProfileWithdrawalBatch, MlProfileWithdrawalResponse, MlModelOperationStatusRequest, MlModelOperationStatusResponse, MlModelAuthorityRequest, MlModelAuthorityResponse } from '../contracts/ml.v2.js';
+import { parseModelAcknowledgement, parseWithdrawalAcknowledgement, parseModelOperationStatus, parseAppliedModelContext,modelRecord } from './modelOperationValidation.js';
+import { ModelOperationError } from '../contracts/modelOperations.js';
 import crypto from 'node:crypto';
+import { rejectDuplicateJsonKeys, validateCapturedRecommendation } from './capturedRecommendation.js';
 import { startSpan, mlOperation, httpOutcome } from '../observability/tracing.js';
 import type { StageOutcome } from '../observability/metrics.js';
 import { performance } from 'node:perf_hooks';
@@ -136,13 +140,36 @@ function containsCopiedPassage(
   allowedSource?: string | null,
 ): boolean {
   if (!readme) return false;
-  const candidate = normalizedProse(summary);
   const source = normalizedProse(readme);
-  const allowed = allowedSource ? normalizedProse(allowedSource) : '';
-  if (candidate.length < 80 || source.length < 80) return false;
-  for (let index = 0; index <= candidate.length - 80; index++) {
-    const passage = candidate.slice(index, index + 80);
-    if (source.includes(passage) && !allowed.includes(passage)) return true;
+  const allowed = normalizedProse(allowedSource ?? '');
+  if (source.length < 80) return false;
+  let segments = [normalizedProse(summary)];
+  if (allowed) {
+    // Canonical description sentences (including bounded excerpts) are source
+    // material, not README-only copying. Keep every other contiguous span;
+    // never join prose across an approved sentence or split adjacent unknowns.
+    segments = [];
+    const endings = [...maskSummaryAbbreviations(summary).matchAll(
+      new RegExp(SUMMARY_SENTENCE_END_PATTERN, 'gu'),
+    )].map(match => match.index! + match[0].length);
+    if (endings.at(-1) !== summary.length) endings.push(summary.length);
+    let start = 0;
+    let pending: string[] = [];
+    for (const end of endings) {
+      const sentence = normalizedProse(summary.slice(start, end));
+      start = end;
+      if (sentence && allowed.includes(sentence)) {
+        if (pending.length) segments.push(pending.join(' '));
+        pending = [];
+      } else if (sentence) pending.push(sentence);
+    }
+    if (pending.length) segments.push(pending.join(' '));
+  }
+  for (const segment of segments) {
+    for (let index = 0; index <= segment.length - 80; index++) {
+      const passage = segment.slice(index, index + 80);
+      if (source.includes(passage) && !allowed.includes(passage)) return true;
+    }
   }
   return false;
 }
@@ -238,6 +265,45 @@ export function validateRepositoryCardSummary(
   }
 }
 
+/** Bound decoded transport bytes before UTF-8 decoding or JSON parsing. */
+async function readBoundedResponse(response: Response, maximum: number, fatal = false): Promise<{ text: string; oversized: boolean }> {
+  if (!response.body) return { text: '', oversized: false };
+  const reader = response.body.getReader();
+  let buffer = Buffer.alloc(0);
+  let size = 0;
+  let complete = false;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) {
+        complete = true;
+        return { text: new TextDecoder('utf-8', { fatal }).decode(buffer.subarray(0, size)), oversized: false };
+      }
+      const retained = Math.min(value.byteLength, maximum - size);
+      const required = size + retained;
+      if (required > buffer.length) {
+        // Grow with actual work, without retaining one allocation per network
+        // chunk or a large backing buffer from an oversized chunk.
+        const grown = Buffer.allocUnsafe(Math.min(maximum, Math.max(required, buffer.length * 2, 16_384)));
+        buffer.copy(grown, 0, 0, size);
+        buffer = grown;
+      }
+      buffer.set(value.subarray(0, retained), size);
+      size = required;
+      if (retained < value.byteLength) {
+        // Diagnostics need only a small prefix. Streaming decode omits a final
+        // split UTF-8 sequence rather than inserting a replacement character.
+        return { text: new TextDecoder().decode(buffer.subarray(0, Math.min(size, 4_000)), { stream: true }), oversized: true };
+      }
+    }
+  } finally {
+    // Cancellation is initiated synchronously; do not wait for a remote peer's
+    // cancellation acknowledgement or convert overflow into deadline abort.
+    if (!complete) void reader.cancel().catch(() => undefined);
+    reader.releaseLock();
+  }
+}
+
 export class MlV2Client implements RecommendationPort, OutboxTransportPort {
   private consecutiveGenerateFailures = 0;
   private circuitState: RecommendationCircuitState = 'closed';
@@ -271,6 +337,7 @@ export class MlV2Client implements RecommendationPort, OutboxTransportPort {
     idempotencyKey: string,
     timeoutMs = this.config.timeoutMs,
     responseFormat: 'required-json' | 'optional-json' = 'required-json',
+    scoringCaptureCapability?: string,
   ): Promise<{ status: number; body: unknown; retryAfterMs?: number }> {
     const span = startSpan(mlOperation(path), 'ml_transport');
     let outcome: StageOutcome = 'failure';
@@ -283,6 +350,7 @@ export class MlV2Client implements RecommendationPort, OutboxTransportPort {
         headers: {
           'content-type': 'application/json',
           'x-internal-secret': this.config.internalSecret,
+          ...(scoringCaptureCapability ? { 'x-scoring-capture-capability': scoringCaptureCapability } : {}),
           'x-request-id': crypto.randomUUID(),
           traceparent: span.traceparent,
           'idempotency-key': idempotencyKey,
@@ -295,8 +363,16 @@ export class MlV2Client implements RecommendationPort, OutboxTransportPort {
         body: JSON.stringify(payload),
         signal: controller.signal,
       });
-      const text = await response.text();
-      const oversized = Buffer.byteLength(text) > this.config.maxResponseBytes;
+      let text: string, oversized: boolean;
+      try {
+        ({ text, oversized } = await readBoundedResponse(response,
+          scoringCaptureCapability ? Math.min(this.config.maxResponseBytes, 1_000_000) : this.config.maxResponseBytes,
+          Boolean(scoringCaptureCapability)));
+      } catch (error) {
+        if (controller.signal.aborted) throw error;
+        if (scoringCaptureCapability) throw new MlRecommendationError('ML captured response decoding failed.', response.status, 'contract');
+        throw error;
+      }
       if (oversized && response.ok) {
         if (responseFormat === 'required-json') {
           if (path === '/api/v2/recommendations/generate') {
@@ -308,7 +384,7 @@ export class MlV2Client implements RecommendationPort, OutboxTransportPort {
       }
       let body: unknown = oversized ? text.slice(0, 4_000) : null;
       if (text && !oversized) {
-        try { body = JSON.parse(text); }
+        try { body = JSON.parse(text); if (scoringCaptureCapability) rejectDuplicateJsonKeys(text); }
         catch {
           if (responseFormat === 'required-json' && response.ok) {
             if (path === '/api/v2/recommendations/generate') throw new MlRecommendationError('ML returned invalid JSON.', response.status, 'contract');
@@ -327,7 +403,8 @@ export class MlV2Client implements RecommendationPort, OutboxTransportPort {
       outcome = httpOutcome(response.status);
       return { status: response.status, body, retryAfterMs };
     } catch (error) {
-      if (controller.signal.aborted) throw new MlTransportTimeoutError('ML transport deadline exceeded.', { cause: error });
+      if (controller.signal.aborted) throw new MlTransportTimeoutError('ML transport deadline exceeded.', scoringCaptureCapability ? undefined : { cause: error });
+      if (scoringCaptureCapability && !(error instanceof MlRecommendationError)) throw new Error('ML captured transport failed.');
       throw error;
     } finally {
       clearTimeout(timer);
@@ -335,7 +412,15 @@ export class MlV2Client implements RecommendationPort, OutboxTransportPort {
     }
   }
 
-  async generate(input: MlRecommendationRequest, work?: { deadline: number }): Promise<MlRecommendationResponse> {
+  async generate(input: MlRecommendationRequest, work?: { deadline: number; scoringCaptureCapability?: string }): Promise<MlRecommendationResponse> {
+    if (input.scoring_capture && (input.scoring_capture.schema_version !== 1
+      || input.scoring_capture.encoding !== 'float32-le-v1'
+      || !/^[1-9][0-9]{0,18}$/.test(String(input.feed_version)) || typeof input.feed_version !== 'string'
+      || BigInt(input.feed_version) > 9223372036854775807n
+      || !work?.scoringCaptureCapability || work.scoringCaptureCapability.length !== 64
+      || !/^[0-9a-f]{64}$/.test(work.scoringCaptureCapability))) {
+      throw new MlRecommendationError('ML captured request configuration is invalid.', 0, 'contract');
+    }
     const remaining = work ? Math.floor(work.deadline - performance.now()) : Infinity;
     if (remaining <= 0 || (work && !Number.isFinite(work.deadline))) {
       throw new MlTransportTimeoutError('ML generation budget exhausted before transport.');
@@ -360,9 +445,10 @@ export class MlV2Client implements RecommendationPort, OutboxTransportPort {
         input,
         input.generation_id,
         Math.min(this.config.generationTimeoutMs ?? this.config.timeoutMs, remaining),
+        'required-json', input.scoring_capture ? work?.scoringCaptureCapability : undefined,
       );
       if (status < 200 || status >= 300) {
-        const detail = responseDetail(body);
+        const detail = input.scoring_capture ? undefined : responseDetail(body);
         throw new MlRecommendationError(
           detail
             ? `ML recommendation request failed with status ${status}: ${detail}`
@@ -411,6 +497,8 @@ export class MlV2Client implements RecommendationPort, OutboxTransportPort {
         }
         ids.add(item.repo_id);
       }
+      try { validateCapturedRecommendation(value, input); }
+      catch { throw new MlRecommendationError('ML captured recommendation contract is invalid.', 200, 'contract'); }
       // A call admitted before a newer opening must not reset that circuit.
       if (epoch === this.circuitEpoch) {
         this.consecutiveGenerateFailures = 0;
@@ -467,6 +555,35 @@ export class MlV2Client implements RecommendationPort, OutboxTransportPort {
       return { accepted: false, retryable: true, status_code: 0, detail: String(error),
         ...(error instanceof MlTransportTimeoutError ? { failure_kind: 'timeout' as const } : {}) };
     }
+  }
+
+  async deliverModelOperations(batch:MlModelOperationBatch):Promise<DeliveryResult<MlModelOperationResponse>> {
+    const result=await this.deliver('/api/v2/model-operations',batch,'model-operations');
+    if(!result.accepted)return {...result,detail:'Model operation delivery unavailable.',response_body:undefined};
+    try{return {...result,response_body:parseModelAcknowledgement(result.response_body)};}
+    catch{return {accepted:false,retryable:true,status_code:502,detail:'Invalid model operation acknowledgement.'};}
+  }
+  async deliverProfileWithdrawals(batch:MlProfileWithdrawalBatch):Promise<DeliveryResult<MlProfileWithdrawalResponse>> {
+    const result=await this.deliver('/api/v2/model-operation-withdrawals',batch,'model-withdrawals');
+    if(!result.accepted)return {...result,detail:'Model withdrawal delivery unavailable.',response_body:undefined};
+    try{return {...result,response_body:parseWithdrawalAcknowledgement(result.response_body)};}
+    catch{return {accepted:false,retryable:true,status_code:502,detail:'Invalid model withdrawal acknowledgement.'};}
+  }
+  async modelOperationStatus(input:MlModelOperationStatusRequest):Promise<MlModelOperationStatusResponse>{
+    try{const result=await this.request('/api/v2/model-operation-status',input,input.operation_id);
+      if(result.status!==200)throw new ModelOperationError();
+      const status=parseModelOperationStatus(result.body);
+      if(status.user_id!==input.user_id || status.operation_id!==input.operation_id || status.model_operation_version!==input.model_operation_version
+        || status.source_envelope_sha256!==input.source_envelope_sha256)throw new ModelOperationError();
+      return status;
+    }catch{throw new ModelOperationError();}
+  }
+  async modelAuthority(input:MlModelAuthorityRequest):Promise<MlModelAuthorityResponse>{
+    try{const result=await this.request('/api/v2/model-authority',input,input.user_id);
+      if(result.status!==200)throw new ModelOperationError();
+      const body=modelRecord(result.body);if(body.schema_version!==1||Object.keys(body).sort().join(',')!=='model_context,schema_version')throw new ModelOperationError();
+      return {schema_version:1,model_context:parseAppliedModelContext(body.model_context)};
+    }catch{throw new ModelOperationError();}
   }
 
   deliverFeedback(batch: MlFeedbackBatch): Promise<DeliveryResult> {
@@ -535,7 +652,8 @@ export class MlV2Client implements RecommendationPort, OutboxTransportPort {
         },
         signal: controller.signal,
       });
-      const text = await response.text();
+      const { text, oversized } = await readBoundedResponse(response, this.config.maxResponseBytes);
+      if (oversized) throw new Error('ML response exceeded size limit.');
       let body: unknown = null;
       try { body = text ? JSON.parse(text) : null; } catch { body = text; }
       outcome = httpOutcome(response.status);

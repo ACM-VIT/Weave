@@ -1,3 +1,12 @@
+import type { FeedIntentScope } from '../contracts/feedIntent.js';
+import { ModelLaneAuthorityService } from '../services/modelLaneAuthorityService.js';
+import { FeedIntentScopeService } from '../services/feedIntentScopeService.js';
+import { IntentFeedGateway } from '../services/intentFeedGateway.js';
+import {getScoringExportConfig} from '../config/scoringExport.js';
+import {createPrivateScoringExport} from '../adapters/postgresScoringExport.js';
+import {createPrivateScoringRetention,getScoringRetentionConfig} from '../workers/scoringRetentionWorker.js';
+import { getScoringCaptureConfig } from '../config/scoringCapture.js';
+import { createPrivateScoringPersistence } from '../adapters/postgresScoringPersistence.js';
 import redisClient from '../config/redis.js';
 import { getV2FeatureFlags, validateFeatureDependencies } from '../config/features.js';
 import { sqlClient } from '../db/index.js';
@@ -79,10 +88,14 @@ export class ApplicationRuntime {
     redisClient,
     intervalFromEnvironment('FEED_RESERVATION_TTL_MS', 60_000, 30_000, 900_000),
   );
+  readonly scoringCapture = getScoringCaptureConfig();
+  readonly privateScoring = this.flags.ML_V2_RECOMMENDATIONS ? createPrivateScoringPersistence(this.scoringCapture) : null;
   readonly indexedFeedRefill = indexedFeedRefillConfiguration();
   readonly ml = this.flags.ML_V2_RECOMMENDATIONS || this.flags.ML_FEEDBACK_OUTBOX
     ? new MlV2Client()
     : null;
+  readonly orderedProfiles=this.ml?new ModelLaneAuthorityService(this.ml):null;
+  readonly modelScopes=this.orderedProfiles?new FeedIntentScopeService(this.orderedProfiles):null;
   readonly generation = this.ml && this.flags.ML_V2_RECOMMENDATIONS
     ? new FeedGenerationService(
       this.persistence,
@@ -90,15 +103,18 @@ export class ApplicationRuntime {
       this.ml,
       600,
       15_000,
-      new PersonaRepairService(this.persistence, this.ml),
+      new PersonaRepairService(this.persistence, this.ml,this.orderedProfiles??undefined),
       this.indexedFeedRefill,
       socialCandidatesConfiguration(),
+      feedGenerationBudget(),
+      this.scoringCapture.enabled && this.privateScoring
+        ? {config:this.scoringCapture,persistence:this.privateScoring.port} : undefined,
     )
     : null;
   readonly shadow = this.ml ? new FeedShadowService(this.persistence, this.ml) : null;
   readonly outbox = new OutboxService();
   readonly prewarm = new FeedPrewarmService(sqlClient, this.generation ? feedGenerationBudget().timeoutMs + 60_000 : 60_000);
-  readonly feed = new FeedV2Service(
+  readonly legacyFeed = new FeedV2Service(
     this.persistence,
     this.queue,
     this.generation
@@ -116,11 +132,56 @@ export class ApplicationRuntime {
         { expectedVersion: version, lowWatermark: this.indexedFeedRefill!.lowWatermark },
       ),
     } : undefined,
+    userId => this.scoringCapture.enabled && this.scoringCapture.userIds.has(userId),
   );
+  readonly feed=this.modelScopes?new IntentFeedGateway(this.legacyFeed,this.persistence,this.modelScopes,scope=>this.createIntentFeed(scope),process.env.JWT_SECRET):this.legacyFeed;
+  private createIntentFeed(scope:FeedIntentScope):FeedV2Service{
+    if(!this.ml||!this.modelScopes)throw new Error('Model feed dependencies are unavailable.');
+    const persistence=new PostgresFeedPersistence();
+    const context=persistence.getGenerationContext.bind(persistence);
+    persistence.getGenerationContext=async userId=>{
+      const current=await context(userId);
+      return current&&userId===scope.userId&&current.modelPolicySha256===scope.policySha256?{...current,delivered:true}:null;
+    };
+    const recent=persistence.getRecentPersonalizedEntries.bind(persistence);
+    persistence.getRecentPersonalizedEntries=async(...args)=>{
+      const entries=await recent(...args);
+      const ids=entries.map(item=>item.generation_id).filter((id):id is string=>Boolean(id));
+      const rows=await sqlClient`SELECT generation_id FROM telemetry.feed_model_generations WHERE generation_id=ANY(${ids}::uuid[])
+        AND user_id=${scope.userId}::uuid AND queue_scope=${scope.queueScope} AND valid_until_ms>floor(extract(epoch FROM clock_timestamp())*1000)::bigint`;
+      const valid=new Set(rows.map(row=>String(row.generation_id)));return entries.filter(entry=>entry.generation_id&&valid.has(entry.generation_id));
+    };
+    const queue=this.queue.withScope(scope.queueScope);
+    const generation=new FeedGenerationService(persistence,queue,this.ml,600,15000,undefined,this.indexedFeedRefill,
+      socialCandidatesConfiguration(),feedGenerationBudget(),this.scoringCapture.enabled&&this.privateScoring?
+        {config:this.scoringCapture,persistence:this.privateScoring.port}:undefined,
+      {scope,isCurrent:()=>this.modelScopes!.isCurrent(scope),persist:(id,applied)=>this.modelScopes!.persistGeneration(scope,id,applied)});
+    return new FeedV2Service(persistence,queue,(owner,limit,excluded,session)=>generation.generate(owner,Math.max(45,limit),excluded,'live',session),
+      false,1500,25,process.env.JWT_SECRET,mlTimeoutMs('FEED_FOREGROUND_WAIT_MS',5000),this.indexedFeedRefill?{
+        lowWatermark:this.indexedFeedRefill.lowWatermark,generate:(owner,version,session)=>generation.generate(owner,this.indexedFeedRefill!.maxQueueDepth,[],'live',session,undefined,
+          {expectedVersion:version,lowWatermark:this.indexedFeedRefill!.lowWatermark})}:undefined,
+      owner=>this.scoringCapture.enabled&&this.scoringCapture.userIds.has(owner),scope);
+  }
   readonly supervisor = new WorkerSupervisor();
+  readonly privateScoringExport: ReturnType<typeof createPrivateScoringExport>;
+  readonly privateScoringRetention: ReturnType<typeof createPrivateScoringRetention>;
 
   constructor(readonly role: 'api' | 'outbox' | 'feed' | 'maintenance' | 'all' = 'api') {
+    const retention=(role==='maintenance'||role==='all')?getScoringRetentionConfig():{enabled:false as const};
+    // Validate the chosen cadence before allocating a pool. No deletion task or
+    // default operational schedule exists while retention is disabled.
+    if(retention.enabled&&!process.env.SCORING_RETENTION_INTERVAL_MS?.trim())throw new Error('SCORING_RETENTION_INTERVAL_REQUIRED');
+    const interval=retention.enabled?intervalFromEnvironment('SCORING_RETENTION_INTERVAL_MS',0,1000,86_400_000):0;
+    this.privateScoringExport=role==='api'?createPrivateScoringExport(getScoringExportConfig()):null;
+    this.privateScoringRetention=createPrivateScoringRetention(retention);
+    if(this.privateScoringExport)this.supervisor.onStop(()=>this.privateScoringExport!.close());
+    if(this.privateScoringRetention){
+      this.supervisor.onStop(()=>this.privateScoringRetention!.close());
+      this.supervisor.register('private-scoring-retention',interval,()=>this.privateScoringRetention!.worker.purgeOnce());
+    }
+    if (this.scoringCapture.enabled && !this.flags.ML_V2_RECOMMENDATIONS) throw new Error('SCORING_CAPTURE_REQUIRES_ML_RECOMMENDATIONS');
     this.supervisor.onStop(() => this.feed.stop());
+    if (this.privateScoring) this.supervisor.onStop(() => this.privateScoring!.close());
     if ((role === 'outbox' || role === 'all') && this.flags.ML_FEEDBACK_OUTBOX && this.ml) {
       resolveOutboxLeaseMs();
       const worker = new OutboxDeliveryLanes(
@@ -167,6 +228,11 @@ export class ApplicationRuntime {
       }
       const worker = new FeedReconciliationWorker(this.persistence, this.queue, reconcileWithin);
       this.supervisor.register('feed-reconciliation', interval, () => worker.runOnce());
+      if (this.scoringCapture.enabled && this.privateScoring) {
+        const owners = [...this.scoringCapture.userIds];
+        this.supervisor.register('scoring-publication-reconciliation', interval,
+          () => this.privateScoring!.port.reconcilePublicationWitnesses(owners, 100));
+      }
     }
     if ((role === 'maintenance' || role === 'all') && this.flags.DB_SCHEMA_V2_WRITES) {
       const data = new DataReconciliationWorker(new DataReconciliationService(sqlClient,

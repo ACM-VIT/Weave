@@ -3,6 +3,7 @@ import {
   bigserial,
   boolean,
   check,
+  customType,
   date,
   doublePrecision,
   foreignKey,
@@ -92,6 +93,10 @@ export const userFeedState = appSchema.table('user_feed_state', {
   lastPublishedFeedVersion: bigint('last_published_feed_version', { mode: 'bigint' }).notNull().default(0n),
   feedbackVersion: bigint('feedback_version', { mode: 'bigint' }).notNull().default(0n),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  modelOperationVersion: bigint('model_operation_version',{mode:'bigint'}).notNull().default(0n),
+  modelAcceptedAtMs: bigint('model_accepted_at_ms',{mode:'bigint'}).notNull().default(0n),
+  modelPolicySha256: text('model_policy_sha256'), modelPolicyLimits: jsonb('model_policy_limits'),
+  modelInitialized: boolean('model_initialized').notNull().default(false),
 });
 
 export const feedPrewarmJobs = telemetrySchema.table('feed_prewarm_jobs', {
@@ -512,6 +517,8 @@ export const feedServes = telemetrySchema.table('feed_serves', {
   modelVersion: text('model_version'),
   nextCursor: text('next_cursor'),
   status: text('status').notNull().default('prepared'),
+  intentEpoch: bigint('intent_epoch',{mode:'bigint'}), intentEpochStartedMs: bigint('intent_epoch_started_ms',{mode:'bigint'}),
+  intentEpochWitnessSha256: text('intent_epoch_witness_sha256'), intentPolicySha256: text('intent_policy_sha256'),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 }, (table) => [
   index('feed_serves_user_created_idx').on(table.userId, table.createdAt),
@@ -531,8 +538,31 @@ export const feedServeItems = telemetrySchema.table('feed_serve_items', {
   uniqueIndex('feed_serve_items_repo_uidx').on(table.serveId, table.repoId),
 ]);
 
+export const feedItemProvenance = telemetrySchema.table('feed_item_provenance', {
+  serveId: uuid('serve_id').notNull(),
+  position: smallint('position').notNull(),
+  exposureId: uuid('exposure_id').notNull().defaultRandom(),
+  userId: uuid('user_id').notNull().references(() => appUsers.userId, { onDelete: 'cascade' }),
+  repoId: uuid('repo_id').notNull().references(() => appRepos.repoId),
+  generationId: uuid('generation_id'),
+  legacyGenerationHint: uuid('legacy_generation_hint'),
+  recordDigest: text('record_digest'),
+  captureStatus: text('capture_status').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().default(sql`clock_timestamp()`),
+}, table => [
+  primaryKey({ columns: [table.serveId,table.position] }),
+  uniqueIndex('feed_item_provenance_exposure_key').on(table.exposureId),
+  index('feed_item_provenance_owner_created_idx').on(table.userId,table.createdAt,table.exposureId),
+  index('feed_item_provenance_generation_owner_idx').on(table.generationId,table.userId).where(sql`${table.captureStatus}='captured'`),
+  foreignKey({name:'feed_item_provenance_parent_fkey',columns:[table.serveId,table.position],
+    foreignColumns:[feedServeItems.serveId,feedServeItems.position]}).onDelete('cascade'),
+  check('feed_item_provenance_legacy_check',sql`${table.captureStatus}<>'captured' OR ${table.legacyGenerationHint} IS NULL`),
+  check('feed_item_provenance_capture_check', sql`(${table.captureStatus}='captured' AND ${table.generationId} IS NOT NULL AND ${table.recordDigest} IS NOT NULL AND ${table.recordDigest} ~ '^[a-f0-9]{64}$') OR (${table.captureStatus}='not_captured' AND ${table.recordDigest} IS NULL)`),
+]);
+
 export const interactionEvents = telemetrySchema.table('interaction_events', {
   eventId: uuid('event_id').primaryKey(),
+  impressionEventId: uuid('impression_event_id'),
   schemaVersion: smallint('schema_version').notNull(),
   userId: uuid('user_id').notNull().references(() => appUsers.userId, { onDelete: 'cascade' }),
   sessionId: uuid('session_id').notNull(),
@@ -546,6 +576,7 @@ export const interactionEvents = telemetrySchema.table('interaction_events', {
   serverReceivedAt: timestamp('server_received_at', { withTimezone: true }).notNull().defaultNow(),
   context: jsonb('context').$type<Record<string, unknown>>().notNull().default({}),
 }, (table) => [
+  check('interaction_events_impression_ref_check',sql`${table.impressionEventId} IS NULL OR(${table.eventType}<>'impression' AND ${table.serveId} IS NOT NULL AND ${table.position} IS NOT NULL)`),
   index('interaction_events_user_received_idx').on(table.userId, table.serverReceivedAt),
   index('interaction_events_serve_repo_idx').on(table.serveId, table.repoId),
 ]);
@@ -569,6 +600,10 @@ export const mlOutbox = telemetrySchema.table('ml_outbox', {
   idempotencyKey: text('idempotency_key').notNull().unique(),
   payload: jsonb('payload').$type<Record<string, unknown>>().notNull(),
   responsePayload: jsonb('response_payload').$type<Record<string, unknown>>(),
+  modelOperationVersion: bigint('model_operation_version',{mode:'bigint'}),
+  previousModelOperationVersion: bigint('previous_model_operation_version',{mode:'bigint'}),
+  operationJson: text('operation_json'), sourceEnvelopeSha256: text('source_envelope_sha256'),
+  logicalRequestSha256: text('logical_request_sha256'), withdrawalJson: text('withdrawal_json'),
   status: text('status').notNull().default('pending'),
   attempts: integer('attempts').notNull().default(0),
   availableAt: timestamp('available_at', { withTimezone: true }).notNull().defaultNow(),
@@ -608,3 +643,93 @@ export const userGithubUnlinks = appSchema.table('user_github_unlinks', {
   check('user_github_unlinks_github_id_check', sql`${table.githubId} ~ '^[1-9][0-9]{0,18}$'`),
   check('user_github_unlinks_status_check', sql`${table.status} IN ('prepared','done','refused','superseded')`),
 ]);
+
+// Private scoring data is deliberately excluded from ordinary product grants.
+export const privateScoringSchema = pgSchema('private_scoring');
+const scoringBytes = customType<{ data: Buffer; driverData: Buffer }>({ dataType: () => 'bytea' });
+export const scoringGenerations = privateScoringSchema.table('scoring_generations', {
+  generationId: uuid('generation_id').primaryKey(),
+  userId: uuid('user_id').notNull().references(() => appUsers.userId, { onDelete: 'cascade' }),
+  feedVersion: bigint('feed_version', { mode: 'bigint' }).notNull(),
+  contextBytes: scoringBytes('context_bytes').notNull(), contextDigest: text('context_digest').notNull(),
+  scoredAt: timestamp('scored_at', { withTimezone: true, mode: 'string' }).notNull(),
+  policyId: text('policy_id').notNull(), policyVersion: text('policy_version').notNull(),
+  retentionDays: integer('retention_days').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true, mode: 'string' }).notNull().default(sql`clock_timestamp()`),
+  expiresAt: timestamp('expires_at', { withTimezone: true, mode: 'string' }).notNull(),
+  inputCount: smallint('input_count').notNull(),
+}, table => [
+  unique('scoring_generations_owner_key').on(table.generationId, table.userId),
+  index('scoring_generations_expiry_idx').on(table.expiresAt, table.generationId),
+  check('scoring_generations_feed_version_check', sql`${table.feedVersion}>0`),
+  check('scoring_generations_context_bytes_check', sql`octet_length(${table.contextBytes}) BETWEEN 1 AND 16384`),
+  check('scoring_generations_context_digest_check', sql`${table.contextDigest} ~ '^[a-f0-9]{64}$'`),
+  check('scoring_generations_policy_id_check', sql`char_length(${table.policyId}) BETWEEN 1 AND 128`),
+  check('scoring_generations_policy_version_check', sql`char_length(${table.policyVersion}) BETWEEN 1 AND 128`),
+  check('scoring_generations_retention_days_check', sql`${table.retentionDays} BETWEEN 1 AND 365`),
+  check('scoring_generations_input_count_check', sql`${table.inputCount} BETWEEN 1 AND 150`),
+  check('scoring_generations_context_digest', sql`${table.contextDigest}=encode(sha256(${table.contextBytes}),'hex')`),
+  check('scoring_generations_expiry', sql`${table.expiresAt}=${table.createdAt}+${table.retentionDays}*interval '24 hours'`),
+]);
+export const scoringInputs = privateScoringSchema.table('scoring_inputs', {
+  generationId: uuid('generation_id').notNull(), userId: uuid('user_id').notNull(),
+  repoId: uuid('repo_id').notNull().references(() => appRepos.repoId, { onDelete: 'cascade' }),
+  providerPosition: smallint('provider_position').notNull(),
+  snapshotBytes: scoringBytes('snapshot_bytes').notNull(), inputBytes: scoringBytes('input_bytes').notNull(),
+  bindingDigest: text('binding_digest').notNull(), stageBytes: scoringBytes('stage_bytes').notNull(),
+  recordDigest: text('record_digest').notNull(), rawHeavyScore: doublePrecision('raw_heavy_score').notNull(),
+  finalScore: doublePrecision('final_score').notNull(), source: text('source').notNull(),
+}, table => [
+  primaryKey({ columns: [table.generationId, table.repoId] }),
+  foreignKey({ name: 'scoring_inputs_owner_fkey', columns: [table.generationId, table.userId],
+    foreignColumns: [scoringGenerations.generationId, scoringGenerations.userId] }).onDelete('cascade'),
+  unique('scoring_inputs_position_key').on(table.generationId, table.providerPosition),
+  unique('scoring_inputs_reference_key').on(table.generationId, table.userId, table.repoId, table.recordDigest),
+  check('scoring_inputs_provider_position_check', sql`${table.providerPosition} BETWEEN 0 AND 149`),
+  check('scoring_inputs_snapshot_bytes_check', sql`octet_length(${table.snapshotBytes}) BETWEEN 1 AND 4096`),
+  check('scoring_inputs_binding_digest_check', sql`${table.bindingDigest} ~ '^[a-f0-9]{64}$'`),
+  check('scoring_inputs_stage_bytes_check', sql`octet_length(${table.stageBytes}) BETWEEN 1 AND 8192`),
+  check('scoring_inputs_record_digest_check', sql`${table.recordDigest} ~ '^[a-f0-9]{64}$'`),
+  check('scoring_inputs_raw_heavy_score_check', sql`${table.rawHeavyScore}>'-Infinity'::double precision AND ${table.rawHeavyScore}<'Infinity'::double precision`),
+  check('scoring_inputs_final_score_check', sql`${table.finalScore}>'-Infinity'::double precision AND ${table.finalScore}<'Infinity'::double precision`),
+  check('scoring_inputs_source_check', sql`char_length(${table.source}) BETWEEN 1 AND 128`),
+  check('scoring_inputs_input_bytes_check', sql`private_scoring.finite_input(${table.inputBytes})`),
+]);
+export const scoringGenerationWitnesses = privateScoringSchema.table('generation_witnesses', {
+  witnessId: uuid('witness_id').defaultRandom().primaryKey(),
+  generationId: uuid('generation_id').notNull().references(() => scoringGenerations.generationId, { onDelete: 'cascade' }),
+  eventType: text('event_type').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true, mode: 'string' }).notNull().default(sql`clock_timestamp()`),
+}, table => [
+  unique('generation_witnesses_generation_id_event_type_key').on(table.generationId, table.eventType),
+  check('generation_witnesses_event_type_check', sql`${table.eventType} IN ('persisted','published','stale','revoked')`),
+]);
+
+export const feedIntentSessions = telemetrySchema.table('feed_intent_sessions', {
+  sessionId: uuid('session_id').primaryKey(),
+  userId: uuid('user_id').references(() => appUsers.userId,{onDelete:'set null'}),
+  intentEpoch: bigint('intent_epoch',{mode:'bigint'}).notNull(),
+  epochStartedMs: bigint('epoch_started_ms',{mode:'bigint'}).notNull(),
+  lastPresenceMs: bigint('last_presence_ms',{mode:'bigint'}).notNull().default(sql`floor(extract(epoch FROM clock_timestamp())*1000)::bigint`),
+  policySha256: text('policy_sha256').notNull(), status: text('status').notNull(),
+  beginOperationVersion: bigint('begin_operation_version',{mode:'bigint'}).notNull(),
+  lastControlOperationVersion: bigint('last_control_operation_version',{mode:'bigint'}).notNull(),
+  epochWitnessSha256: text('epoch_witness_sha256').notNull(), retirementWitnessSha256: text('retirement_witness_sha256'),
+});
+export const pendingModelFeedback = telemetrySchema.table('pending_model_feedback', {
+  eventId: uuid('event_id').primaryKey().references(() => interactionEvents.eventId,{onDelete:'cascade'}),
+  userId: uuid('user_id').notNull().references(() => appUsers.userId,{onDelete:'cascade'}),
+  feedbackVersion: bigint('feedback_version',{mode:'bigint'}).notNull(),
+  originalFeedbackJson: text('original_feedback_json').notNull(), acceptedAtMs: bigint('accepted_at_ms',{mode:'bigint'}).notNull(),
+  canonicalAttribution: jsonb('canonical_attribution'), operationId: uuid('operation_id').references(() => mlOutbox.outboxId),
+});
+
+export const feedModelGenerations = telemetrySchema.table('feed_model_generations', {
+  generationId: uuid('generation_id').primaryKey(),
+  userId: uuid('user_id').notNull().references(() => appUsers.userId,{onDelete:'cascade'}),
+  sessionId: uuid('session_id').notNull().references(() => feedIntentSessions.sessionId),
+  queueScope: text('queue_scope').notNull(), appliedContext: jsonb('applied_context'),
+  validUntilMs: bigint('valid_until_ms',{mode:'bigint'}).notNull(),
+  createdAt: timestamp('created_at',{withTimezone:true}).notNull().defaultNow(),
+},table=>[index('feed_model_generations_scope').on(table.userId,table.queueScope,table.validUntilMs),
+  index('feed_model_generations_expired_body').on(table.validUntilMs,table.generationId).where(sql`${table.appliedContext} IS NOT NULL`)]);

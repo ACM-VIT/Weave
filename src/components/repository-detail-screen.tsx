@@ -1,5 +1,7 @@
 import { useRepositoryReadmeSummary } from '@/hooks/use-repository-readme-summary';
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {authSessionLifecycle} from '@/api/session-lifecycle';
+import {takeFeedNavigation,type FeedNavigationAttribution} from '@/services/feedImpressionAttribution';
 import {
   ActivityIndicator,
   Alert,
@@ -98,12 +100,22 @@ function goBack() {
   else router.replace('/(tabs)/home');
 }
 
-export function RepositoryDetailScreen({ repositoryId }: { repositoryId: string }) {
+export function RepositoryDetailScreen({ repositoryId,navigationToken }: { repositoryId: string;navigationToken?:string }) {
   const { width } = useWindowDimensions();
   const insets = useSafeAreaInsets();
   const { user, isLoading: isAuthLoading } = useAuth();
   const viewerUserId = user?.user_id;
   const queryClient = useQueryClient();
+  const renderGeneration=authSessionLifecycle.currentGeneration();
+  const [origin,setOrigin]=useState<FeedNavigationAttribution|null>(null);
+  const consumedOrigin=useRef('');
+  useEffect(()=>{
+    const key=`${viewerUserId??''}:${repositoryId}:${navigationToken??''}:${renderGeneration}`;
+    if(consumedOrigin.current===key)return;consumedOrigin.current=key;
+    setOrigin(viewerUserId?takeFeedNavigation(queryClient,viewerUserId,repositoryId,navigationToken,renderGeneration):null);
+  },[navigationToken,queryClient,renderGeneration,repositoryId,viewerUserId]);
+  const attribution=origin&&origin.ownerId===viewerUserId&&origin.repoId===repositoryId&&origin.generation===renderGeneration?origin:null;
+
   const [saveVisible, setSaveVisible] = useState(false);
   const [shareVisible, setShareVisible] = useState(false);
   const [readmeVisible, setReadmeVisible] = useState(false);
@@ -141,9 +153,12 @@ export function RepositoryDetailScreen({ repositoryId }: { repositoryId: string 
     repository?.readmeDefaultBranch, repository?.readmeSourcePath]);
 
   const queueActivity = useCallback(async (action: 'share' | 'github_open') => {
-    if (!viewerUserId || !repository) return;
-    await queueActivityForViewer(viewerUserId, { repo_id: repository.id, action });
-  }, [repository, viewerUserId]);
+    if (!viewerUserId || !repository || !authSessionLifecycle.isCurrent(renderGeneration)) return;
+    await queueActivityForViewer(viewerUserId, { repo_id: repository.id, action,
+      ...(attribution?{session_id:attribution.sessionId,serve_id:attribution.serveId,position:attribution.position,
+        ...(attribution.original?{impression_event_id:attribution.original.eventId}:{})}:{}),
+    });
+  }, [attribution,renderGeneration,repository, viewerUserId]);
 
   const handleListMembershipsChanged = useCallback((listIds: string[], saved: boolean) => {
     queryClient.setQueryData<RepositoryDetail>(
@@ -363,6 +378,10 @@ export function RepositoryDetailScreen({ repositoryId }: { repositoryId: string 
       </ScrollView>
 
       <SavePopup
+        serveId={attribution?.serveId}
+        position={attribution?.position}
+        sessionId={attribution?.sessionId}
+        impressionEventId={attribution?.original?.eventId}
         isVisible={saveVisible}
         onClose={() => setSaveVisible(false)}
         onListMembershipsChanged={handleListMembershipsChanged}

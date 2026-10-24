@@ -99,3 +99,23 @@ for (const discovery of [false, true]) {
     assert.equal(retainedFeedScrollOffset(after, after, 470 * 800, 800, [anchor.feedId]), undefined);
   });
 }
+
+
+test('history eviction retains a qualified impression added while the next page was in flight', () => {
+  const uuid = (value: number) => `00000000-0000-4000-8000-${String(value).padStart(12, '0')}`;
+  const original = { eventId: uuid(9000), occurredAt: '2026-10-24T00:00:01.000Z' };
+  const items = Array.from({ length: 500 }, (_, position) => ({
+    repo_id: uuid(position + 1), serve_id: uuid(1000), feed_session_id: uuid(2000), position,
+  }));
+  const page = { items, nextCursor: 'next', feedVersion: '1' };
+  const previous = { pages: [{ ...page, items: items.map((item, index) => index === 499
+    ? { ...item, client_original_impression: original } : item) }], pageParams: [null] };
+  const incoming = { pages: [page, { items: [{ ...items[0], repo_id: uuid(501), position: 500 }],
+    nextCursor: null, feedVersion: '1' }], pageParams: [null, 'next'] };
+  const bounded = shareHomeFeedHistory(previous, incoming, []) as typeof previous;
+  const retained = bounded.pages.flatMap(value => value.items);
+  assert.equal(retained.length, 500);
+  assert.equal(retained[0].repo_id, uuid(2), 'evicted rows stay absent');
+  assert.deepEqual(retained.find(item => item.repo_id === uuid(500))?.client_original_impression, original);
+  assert.equal(retained.at(-1)?.client_original_impression, undefined, 'different serve attribution cannot inherit a view');
+});

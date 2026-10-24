@@ -72,3 +72,12 @@ test('reset and reordered refresh drop old cards and filter invalid records with
   assert.deepEqual(after.map(entry => entry.repository.id), ['first', 'second']);
   assert.strictEqual(after[0], before[0]);
 });
+
+test('decoded feed rows retain their request session rather than generic app attribution',async()=>{
+  const {decodeFeedPage}=await import('../src/api/feed-data');
+  const session='00000000-0000-4000-8000-000000000010';
+  const page=decodeFeedPage({serve_id:'00000000-0000-4000-8000-000000000011',feed_version:'1',next_cursor:null,
+    items:[{repo_id:'00000000-0000-4000-8000-000000000012',position:0,repository:{full_name:'fixture/project'}}]},session);
+  const mapped=createFeedItemMapper()([page]);
+  assert.equal(mapped[0].repository.feedSessionId,session);
+});

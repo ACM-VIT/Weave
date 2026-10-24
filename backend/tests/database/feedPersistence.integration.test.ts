@@ -6,6 +6,12 @@ import { PostgresFeedPersistence } from '../../adapters/postgresFeedPersistence.
 import { FeedServeOverlapError } from '../../ports/feedPersistencePort.js';
 import type { CreateServeInput, RepositoryProjection } from '../../contracts/feed.v2.js';
 import { assertDisposableDatabase } from './disposableDatabase.js';
+function ordinaryFeedVersion(value: string | number): number {
+  assert.equal(typeof value, 'number', 'This fixture implements only ordinary recommendation responses');
+  assert.ok(Number.isSafeInteger(value));
+  return value as number;
+}
+
 const enabled = process.env.RUN_DATABASE_INTEGRATION === '1';
 if (enabled) assertDisposableDatabase();
 const integration = enabled ? test : test.skip;
@@ -229,7 +235,7 @@ integration('real feed recovery followed by late ML publication serves only unse
     assert.deepEqual(input.exclude_repo_ids, []);
     modelStarted(); await model;
     return { schema_version: 2, generation_id: input.generation_id, user_id: input.user_id,
-      feed_version: input.feed_version, model_version: 'late-test', embedding_version: 'test',
+      feed_version: ordinaryFeedVersion(input.feed_version), model_version: 'late-test', embedding_version: 'test',
       embedding_versions: ['test'], served_ranker: 'hybrid', heavy_ranker_selected: false, ranker_applied: false,
       fallback_code: null, fallback_reason: null, retrieval_mode: 'hybrid',
       context_status: { cold_start_applied: false, locale: 'not_provided' },
@@ -260,4 +266,30 @@ integration('real feed recovery followed by late ML publication serves only unse
       GROUP BY item.repo_id HAVING count(*)>1`;
     assert.equal(duplicates.length, 0);
   } finally { finishModel(); await service.stop(); await redis.flushdb(); await redis.quit(); }
+});
+
+integration('legacy recovery retains an unverified header hint without guessing each item generation',async()=>{
+  const f=await fixture(2),persistence=new PostgresFeedPersistence();
+  const generationA=crypto.randomUUID(),generationB=crypto.randomUUID();
+  // This is the old registered write shape: the header kept the first input
+  // generation, while a mixed page's individual generation IDs were not stored.
+  const originalEntries=f.input.items.map((item,index)=>({...item,generation_id:index===0?generationA:generationB}));
+  const [header]=await sqlClient`INSERT INTO telemetry.feed_serves(feed_request_id,user_id,session_id,feed_version,generation_id,source,model_version)
+    VALUES(${f.input.feed_request_id}::uuid,${f.user}::uuid,${f.session}::uuid,1,${originalEntries[0].generation_id}::uuid,'personalized','test') RETURNING serve_id`;
+  for(const item of originalEntries){
+    await sqlClient`INSERT INTO telemetry.feed_serve_items(serve_id,position,repo_id,score,source,model_version)
+      VALUES(${header.serve_id}::uuid,${item.position},${item.repo_id}::uuid,${item.score},${item.source},${item.model_version})`;
+    await sqlClient`INSERT INTO app.repo_content(repo_id,content_version,content_hash) VALUES(${item.repo_id}::uuid,1,'fixture-content')`;
+  }
+  const legacy=await persistence.getRecentPersonalizedEntries(f.user,1n,2,[],crypto.randomUUID());
+  assert.deepEqual(legacy.map(item=>item.generation_id),[undefined,undefined],'the header cannot prove the second item generation');
+  assert.deepEqual(legacy.map(item=>item.legacy_generation_hint),[generationA,generationA],'preserve the actual old header as an explicitly unverified hint');
+  const original=await persistence.getServeByRequest(f.user,f.input.feed_request_id);
+  assert.equal(original?.generation_id,generationA);assert.equal(original?.items[1].generation_id,undefined);
+  const recovered=await persistence.createServe({...f.input,feed_request_id:crypto.randomUUID(),session_id:crypto.randomUUID(),generation_id:null,
+    items:legacy.map((item,position)=>({...item,position,repository:f.input.items[position].repository}))});
+  assert.deepEqual(recovered.items.map(item=>item.generation_id),[undefined,undefined]);
+  const replay=await persistence.getServeByRequest(f.user,recovered.feed_request_id);
+  assert.deepEqual(replay?.items.map(item=>item.legacy_generation_hint),[generationA,generationA]);
+  assert.equal(Number((await sqlClient`SELECT count(*) FROM telemetry.feed_item_provenance WHERE serve_id=${recovered.serve_id}::uuid AND capture_status='captured'`)[0].count),0);
 });

@@ -214,3 +214,16 @@ test('feedback batch strips metadata and retains each enqueue lineage with first
   }
   assert.deepEqual(f.delivered, [first.outbox_id, second.outbox_id]);
 });
+
+test('the shared onboarding slot alternates legacy and ordered work without starving either cohort',async()=>{
+  const {modelDigest}=await import('../../contracts/modelOperations.js');
+  const legacy=Array.from({length:4},()=>row('onboard')),model=row('model_operation');
+  model.operation_json='{}';model.source_envelope_sha256=modelDigest(model.operation_json);model.model_operation_version='1';
+  const f=fixture([model,...legacy]);
+  f.outbox.prepareModelDelivery=async item=>item;
+  f.transport.deliverModelOperations=async()=>({accepted:true,retryable:false,status_code:202,response_body:{schema_version:1,operations:[{
+    operation_id:model.outbox_id,model_operation_version:'1',source_envelope_sha256:model.source_envelope_sha256!,status:'accepted'}]}});
+  const lanes=new OutboxDeliveryLanes(f.outbox,f.transport);
+  await lanes.runOnce('onboard');await lanes.runOnce('onboard');await lanes.runOnce('onboard');
+  assert.deepEqual(f.delivered,[legacy[0].outbox_id,model.outbox_id,legacy[1].outbox_id]);
+});

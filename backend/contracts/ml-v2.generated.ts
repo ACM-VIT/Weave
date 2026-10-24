@@ -21,6 +21,74 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v2/model-authority": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Read Model Authority */
+        post: operations["read_model_authority_api_v2_model_authority_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v2/model-operation-status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Read Model Operation Status */
+        post: operations["read_model_operation_status_api_v2_model_operation_status_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v2/model-operation-withdrawals": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Submit Profile Withdrawals */
+        post: operations["submit_profile_withdrawals_api_v2_model_operation_withdrawals_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v2/model-operations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Submit Model Operations */
+        post: operations["submit_model_operations_api_v2_model_operations_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v2/recommendations/generate": {
         parameters: {
             query?: never;
@@ -110,6 +178,138 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /** AppliedModelContext */
+        AppliedModelContext: {
+            /** Applied Feedback Version */
+            applied_feedback_version: string;
+            /** Applied Operation Version */
+            applied_operation_version: string;
+            /** As Of Ms */
+            as_of_ms: string;
+            /** Effective Vector Sha256 */
+            effective_vector_sha256: string;
+            /** Epoch */
+            epoch: string;
+            /** Explicit Negative Repo Ids */
+            explicit_negative_repo_ids: string[];
+            /** Head */
+            head: string;
+            /** Policy Sha256 */
+            policy_sha256: string;
+            /** Profile Version */
+            profile_version: string;
+            /**
+             * Schema Version
+             * @constant
+             */
+            schema_version: 1;
+            /**
+             * Session Id
+             * Format: uuid
+             */
+            session_id: string;
+            /** Session Witness Sha256 */
+            session_witness_sha256: string;
+            /** State Sha256 */
+            state_sha256: string;
+            /**
+             * User Id
+             * Format: uuid
+             */
+            user_id: string;
+            /** Valid Until Ms */
+            valid_until_ms: string;
+        };
+        /** CapturedRecommendationItem */
+        CapturedRecommendationItem: {
+            /** Raw Heavy Score */
+            raw_heavy_score: number;
+            /**
+             * Repo Id
+             * Format: uuid
+             */
+            repo_id: string;
+            /** Retrieval Scores */
+            retrieval_scores?: {
+                [key: string]: number;
+            };
+            /** Score */
+            score: number;
+            scored_input: components["schemas"]["ScoredPacket"];
+            /** Source */
+            source: string;
+        };
+        /** CapturedRecommendationResponse */
+        CapturedRecommendationResponse: {
+            context_status: components["schemas"]["RecommendationContextStatus"];
+            /** Embedding Version */
+            embedding_version: string;
+            /** Embedding Versions */
+            embedding_versions: string[];
+            /** Fallback Code */
+            fallback_code: null;
+            /** Fallback Reason */
+            fallback_reason: null;
+            /** Feed Version */
+            feed_version: string;
+            /**
+             * Generation Id
+             * Format: uuid
+             */
+            generation_id: string;
+            /**
+             * Heavy Ranker Selected
+             * @constant
+             */
+            heavy_ranker_selected: true;
+            /** Items */
+            items: components["schemas"]["CapturedRecommendationItem"][];
+            model_context?: components["schemas"]["AppliedModelContext"] | null;
+            /** Model Version */
+            model_version: string;
+            /**
+             * Ranker Applied
+             * @constant
+             */
+            ranker_applied: true;
+            /**
+             * Retrieval Mode
+             * @enum {string}
+             */
+            retrieval_mode: "personalized" | "cold_start_profile";
+            /**
+             * Schema Version
+             * @constant
+             */
+            schema_version: 2;
+            scoring_capture: components["schemas"]["CapturedScoringStatus"];
+            scoring_context: components["schemas"]["ScoringContext"];
+            /** Scoring Metadata Complete */
+            scoring_metadata_complete: boolean;
+            /**
+             * Served Ranker
+             * @constant
+             */
+            served_ranker: "heavy";
+            /**
+             * User Id
+             * Format: uuid
+             */
+            user_id: string;
+        };
+        /** CapturedScoringStatus */
+        CapturedScoringStatus: {
+            /**
+             * Schema Version
+             * @constant
+             */
+            schema_version: 1;
+            /**
+             * Status
+             * @constant
+             */
+            status: "captured";
+        };
         /**
          * CardSummaryArtifact
          * @description Versioned summary artifact returned to the canonical backend.
@@ -130,6 +330,19 @@ export interface components {
             source: "generated" | "description_fallback";
             /** Summary */
             summary: string;
+        };
+        /** EmptyScoringStatus */
+        EmptyScoringStatus: {
+            /**
+             * Schema Version
+             * @constant
+             */
+            schema_version: 1;
+            /**
+             * Status
+             * @constant
+             */
+            status: "not_scored_empty";
         };
         /** FeedbackBatch */
         FeedbackBatch: {
@@ -186,6 +399,204 @@ export interface components {
              * @constant
              */
             durable: true;
+        };
+        /** ModelAuthorityRequest */
+        ModelAuthorityRequest: {
+            model_context: components["schemas"]["ModelRecommendationContext"];
+            /**
+             * Schema Version
+             * @constant
+             */
+            schema_version: 1;
+            /**
+             * User Id
+             * Format: uuid
+             */
+            user_id: string;
+        };
+        /** ModelAuthorityResponse */
+        ModelAuthorityResponse: {
+            model_context: components["schemas"]["AppliedModelContext"];
+            /**
+             * Schema Version
+             * @constant
+             */
+            schema_version: 1;
+        };
+        /** ModelOperationAcknowledgement */
+        ModelOperationAcknowledgement: {
+            /** Model Operation Version */
+            model_operation_version: string;
+            /**
+             * Operation Id
+             * Format: uuid
+             */
+            operation_id: string;
+            /** Source Envelope Sha256 */
+            source_envelope_sha256: string;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "accepted" | "duplicate" | "withdrawal_accepted";
+            /** Withdrawal Sha256 */
+            withdrawal_sha256?: string | null;
+        };
+        /** ModelOperationBatch */
+        ModelOperationBatch: {
+            /** Operations */
+            operations: components["schemas"]["ModelOperationInput"][];
+            /**
+             * Schema Version
+             * @constant
+             */
+            schema_version: 1;
+        };
+        /** ModelOperationInput */
+        ModelOperationInput: {
+            /** Operation Json */
+            operation_json: string;
+        };
+        /** ModelOperationResponse */
+        ModelOperationResponse: {
+            /** Operations */
+            operations: components["schemas"]["ModelOperationAcknowledgement"][];
+            /**
+             * Schema Version
+             * @constant
+             */
+            schema_version: 1;
+        };
+        /** ModelOperationStatusRequest */
+        ModelOperationStatusRequest: {
+            /** Model Operation Version */
+            model_operation_version: string;
+            /**
+             * Operation Id
+             * Format: uuid
+             */
+            operation_id: string;
+            /**
+             * Schema Version
+             * @constant
+             */
+            schema_version: 1;
+            /** Source Envelope Sha256 */
+            source_envelope_sha256: string;
+            /**
+             * User Id
+             * Format: uuid
+             */
+            user_id: string;
+        };
+        /** ModelOperationStatusResponse */
+        ModelOperationStatusResponse: {
+            /** Applied Feedback Version */
+            applied_feedback_version?: string | null;
+            /** Applied Operation Version */
+            applied_operation_version?: string | null;
+            /** Applied Profile Version */
+            applied_profile_version?: string | null;
+            /**
+             * Basis Status
+             * @enum {string}
+             */
+            basis_status: "missing" | "awaiting_profile" | "ready";
+            /** Current Head */
+            current_head?: string | null;
+            /** Model Operation Version */
+            model_operation_version: string;
+            /** Operation Head */
+            operation_head?: string | null;
+            /**
+             * Operation Id
+             * Format: uuid
+             */
+            operation_id: string;
+            /**
+             * Schema Version
+             * @constant
+             */
+            schema_version: 1;
+            /** Source Envelope Sha256 */
+            source_envelope_sha256: string;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "pending" | "applied" | "withdrawn_profile" | "rejected_capacity" | "rejected_session_dependency";
+            /**
+             * User Id
+             * Format: uuid
+             */
+            user_id: string;
+            /** Withdrawal Sha256 */
+            withdrawal_sha256?: string | null;
+        };
+        /** ModelRecommendationContext */
+        ModelRecommendationContext: {
+            /** As Of Ms */
+            as_of_ms: string;
+            /** Epoch */
+            epoch: string;
+            /** Minimum Applied Operation Version */
+            minimum_applied_operation_version: string;
+            /** Policy Sha256 */
+            policy_sha256: string;
+            /** Required Profile Version */
+            required_profile_version: string;
+            /**
+             * Schema Version
+             * @constant
+             */
+            schema_version: 1;
+            /** Session Id */
+            session_id: string;
+        };
+        /** ModelRecommendationResponse */
+        ModelRecommendationResponse: {
+            context_status: components["schemas"]["RecommendationContextStatus"];
+            /** Embedding Version */
+            embedding_version: string;
+            /** Embedding Versions */
+            embedding_versions: string[];
+            /** Fallback Code */
+            fallback_code: string | null;
+            /** Fallback Reason */
+            fallback_reason: string | null;
+            /** Feed Version */
+            feed_version: string;
+            /**
+             * Generation Id
+             * Format: uuid
+             */
+            generation_id: string;
+            /** Heavy Ranker Selected */
+            heavy_ranker_selected: boolean;
+            /** Items */
+            items: components["schemas"]["RecommendationItem"][];
+            model_context: components["schemas"]["AppliedModelContext"];
+            /** Model Version */
+            model_version: string;
+            /** Ranker Applied */
+            ranker_applied: boolean;
+            /** Retrieval Mode */
+            retrieval_mode: string;
+            /**
+             * Schema Version
+             * @constant
+             */
+            schema_version: 2;
+            /**
+             * Served Ranker
+             * @enum {string}
+             */
+            served_ranker: "heavy" | "hybrid";
+            /**
+             * User Id
+             * Format: uuid
+             */
+            user_id: string;
         };
         /** OnboardingJob */
         OnboardingJob: {
@@ -249,6 +660,50 @@ export interface components {
              */
             user_id: string;
         };
+        /** ProfileWithdrawalAcknowledgement */
+        ProfileWithdrawalAcknowledgement: {
+            /** Model Operation Version */
+            model_operation_version: string;
+            /**
+             * Operation Id
+             * Format: uuid
+             */
+            operation_id: string;
+            /** Source Envelope Sha256 */
+            source_envelope_sha256: string;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "accepted" | "duplicate";
+            /** Withdrawal Sha256 */
+            withdrawal_sha256: string;
+        };
+        /** ProfileWithdrawalBatch */
+        ProfileWithdrawalBatch: {
+            /**
+             * Schema Version
+             * @constant
+             */
+            schema_version: 1;
+            /** Withdrawals */
+            withdrawals: components["schemas"]["ProfileWithdrawalInput"][];
+        };
+        /** ProfileWithdrawalInput */
+        ProfileWithdrawalInput: {
+            /** Withdrawal Json */
+            withdrawal_json: string;
+        };
+        /** ProfileWithdrawalResponse */
+        ProfileWithdrawalResponse: {
+            /**
+             * Schema Version
+             * @constant
+             */
+            schema_version: 1;
+            /** Withdrawals */
+            withdrawals: components["schemas"]["ProfileWithdrawalAcknowledgement"][];
+        };
         /** RecommendationContext */
         RecommendationContext: {
             /**
@@ -291,7 +746,7 @@ export interface components {
             /** Exclude Repo Ids */
             exclude_repo_ids?: string[];
             /** Feed Version */
-            feed_version: number;
+            feed_version: number | string;
             /**
              * Generation Id
              * Format: uuid
@@ -299,11 +754,13 @@ export interface components {
             generation_id: string;
             /** Limit */
             limit: number;
+            model_context?: components["schemas"]["ModelRecommendationContext"] | null;
             /**
              * Schema Version
              * @constant
              */
             schema_version: 2;
+            scoring_capture?: components["schemas"]["ScoringCaptureRequest"] | null;
             /** Social Candidates */
             social_candidates?: components["schemas"]["SocialCandidate"][];
             /** Social Repo Ids */
@@ -313,7 +770,18 @@ export interface components {
              * Format: uuid
              */
             user_id: string;
-        };
+        } & ({
+            feed_version: number;
+            model_context?: null;
+            scoring_capture?: null;
+        } | {
+            feed_version: string;
+            scoring_capture: components["schemas"]["ScoringCaptureRequest"];
+        } | {
+            feed_version: string;
+            model_context: components["schemas"]["ModelRecommendationContext"];
+            scoring_capture?: null;
+        });
         /** RecommendationResponse */
         RecommendationResponse: {
             context_status: components["schemas"]["RecommendationContextStatus"];
@@ -358,7 +826,17 @@ export interface components {
              */
             user_id: string;
         };
-        /** RepositoryFeaturePatch */
+        /**
+         * RepositoryFeaturePatch
+         * @description Mutable observations plus optional, validated derived-score echoes.
+         *
+         *     ``pushed_days_ago`` is the producer's age at its observation anchor. The
+         *     refresh service never advances it from wall-clock time or infers it from
+         *     ``pushed_at``. Ranking scores are server-owned; callers may include them
+         *     for compatibility, but the refresh service requires exact agreement with
+         *     the effective score. It recomputes a score only when one of that score's
+         *     source observations changes.
+         */
         RepositoryFeaturePatch: {
             /** Activity Score */
             activity_score?: number | null;
@@ -542,6 +1020,21 @@ export interface components {
              */
             search_id: string;
         };
+        /** RepositorySnapshot */
+        RepositorySnapshot: {
+            /** Content Hash */
+            content_hash: string;
+            /** Content Version */
+            content_version: string;
+            /** Embedding Version Index */
+            embedding_version_index: number;
+            /** Feature Version */
+            feature_version: string;
+            /** Repo Id */
+            repo_id: string;
+            /** Source Hash */
+            source_hash: string;
+        };
         /** RepositorySource */
         RepositorySource: {
             /** Content Hash */
@@ -688,6 +1181,83 @@ export interface components {
              */
             retryable: false;
         };
+        /** ScoredPacket */
+        ScoredPacket: {
+            /** Binding Sha256 */
+            binding_sha256: string;
+            /** Input Base64 */
+            input_base64: string;
+            snapshot: components["schemas"]["RepositorySnapshot"];
+        };
+        /** ScoringCaptureRequest */
+        ScoringCaptureRequest: {
+            /**
+             * Encoding
+             * @constant
+             */
+            encoding: "float32-le-v1";
+            /**
+             * Schema Version
+             * @constant
+             */
+            schema_version: 1;
+        };
+        /** ScoringContext */
+        ScoringContext: {
+            /** Code Commit */
+            code_commit: string;
+            /**
+             * Dimensions
+             * @default 778
+             * @constant
+             */
+            dimensions?: 778;
+            /** Embedding Model */
+            embedding_model: string;
+            /** Embedding Revision */
+            embedding_revision: string;
+            /**
+             * Encoding
+             * @default float32-le-v1
+             * @constant
+             */
+            encoding?: "float32-le-v1";
+            /** Feature Order Sha256 */
+            feature_order_sha256: string;
+            /**
+             * Feature Spec Version
+             * @constant
+             */
+            feature_spec_version: "v2";
+            /** Feed Version */
+            feed_version: string;
+            /** Feedback State Revision */
+            feedback_state_revision: string;
+            /** Feedback Version */
+            feedback_version: string;
+            /** Generation Id */
+            generation_id: string;
+            /** Manifest Sha256 */
+            manifest_sha256: string;
+            /** Model Sha256 */
+            model_sha256: string;
+            /** Model Version */
+            model_version: string;
+            /** Profile Version */
+            profile_version: string;
+            /** Repository Embedding Versions */
+            repository_embedding_versions: string[];
+            /** Scaler Sha256 */
+            scaler_sha256: string;
+            /** Scored At */
+            scored_at: string;
+            /** User Embedding Version */
+            user_embedding_version: string | null;
+            /** User Id */
+            user_id: string;
+            /** User Vector Sha256 */
+            user_vector_sha256: string;
+        };
         /** SocialCandidate */
         SocialCandidate: {
             /** Owner Github Id */
@@ -706,6 +1276,52 @@ export interface components {
             source_score: number;
             /** Support */
             support: number;
+        };
+        /** UnscoredEmptyRecommendationResponse */
+        UnscoredEmptyRecommendationResponse: {
+            context_status: components["schemas"]["RecommendationContextStatus"];
+            /** Embedding Version */
+            embedding_version: string;
+            /** Embedding Versions */
+            embedding_versions: string[];
+            /** Fallback Code */
+            fallback_code: null;
+            /** Fallback Reason */
+            fallback_reason: null;
+            /** Feed Version */
+            feed_version: string;
+            /**
+             * Generation Id
+             * Format: uuid
+             */
+            generation_id: string;
+            /** Heavy Ranker Selected */
+            heavy_ranker_selected: boolean;
+            /** Items */
+            items: components["schemas"]["RecommendationItem"][];
+            model_context?: components["schemas"]["AppliedModelContext"] | null;
+            /** Model Version */
+            model_version: string;
+            /** Ranker Applied */
+            ranker_applied: boolean;
+            /** Retrieval Mode */
+            retrieval_mode: string;
+            /**
+             * Schema Version
+             * @constant
+             */
+            schema_version: 2;
+            scoring_capture: components["schemas"]["EmptyScoringStatus"];
+            /**
+             * Served Ranker
+             * @enum {string}
+             */
+            served_ranker: "heavy" | "hybrid";
+            /**
+             * User Id
+             * Format: uuid
+             */
+            user_id: string;
         };
     };
     responses: never;
@@ -749,10 +1365,145 @@ export interface operations {
             };
         };
     };
-    generate_recommendations_api_v2_recommendations_generate_post: {
+    read_model_authority_api_v2_model_authority_post: {
         parameters: {
             query?: never;
             header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ModelAuthorityRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ModelAuthorityResponse"];
+                };
+            };
+            /** @description Request validation failed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RequestValidationResponse"];
+                };
+            };
+        };
+    };
+    read_model_operation_status_api_v2_model_operation_status_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ModelOperationStatusRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ModelOperationStatusResponse"];
+                };
+            };
+            /** @description Request validation failed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RequestValidationResponse"];
+                };
+            };
+        };
+    };
+    submit_profile_withdrawals_api_v2_model_operation_withdrawals_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ProfileWithdrawalBatch"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProfileWithdrawalResponse"];
+                };
+            };
+            /** @description Request validation failed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RequestValidationResponse"];
+                };
+            };
+        };
+    };
+    submit_model_operations_api_v2_model_operations_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ModelOperationBatch"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ModelOperationResponse"];
+                };
+            };
+            /** @description Request validation failed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RequestValidationResponse"];
+                };
+            };
+        };
+    };
+    generate_recommendations_api_v2_recommendations_generate_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Additional scoped capability required when scoring_capture is provided. Ordinary requests require only the internal service credential. */
+                "x-scoring-capture-capability"?: string;
+            };
             path?: never;
             cookie?: never;
         };
@@ -768,7 +1519,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["RecommendationResponse"];
+                    "application/json": components["schemas"]["RecommendationResponse"] | components["schemas"]["ModelRecommendationResponse"] | components["schemas"]["CapturedRecommendationResponse"] | components["schemas"]["UnscoredEmptyRecommendationResponse"];
                 };
             };
             /** @description Request validation failed */

@@ -1,3 +1,4 @@
+import { feedSessions } from '@/api/feed-sessions';
 import { useState, useCallback, useEffect, useLayoutEffect, useMemo, useRef } from 'react';
 import {
   ActivityIndicator,
@@ -81,7 +82,9 @@ export default function HomeScreen() {
     const controller = new FeedPaginationController(async (cursor, signal, requestId, sessionId, initialPage) => {
       const token = await SecureStore.getItemAsync('access_token');
       if (!token) throw new Error('No token');
-      return fetchHomeFeed(token, cursor, { signal, requestId, sessionId, initialPage });
+      const canonicalSessionId=await feedSessions(token).prepare(sessionId);
+      if(cursor!==null&&canonicalSessionId!==sessionId)throw Object.assign(new Error('Browsing session changed.'),{status:400,code:'FEED_CURSOR_STALE'});
+      return fetchHomeFeed(token, cursor, { signal, requestId, sessionId:canonicalSessionId, initialPage });
     }, queryClient.getQueryData<InfiniteData<FeedPage>>(feedQueryKey)?.pages,
     () => queryClient.getQueryData<InfiniteData<FeedPage>>(feedQueryKey)?.pages ?? []);
     return { controller, reset: () => controller.reset() };
@@ -321,15 +324,24 @@ export default function HomeScreen() {
     );
   }, [responsiveWidth]);
 
+  const [sessionError,setSessionError]=useState<string|null>(null);
+  const [resettingSession,setResettingSession]=useState(false);
+  const resettingSessionRef=useRef(false);
   const refreshFeed = async () => {
+    if(resettingSessionRef.current)return;
+    resettingSessionRef.current=true;setResettingSession(true);setSessionError(null);
+    try{
+    const token=await SecureStore.getItemAsync('access_token');
+    const preserveSession=token?await feedSessions(token).reset(pagination.controller.getSessionId()):false;
     await queryClient.cancelQueries({ queryKey: feedQueryKey, exact: true });
-    pagination.reset();
+    pagination.controller.reset({preserveSession});
     visibleIds.current = [];
     retentionPins.current = [];
     scrollOffset.current = 0;
     committedItems.current = [];
     listRef.current?.scrollToOffset({ offset: 0, animated: false });
     await queryClient.resetQueries({ queryKey: feedQueryKey, exact: true });
+    }catch{setSessionError('Could not refresh. Try again.');}finally{resettingSessionRef.current=false;setResettingSession(false);}
   };
   const loadMore = useCallback(() => {
     if (hasNextPage && !isFetching) void fetchNextPage({ cancelRefetch: false });
@@ -403,7 +415,7 @@ export default function HomeScreen() {
               onQueueActivity={(event, flushNow) => handleQueueActivity(item.repository, event, flushNow)}
               onSavedChange={(saved, changed) => handleSavedChange(item.repository, saved, changed)}
               onOwnerPress={() => openOwnerProfile(item.repository)}
-              onRepositoryPress={() => router.push(repositoryHref(item.repository.id))}
+              onRepositoryPress={(navigationToken) => router.push(repositoryHref(item.repository.id,navigationToken))}
               isViewable={viewableItems.includes(item.feedId)}
             />
           )}
@@ -411,7 +423,7 @@ export default function HomeScreen() {
           contentContainerStyle={styles.feedListContent}
           showsVerticalScrollIndicator={false}
           onRefresh={refreshFeed}
-          refreshing={isRefetching && !isFetchingNextPage}
+          refreshing={resettingSession || (isRefetching && !isFetchingNextPage)}
           snapToInterval={pageHeight}
           snapToAlignment="start"
           decelerationRate="fast"
@@ -438,7 +450,7 @@ export default function HomeScreen() {
           onViewableItemsChanged={onViewableItemsChanged}
           viewabilityConfig={VIEWABILITY_CONFIG}
         />
-        <FeedHeader pageWidth={pageWidth} discovery={data?.pages[0]?.mode === 'discovery'} onRefresh={refreshFeed} refreshing={isFetching && !isFetchingNextPage} />
+        <FeedHeader pageWidth={pageWidth} discovery={data?.pages[0]?.mode === 'discovery'} onRefresh={refreshFeed} refreshing={resettingSession || (isFetching && !isFetchingNextPage)} statusMessage={sessionError} />
       </View>
     </View>
   );

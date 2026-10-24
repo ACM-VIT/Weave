@@ -1,4 +1,5 @@
-import { replaceEqualDeep, type InfiniteData } from '@tanstack/react-query';
+import { type InfiniteData } from '@tanstack/react-query';
+import { retainOriginalFeedImpressions } from './feedImpressionAttribution';
 import type { FeedPage } from './feedPagination';
 import type { FeedItem } from '../utils/feed-items';
 import { getFeedItemIdentity } from '../utils/feed-repository';
@@ -51,7 +52,7 @@ export function retainHomeFeedHistory(history: History, visible: readonly string
 /** Apply the cap before QueryClient publishes either fetched or patched data. */
 export function shareHomeFeedHistory(previous: unknown, next: unknown, visible: readonly string[]): unknown {
   if (!next) return next;
-  return replaceEqualDeep(previous, retainHomeFeedHistory(next as History, visible));
+  return retainOriginalFeedImpressions(previous, retainHomeFeedHistory(next as History, visible));
 }
 
 /** Every row touching the viewport is retained, independent of impression thresholds. */

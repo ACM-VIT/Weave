@@ -216,6 +216,7 @@ export async function apiV2<T>(
       ? payload.error : `Backend request failed (${response.status}).`);
     Object.assign(error, {
       status: response.status,
+      ...(payload && 'code' in payload && typeof payload.code==='string' && /^[A-Z][A-Z0-9_]{0,63}$/.test(payload.code) ? {code:payload.code} : {}),
       retryAfter: response.headers.get('retry-after'),
       accessToken: result.token,
     });

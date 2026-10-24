@@ -45,6 +45,9 @@ export class DurableActivityOutbox {
   private mutationTail: Promise<unknown> = Promise.resolve();
   private queuedIds = new Set<string>();
   private readonly undurable = new Map<string, QueuedActivity>();
+  // Preparation can precede a failing initial read/import. Keep those exact
+  // events separately so restoration never overwrites an accepted reference.
+  private readonly prepared = new Map<string, QueuedActivity>();
   private flushPromise: Promise<ActivityFlushResult> | null = null;
   private readonly listeners = new Set<ActivityListener>();
   private retryDelayMs = 1_000;
@@ -122,19 +125,32 @@ export class DurableActivityOutbox {
     }
   }
 
+  private retainPrepared(): void {
+    for (const [eventId, event] of this.prepared) {
+      if (!this.queuedIds.has(eventId)) {
+        this.events.push(event);
+        this.queuedIds.add(eventId);
+        this.undurable.set(eventId, event);
+      }
+      this.prepared.delete(eventId);
+    }
+  }
+
   async enqueue(
     input: ActivityInput,
     onPrepared?: (event: QueuedActivity) => void,
   ): Promise<QueuedActivity> {
     const event = this.dependencies.prepare(input);
+    // Retain synchronously before exposing the prepared ID or awaiting storage.
+    // A failed read remains a rejected write, but cannot lose the event needed
+    // by already prepared actions. The next enqueue/count/flush retries it.
+    if (!this.queuedIds.has(event.event_id) && !this.prepared.has(event.event_id)) {
+      this.prepared.set(event.event_id, event);
+    }
     onPrepared?.(event);
-    await this.restore();
     await this.mutate(async () => {
-      if (!this.queuedIds.has(event.event_id)) {
-        this.events.push(event);
-        this.queuedIds.add(event.event_id);
-        this.undurable.set(event.event_id, event);
-      }
+      await this.restore();
+      this.retainPrepared();
       // Keep failed appends in memory and retry before any later delivery.
       await this.ensureDurable();
     });
@@ -143,8 +159,10 @@ export class DurableActivityOutbox {
 
   async pendingCount(): Promise<number> {
     await this.restore();
-    await this.mutationTail.catch(() => undefined);
-    return this.events.length;
+    return this.mutate(async () => {
+      this.retainPrepared();
+      return this.events.length;
+    });
   }
 
   flush(token: string, generation = this.dependencies.session?.capture()): Promise<ActivityFlushResult> {
@@ -170,7 +188,10 @@ export class DurableActivityOutbox {
     this.assertSession(token, generation);
     await this.restore();
     this.assertSession(token, generation);
-    await this.mutationTail.catch(() => undefined);
+    await this.mutate(async () => {
+      this.assertSession(token, generation);
+      this.retainPrepared();
+    });
     this.assertSession(token, generation);
     if (this.events.length === 0) {
       return { delivered: 0, invalidatedFeed: false, deferred: false };

@@ -1,3 +1,4 @@
+import type { ModelLaneAuthorityService } from './modelLaneAuthorityService.js';
 import { performance } from 'node:perf_hooks';
 
 import type { FeedPersistencePort } from '../ports/feedPersistencePort.js';
@@ -19,9 +20,11 @@ export class PersonaRepairService {
   constructor(
     private readonly persistence: Pick<FeedPersistencePort, 'getMlOnboardingJob' | 'recordMlProfileDelivered'>,
     private readonly transport: Pick<OutboxTransportPort, 'deliverOnboarding'>,
+    private readonly orderedProfiles?:ModelLaneAuthorityService,
   ) {}
 
   async repair(userId: string, budget?: PersonaRepairBudget): Promise<bigint> {
+    if(this.orderedProfiles && await this.orderedProfiles.isEnabled(userId))return this.orderedProfiles.ensureProfileReady(userId);
     if (!this.persistence.getMlOnboardingJob) {
       throw new PersonaRepairError('Persona repair persistence is unavailable.');
     }

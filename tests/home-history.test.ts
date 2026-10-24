@@ -25,6 +25,7 @@ for (const discovery of [false, true]) for (const backscroll of [false, true]) {
     const pages = Array.from({ length: 50 }, (_, index) => page(index * 10));
     client.setQueryData(key, { pages, pageParams: pages.map(value => value.requestCursor) });
     let list: any, calls = 0;
+    const preparedSessions: string[] = [], resetSessions: string[] = [];
     let resolveNext!: () => void;
     const response = new Promise<void>(resolve => { resolveNext = resolve; });
     const scrolls: any[] = [], mounts = new Map<string, number>(), impressions: string[] = [];
@@ -49,6 +50,7 @@ for (const discovery of [false, true]) for (const backscroll of [false, true]) {
       '@/components/home/RepositoryFeedItem': { RepositoryFeedItem: Card }, '@/components/home/FeedHeader': { FeedHeader: () => null },
       '@/constants/theme': { REFERENCE_THEME: {} }, 'expo-router': { router: { push() {} } },
       '../../utils/storage': { getItemAsync: async () => 'token' },
+      '@/api/feed-sessions': { feedSessions: () => ({ prepare: async (session: string) => { preparedSessions.push(session); return session; }, reset: async (session: string) => { resetSessions.push(session); return true; } }) },
       '@/api/home-feed': { fetchHomeFeed: async (_token: string, cursor: string | null) => { calls++; if (backscroll && cursor === '500') await response; return page(Number(cursor)); } },
       '@/store/AuthContext': { useAuth: () => ({ user: { user_id: 'viewer' }, checkOnboardingStatus: async () => {}, adjustLikesGivenCount() {}, settleLikesGivenCountAdjustments() {} }) },
       '@/services/activityOutboxClient': { getActivityOutbox: () => null },
@@ -103,6 +105,8 @@ for (const discovery of [false, true]) for (const backscroll of [false, true]) {
       }
       assert.equal(cached.pages.at(-1)!.nextCursor, '510');
       await act(async () => { await list.onRefresh(); await new Promise(resolve => setTimeout(resolve, 25)); });
+      assert.deepEqual(resetSessions, ['session']);
+      assert.equal(preparedSessions.at(-1), 'session', 'refresh retains the canonical reset session');
       assert.equal(scrolls.at(-1).offset, 0);
       assert.equal(client.getQueryData<InfiniteData<FeedPage>>(key)!.pages[0].items[0].repo_id, '0');
     } finally {
