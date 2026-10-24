@@ -1,6 +1,6 @@
 "use no memo";
 
-import React, { useEffect, useMemo, useRef } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Animated,
   Easing,
@@ -29,6 +29,8 @@ import {
   type ReadmeImageContext,
 } from '@/utils/readme-images';
 import { extractReadmeVideos } from '@/utils/readme-videos';
+import { readmePopupBlocks } from '@/utils/readme-popup-content';
+import { ReadmeVideoPopup } from './ReadmeVideoPopup';
 import { ReadmeVideo } from './ReadmeVideo';
 import { SafeReadmeImageRenderer } from './SafeReadmeImage';
 
@@ -168,7 +170,11 @@ const markdownTagStyles = {
   },
 } as const;
 
-export function ReadmePopup({
+export function ReadmePopup(props: ReadmePopupProps) {
+  return props.isVisible ? <VisibleReadmePopup {...props} /> : null;
+}
+
+function VisibleReadmePopup({
   isVisible,
   onClose,
   title,
@@ -187,6 +193,7 @@ export function ReadmePopup({
   const opacity = useMemo(() => new Animated.Value(0), []);
   const contentProgress = useMemo(() => new Animated.Value(0), []);
   const closingRef = useRef(false);
+  const [videoUrl, setVideoUrl] = useState<string | null>(null);
   const content = useMemo(() => contentKind === 'summary'
     ? readmeText || README_SUMMARY_PENDING
     : prepareReadmeForDisplay(readmeText), [contentKind, readmeText]);
@@ -196,6 +203,8 @@ export function ReadmePopup({
     () => renderReadmeMarkdown(content, readmeSource),
     [content, readmeSource],
   );
+  const blocks = useMemo(() => readmePopupBlocks(markdownHtml, videos, contentKind === 'summary'),
+    [markdownHtml, videos, contentKind]);
   const cardAnimationStyle = useMemo(() => ({
     opacity,
     transform: [
@@ -267,6 +276,7 @@ export function ReadmePopup({
   const closeAnimated = () => {
     if (closingRef.current) return;
     closingRef.current = true;
+    setVideoUrl(null);
     opacity.stopAnimation();
     contentProgress.stopAnimation();
 
@@ -325,6 +335,8 @@ export function ReadmePopup({
 
         <Animated.View
           accessibilityViewIsModal
+          accessibilityElementsHidden={Boolean(videoUrl)}
+          importantForAccessibility={videoUrl ? "no-hide-descendants" : "auto"}
           style={[
             styles.card,
             {
@@ -362,7 +374,9 @@ export function ReadmePopup({
                   <Text style={styles.repoTitle} accessibilityRole="alert">{errorMessage}</Text>
                   {onRetry ? <Pressable accessibilityRole="button" accessibilityLabel="Retry loading README"
                     onPress={onRetry} style={styles.retryButton}><Text style={styles.headerText}>Retry</Text></Pressable> : null}
-                </View> : <RenderHtml
+                </View> : blocks.map((block, index) => block.kind === 'video'
+                  ? <ReadmeVideo key={block.url} url={block.url} onPress={() => setVideoUrl(block.url)} />
+                  : <RenderHtml key={`section-${index}`}
                 contentWidth={cardWidth - 44}
                 defaultTextProps={{ selectable: true }}
                 enableExperimentalMarginCollapsing
@@ -389,20 +403,20 @@ export function ReadmePopup({
                     },
                   },
                 }}
-                source={{ html: markdownHtml }}
+                source={{ html: block.content }}
                 systemFonts={markdownFonts}
                 tagsStyles={markdownTagStyles}
-              />}
+              />)}
               {mediaMessage ? <View>
                 <Text style={{ color: REFERENCE_THEME.textSecondary }}>{mediaMessage}</Text>
                 {onRetry ? <Pressable accessibilityRole="button" onPress={onRetry} style={styles.retryButton}>
                   <Text style={styles.headerText}>Retry loading videos</Text>
                 </Pressable> : null}
               </View> : null}
-              {isVisible ? videos.map((url) => <ReadmeVideo key={url} url={url} />) : null}
             </Animated.View>
           </ScrollView>
         </Animated.View>
+        {videoUrl && isVisible ? <ReadmeVideoPopup key={videoUrl} url={videoUrl} onClose={() => setVideoUrl(null)} /> : null}
       </View>
     </Modal>
   );

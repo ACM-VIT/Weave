@@ -78,6 +78,7 @@ function feed(ids: string[], reducedMotion = false, attribution?: { ownerId: str
     },
     'react-native-worklets': {scheduleOnRN: (fn: (...args: any[]) => void, ...args: any[]) => fn(...args)},
     'react-native-gesture-handler': {Gesture: {Pan: () => gesture}, GestureDetector: ({children}: any) => children},
+    './ReadmeVideoPopup': {ReadmeVideoPopup: 'ReadmeVideoPopup'},
     './ReadmeVideo': {ReadmeVideo: 'ReadmeVideo'},
     './SafeReadmeImage': {SafeReadmeImageRenderer: 'SafeReadmeImageRenderer'},
     './DescriptionCard': {SaveSwipeGestureContext: React.createContext(null)},
@@ -153,6 +154,9 @@ function feed(ids: string[], reducedMotion = false, attribution?: { ownerId: str
     setHeight(value:number) {shareHeight=value;},
     setReadme(value: () => Promise<any>) {loadReadme=value;},
     get readmePopupProps() {return root.root.findAllByType(overlayTypes[3])[0]?.props;},
+    get videoPopup() {return root.root.findAllByType('ReadmeVideoPopup')[0];},
+    async openVideo() {await act(async () => {root.root.findAllByType('ReadmeVideo')[0].props.onPress();});},
+    async closeVideo() {await act(async () => {this.videoPopup.props.onClose();});},
     get videoUrls() {return root.root.findAllByType('ReadmeVideo').map(node=>node.props.url);},
     get renderedReadmeHtml() {return root.root.findAllByType('RenderHtml').map(node=>node.props.source.html).join('');},
     get githubActionScrollable() {return this.button('Open on GitHub').findAllByType('Text').length>0
@@ -618,7 +622,13 @@ test('Read more keeps the summary and lazily hydrates original README videos', a
     assert.equal(app.readmePopupProps.contentKind, 'summary');
     assert.ok(app.renderedReadmeHtml.includes('Summary.'));
     assert.deepEqual(app.videoUrls, ['https://cdn.example.com/demo.mp4']);
+    assert.equal(app.videoPopup, undefined, 'summary previews do not mount a player');
+    await app.openVideo();
+    assert.equal(app.videoPopup.props.url, 'https://cdn.example.com/demo.mp4');
+    await app.closeVideo();
+    assert.equal(app.videoPopup, undefined);
+    assert.ok(app.renderedReadmeHtml.includes('Summary.'), 'closing video preserves the summary');
     await app.requestClose();
-    assert.deepEqual(app.videoUrls, [], 'closing unmounts the player');
+    assert.deepEqual(app.videoUrls, [], 'closing removes the previews');
   } finally { await app.unmount(); }
 });

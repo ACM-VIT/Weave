@@ -1,35 +1,18 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React from 'react';
 import { Pressable, Text, View } from 'react-native';
-import { useEvent } from 'expo';
-import { useVideoPlayer, VideoView } from 'expo-video';
-import { openReadmeExternalLink } from '@/utils/readme-external-link';
+import { Play } from 'lucide-react-native';
+import { REFERENCE_THEME } from '@/constants/theme';
 
-/** Mounted only inside an open popup; useVideoPlayer releases playback on unmount. */
-export function ReadmeVideo({ url }: { url: string }) {
-  const [started, setStarted] = useState(false);
-  const [failed, setFailed] = useState(false);
-  const player = useVideoPlayer(null);
-  const mounted = useRef(true);
-  useEffect(() => {
-    mounted.current = true;
-    return () => { mounted.current = false; };
-  }, []);
-  const status = useEvent(player, 'statusChange', { status: player.status });
-  const hasError = failed || status.status === 'error';
-  return <View style={{ marginVertical: 12, gap: 8 }}>
-    {started && !hasError ? <VideoView player={player} nativeControls contentFit="contain"
-      style={{ width: '100%', aspectRatio: 16 / 9, backgroundColor: '#111' }} /> : null}
-    {!started ? <Pressable accessibilityRole="button" accessibilityLabel="Play README video"
-      style={{ minHeight: 64, justifyContent: 'center', padding: 16, backgroundColor: '#222', borderRadius: 8 }}
-      onPress={() => {
-        setStarted(true);
-        void player.replaceAsync(url).then(() => { if (mounted.current) player.play(); })
-          .catch(() => { if (mounted.current) setFailed(true); });
-      }}><Text style={{ color: '#87e49e' }}>▶ Play demo video</Text></Pressable> : null}
-    {hasError ? <Text style={{ color: '#ddd' }}>This video could not be played here.</Text> : null}
-    <Pressable accessibilityRole="link" onPress={() => openReadmeExternalLink(url)}
-      style={{ minHeight: 44, justifyContent: 'center' }}>
-      <Text style={{ color: '#87e49e' }}>Open original video ↗</Text>
-    </Pressable>
-  </View>;
+/** A preview only: no player or video download until the dedicated viewer opens. */
+export function ReadmeVideo({ onPress }: { url: string; onPress: () => void }) {
+  return <Pressable accessibilityRole="button" accessibilityLabel="Open README video"
+    accessibilityHint="Opens a larger video player. Closing it returns to this summary."
+    onPress={onPress} style={({ pressed }) => ({ marginVertical: 16, borderRadius: 12,
+      overflow: 'hidden', borderWidth: 1, borderColor: REFERENCE_THEME.separator,
+      backgroundColor: REFERENCE_THEME.surface, opacity: pressed ? 0.75 : 1 })}>
+    <View style={{ aspectRatio: 16 / 9, alignItems: 'center', justifyContent: 'center', gap: 12 }}>
+      <Play color={REFERENCE_THEME.accentLight} size={36} />
+      <Text style={{ color: REFERENCE_THEME.textPrimary }}>Watch repository demo</Text>
+    </View>
+  </Pressable>;
 }
