@@ -70,7 +70,7 @@
     "web": "expo start --web",
     "lint": "expo lint",
     "typecheck": "tsc --noEmit",
-    "test": "tsx --test tests/**/*.test.ts",
+    "test": "tsx --test --test-concurrency=4 tests/**/*.test.ts",
     "doctor": "expo-doctor",
     "export:all": "expo export --platform all",
     "build:android:artifact": "node ./scripts/build-android-artifact.mjs"
