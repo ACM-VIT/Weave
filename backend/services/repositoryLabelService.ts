@@ -1,6 +1,13 @@
 import type { RepositoryLabel, RepositoryLabelLoader } from '../contracts/repositoryLabel.js';
+import { incrementMetric } from '../observability/metrics.js';
 
 const HOUR = 3_600_000;
+type LabelDegradation = 'repository_source_failure' | 'recent_likes_source_failure' | 'request_timeout'
+  | 'admission_rejected' | 'projection_failure';
+/** Fixed reason vocabulary bounds cardinality; no IDs, exception text or payloads. */
+function recordLabelDegradation(reason: LabelDegradation): void {
+  incrementMetric('repository_label_degradation_total', { reason });
+}
 /** Product defaults, centralized so another label is one rule and evidence loader. */
 export const REPOSITORY_LABEL_POLICY = Object.freeze({
   trendingTop: 10, trendingFreshnessMs: 36 * HOUR,
@@ -76,20 +83,30 @@ export class RepositoryLabelService {
     if (now < this.likesRetryAfter) return;
     const work = Promise.resolve().then(() => this.source.recentLikes(new Date(now)))
       .then(rows => { this.likes = { observedAt: now, rows }; })
-      .catch(() => { this.likesRetryAfter = this.now() + 5_000; });
+      .catch(() => {
+        recordLabelDegradation('recent_likes_source_failure');
+        this.likesRetryAfter = this.now() + 5_000;
+      });
     this.likesPending = work;
     try { await work; } finally { if (this.likesPending === work) this.likesPending = undefined; }
   }
 
   readonly load: RepositoryLabelLoader = async repoIds => {
     const ids = [...new Set(repoIds)];
-    if (!ids.length || ids.length > 100 || this.activeLoads >= REPOSITORY_LABEL_POLICY.concurrentLoads) return new Map();
+    if (!ids.length || ids.length > 100) return new Map();
+    if (this.activeLoads >= REPOSITORY_LABEL_POLICY.concurrentLoads) {
+      recordLabelDegradation('admission_rejected');
+      return new Map();
+    }
     const reference = this.now();
     this.activeLoads++;
     // The real work owns admission even after a caller's optional budget expires.
     // This bounds queries waiting for a pooled connection as well as active SQL.
     const work = Promise.all([
-      Promise.resolve().then(() => this.source.repositories(ids)).catch(() => [] as RepositoryLabelEvidence[]),
+      Promise.resolve().then(() => this.source.repositories(ids)).catch(() => {
+        recordLabelDegradation('repository_source_failure');
+        return [] as RepositoryLabelEvidence[];
+      }),
       this.refreshLikes(reference),
     ]).then(([rows]) => {
       const now = this.now();
@@ -102,12 +119,18 @@ export class RepositoryLabelService {
         if (label) result.set(row.repo_id, label);
       }
       return result;
-    }).catch(() => new Map<string, RepositoryLabel>());
+    }).catch(() => {
+      recordLabelDegradation('projection_failure');
+      return new Map<string, RepositoryLabel>();
+    });
     void work.finally(() => { this.activeLoads--; });
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       return await Promise.race([work, new Promise<Map<string, RepositoryLabel>>(resolve => {
-        timer = setTimeout(() => resolve(new Map()), REPOSITORY_LABEL_POLICY.requestBudgetMs);
+        timer = setTimeout(() => {
+          recordLabelDegradation('request_timeout');
+          resolve(new Map());
+        }, REPOSITORY_LABEL_POLICY.requestBudgetMs);
       })]);
     } finally { clearTimeout(timer); }
   };

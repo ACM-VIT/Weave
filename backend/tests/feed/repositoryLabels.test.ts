@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { snapshotMetrics } from '../../observability/metrics.js';
 import { REPOSITORY_LABEL_POLICY as policy, RepositoryLabelService, selectRepositoryLabel, withRepositoryLabels,
   type RepositoryLabelEvidence } from '../../services/repositoryLabelService.js';
 
@@ -7,6 +8,14 @@ const now = Date.parse('2026-10-24T12:00:00Z');
 const stamp = (age = 0) => new Date(now - age).toISOString();
 const evidence: RepositoryLabelEvidence = { repo_id: 'repo', trending_rank: 3, trending_observed_at: stamp(),
   star_count: 1_000, stats_observed_at: stamp() };
+
+function degradationCounters(): Record<string, number> {
+  const counters = snapshotMetrics().counters as Record<string, number>;
+  return Object.fromEntries(Object.entries(counters).filter(([key]) => key.startsWith('repository_label_degradation_total:')));
+}
+function reasonCount(reason: string): number {
+  return degradationCounters()[`repository_label_degradation_total:${JSON.stringify([['reason', reason]])}`] ?? 0;
+}
 
 test('evidence rules select one label in priority order, with exact rank/count bounds', () => {
   const likes = { repo_id: 'repo', count: 20, rank: 10 };
@@ -52,6 +61,8 @@ test('batched service coalesces global likes, reuses bounded cache, refreshes af
 });
 
 test('optional timeout retains physical admission until stalled queries finish', async () => {
+  const timeoutsBefore = reasonCount('request_timeout');
+  const admissionBefore = reasonCount('admission_rejected');
   let finish!: (value: RepositoryLabelEvidence[]) => void;
   const stalled = new Promise<RepositoryLabelEvidence[]>(resolve => { finish = resolve; });
   let queries = 0;
@@ -62,9 +73,38 @@ test('optional timeout retains physical admission until stalled queries finish',
   assert.ok(pages.every(page => page.size === 0));
   assert.equal((await service.load(['repo'])).size, 0);
   assert.equal(queries, policy.concurrentLoads, 'HTTP timeout must not reopen physical query admission');
+  assert.equal(reasonCount('request_timeout') - timeoutsBefore, policy.concurrentLoads);
+  assert.equal(reasonCount('admission_rejected') - admissionBefore, 1);
   finish([evidence]);
   await new Promise(resolve => setImmediate(resolve));
   assert.equal((await service.load(['repo'])).get('repo')?.kind, 'trending');
+  assert.equal(reasonCount('request_timeout') - timeoutsBefore, policy.concurrentLoads,
+    'successful completion after physical release must clear the observer timeout');
+});
+
+test('diagnostics distinguish successful empty evidence from source failures without retaining exception details', async () => {
+  const healthy = new RepositoryLabelService({ async repositories() { return []; }, async recentLikes() { return []; } }, () => now);
+  const beforeHealthy = degradationCounters();
+  assert.equal((await healthy.load(['repo'])).size, 0);
+  assert.deepEqual(degradationCounters(), beforeHealthy, 'no qualifying data is a healthy result, not an outage');
+
+  const repositoryBefore = reasonCount('repository_source_failure');
+  const likesBefore = reasonCount('recent_likes_source_failure');
+  const timeoutBefore = reasonCount('request_timeout');
+  const failed = new RepositoryLabelService({
+    async repositories() { throw new Error('private-repo-secret'); },
+    async recentLikes() { throw new Error('private-database-secret'); },
+  }, () => now);
+  assert.equal((await failed.load(['private-repo-secret'])).size, 0);
+  assert.equal(reasonCount('repository_source_failure') - repositoryBefore, 1);
+  assert.equal(reasonCount('recent_likes_source_failure') - likesBefore, 1);
+  assert.equal(reasonCount('request_timeout'), timeoutBefore, 'source rejection is not an observer timeout');
+  assert.equal((await failed.load(['private-repo-secret'])).size, 0);
+  assert.equal(reasonCount('repository_source_failure') - repositoryBefore, 2);
+  assert.equal(reasonCount('recent_likes_source_failure') - likesBefore, 1, 'aggregate retry backoff avoids duplicate source-failure counts');
+  const serialized = JSON.stringify(degradationCounters());
+  assert.equal(serialized.includes('private-repo-secret'), false);
+  assert.equal(serialized.includes('private-database-secret'), false);
 });
 
 test('optional source failure preserves available evidence; enrichment copies and fails open', async () => {

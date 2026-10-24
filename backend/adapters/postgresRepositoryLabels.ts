@@ -7,6 +7,9 @@ export function createRepositoryLabelSource(client: typeof sqlClient = sqlClient
     async repositories(repoIds) {
       return client.begin(async tx => {
         await tx`SELECT set_config('statement_timeout', ${String(policy.queryTimeoutMs)}, true)`;
+        // The ML publisher enumerates github-trending ranks from 1 and stores
+        // them unchanged. The backend's zero-based search-corpus snapshot has a
+        // different source and must never become an official GitHub rank badge.
         const rows = await tx`SELECT r.repo_id, trending.position AS trending_rank,
           trending.computed_at AS trending_observed_at,stat.star_count,stat.observed_at AS stats_observed_at
           FROM app.repos r

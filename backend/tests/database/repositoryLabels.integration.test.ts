@@ -7,8 +7,9 @@ const enabled = process.env.RUN_DATABASE_INTEGRATION === '1';
 if (enabled) assertDisposableDatabase();
 
 (enabled ? test : test.skip)('real SQL uses global recent retained likes, active identities and actual daily snapshot rank', async () => {
-  const [{ sqlClient: sql }, { createRepositoryLabelSource }] = await Promise.all([
+  const [{ sqlClient: sql }, { createRepositoryLabelSource }, { selectRepositoryLabel }] = await Promise.all([
     import('../../db/index.js'), import('../../adapters/postgresRepositoryLabels.js'),
+    import('../../services/repositoryLabelService.js'),
   ]);
   const users = Array.from({ length: 31 }, () => randomUUID());
   const repos = Array.from({ length: 12 }, () => randomUUID());
@@ -37,6 +38,26 @@ if (enabled) assertDisposableDatabase();
     const rows = await source.repositories([repos[0]]);
     assert.equal(rows[0].trending_rank, 3);
     assert.equal(rows[0].star_count, 1200);
+    // github-trending is the ML publisher's one-based official GitHub list.
+    // The other producer is zero-based but publishes a distinct search source.
+    await sql`INSERT INTO app.trending_snapshot_items(snapshot_id,position,repo_id)
+      VALUES(${snapshot}::uuid,0,${repos[1]}::uuid),(${snapshot}::uuid,1,${repos[2]}::uuid),
+        (${snapshot}::uuid,9,${repos[3]}::uuid),(${snapshot}::uuid,10,${repos[4]}::uuid),
+        (${snapshot}::uuid,11,${repos[5]}::uuid)`;
+    const ranked = new Map((await source.repositories(repos.slice(1, 6)))
+      .map(row => [row.repo_id, selectRepositoryLabel(row, reference.getTime())]));
+    assert.equal(ranked.get(repos[1]), null, 'invalid zero is not silently shifted into an official #1');
+    for (const [index, expected] of [[2, 1], [3, 9], [4, 10]]) {
+      const label = ranked.get(repos[index]);
+      assert.ok(label?.kind === 'trending');
+      assert.equal(label.rank, expected, 'official GitHub positions remain one-based');
+    }
+    assert.equal(ranked.get(repos[5]), null, 'official position 11 is outside the top ten');
+    await sql`UPDATE app.trending_snapshots SET source='github-search-persona-corpus-v1'
+      WHERE snapshot_id=${snapshot}::uuid`;
+    assert.ok((await source.repositories(repos.slice(1, 6))).every(row => row.trending_rank === null),
+      'zero-based search-corpus positions cannot claim an official GitHub rank');
+    await sql`UPDATE app.trending_snapshots SET source='github-trending' WHERE snapshot_id=${snapshot}::uuid`;
     let likes = await source.recentLikes(reference);
     assert.equal(likes.length, 10);
     assert.equal(likes[0].repo_id, repos[11]);
