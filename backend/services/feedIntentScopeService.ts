@@ -24,7 +24,7 @@ export class FeedIntentScopeService {
  }
  async resolve(userId:string,sessionId:string,asOfMs?:string):Promise<FeedIntentScope|null>{
   if(!await this.authority.isEnabled(userId))return null;
-  await this.authority.ensureProfileReady(userId);
+  await this.authority.ensureProfileReady(userId,{reuseAppliedProof:true});
   const snapshot=await this.snapshot(userId,sessionId);if(!snapshot)throw new ModelOperationError();
   const context:MlModelRecommendationContext={schema_version:1,session_id:sessionId,epoch:snapshot.epoch,policy_sha256:snapshot.policySha256,
     minimum_applied_operation_version:snapshot.acceptedOperationVersion,required_profile_version:snapshot.profileVersion,as_of_ms:asOfMs??String(Date.now())};
