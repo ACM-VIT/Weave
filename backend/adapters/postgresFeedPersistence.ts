@@ -1,3 +1,4 @@
+import { unfamiliarRepositorySql, canonicalGithubIdSql } from '../services/familiarRepositoryEligibility.js';
 import { lockModelLane } from '../services/modelOperationService.js';
 import { lockedSession } from '../services/feedIntentSessionService.js';
 import { ModelOperationError } from '../contracts/modelOperations.js';
@@ -177,6 +178,22 @@ export class PostgresFeedPersistence implements FeedPersistencePort, FeedReconci
     if (!boundedLimit) return [];
     const rows = await sqlClient`
       WITH exposures AS (
+        SELECT repo.repo_id,now() AS observed_at,-1 AS priority
+        FROM app.users feed_viewer JOIN app.repos repo
+          ON repo.owner_github_id=${sqlClient.unsafe(canonicalGithubIdSql('feed_viewer.github_id'))}
+        WHERE feed_viewer.user_id=${userId}::uuid AND feed_viewer.github_identity_verified_at IS NOT NULL
+          AND repo.status='active'
+        UNION ALL
+        SELECT repo.repo_id,now() AS observed_at,-1 AS priority
+        FROM app.users feed_viewer JOIN app.user_github_imports imported
+          ON imported.user_id=feed_viewer.user_id AND imported.github_id=feed_viewer.github_id
+          AND imported.accepted_at IS NOT NULL AND imported.revoked_at IS NULL
+        CROSS JOIN LATERAL jsonb_array_elements(CASE WHEN jsonb_typeof(imported.provenance->'repository_ids')='array'
+          THEN imported.provenance->'repository_ids' ELSE '[]'::jsonb END) known(value)
+        JOIN app.repos repo ON repo.github_id=${sqlClient.unsafe(canonicalGithubIdSql("known.value->>'github_id'"))}
+        WHERE feed_viewer.user_id=${userId}::uuid AND feed_viewer.github_identity_verified_at IS NOT NULL
+          AND repo.status='active'
+        UNION ALL
         SELECT item.repo_id,serve.created_at AS observed_at,0 AS priority
         FROM telemetry.feed_serves serve
         JOIN telemetry.feed_serve_items item ON item.serve_id=serve.serve_id
@@ -261,6 +278,7 @@ export class PostgresFeedPersistence implements FeedPersistencePort, FeedReconci
         WHERE serve.user_id=${userId}::uuid
           AND serve.feed_version=${feedVersion.toString()}::bigint
           AND serve.source='personalized'
+          AND ${sqlClient.unsafe(unfamiliarRepositorySql('serve.user_id'))}
           AND NOT (item.repo_id=ANY(${excludeRepoIds}::uuid[]))
           AND NOT EXISTS (
             SELECT 1 FROM telemetry.feed_serves delivered
@@ -747,7 +765,9 @@ export class PostgresFeedPersistence implements FeedPersistencePort, FeedReconci
       SELECT item.repo_id FROM app.trending_snapshot_items item
       JOIN app.trending_snapshots snapshot ON snapshot.snapshot_id=item.snapshot_id
       JOIN app.repos repo ON repo.repo_id=item.repo_id
+      LEFT JOIN app.users feed_viewer ON feed_viewer.user_id=${viewerUserId ?? null}::uuid
       WHERE snapshot.complete AND snapshot.active AND repo.status='active'
+        AND ${sqlClient.unsafe(unfamiliarRepositorySql('feed_viewer.user_id'))}
         AND NOT (item.repo_id = ANY(${excludeRepoIds}::uuid[]))
         AND NOT EXISTS (
           SELECT 1 FROM app.reactions negative WHERE negative.user_id=${viewerUserId ?? null}::uuid
