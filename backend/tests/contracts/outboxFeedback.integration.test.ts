@@ -5,6 +5,7 @@ import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
+import type { InteractionEventV2 } from '../../contracts/interactions.v2.js';
 import type { MlFeedbackEvent } from '../../contracts/ml.v2.js';
 import { assertDisposableDatabase } from '../database/disposableDatabase.js';
 import { stopFixtureProcess } from './fixtureProcess.js';
@@ -35,11 +36,18 @@ test('real PostgreSQL outbox and pinned Python HTTP/Redis retain partial, confli
   const redis = new Redis(process.env.REDIS_URL!, { lazyConnect: true, maxRetriesPerRequest: 0, retryStrategy: null });
   redis.on('error', () => {});
   const ids: string[] = [];
+  const productUser = randomUUID(), productRepo = randomUUID();
   let stopChild: (() => Promise<void>) | undefined;
   t.after(async () => {
     try {
       await stopChild?.();
       await sqlClient`DELETE FROM telemetry.ml_outbox WHERE outbox_id=ANY(${ids}::uuid[])`;
+      await sqlClient`DELETE FROM telemetry.ml_outbox WHERE job_type='feedback' AND aggregate_id=${productUser}::uuid`;
+      await sqlClient`DELETE FROM telemetry.interaction_events WHERE user_id=${productUser}::uuid`;
+      await sqlClient`DELETE FROM telemetry.user_repo_engagement WHERE user_id=${productUser}::uuid`;
+      await sqlClient`DELETE FROM app.users WHERE user_id=${productUser}::uuid`;
+      await sqlClient`DELETE FROM auth.users WHERE id=${productUser}::uuid`;
+      await sqlClient`DELETE FROM app.repos WHERE repo_id=${productRepo}::uuid`;
       if (redis.status === 'ready') {
         const keys = await redis.keys(`${stream}*`); if (keys.length) await redis.del(...keys);
       }
@@ -130,4 +138,75 @@ test('real PostgreSQL outbox and pinned Python HTTP/Redis retain partial, confli
   const durable = await streamIds();
   assert.equal(durable.length, new Set(durable).size, 'ambiguous/partial retries do not duplicate Redis events');
   assert.equal(durable.length, normal.length + partial.length + ambiguous.length + good.length + 1 + pressure.length);
+
+  // Exercise the actual product writers before HTTP delivery. ML acknowledgements
+  // and ambiguous retries must never apply product deltas a second time.
+  const { processInteractionBatchV2InTransaction } = await import('../../services/activityV2Service.js');
+  const { setRepositorySaved } = await import('../../services/savedRepositoryService.js');
+  await sqlClient`INSERT INTO auth.users(id) VALUES(${productUser}::uuid)`;
+  await sqlClient`INSERT INTO app.users(user_id,username,status)
+    VALUES(${productUser}::uuid,${'counter_'+productUser.replaceAll('-', '')},'active')`;
+  await sqlClient`INSERT INTO app.repos(repo_id,github_id,full_name,owner,name,url,status)
+    VALUES(${productRepo}::uuid,${Date.now()},${'counter/'+productRepo},'counter',${productRepo},
+      ${'https://github.com/counter/'+productRepo},'active')`;
+  const session = randomUUID();
+  const interaction = (event_type: InteractionEventV2['event_type']): InteractionEventV2 => ({
+    schema_version: 2, event_id: randomUUID(), session_id: session, serve_id: null,
+    repo_id: productRepo, position: null, event_type, dwell_ms: null,
+    client_occurred_at: new Date().toISOString(),
+    context: event_type === 'save' ? { save_state_source: 'list_membership' } : {},
+  });
+  const events = [interaction('like'), interaction('save'), interaction('impression')];
+  const write = async (values: InteractionEventV2[], saved: boolean, rollback = false) => sqlClient.begin(async tx => {
+    await tx`SELECT user_id FROM app.users WHERE user_id=${productUser}::uuid FOR KEY SHARE`;
+    await tx`INSERT INTO app.user_feed_state(user_id) VALUES(${productUser}::uuid) ON CONFLICT DO NOTHING`;
+    await tx`SELECT user_id FROM app.user_feed_state WHERE user_id=${productUser}::uuid FOR UPDATE`;
+    const changed = await setRepositorySaved(tx, productUser, productRepo, saved);
+    const result = await processInteractionBatchV2InTransaction(tx, productUser, values);
+    if (rollback) throw new Error('fixture rollback');
+    return { changed, result };
+  });
+  const counts = async () => {
+    const [row] = await sqlClient`SELECT likes_count,saves_count,views_count
+      FROM app.repo_engagement WHERE repo_id=${productRepo}::uuid`;
+    return [Number(row!.likes_count), Number(row!.saves_count), Number(row!.views_count)];
+  };
+  const first = await write(events, true);
+  assert.equal(first.changed, true);
+  assert.ok(first.result.results.every(value => value.status === 'accepted'));
+  assert.deepEqual(await counts(), [1, 1, 1]);
+  const repeated = await write(events, true);
+  assert.equal(repeated.changed, false);
+  assert.ok(repeated.result.results.every(value => value.status === 'duplicate'));
+  assert.deepEqual(await counts(), [1, 1, 1]);
+  const productJobs = await sqlClient`SELECT outbox_id,payload FROM telemetry.ml_outbox
+    WHERE aggregate_id=${productUser}::uuid AND job_type='feedback'
+    ORDER BY (payload->>'feedback_version')::bigint`;
+  const productIds = productJobs.map(row => String(row.outbox_id)); ids.push(...productIds);
+  assert.equal(productIds.length, 2, 'like and save emit feedback; impression stays backend-owned');
+  await control('delay');
+  assert.equal((await timeoutLanes.runOnce('feedback')).processed, 1, 'same-user feedback remains causally ordered');
+  assert.deepEqual(await statuses(productIds), ['pending', 'pending']);
+  assert.ok((await streamIds()).includes(String(productJobs[0]!.payload.event_id)));
+  assert.ok(!(await streamIds()).includes(String(productJobs[1]!.payload.event_id)), 'successor waits for predecessor acknowledgement');
+  assert.deepEqual(await counts(), [1, 1, 1], 'Redis accepts before ambiguous HTTP timeout without changing product counts');
+  await retry([productIds[0]!]);
+  assert.equal((await lanes.runOnce('feedback')).processed, 1);
+  assert.deepEqual(await statuses(productIds), ['delivered', 'delivered']);
+  const afterRetry = await streamIds();
+  assert.equal(afterRetry.length, new Set(afterRetry).size);
+  for (const job of productJobs) {
+    assert.equal(afterRetry.filter(id => id === String(job.payload.event_id)).length, 1,
+      'each committed product feedback event must reach Redis exactly once');
+  }
+  assert.deepEqual(await counts(), [1, 1, 1], 'delivered duplicate acknowledgements leave all product counts unchanged');
+  const rolledBack = [interaction('unlike'), interaction('impression')];
+  await assert.rejects(write(rolledBack, false, true), /fixture rollback/);
+  assert.deepEqual(await counts(), [1, 1, 1]);
+  assert.equal(Number((await sqlClient`SELECT count(*) FROM telemetry.interaction_events
+    WHERE event_id=ANY(${rolledBack.map(value => value.event_id)}::uuid[])`)[0]!.count), 0);
+  assert.equal(Number((await sqlClient`SELECT count(*) FROM telemetry.ml_outbox
+    WHERE aggregate_id=${productUser}::uuid AND job_type='feedback'`)[0]!.count), 2,
+    'rollback does not leave feedback jobs for uncommitted counter changes');
+
 });
