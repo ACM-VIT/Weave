@@ -42,6 +42,8 @@ for (const feedback of [false, true]) {
         try {
           assert.equal(runtime.generation, null);
           assert.equal(runtime.ml !== null, feedback);
+          assert.equal(runtime.feed, runtime.legacyFeed);
+          if (feedback) assert.ok(runtime.modelScopes);
           assert.equal('feed-prewarm' in runtime.supervisor.snapshot(), false);
           if (role === 'api') runtime.start();
         } finally { await runtime.supervisor.stop(); }
