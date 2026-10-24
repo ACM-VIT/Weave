@@ -757,6 +757,7 @@ test('a failed complete membership load can retry in the save sheet without allo
     await act(async () => {await new Promise(resolve => setTimeout(resolve, 650));});
     assert.equal(app.client.getQueryState(['repository-lists', 'viewer', 'repo'])?.status, 'error');
     assert.equal(app.button('Save repository to selected Lists').props.disabled, true);
+    assert.equal(app.button('Create new List').props.disabled, true, 'creating from an unknown membership baseline can erase existing selections');
     assert.ok(app.button('Retry loading Lists'), 'a failed list load needs an in-place retry');
     app.setListLoader(async () => [{id:'list', source:'collection', name:'Recovered list', selected:true, repositoryCount:1}]);
     await app.press('Retry loading Lists');

@@ -183,6 +183,7 @@ export function SavePopup({
     retryDelay: 500,
   });
 
+  const listsUnavailable = !listsQuery.isSuccess || listsQuery.isFetching;
   const lists = useMemo(() => listsQuery.data ?? [], [listsQuery.data]);
   const serverSelectedIds = useMemo(
     () => new Set(lists.filter((list) => list.selected).map(listMembershipKey)),
@@ -279,6 +280,7 @@ export function SavePopup({
     },
     mutationFn: async (generation: number) => {
       authSessionLifecycle.assertCurrent(generation);
+      if (listsUnavailable) throw new Error('Load your Lists before creating a new one.');
       const name = newListName.trim();
       if (!name) throw new Error('List name is required.');
       const token = await SecureStore.getItemAsync('access_token');
@@ -441,9 +443,10 @@ export function SavePopup({
   const isSaving = saveMutation.isPending || pending.save;
   const isCreatingList = createMutation.isPending || pending.create;
   const mutationBusy = isSaving || isCreatingList;
+  const selectionBlocked = mutationBusy || listsUnavailable;
 
   const toggleList = (listId: string) => {
-    if (mutationBusy) return;
+    if (selectionBlocked) return;
     setMessage(null);
     const next = new Set(selectedIds);
     if (next.has(listId)) next.delete(listId);
@@ -453,7 +456,7 @@ export function SavePopup({
   };
 
   const beginListCreation = () => {
-    if (mutationBusy) return;
+    if (selectionBlocked) return;
     setMessage(null);
     setIsCreating(true);
     void haptic();
@@ -597,8 +600,8 @@ export function SavePopup({
                           <Pressable
                             accessibilityLabel={`${list.name}, ${list.repositoryCount} repositories`}
                             accessibilityRole="checkbox"
-                            accessibilityState={{ checked: selected, disabled: mutationBusy }}
-                            disabled={mutationBusy}
+                            accessibilityState={{ checked: selected, disabled: selectionBlocked }}
+                            disabled={selectionBlocked}
                             onPress={() => toggleList(membershipId)}
                             style={StyleSheet.absoluteFill}
                           />
@@ -636,6 +639,7 @@ export function SavePopup({
                     {
                       backgroundColor: palette.elevatedStrong,
                       borderColor: '#55555A',
+                      opacity: selectionBlocked ? 0.5 : 1,
                     },
                   ]}
                 >
@@ -659,8 +663,8 @@ export function SavePopup({
                   <Pressable
                     accessibilityLabel="Create new List"
                     accessibilityRole="button"
-                    accessibilityState={{ disabled: mutationBusy }}
-                    disabled={mutationBusy}
+                    accessibilityState={{ disabled: selectionBlocked }}
+                    disabled={selectionBlocked}
                     onPress={beginListCreation}
                     style={StyleSheet.absoluteFill}
                   />
@@ -740,11 +744,11 @@ export function SavePopup({
                   </View>
                   <TextInput
                     accessibilityLabel="List name"
-                    editable={!mutationBusy}
+                    editable={!selectionBlocked}
                     ref={createInputRef}
                     maxLength={100}
                     onChangeText={(value) => { setNewListName(value); if (message) setMessage(null); }}
-                    onSubmitEditing={() => { if (newListName.trim() && !mutationBusy) createMutation.mutate(renderGeneration); }}
+                    onSubmitEditing={() => { if (newListName.trim() && !selectionBlocked) createMutation.mutate(renderGeneration); }}
                     placeholder="List name"
                     placeholderTextColor={palette.secondary}
                     returnKeyType="done"
@@ -756,13 +760,13 @@ export function SavePopup({
                   ) : null}
                   <Pressable
                     accessibilityRole="button"
-                    accessibilityState={{ disabled: !newListName.trim() || mutationBusy }}
-                    disabled={!newListName.trim() || mutationBusy}
-                    onPress={() => { if (newListName.trim() && !mutationBusy) createMutation.mutate(renderGeneration); }}
+                    accessibilityState={{ disabled: !newListName.trim() || selectionBlocked }}
+                    disabled={!newListName.trim() || selectionBlocked}
+                    onPress={() => { if (newListName.trim() && !selectionBlocked) createMutation.mutate(renderGeneration); }}
                     style={({ pressed }) => [
                       styles.createSubmit,
                       { backgroundColor: palette.saveAccent },
-                      (!newListName.trim() || mutationBusy) && styles.disabled,
+                      (!newListName.trim() || selectionBlocked) && styles.disabled,
                       pressed && styles.pressed,
                     ]}
                   >
