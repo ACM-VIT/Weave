@@ -2,7 +2,7 @@ import type { TransactionSql } from 'postgres';
 import { performance } from 'node:perf_hooks';
 import { createSearchSqlClient, SEARCH_SQL_CONNECTIONS } from './index.js';
 import { SearchRateLimitError } from '../services/searchService.js';
-import { checkSearchWork, searchStatementTimeout, type SearchWork } from '../services/searchWork.js';
+import { checkSearchWork, searchStatementTimeout, settleSearchWork, type SearchWork } from '../services/searchWork.js';
 
 const MAX_QUEUED_SEARCH_SQL = 16;
 type Slot = { client?: ReturnType<typeof createSearchSqlClient>; busy: boolean };
@@ -131,9 +131,13 @@ export async function searchSql<T>(work: SearchWork, query: (sql: TransactionSql
     if (work.signal.aborted) { abort(); checkSearchWork(work); }
     const result = await owned.sql.begin(sql => callback = (async () => {
       checkSearchWork(work);
-      await sql`SELECT set_config('statement_timeout', ${String(searchStatementTimeout(work))}, true)`;
-      checkSearchWork(work);
-      const value = await query(sql);
+      // This bounded integer is generated locally, never supplied as SQL input.
+      // Simple protocol avoids a parameter-description round trip. Dispatch it
+      // first so PostgreSQL applies the transaction-local deadline before any
+      // pipelined search SQL, and settle both operations before releasing a slot.
+      const timeout = sql.unsafe(`SET LOCAL statement_timeout = ${searchStatementTimeout(work)}`).simple().execute();
+      const result = Promise.resolve().then(() => { checkSearchWork(work); return query(sql); });
+      const [, value] = await settleSearchWork([timeout, result] as const);
       checkSearchWork(work);
       return { value };
     })());
