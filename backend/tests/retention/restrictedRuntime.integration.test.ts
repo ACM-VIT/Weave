@@ -51,10 +51,13 @@ integration('restricted runtime allocates topics and prunes history without jour
       WHERE p.oid='telemetry.prune_runtime_history(integer,integer)'::regprocedure
         AND acl.grantee=0 AND acl.privilege_type='EXECUTE') AS allowed`)[0].allowed,false);
   } finally {
-    await admin`DELETE FROM telemetry.ml_outbox WHERE aggregate_id=${aggregate}::uuid`;
-    await admin`DELETE FROM app.users WHERE user_id=${aggregate}::uuid`;
-    await admin`DELETE FROM auth.users WHERE id=${aggregate}::uuid`;
-    await admin`DELETE FROM app.topics WHERE slug=${slug}`;
-    await admin.end({timeout:1});
+    try {
+      await admin`DELETE FROM telemetry.ml_outbox WHERE aggregate_id=${aggregate}::uuid`;
+      await admin`DELETE FROM app.users WHERE user_id=${aggregate}::uuid`;
+      await admin`DELETE FROM auth.users WHERE id=${aggregate}::uuid`;
+      await admin`DELETE FROM app.topics WHERE slug=${slug}`;
+    } finally {
+      await admin.end({timeout:1});
+    }
   }
 });
