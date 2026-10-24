@@ -169,9 +169,13 @@ export class GitHubActivityImportClient {
       if (handle.toLowerCase() !== identity.handle.toLowerCase()) throw new GitHubActivityImportError('provider_identity_changed');
       const repositories = new Map<string, GitHubActivityRepository>();
       const sources = {} as GitHubActivitySnapshot['sources'];
-      for (const source of ['owned', 'starred', 'contributed'] as const) {
+      // One sequential paginator per source, at most three source requests in
+      // flight. Keep bounded pages local until all channels settle; arrival order
+      // must never decide canonical metadata or immutable identity precedence.
+      const collected = await Promise.all((['owned', 'starred', 'contributed'] as const).map(async source => {
         const result: GitHubActivitySourceResult = { status: 'complete', pages: 0, count: 0 };
-        const sourceIds = new Set<string>();
+        const pages: GitHubActivityRepository[][] = [];
+        const sourceOwners = new Map<string, string>();
         let cursor: string | null = null;
         const cursors = new Set<string>();
         try {
@@ -210,17 +214,12 @@ export class GitHubActivityImportClient {
             const pageIdentities = new Map<string, GitHubActivityRepository>();
             for (const row of accepted) {
               if (source === 'owned' && row.owner_github_id !== githubId) throw new GitHubActivityImportError('invalid_owned_repository');
-              const existing = pageIdentities.get(row.github_id) ?? repositories.get(row.github_id);
-              if (existing && existing.owner_github_id !== row.owner_github_id) throw new GitHubActivityImportError('conflicting_repository_identity');
+              const existingOwner = pageIdentities.get(row.github_id)?.owner_github_id ?? sourceOwners.get(row.github_id);
+              if (existingOwner && existingOwner !== row.owner_github_id) throw new GitHubActivityImportError('conflicting_repository_identity');
               pageIdentities.set(row.github_id, row);
             }
-            for (const row of accepted) {
-              const existing = repositories.get(row.github_id);
-              if (existing) { if (!existing.sources.includes(source)) existing.sources.push(source); }
-              else repositories.set(row.github_id, row);
-              sourceIds.add(row.github_id);
-            }
-            result.pages++;
+            for (const row of accepted) sourceOwners.set(row.github_id,row.owner_github_id);
+            pages.push(accepted);
             if (!hasNext) break;
             if (page === this.maxPages) result.status = 'truncated';
           }
@@ -231,6 +230,31 @@ export class GitHubActivityImportClient {
           if (error instanceof GitHubActivityImportError && error.retryAfterSeconds !== undefined) {
             result.retry_after_seconds = error.retryAfterSeconds;
           }
+        }
+        return {source,result,pages};
+      }));
+      // Replay accepted pages in the original owned → starred → contributed
+      // order. A cross-source conflict rejects its entire page and any later
+      // buffered pages, retaining only this source's earlier accepted pages.
+      for (const {source,result,pages} of collected) {
+        const sourceIds = new Set<string>();
+        for (const accepted of pages) {
+          if (accepted.some(row => {
+            const existing = repositories.get(row.github_id);
+            return existing && existing.owner_github_id !== row.owner_github_id;
+          })) {
+            result.status = 'unavailable';
+            result.error_code = 'conflicting_repository_identity';
+            delete result.retry_after_seconds;
+            break;
+          }
+          for (const row of accepted) {
+            const existing = repositories.get(row.github_id);
+            if (existing) { if (!existing.sources.includes(source)) existing.sources.push(source); }
+            else repositories.set(row.github_id,row);
+            sourceIds.add(row.github_id);
+          }
+          result.pages++;
         }
         result.count = sourceIds.size;
         sources[source] = result;

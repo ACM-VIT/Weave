@@ -7,6 +7,7 @@ import type { GitHubActivityImportClient, GitHubActivitySnapshot } from './githu
 import { importedPreferences, mergeImportedPreferences } from './githubPreferenceProjection.js';
 import { normalizeOnboardingTopic } from '../contracts/onboardingTaxonomy.js';
 import { buildMlOnboardingJob, hasMlEmbeddingContext } from './mlOnboardingService.js';
+import { replaceUserTopics } from './userTopicsService.js';
 
 export interface GitHubImportCache {
   get(key: string): Promise<string | null>;
@@ -139,12 +140,8 @@ export class GitHubImportConsentService {
       WHERE user_id=${userId}::uuid RETURNING *`;
     await tx`INSERT INTO app.user_feed_state(user_id,feed_version) VALUES(${userId}::uuid,2)
       ON CONFLICT(user_id) DO UPDATE SET feed_version=app.user_feed_state.feed_version+1,updated_at=now()`;
-    await tx`DELETE FROM app.user_topics WHERE user_id=${userId}::uuid`;
-    for (const topic of new Set(fields.flatMap(field => preferences[field].map(normalizeOnboardingTopic)))) {
-      const [record] = await tx`INSERT INTO app.topics(slug,display_name) VALUES(${topic},${topic})
-        ON CONFLICT(slug) DO UPDATE SET display_name=app.topics.display_name RETURNING topic_id`;
-      await tx`INSERT INTO app.user_topics(user_id,topic_id) VALUES(${userId}::uuid,${record.topic_id}) ON CONFLICT DO NOTHING`;
-    }
+    await replaceUserTopics(tx, userId, fields.flatMap(field => preferences[field].map(normalizeOnboardingTopic)),
+      { overwriteDisplayNames: false });
     const version = Number(profile.profile_version);
     if (!Number.isSafeInteger(version)) throw failure('Profile version exceeds the supported contract.', 503);
     const job = buildMlOnboardingJob(userId, version, { username: profile.username, fullName: profile.full_name,
