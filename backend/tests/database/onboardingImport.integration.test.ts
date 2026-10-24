@@ -7,7 +7,7 @@ const enabled = process.env.RUN_DATABASE_INTEGRATION === '1';
 if (enabled) assertDisposableDatabase();
 const integration = enabled ? test : test.skip;
 
-integration('registered onboarding persists stable taxonomy separately and queues canonical ML context atomically', async () => {
+integration('registered onboarding and profile edits persist canonical context without no-op deliveries', async t => {
   const redisUrl = new URL(process.env.REDIS_DATABASE_TEST_URL ?? 'redis://127.0.0.1:56388/15');
   assert.ok(['127.0.0.1', 'localhost', '[::1]'].includes(redisUrl.hostname) && redisUrl.pathname === '/15');
   Object.assign(process.env, { JWT_SECRET: 'onboarding-disposable-fixture-secret', REDIS_URL: redisUrl.toString(),
@@ -50,6 +50,92 @@ integration('registered onboarding persists stable taxonomy separately and queue
     assert.equal(invalid.status, 400);
     assert.equal(String((await sqlClient`SELECT profile_version FROM app.users WHERE user_id=${userId}::uuid`)[0].profile_version), String(profile.profile_version));
     assert.equal(Number((await sqlClient`SELECT count(*) FROM telemetry.ml_outbox WHERE aggregate_id=${userId}::uuid`)[0].count), 1);
+
+    const patch = async (body: unknown) => {
+      const response = await fetch(`http://127.0.0.1:${address.port}/api/v2/users/me`, {
+        method: 'PATCH', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+      });
+      return { status: response.status, body: await response.json() as {data: Record<string, unknown>} };
+    };
+    const frontier = async () => (await sqlClient`
+      SELECT u.profile_version,u.updated_at::text AS user_updated,u.xmin::text AS user_revision,
+        f.feed_version,f.model_operation_version,f.model_accepted_at_ms,f.updated_at::text AS feed_updated,
+        (SELECT count(*) FROM telemetry.ml_outbox WHERE aggregate_id=u.user_id) AS jobs
+      FROM app.users u JOIN app.user_feed_state f USING(user_id) WHERE user_id=${userId}::uuid
+    `)[0];
+    const measurements: {lane: string; before: Awaited<ReturnType<typeof frontier>>; after: Awaited<ReturnType<typeof frontier>>}[] = [];
+    const username = 'import_'+userId.replaceAll('-', '');
+    for (const lane of ['legacy','ordered']) {
+      if (lane === 'ordered') await sqlClient`UPDATE app.user_feed_state SET model_policy_sha256=${'a'.repeat(64)},
+        model_policy_limits=${JSON.stringify({input_bytes:131072,max_sessions:2,generation_freshness_ms:10000,idle_expiry_ms:60000})}::jsonb
+        WHERE user_id=${userId}::uuid`;
+      const before = await frontier(), started = performance.now();
+      for (let index=0;index<20;index++) {
+        const result = await patch(index%2 ? {username:` ${username} `,full_name:' Tarun ',date_of_birth:'2005-01-01',bio:null,avatar_url:null} : {});
+        assert.equal(result.status,200,JSON.stringify(result.body));
+        assert.deepEqual(Object.keys(result.body.data).sort(),['user_id','username','full_name','date_of_birth','bio','github_handle','avatar_url',
+          'interests','skills','tech_stack','profile_version','updated_at'].sort());
+      }
+      const milliseconds = performance.now()-started, after = await frontier();
+      measurements.push({lane,before,after});
+      t.diagnostic(JSON.stringify({lane,unchangedSaves:20,milliseconds:Math.round(milliseconds*100)/100,
+        profileWrites:Number(after.profile_version)-Number(before.profile_version),feedAdvances:Number(after.feed_version)-Number(before.feed_version),
+        modelAdvances:Number(after.model_operation_version)-Number(before.model_operation_version),deliveries:Number(after.jobs)-Number(before.jobs)}));
+    }
+    for (const {lane,before,after} of measurements) assert.deepEqual(after,before,`${lane} no-ops preserve every frontier, timestamp and profile row revision`);
+
+    const beforeEdit = await frontier(), editStarted = performance.now();
+    const changed = await patch({bio:' New bio '});
+    assert.equal(changed.status,200);assert.equal(changed.body.data.bio,'New bio');
+    const afterEdit = await frontier();
+    for (const key of ['profile_version','feed_version','model_operation_version','jobs']) {
+      assert.equal(BigInt(afterEdit[key]),BigInt(beforeEdit[key])+1n,`${key} advances for a real edit`);
+    }
+    t.diagnostic(JSON.stringify({changedSaves:1,milliseconds:Math.round((performance.now()-editStarted)*100)/100,deliveries:1}));
+    const nullable = await patch({full_name:null,avatar_url:'https://example.invalid/avatar.png'});
+    assert.equal(nullable.status,200);assert.equal(nullable.body.data.full_name,null);assert.equal(nullable.body.data.bio,'New bio');
+    assert.deepEqual((await patch({full_name:null})).body.data,nullable.body.data,'an explicit already-null value is unchanged');
+    const empty = await patch({full_name:''});
+    assert.equal(empty.status,200);assert.equal(empty.body.data.full_name,'');
+    assert.equal(BigInt(String(empty.body.data.profile_version)),BigInt(String(nullable.body.data.profile_version))+1n,'null and empty text remain distinct');
+    const cleared = await patch({avatar_url:null});
+    assert.equal(cleared.status,200);assert.equal(cleared.body.data.avatar_url,null);
+    assert.deepEqual((await patch({avatar_url:null})).body.data,cleared.body.data);
+    const beforeInvalid = await frontier();
+    for (const body of [{date_of_birth:null},{date_of_birth:'2005-02-30'},{username:null},{full_name:'x'.repeat(101)},{unknown:true}]) {
+      assert.equal((await patch(body)).status,400,'no-op detection cannot bypass existing validation');
+    }
+    assert.deepEqual(await frontier(),beforeInvalid);
+
+    const gate = await sqlClient.reserve();let locked=false;
+    const pending: ReturnType<typeof patch>[]=[];
+    try {
+      await gate`BEGIN`;locked=true;
+      await gate`SELECT user_id FROM app.users WHERE user_id=${userId}::uuid FOR UPDATE`;
+      const waitForBlocked = async (count: number) => {
+        const deadline=performance.now()+5000;
+        while(Number((await sqlClient`SELECT count(*) FROM pg_stat_activity WHERE datname=current_database()
+          AND state='active' AND wait_event_type='Lock' AND query ILIKE '%FROM app.users%FOR UPDATE%'`)[0].count)<count) {
+          if(performance.now()>deadline)throw new Error('Concurrent profile requests did not reach the user lock');
+          await new Promise(resolve=>setTimeout(resolve,10));
+        }
+      };
+      const before = await frontier();
+      pending.push(patch({full_name:'Concurrent name'}));await waitForBlocked(1);
+      pending.push(patch({avatar_url:'https://example.invalid/concurrent.png'}));await waitForBlocked(2);
+      await gate`ROLLBACK`;locked=false;
+      const results=await Promise.all(pending);results.forEach(result=>assert.equal(result.status,200));
+      const after=await frontier();
+      for (const key of ['profile_version','feed_version','model_operation_version','jobs']) assert.equal(BigInt(after[key]),BigInt(before[key])+2n);
+      const latest=(await patch({})).body.data;
+      assert.equal(latest.full_name,'Concurrent name');assert.equal(latest.avatar_url,'https://example.invalid/concurrent.png');
+      const sameBefore=await frontier();
+      const identical=await Promise.all([patch({bio:'Same concurrent edit'}),patch({bio:'Same concurrent edit'})]);
+      identical.forEach(result=>assert.equal(result.status,200));
+      assert.equal(identical[0].body.data.profile_version,identical[1].body.data.profile_version);
+      const sameAfter=await frontier();
+      for (const key of ['profile_version','feed_version','model_operation_version','jobs']) assert.equal(BigInt(sameAfter[key]),BigInt(sameBefore[key])+1n);
+    } finally {if(locked)await gate`ROLLBACK`;gate.release();await Promise.allSettled(pending);}
   } finally {
     server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve()));
     await sqlClient`DELETE FROM telemetry.ml_outbox WHERE aggregate_id=${userId}::uuid`;

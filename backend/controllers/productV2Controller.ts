@@ -140,7 +140,20 @@ export async function updateMe(req: AuthRequest, res: Response): Promise<void> {
   }
   try {
     const updated = await sqlClient.begin(async (tx) => {
-      await tx`SELECT user_id FROM app.users WHERE user_id=${id}::uuid FOR UPDATE`;
+      const profiles = await tx`
+        SELECT user_id,username,full_name,date_of_birth,bio,github_handle,avatar_url,interests,skills,tech_stack,
+          profile_version,updated_at,
+          (username IS DISTINCT FROM COALESCE(${usernameValue ?? null},username)
+            OR full_name IS DISTINCT FROM CASE WHEN ${req.body.full_name !== undefined} THEN ${fullName ?? null} ELSE full_name END
+            OR date_of_birth IS DISTINCT FROM CASE WHEN ${req.body.date_of_birth !== undefined} THEN ${dateOfBirth ?? null}::date ELSE date_of_birth END
+            OR bio IS DISTINCT FROM CASE WHEN ${req.body.bio !== undefined} THEN ${bio ?? null} ELSE bio END
+            OR avatar_url IS DISTINCT FROM CASE WHEN ${req.body.avatar_url !== undefined} THEN ${avatarUrl ?? null} ELSE avatar_url END) AS profile_changed
+        FROM app.users WHERE user_id=${id}::uuid FOR UPDATE`;
+      if (!profiles[0]) throw Object.assign(new Error('User profile not found.'), { statusCode: 404 });
+      const { profile_changed, ...profile } = profiles[0];
+      // Compare the same normalized/null-aware values that UPDATE would write,
+      // after locking the current row; concurrent edits cannot use a stale read.
+      if (!profile_changed) return profile;
       const rows = await tx`
         UPDATE app.users SET username=COALESCE(${usernameValue ?? null},username),
           full_name=CASE WHEN ${req.body.full_name !== undefined} THEN ${fullName ?? null} ELSE full_name END,
