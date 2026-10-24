@@ -17,7 +17,7 @@ import { useAuth } from '../../store/AuthContext';
 import { GitHubImportPanel } from '../../components/onboarding/GitHubImportPanel';
 
 export default function Step1() {
-  const { data, updateData, githubControlRevision } = useOnboarding();
+  const { data, updateData, githubImportRevision } = useOnboarding();
   const { user, checkOnboardingStatus } = useAuth();
   const [manualMode, setManualMode] = useState(Boolean(data.skills?.length));
   const [selectedCategories, setSelectedCategories] = useState<string[]>(data.skills ?? []);
@@ -38,7 +38,7 @@ export default function Step1() {
   if (!manualMode && user) return <SafeAreaView className="flex-1 bg-black">
     <ScrollView contentContainerStyle={{ padding: 20, paddingBottom: 40, maxWidth: 450, width: '100%', alignSelf: 'center' }}>
       <ProgressBar step={1} totalSteps={3} />
-      <GitHubImportPanel key={`${user.user_id}:${githubControlRevision}`} userId={user.user_id} onSaved={checkOnboardingStatus} onManual={() => setManualMode(true)}
+      <GitHubImportPanel key={`${user.user_id}:${githubImportRevision}`} userId={user.user_id} onSaved={checkOnboardingStatus} onManual={() => setManualMode(true)}
         identityDraft={{ username: data.username ?? '', full_name: data.full_name ?? '', date_of_birth: data.date_of_birth ?? '', bio: data.bio }} />
     </ScrollView>
   </SafeAreaView>;

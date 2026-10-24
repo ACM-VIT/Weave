@@ -1,10 +1,11 @@
+import type { FeedIntentScope } from '../contracts/feedIntent.js';
 import { FeedPreferenceChangedError } from '../ports/feedPersistencePort.js';
 import crypto from 'node:crypto';
 import { performance } from 'node:perf_hooks';
 
 import type { FeedRequestV2, FeedResponseV2, FeedSource, RecommendationEntry, RepositoryProjection } from '../contracts/feed.v2.js';
 import type { FeedPersistencePort } from '../ports/feedPersistencePort.js';
-import { FeedServeOverlapError } from '../ports/feedPersistencePort.js';
+import { FeedServeOverlapError, FeedProvenanceUnavailableError } from '../ports/feedPersistencePort.js';
 import type { FeedQueuePort, FeedReservation } from '../redis/feedQueue.js';
 import { ReservationOwnedError } from '../redis/feedQueue.js';
 import { incrementMetric, observeMetric } from '../observability/metrics.js';
@@ -59,7 +60,17 @@ function responseFromServe(serve: Awaited<ReturnType<FeedPersistencePort['create
     feed_version: serve.feed_version.toString(),
     source: serve.source,
     model_version: serve.model_version,
-    items: serve.items,
+    items: serve.items.map(item => ({
+      repo_id: item.repo_id,
+      score: item.score,
+      source: item.source,
+      model_version: item.model_version,
+      summary_id: item.summary_id,
+      ...(item.generation_id === undefined ? {} : { generation_id: item.generation_id }),
+      position: item.position,
+      ...(item.exposure_id === undefined ? {} : { exposure_id: item.exposure_id }),
+      repository: item.repository,
+    })),
     next_cursor: serve.next_cursor,
   };
 }
@@ -75,6 +86,8 @@ export class FeedV2Service {
     cursorSecret?: string,
     private readonly generationWaitMs = 5_000,
     refill?: FeedRefillOptions,
+    private readonly captureRequired: (userId: string) => boolean = () => false,
+    private readonly intentScope?:FeedIntentScope,
   ) {
     this.cursorCodec = new FeedCursorCodec(cursorSecret);
     this.serveWaits = new FeedWaitCoordinator(reservationPollMs, () => new FeedRequestInProgressError());
@@ -297,6 +310,7 @@ export class FeedV2Service {
       user_id: userId,
       session_id: request.session_id,
       feed_version: version.toString(),
+      ...(this.intentScope?{model_scope:this.intentScope.queueScope}:{}),
     });
     // Before claiming ownership there is no shared writer to preserve.
     signal?.throwIfAborted();
@@ -412,7 +426,8 @@ export class FeedV2Service {
     // to the immutable same-request replay returned above.
     try {
       const eligible = new Set(await this.persistence.listPreferenceEligibleRepositoryIds(userId, entries.map(entry => entry.repo_id)));
-      const allowed = entries.filter(entry => eligible.has(entry.repo_id));
+      const allowed = entries.filter(entry => eligible.has(entry.repo_id)
+        && (!this.captureRequired(userId) || Boolean(entry.scoring_reference)));
       if (entries.length > 0 && allowed.length === 0) {
         if (queueAvailable) await this.queue.commit(userId, version, request.feed_request_id, token);
         throw new FeedRequestInProgressError();
@@ -451,6 +466,7 @@ export class FeedV2Service {
               session_id: request.session_id,
               feed_version: version.toString(),
               offset: pageOffset + usable.length,
+              ...(this.intentScope?{model_scope:this.intentScope.queueScope}:{}),
             });
           }
         } catch (error) {
@@ -458,6 +474,7 @@ export class FeedV2Service {
         }
       }
       const stored = await this.persistence.createServe({
+        ...(this.intentScope?{intent_scope:this.intentScope}:{}),
         feed_request_id: request.feed_request_id,
         user_id: userId,
         session_id: request.session_id,
@@ -491,9 +508,14 @@ export class FeedV2Service {
         if (queueAvailable) await this.queue.commit(userId, version, request.feed_request_id, token);
         return responseFromServe(replayAfterFailure);
       }
-      if (queueAvailable) await this.queue.release(userId, version, request.feed_request_id, token);
+      if (queueAvailable && error instanceof FeedProvenanceUnavailableError) {
+        // SQL proved this unserved reservation cannot be used (expired,
+        // revoked, purged or mismatched private references). Retire only our
+        // token-owned batch so retry can generate; never invent a seen event.
+        await this.queue.commit(userId, version, request.feed_request_id, token);
+      } else if (queueAvailable) await this.queue.release(userId, version, request.feed_request_id, token);
       if (error instanceof FeedServeOverlapError) throw new FeedRequestInProgressError();
-      if (error instanceof FeedPreferenceChangedError) throw new FeedRequestInProgressError();
+      if (error instanceof FeedPreferenceChangedError || error instanceof FeedProvenanceUnavailableError) throw new FeedRequestInProgressError();
       throw error;
     }
   }

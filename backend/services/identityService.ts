@@ -103,7 +103,8 @@ export async function ensureIdentityProfile(profile: IdentityProfile): Promise<v
       ON CONFLICT (user_id) DO UPDATE SET
         full_name=COALESCE(EXCLUDED.full_name,app.users.full_name),
         date_of_birth=COALESCE(EXCLUDED.date_of_birth,app.users.date_of_birth),
-        bio=COALESCE(EXCLUDED.bio,app.users.bio),
+        bio=CASE WHEN EXISTS(SELECT 1 FROM app.user_feed_state WHERE user_id=app.users.user_id AND model_policy_sha256 IS NOT NULL)
+          THEN app.users.bio ELSE COALESCE(EXCLUDED.bio,app.users.bio) END,
         avatar_url=COALESCE(EXCLUDED.avatar_url,app.users.avatar_url),
         -- Identity provisioning may insert the initial state, but it must not
         -- mutate a durable onboarding decision on conflict. Only onboarding or
@@ -139,7 +140,8 @@ export async function ensureIdentityProfile(profile: IdentityProfile): Promise<v
         avatarUrl: profile.avatarUrl,
       });
     }
-    if (hasMlEmbeddingContext(onboardingJob.profile)) {
+    const [laneState]=await tx`SELECT model_policy_sha256 FROM app.user_feed_state WHERE user_id=${profile.userId}::uuid`;
+    if (!laneState?.model_policy_sha256 && hasMlEmbeddingContext(onboardingJob.profile)) {
       await tx`
         INSERT INTO telemetry.ml_outbox (job_type,aggregate_id,idempotency_key,payload)
         VALUES ('onboard',${profile.userId}::uuid,${`onboard:${profile.userId}:1`},${JSON.stringify(withOutboxTrace(onboardingJob))}::jsonb)

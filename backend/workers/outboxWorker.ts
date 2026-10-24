@@ -1,3 +1,4 @@
+import { modelDigest } from '../contracts/modelOperations.js';
 import { startSpan, httpOutcome, withoutOutboxTrace } from '../observability/tracing.js';
 import { observeStage, type StageOutcome } from '../observability/metrics.js';
 import type {
@@ -36,6 +37,42 @@ export class OutboxWorker {
     return this.transport.deliverRepositoryRefresh({ job_id, repo_id, feature_version, features });
   }
 
+  private async deliverModel(row:OutboxRow):Promise<DeliveryResult>{
+    const current=await this.outbox.prepareModelDelivery(row);
+    if(!current)return {accepted:false,retryable:true,status_code:0,detail:'Model delivery claim is no longer current.'};
+    if(!current.operation_json || modelDigest(current.operation_json)!==current.source_envelope_sha256 || !current.model_operation_version){
+      await this.outbox.markFailed(current,'Invalid frozen model source.',false);
+      return {accepted:false,retryable:false,status_code:0,detail:'Invalid frozen model source.'};
+    }
+    let result:DeliveryResult;
+    let acknowledged=false;
+    if(current.withdrawal_json){
+      if(!this.transport.deliverProfileWithdrawals)result={accepted:false,retryable:true,status_code:503};
+      else{
+        const response=await this.transport.deliverProfileWithdrawals({schema_version:1,withdrawals:[{withdrawal_json:current.withdrawal_json}]});
+        result=response;
+        const a=response.response_body?.withdrawals;
+        acknowledged=response.accepted && a?.length===1 && a[0].operation_id===current.outbox_id
+          && a[0].model_operation_version===current.model_operation_version && a[0].source_envelope_sha256===current.source_envelope_sha256
+          && a[0].withdrawal_sha256===modelDigest(current.withdrawal_json) && ['accepted','duplicate'].includes(a[0].status);
+      }
+    }else{
+      if(!this.transport.deliverModelOperations)result={accepted:false,retryable:true,status_code:503};
+      else{
+        const response=await this.transport.deliverModelOperations({schema_version:1,operations:[{operation_json:current.operation_json}]});
+        result=response;
+        const a=response.response_body?.operations;
+        // withdrawal_accepted requires reloading the attestation, never claims original application.
+        acknowledged=response.accepted && a?.length===1 && a[0].operation_id===current.outbox_id
+          && a[0].model_operation_version===current.model_operation_version && a[0].source_envelope_sha256===current.source_envelope_sha256
+          && ['accepted','duplicate'].includes(a[0].status);
+      }
+    }
+    if(acknowledged)await this.outbox.markDelivered(current);
+    else await this.outbox.markFailed(current,'Model delivery was not durably acknowledged.',result.accepted||result.retryable,result.retry_after_ms);
+    return {...result,accepted:acknowledged,detail:acknowledged?undefined:'Model delivery was not durably acknowledged.'};
+  }
+
   async runOnce(limit = 1): Promise<number> {
     let processed = 0;
     for (let index = 0; index < limit; index++) {
@@ -60,12 +97,13 @@ export class OutboxWorker {
     let outcome: StageOutcome = 'failure';
     const result = await span.run(async () => {
       try {
-        const delivery = await this.deliver(row);
+        const delivery = row.job_type==='model_operation'?await this.deliverModel(row):await this.deliver(row);
         outcome = delivery.accepted ? 'success' : delivery.failure_kind === 'timeout' ? 'timeout'
           : delivery.status_code >= 400 ? httpOutcome(delivery.status_code) : 'failure';
         return delivery;
       } finally { span.finish(outcome); }
     });
+    if(row.job_type==='model_operation')return result;
     if (result.accepted) {
       if (row.job_type === 'repo_index') {
         if (!result.response_body) {

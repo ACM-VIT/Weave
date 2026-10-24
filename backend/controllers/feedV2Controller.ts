@@ -1,3 +1,4 @@
+import { ModelOperationError } from '../contracts/modelOperations.js';
 import type { Response } from 'express';
 
 import type { AuthRequest } from '../middlewares/authMiddleware.js';
@@ -28,6 +29,7 @@ export async function getFeedV2(req: AuthRequest, res: Response): Promise<void> 
     if (!controller.signal.aborted) res.status(200).json(response);
   } catch (error) {
     if (controller.signal.aborted) return;
+    if(error instanceof ModelOperationError){res.setHeader('Retry-After','1');res.status(error.statusCode===409?503:error.statusCode).json({error:error.message,code:error.code,retryable:true});return;}
     if (error instanceof InvalidFeedCursorError) {
       res.status(400).json({ error: error.message,
         ...(error instanceof StaleFeedCursorError ? { code: error.code } : {}),

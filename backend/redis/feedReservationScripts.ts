@@ -23,6 +23,10 @@ end
 redis.call('hset', KEYS[2], 'token', ARGV[1], 'request_id', ARGV[2])
 redis.call('pexpire', KEYS[2], ARGV[4])
 redis.call('del', KEYS[3])
+local queueTtl = redis.call('pttl', KEYS[1])
+local time = redis.call('time')
+local now = tonumber(time[1])*1000+math.floor(tonumber(time[2])/1000)
+redis.call('hset', KEYS[2], 'queue_deadline_ms', now + (queueTtl > 0 and queueTtl or tonumber(ARGV[4])))
 local items = {}
 for i = 1, tonumber(ARGV[3]) do
   local item = redis.call('lpop', KEYS[1])
@@ -58,6 +62,14 @@ if #discarded > 0 then
     if not seen[cjson.decode(item).repo_id] then redis.call('rpush', KEYS[3], item) end
   end
 end
+-- Refill may drain a queue whose publication renewed or shortened its TTL.
+-- Capture that exact deadline before the final LPOP deletes the list key.
+local queueTtl = redis.call('pttl', KEYS[1])
+if queueTtl > 0 then
+  local time = redis.call('time')
+  local now = tonumber(time[1])*1000+math.floor(tonumber(time[2])/1000)
+  redis.call('hset', KEYS[2], 'queue_deadline_ms', now+queueTtl)
+end
 for i = 1, tonumber(ARGV[2]) do
   local item = redis.call('lpop', KEYS[1])
   if not item then break end
@@ -72,9 +84,15 @@ return {redis.call('llen', KEYS[1]), redis.call('lrange', KEYS[3], 0, -1)}
 export const RELEASE_FEED_LUA = `${TRACK_FEED_VERSION_FUNCTION_LUA}
 if redis.call('hget', KEYS[2], 'token') ~= ARGV[1] then return 0 end
 trackVersion(KEYS[5], ARGV[2])
+local queueTtl = redis.call('pttl', KEYS[1])
+local time = redis.call('time')
+local now = tonumber(time[1])*1000+math.floor(tonumber(time[2])/1000)
+local deadline = tonumber(redis.call('hget', KEYS[2], 'queue_deadline_ms'))
+local restoreTtl = queueTtl > 0 and queueTtl or math.max(1, (deadline or (now + tonumber(ARGV[3]))) - now)
 while redis.call('llen', KEYS[3]) > 0 do
   redis.call('lpush', KEYS[1], redis.call('rpop', KEYS[3]))
 end
+redis.call('pexpire', KEYS[1], restoreTtl)
 redis.call('del', KEYS[2], KEYS[3])
 redis.call('zrem', KEYS[4], KEYS[2])
 return 1
