@@ -226,6 +226,21 @@ try {
     missing.push('required-grant:ghsocial_backend:telemetry.feed_prewarm_jobs:SELECT,INSERT,UPDATE');
   }
 
+  const [retentionGrants] = await client`
+    SELECT has_sequence_privilege('ghsocial_backend','app.topics_topic_id_seq','USAGE') AS topics,
+      has_function_privilege('ghsocial_backend','telemetry.prune_runtime_history(integer,integer)','EXECUTE') AS retention,
+      has_table_privilege('ghsocial_backend','telemetry.ml_outbox','DELETE') AS journal_delete,
+      has_table_privilege('ghsocial_backend','telemetry.generation_attempts','DELETE') AS generation_delete,
+      EXISTS(SELECT 1 FROM pg_proc p, LATERAL aclexplode(COALESCE(p.proacl,acldefault('f',p.proowner))) acl
+        WHERE p.oid='telemetry.prune_runtime_history(integer,integer)'::regprocedure
+          AND acl.grantee=0 AND acl.privilege_type='EXECUTE') AS public_retention
+  `;
+  if (!retentionGrants.topics) missing.push('required-grant:ghsocial_backend:app.topics_topic_id_seq:USAGE');
+  if (!retentionGrants.retention) missing.push('required-grant:ghsocial_backend:telemetry.prune_runtime_history:EXECUTE');
+  if (retentionGrants.journal_delete || retentionGrants.generation_delete || retentionGrants.public_retention) {
+    missing.push('prohibited-grant:unrestricted-runtime-retention');
+  }
+
   const migrationRows = await client`
     SELECT hash, created_at FROM drizzle.__drizzle_migrations ORDER BY created_at
   `.catch(() => []);
