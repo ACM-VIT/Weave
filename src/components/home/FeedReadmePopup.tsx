@@ -32,7 +32,7 @@ export function FeedReadmePopup({ repository, onClose, summaryText }: {
   const source = repository.readmeFull ? repository : query.data ?? repository;
   return <ReadmePopup isVisible onClose={onClose} title={repository.name} contentKind={summaryText === undefined ? "readme" : "summary"}
     readmeText={summaryText === undefined ? source.readmeFull : summaryText} mediaMarkdown={source.readmeFull}
-    mediaMessage={summaryText !== undefined && !repository.readmeFull
+    mediaMessage={summaryText !== undefined && !source.readmeFull
       ? query.isError ? 'Could not load README videos.' : query.isPending ? 'Checking README for videos…' : null : null}
     loading={summaryText === undefined && !repository.readmeFull && query.isPending}
     errorMessage={summaryText === undefined && !source.readmeFull && query.error instanceof Error ? query.error.message : null}
