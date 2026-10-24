@@ -190,7 +190,7 @@ export default function RepoCard({
       ) : null}
       <View style={{ flexDirection: 'row', alignItems: 'center', gap: 7, marginTop: 11 }}>
         <GradientAvatar repo={repo} />
-        <Text style={{ color: 'rgba(235, 235, 245, 0.6)', fontSize: 12, fontWeight: '500' }}>{repo.owner}</Text>
+        <Text numberOfLines={1} style={{ flex: 1, minWidth: 0, flexShrink: 1, color: 'rgba(235, 235, 245, 0.6)', fontSize: 12, fontWeight: '500' }}>{repo.owner}</Text>
       </View>
     </Pressable>
   );

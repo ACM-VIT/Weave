@@ -76,6 +76,7 @@ export default function ExploreScreen() {
     : mergeExplorePages(browse.data?.pages ?? []).map(repo => ({ type: 'repository', id: repo.id, data: repo })),
   [searching,search.data?.pages,browse.data?.pages]);
   const current = searching ? search : browse;
+  const twoColumns = activeTab === 'Latest';
   const periods = browse.data?.pages[0]?.availablePeriods ?? [];
   const selectedPeriod = browse.data?.pages[0]?.period ?? period;
   const fallback = searching && search.data?.pages.some(page => page.mode === 'lexical');
@@ -102,11 +103,16 @@ export default function ExploreScreen() {
       key={`${searching ? group : activeTab}:${query}:${selectedPeriod ?? ''}`}
       data={items}
       keyExtractor={item => `${item.type}:${item.id}`}
-      numColumns={!searching && activeTab === 'Latest' ? 2 : 1}
-      columnWrapperStyle={!searching && activeTab === 'Latest' ? { gap: 10 } : undefined}
-      renderItem={({ item }) => !searching && activeTab === 'Latest' && item.type === 'repository'
-        ? <View style={{ flex: 1 }}><RepoCard repo={item.data} onPress={() => router.push(searchResultHref(item))} /></View>
-        : <SearchRow item={item} />}
+      numColumns={twoColumns ? 2 : 1}
+      columnWrapperStyle={twoColumns ? { gap: 10, alignItems: 'flex-start' } : undefined}
+      renderItem={({ item, index }) => (
+        <View style={{ flex: 1, minWidth: 0, maxWidth: twoColumns ? '50%' : undefined, marginTop: twoColumns && index % 2 === 1 ? 30 : 0 }}>
+          {twoColumns && item.type === 'repository'
+            ? <RepoCard repo={item.data} onPress={() => router.push(searchResultHref(item))} />
+            : <SearchRow item={item} />}
+        </View>
+      )}
+      showsVerticalScrollIndicator={false}
       keyboardDismissMode="on-drag"
       keyboardShouldPersistTaps="handled"
       contentInsetAdjustmentBehavior="automatic"
