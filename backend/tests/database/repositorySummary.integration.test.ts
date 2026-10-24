@@ -637,10 +637,7 @@ integration('legacy refreshes require the current canonical version, not any old
 
 integration('bounded digest processing improves ready latency while retaining real SQL lease and publication ownership',{timeout:30_000},async t=>{
   assertDisposableDatabase();
-  const url=new URL(process.env.README_SUMMARY_TEST_DATABASE_URL??'');
-  assert.ok(['127.0.0.1','localhost','[::1]'].includes(url.hostname));
-  assert.equal(url.toString(),new URL(process.env.DATABASE_URL!).toString());
-  const db=postgres(url.toString(),{max:4,prepare:false}),ids=Array.from({length:6},()=>crypto.randomUUID());
+  const db=postgres(process.env.DATABASE_URL!,{max:4,prepare:false}),ids=Array.from({length:6},()=>crypto.randomUUID());
   try {
     for(const [index,id] of ids.entries()){
       const name=`worker-pool-${index}`,githubId=String(BigInt(Date.now())*100n+BigInt(index));
