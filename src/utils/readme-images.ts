@@ -98,10 +98,22 @@ function encodePathSegments(value: string): string {
 
 function rawRepositoryRoot(context: ReadmeImageContext): URL | null {
   const parts = repositoryParts(context);
+  if (!parts) return null;
+  const repositoryRoot = new URL(
+    `https://raw.githubusercontent.com/${encodeURIComponent(parts.owner)}/${encodeURIComponent(parts.repo)}/`,
+  );
+  try {
+    const pinned = new URL(context.readmeBaseUrl ?? '');
+    const commit = pinned.pathname.slice(repositoryRoot.pathname.length).split('/')[0];
+    if (isPublicHttpsUrl(pinned) && pinned.origin === repositoryRoot.origin
+      && pinned.pathname.startsWith(repositoryRoot.pathname) && /^[a-f0-9]{40}$/.test(commit)
+      && !pinned.search && !pinned.hash && pinned.pathname.endsWith('/')) {
+      return new URL(`${commit}/`, repositoryRoot);
+    }
+  } catch { /* Missing or untrusted metadata retains the branch-based root. */ }
   const branch = context.readmeDefaultBranch?.trim();
   if (
-    !parts
-    || !branch
+    !branch
     || branch.split('/').some((segment) => segment === '.' || segment === '..')
   ) return null;
 
