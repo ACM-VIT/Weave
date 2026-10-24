@@ -158,7 +158,7 @@ export class RedisFeedQueue implements FeedQueuePort {
     const [meta, items] = this.reservationKeys(userId, version, requestId);
     return Number(await this.redis.eval(
       RELEASE_FEED_LUA, 5, this.queueKey(userId, version), meta, items,
-      this.reservationIndexKey(userId, version), this.versionIndexKey(userId), token, String(version),
+      this.reservationIndexKey(userId, version), this.versionIndexKey(userId), token, String(version), String(this.reservationTtlMs),
     )) === 1;
   }
 
