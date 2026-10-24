@@ -154,11 +154,16 @@ async function recomputeMany(
 ): Promise<RepositoryMembershipState[]> {
   const ordered = [...new Set(repositoryIds)].sort();
   // Shared counters use the same sorted engagement-lock order as interaction
-  // batches. Acquire all of them before applying any counter transitions.
+  // batches. Finish every insert before taking existing-row locks: otherwise
+  // another user's shorter batch can own a missing later row while waiting on
+  // an earlier row held by this transaction, creating a cross-batch deadlock.
   for (let offset=0;offset<ordered.length;offset+=MEMBERSHIP_BATCH_SIZE) {
     const batch=ordered.slice(offset,offset+MEMBERSHIP_BATCH_SIZE);
     await tx`INSERT INTO app.repo_engagement(repo_id)
       SELECT repo_id FROM unnest(${batch}::uuid[]) AS input(repo_id) ORDER BY repo_id ON CONFLICT DO NOTHING`;
+  }
+  for (let offset=0;offset<ordered.length;offset+=MEMBERSHIP_BATCH_SIZE) {
+    const batch=ordered.slice(offset,offset+MEMBERSHIP_BATCH_SIZE);
     await tx`SELECT repo_id FROM app.repo_engagement WHERE repo_id=ANY(${batch}::uuid[]) ORDER BY repo_id FOR UPDATE`;
   }
   const states: RepositoryMembershipState[] = [];

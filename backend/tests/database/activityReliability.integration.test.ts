@@ -160,6 +160,7 @@ test('List and Board deletion reconcile bounded SQL work, exact saves and ordere
   const [{default:express},{sqlClient},{default:router},{default:redis},{syncRepositoryLists}]=await Promise.all([
     import('express'),import('../../db/index.js'),import('../../routes/productV2Routes.js'),import('../../config/redis.js'),import('../../services/repositoryMembershipService.js'),
   ]);
+  t.after(()=>redis.disconnect());
   const app=express();app.use(express.json());app.use('/api/v2',router);const server=app.listen(0,'127.0.0.1');
   await new Promise<void>(resolve=>server.listening?resolve():server.once('listening',resolve));
   const address=server.address();if(!address||typeof address==='string')throw new Error('No membership HTTP address');
@@ -200,6 +201,9 @@ test('List and Board deletion reconcile bounded SQL work, exact saves and ordere
     (SELECT count(*) FROM telemetry.ml_outbox WHERE aggregate_id=${user}::uuid) AS jobs
     FROM app.user_stats s JOIN app.user_feed_state f USING(user_id) WHERE s.user_id=${user}::uuid`)[0];
   const metrics:{kind:string;repositories:number;statements:number;milliseconds:number;lockWindowUpperBoundMs:number}[]=[];
+  const publicCounts=async(ids:string[])=>
+    (await sqlClient`SELECT repo_id,saves_count FROM app.repo_engagement WHERE repo_id=ANY(${ids}::uuid[]) ORDER BY repo_id`)
+      .map(row=>({repo_id:String(row.repo_id),saves_count:Number(row.saves_count)}));
   try {
     const rows=repos.map((id,index)=>({repo_id:id,github_id:String(BigInt(Date.now())*10000n+BigInt(index)),name:id}));
     await sqlClient`INSERT INTO app.repos(repo_id,github_id,full_name,owner,name,url,status)
@@ -208,10 +212,13 @@ test('List and Board deletion reconcile bounded SQL work, exact saves and ordere
     await sqlClient`INSERT INTO app.repo_engagement(repo_id) SELECT unnest(${repos}::uuid[])`;
     for(const kind of ['collections','boards'] as const)for(const count of [1,100,1000]){
       const ids=repos.slice(0,count),user=await owner(ids),target=await list(user,kind,ids);
+      const countersBefore=await publicCounts(ids);
       statements=0;lockStarted=0;measuring=true;const started=performance.now();let response:Response;
       try {response=await request(user,kind,target);await response.text();}finally{measuring=false;}
       const ended=performance.now();assert.equal(response.status,204);
       const row=await state(user);assert.equal(Number(row.saves),0);assert.equal(Number(row.saved_repos_count),0);
+      assert.deepEqual(await publicCounts(ids),countersBefore.map(row=>({...row,saves_count:row.saves_count-1})),
+        'every affected public counter changes once across all batches');
       assert.equal(String(row.feed_version),'2');assert.equal(Number(row.feedback_version),count);assert.equal(Number(row.events),count);assert.equal(Number(row.jobs),count);
       const events=await sqlClient`SELECT repo_id,event_type FROM telemetry.interaction_events WHERE user_id=${user}::uuid ORDER BY feedback_version`;
       assert.deepEqual(events.map(row=>String(row.repo_id)),ids);assert.ok(events.every(row=>row.event_type==='unsave'));
@@ -243,7 +250,8 @@ test('List and Board deletion reconcile bounded SQL work, exact saves and ordere
     current=await state(drift);assert.equal(Number(current.saves),1);assert.equal(Number(current.saved_repos_count),1,'preserve sorted sequential clamping through a remove then repair');
     assert.deepEqual((await sqlClient`SELECT event_type FROM telemetry.interaction_events WHERE user_id=${drift}::uuid ORDER BY feedback_version`).map(row=>row.event_type),['unsave','save']);
 
-    const rollback=await owner(ids),rollbackList=await list(rollback,'collections',ids),before=await state(rollback);
+    const rollbackIds=repos.slice(0,300),rollback=await owner(rollbackIds),rollbackList=await list(rollback,'collections',rollbackIds),
+      before=await state(rollback),beforeRollbackCounters=await publicCounts(rollbackIds);
     await sqlClient.unsafe(`CREATE FUNCTION telemetry.${fault}() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN
       IF NEW.aggregate_id='${rollback}'::uuid AND NEW.payload->>'event_type'='unsave' THEN
         IF EXISTS(SELECT 1 FROM app.saves WHERE user_id='${rollback}'::uuid)
@@ -252,9 +260,10 @@ test('List and Board deletion reconcile bounded SQL work, exact saves and ordere
       END IF;RETURN NEW;END $$`);
     await sqlClient.unsafe(`CREATE TRIGGER ${fault} BEFORE INSERT ON telemetry.ml_outbox FOR EACH ROW EXECUTE FUNCTION telemetry.${fault}()`);
     assert.equal((await request(rollback,'collections',rollbackList)).status,500);assert.deepEqual(await state(rollback),before);
-    assert.equal(Number((await sqlClient`SELECT count(*) FROM app.collection_repos WHERE collection_id=${rollbackList}::uuid`)[0].count),3);
+    assert.deepEqual(await publicCounts(rollbackIds),beforeRollbackCounters,'rollback restores every public counter across batches');
+    assert.equal(Number((await sqlClient`SELECT count(*) FROM app.collection_repos WHERE collection_id=${rollbackList}::uuid`)[0].count),rollbackIds.length);
     await sqlClient.unsafe(`DROP TRIGGER ${fault} ON telemetry.ml_outbox`);await sqlClient.unsafe(`DROP FUNCTION telemetry.${fault}()`);
-    assert.equal((await request(rollback,'collections',rollbackList)).status,204);assert.equal(Number((await state(rollback)).events),3);
+    assert.equal((await request(rollback,'collections',rollbackList)).status,204);assert.equal(Number((await state(rollback)).events),rollbackIds.length);
 
     const racing=await owner(ids.slice(0,2)),old=await list(racing,'collections',ids.slice(0,2)),next=await list(racing,'collections',[]);
     const gate=await sqlClient.reserve();let locked=false;const pending:Promise<unknown>[]=[];
@@ -275,6 +284,37 @@ test('List and Board deletion reconcile bounded SQL work, exact saves and ordere
       current=await state(racing);assert.equal(Number(current.saves),1);assert.equal(Number(current.saved_repos_count),1);assert.equal(Number(current.feedback_version),3);
     } finally {if(locked)await gate`ROLLBACK`;gate.release();await Promise.allSettled(pending);}
 
+    // With a missing row in the second large batch, the short deletion used to
+    // insert that row then wait on the first row, while the long deletion took
+    // the first row then waited for that insert. Force both lock waits before
+    // release; distinct owners deliberately bypass per-user serialization.
+    const shared=repos.slice(0,257),shortIds=[shared[0]!,shared[256]!];
+    const longOwner=await owner(shared),shortOwner=await owner(shortIds);
+    const longList=await list(longOwner,'collections',shared),shortList=await list(shortOwner,'boards',shortIds);
+    await sqlClient`DELETE FROM app.repo_engagement WHERE repo_id=${shared[256]}::uuid`;
+    const counterGate=await sqlClient.reserve();let counterLocked=false;const deletions:Promise<Response>[]=[];
+    try{
+      await counterGate`BEGIN`;counterLocked=true;
+      await counterGate`SELECT repo_id FROM app.repo_engagement WHERE repo_id=${shared[0]}::uuid FOR UPDATE`;
+      const waitForCounters=async(count:number)=>{
+        const deadline=performance.now()+5000;
+        while(Number((await sqlClient`SELECT count(*) FROM pg_stat_activity WHERE datname=current_database() AND state='active'
+          AND wait_event_type='Lock' AND query ILIKE '%app.repo_engagement%'`)[0].count)<count){
+          assert.ok(performance.now()<deadline,'both cross-user deletions must reach the engagement lock barrier');
+          await new Promise(resolve=>setTimeout(resolve,5));
+        }
+      };
+      deletions.push(request(longOwner,'collections',longList));await waitForCounters(1);
+      deletions.push(request(shortOwner,'boards',shortList));await waitForCounters(2);
+      await counterGate`ROLLBACK`;counterLocked=false;
+      for(const response of await Promise.all(deletions))assert.equal(response.status,204,await response.text());
+      for(const id of [longOwner,shortOwner]){
+        const stateAfter=await state(id);assert.equal(Number(stateAfter.saves),0);assert.equal(Number(stateAfter.saved_repos_count),0);
+      }
+    }finally{
+      if(counterLocked)await counterGate`ROLLBACK`;counterGate.release();await Promise.allSettled(deletions);
+    }
+
     const ordered=await owner(ids),orderedList=await list(ordered,'collections',ids);
     await sqlClient`UPDATE app.user_feed_state SET model_policy_sha256=${'a'.repeat(64)},model_initialized=true,
       model_policy_limits=${JSON.stringify({input_bytes:131072,max_sessions:2,generation_freshness_ms:10000,idle_expiry_ms:60000})}::jsonb WHERE user_id=${ordered}::uuid`;
@@ -290,6 +330,6 @@ test('List and Board deletion reconcile bounded SQL work, exact saves and ordere
     await sqlClient`DELETE FROM telemetry.ml_outbox WHERE aggregate_id=ANY(${users}::uuid[])`;
     await sqlClient`DELETE FROM telemetry.interaction_events WHERE user_id=ANY(${users}::uuid[])`;
     await sqlClient`DELETE FROM app.users WHERE user_id=ANY(${users}::uuid[])`;await sqlClient`DELETE FROM auth.users WHERE id=ANY(${users}::uuid[])`;
-    await sqlClient`DELETE FROM app.repos WHERE repo_id=ANY(${repos}::uuid[])`;redis.disconnect();
+    await sqlClient`DELETE FROM app.repos WHERE repo_id=ANY(${repos}::uuid[])`;
   }
 });
