@@ -17,6 +17,8 @@ function harness() {
   let finish!: () => void; let fail!: (e: Error) => void;
   let viewer = 'alice'; let requests = 0;
   let serverFollowing=false; let serverUpdatedAt: number | undefined;
+  const committed: boolean[] = [];
+  const changed: boolean[] = [];
   const filename = resolve('src/components/follow-button.tsx');
   const require = createRequire(filename);
   const mocks: Record<string, any> = {
@@ -36,8 +38,9 @@ function harness() {
   const Button = module.exports.FollowButton;
   let root!: ReturnType<typeof create>;
   const tree = (count = 1, offset = 0) => React.createElement(QueryClientProvider, { client },
-    Array.from({length:count}, (_, key) => React.createElement(Button, {key:key+offset, targetUserId:'target', isFollowing:serverFollowing, stateUpdatedAt:serverUpdatedAt})));
-  return { client, get requests(){return requests;}, get buttons(){return root.root.findAllByType('Pressable');},
+    Array.from({length:count}, (_, key) => React.createElement(Button, {key:key+offset, targetUserId:'target', isFollowing:serverFollowing, stateUpdatedAt:serverUpdatedAt,
+      onFollowingCommitted: (following:boolean) => committed.push(following), onFollowingChange: (following:boolean) => changed.push(following)})));
+  return { client, committed, changed, get requests(){return requests;}, get buttons(){return root.root.findAllByType('Pressable');},
     async mount(count=1){ await act(async()=>{root=create(tree(count));}); },
     async update(count:number){await act(async()=>root.update(tree(count)));},
     async freshRemount(following:boolean,updatedAt:number){serverFollowing=following;serverUpdatedAt=updatedAt;await act(async()=>{root.update(tree(1,100));await new Promise(r=>setTimeout(r,5));});},
@@ -46,9 +49,30 @@ function harness() {
     async succeed(){await act(async()=>{finish(); await new Promise(r=>setTimeout(r,5));});},
     async reject(){await act(async()=>{fail(new Error('offline')); await new Promise(r=>setTimeout(r,5));});},
     async changeAccountAndFail(){await act(async()=>{authSessionLifecycle.retire(authSessionLifecycle.currentGeneration());client.clear();viewer='bob';root.update(tree());fail(new Error('late failure'));await new Promise(r=>setTimeout(r,5));});},
+    async changeAccountAndSucceed(){await act(async()=>{authSessionLifecycle.retire(authSessionLifecycle.currentGeneration());client.clear();viewer='bob';root.update(tree());finish();await new Promise(r=>setTimeout(r,5));});},
     async close(){await act(()=>root.unmount());client.clear();},
   };
 }
+
+test('a successful follow is observed once after the initiating control unmounts', async () => {
+  const f = harness();
+  try {
+    await f.mount(); await f.press();
+    assert.deepEqual(f.committed, []);
+    await f.update(0); await f.succeed();
+    assert.deepEqual(f.committed, [true]);
+    assert.deepEqual(f.changed, [], 'unmounted UI callbacks remain suppressed');
+  } finally { await f.close(); }
+});
+
+test('a retired viewer cannot record a late successful follow observation', async () => {
+  const f = harness();
+  try {
+    await f.mount(); await f.press(); await f.changeAccountAndSucceed();
+    assert.deepEqual(f.committed, []);
+    assert.deepEqual(f.changed, []);
+  } finally { await f.close(); }
+});
 
 test('mounted follow controls share pending state; stale initial props do not undo success', async()=>{
   const f=harness();await f.mount();await f.press();
@@ -95,6 +119,7 @@ test('failed follow rolls back the shared viewer state for every mounted control
   const f=harness();await f.mount(2);await f.press();
   assert.ok(f.buttons.every(button=>button.props.accessibilityState.selected));
   await f.reject();
+  assert.deepEqual(f.committed, [], 'failed requests are not observed as successful follows');
   assert.ok(f.buttons.every(button=>button.props.accessibilityState.selected===false));
   assert.equal(f.requests,1);await f.close();
 });

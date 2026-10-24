@@ -7,6 +7,8 @@ import React, { act } from 'react';
 import { create } from 'react-test-renderer';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import ts from 'typescript';
+import type { QueuedActivity } from '../src/api/activity';
+import { DurableActivityOutbox } from '../src/services/activityOutbox';
 import { deserializeActivitySnapshot } from '../src/services/activityOutboxFileStorage';
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
@@ -22,10 +24,11 @@ test('card owner-follow success callbacks record distinct durable product observ
     compilerOptions: { module: ts.ModuleKind.CommonJS, esModuleInterop: true },
   }).outputText;
   const activityModule = { exports: {} as any };
+  let eventSequence = 0;
   new Function('require', 'module', 'exports', activityCode)((specifier: string) => {
     if (specifier === './client') return { apiV2: async () => ({}), apiV2Raw: async () => ({}) };
     if (specifier === '../utils/uuid') return {
-      createUuid: () => '00000000-0000-4000-8000-000000000099',
+      createUuid: () => `00000000-0000-4000-8000-${String(++eventSequence).padStart(12, '0')}`,
       getAppSessionId: () => '00000000-0000-4000-8000-000000000098',
     };
     return nativeRequire(specifier);
@@ -63,14 +66,30 @@ test('card owner-follow success callbacks record distinct durable product observ
   t.after(async () => { await act(async () => root.unmount()); client.clear(); });
   assert.deepEqual(events, [], 'rendering or initial follow status is not a follow action');
   const button = root.root.findByType('FollowButton');
-  await act(async () => button.props.onFollowingChange(true));
-  await act(async () => button.props.onFollowingChange(false));
+  await act(async () => button.props.onFollowingCommitted(true));
+  await act(async () => button.props.onFollowingCommitted(false));
   assert.deepEqual(events, [
     { event: { repo_id: repo, action: 'follow' }, flush: true },
     { event: { repo_id: repo, action: 'unfollow' }, flush: true },
   ]);
-  const persisted = deserializeActivitySnapshot(JSON.stringify(events.map(({ event }) => prepareQueuedActivity(event))));
-  assert.deepEqual(persisted.map(event => toInteractionEventV2(event).event_type), ['follow', 'unfollow']);
+  let snapshot = '[]';
+  const dependencies = {
+    prepare: prepareQueuedActivity,
+    load: async () => deserializeActivitySnapshot(snapshot),
+    persist: async (pending: readonly QueuedActivity[]) => { snapshot = JSON.stringify(pending); },
+    send: async (pending: QueuedActivity[]) => {
+      assert.equal(new Set(pending.map(event => event.event_id)).size, 2);
+      assert.deepEqual(pending.map(event => toInteractionEventV2(event).event_type), ['follow', 'unfollow']);
+      return { accepted: 2, duplicates: 0, feed_version: '1',
+        results: pending.map(event => ({ event_id: event.event_id, status: 'accepted' as const })) };
+    },
+  };
+  const outbox = new DurableActivityOutbox(dependencies);
+  for (const { event } of events) await outbox.enqueue(event);
+  const restored = new DurableActivityOutbox(dependencies);
+  assert.equal(await restored.pendingCount(), 2, 'both observations survive an outbox reload');
+  assert.equal((await restored.flush('synthetic-token')).delivered, 2);
+  assert.equal(snapshot, '[]');
   const dismiss = root.root.findAllByType('Pressable').find(node => node.props.accessibilityLabel === 'Not interested in this repository');
   assert.ok(dismiss);
   await act(async () => dismiss.props.onPress());

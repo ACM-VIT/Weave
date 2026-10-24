@@ -265,7 +265,6 @@ export function RepositoryScreen({
     const ownerUserId = repository.ownerProfileClaimedUserId ?? repository.ownerUserId ?? null;
     const ownerProfileId = repository.ownerProfileId ?? null;
     if (!viewerUserId || (!ownerUserId && !ownerProfileId)) return;
-    onQueueActivity?.({ repo_id: repository.id, action: following ? FEEDBACK_ACTIONS.follow : FEEDBACK_ACTIONS.unfollow }, true);
     if (ownerUserId) {
       queryClient.setQueryData(
         followStateQueryKey(getProfileFollowIdentity(null, ownerUserId), viewerUserId),
@@ -347,6 +346,10 @@ export function RepositoryScreen({
                 isFollowing={repository.viewerFollowsOwner === true}
                 neutral
                 onFollowingChange={handleOwnerFollowingChange}
+                onFollowingCommitted={(following) => onQueueActivity?.({
+                  repo_id: repository.id,
+                  action: following ? FEEDBACK_ACTIONS.follow : FEEDBACK_ACTIONS.unfollow,
+                }, true)}
                 stateKnown={ownerFollowStateKnown}
                 targetProfileId={repository.ownerProfileId}
                 targetUserId={repository.ownerUserId}
