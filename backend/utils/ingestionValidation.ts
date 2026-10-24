@@ -33,7 +33,9 @@ function optionalHttpsDirectory(value: unknown): boolean {
       && parsed.port === '' && parsed.username === '' && parsed.password === ''
       && parsed.search === '' && parsed.hash === '' && parsed.pathname.endsWith('/')
       && parsed.toString() === value
-      && segments.length >= 5 && segments[2] === 'refs' && segments[3] === 'heads';
+      && parsed.pathname.split('/').slice(1, -1).every(Boolean)
+      && ((segments.length >= 3 && /^[a-f0-9]{40}$/.test(segments[2]))
+        || (segments.length >= 5 && segments[2] === 'refs' && segments[3] === 'heads'));
   } catch {
     return false;
   }

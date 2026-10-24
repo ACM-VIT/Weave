@@ -272,7 +272,7 @@ export const repoContent = appSchema.table('repo_content', {
     AND (${table.readmeBaseUrl} IS NULL OR (
       char_length(${table.readmeBaseUrl}) <= 2048
       AND ${table.readmeBaseUrl}
-        ~ '^https://raw[.]githubusercontent[.]com/[^/[:space:]?#]+/[^/[:space:]?#]+/refs/heads/[^[:space:]?#]+/$'
+        ~ '^https://raw[.]githubusercontent[.]com/[^/[:space:]?#]+/[^/[:space:]?#]+/(refs/heads/[^[:space:]?#]+|[a-f0-9]{40}(/[^/[:space:]?#]+)*)/$'
     ))
   `),
 ]);
