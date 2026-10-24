@@ -62,6 +62,11 @@ function feed(ids: string[], reducedMotion = false, attribution?: { ownerId: str
     Keyboard: { dismiss() {} }, Linking: { openURL: () => openExternal() },
     Share: { share: async () => ({ action: 'sharedAction' }) },
     ...Object.fromEntries(['ActivityIndicator', 'FlatList', 'Image', 'KeyboardAvoidingView', 'Modal', 'Pressable', 'ScrollView', 'Text', 'TextInput', 'View'].map(name => [name, name])),
+    FlatList: (props: any) => props.numColumns === 2 ? React.createElement('FlatList', props,
+      props.ListHeaderComponent,
+      props.data.length ? props.data.slice(0, props.initialNumToRender * props.numColumns).map((item: any, index: number) =>
+        React.createElement(React.Fragment, {key: props.keyExtractor(item)}, props.renderItem({item, index}))) : props.ListEmptyComponent,
+    ) : React.createElement('FlatList', props),
   };
   const auth = { useAuth: () => ({ user: { user_id: attribution?.ownerId ?? 'viewer', username: 'viewer' }, checkOnboardingStatus: async () => undefined }) };
   const storage = { getItemAsync: async () => 'token', getStorageItem: async () => 'token' };
@@ -238,6 +243,9 @@ function feed(ids: string[], reducedMotion = false, attribution?: { ownerId: str
       await act(async () => { closeAnimations.splice(0).forEach(callback => callback({ finished })); });
     },
     async type(text: string) { await act(async () => { this.input.props.onChangeText(text); }); },
+    async searchLists(text: string) { await act(async () => {
+      root.root.findAllByType('TextInput').find(node => node.props.accessibilityLabel === 'Search Lists')!.props.onChangeText(text);
+    }); },
     async submit() { await act(async () => { this.input.props.onSubmitEditing(); await new Promise(resolve => setTimeout(resolve, 0)); }); },
     async createCollection(name: string) {
       await this.press('Create new List');
@@ -810,4 +818,29 @@ test('failed-load creation attempts cannot erase memberships after retry and leg
     await app.press('Save repository to selected Lists');
     assert.equal(saves,1);
   }finally{await app.unmount();}
+});
+
+test('the windowed save grid retains offscreen memberships while filtering and creating a List', async()=>{
+  const app=feed([],true);let saves=0;
+  app.setSave(async(_repo, selected)=>{
+    saves++;
+    assert.deepEqual([...selected].sort(),['collection:0','legacy-board:4999','collection:new'].sort());
+    return {saved:true,selectedListIds:selected,saveStateChanged:false};
+  });
+  const lists=Array.from({length:5000},(_,index)=>({id:String(index),source:index%2?'legacy-board':'collection',
+    name:`List ${String(index).padStart(5,'0')}`,selected:index===4999,repositoryCount:index}));
+  app.setListLoader(async()=>lists);
+  app.setCreate(async()=>({id:'new',source:'collection',name:'New List',selected:false,repositoryCount:0}));
+  await app.mountStandaloneSave('00000000-0000-4000-8000-000000000011');
+  try {
+    await waitForReadmeState(()=>app.messages.includes('List 00000'));
+    assert.ok(!app.messages.includes('List 04999'),'the selected tail membership is outside the render window');
+    await app.searchLists('List 00000');
+    await app.press('List 00000, 0 repositories');
+    await app.searchLists('no match');
+    assert.ok(app.messages.includes('No matching Lists'));
+    await app.createCollection('New List');
+    await app.press('Save repository to selected Lists');
+    assert.equal(saves,1);
+  } finally {await app.unmount();}
 });
