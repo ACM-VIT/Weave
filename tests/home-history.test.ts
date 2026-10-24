@@ -11,8 +11,9 @@ import type { FeedPage } from '../src/services/feedPagination';
 
 // Render the real Home hooks, mapper, pagination and query cache. Replace the
 // native list and expensive card body to inspect row mounts and scroll commands.
-for (const discovery of [false, true]) for (const backscroll of [false, true]) {
-  test(`actual Home eviction preserves visible row state, attribution and scroll (discovery=${discovery}, backscroll=${backscroll})`, async () => {
+for (const discovery of [false, true]) for (const scenario of ['steady', 'backscroll', 'resize']) {
+  const backscroll = scenario !== 'steady', resize = scenario === 'resize';
+  test(`actual Home eviction preserves visible row state, attribution and scroll (discovery=${discovery}, scenario=${scenario})`, async () => {
     (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
     const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: Infinity } } });
     const key = ['feed', 'viewer'];
@@ -74,8 +75,11 @@ for (const discovery of [false, true]) for (const backscroll of [false, true]) {
       if (backscroll) {
         assert.equal(calls, 1);
         assert.equal(list.data[0].repository.id, '0', 'the response is still deferred');
-        threatened = list.data[4];
-        await act(async () => {
+        threatened = list.data[resize ? 0 : 4];
+        if (resize) {
+          const host = renderer.root.findAllByType('View' as any).find(node => node.props.onLayout)!;
+          await act(async () => { host.props.onLayout({ nativeEvent: { layout: { width: 380, height: 800 } } }); });
+        } else await act(async () => {
           // Card 4 is 40% visible; only card 5 qualifies for an impression.
           list.onScroll({ nativeEvent: { contentOffset: { y: 4 * 800 + 480 } } });
           list.onViewableItemsChanged({ viewableItems: [{ item: list.data[5], isViewable: true }] });
@@ -88,11 +92,16 @@ for (const discovery of [false, true]) for (const backscroll of [false, true]) {
       assert.equal(list.data.length, 500);
       if (backscroll) {
         assert.equal(list.data[0].feedId, threatened.feedId, 'partly visible row must be pinned by the actual Home wiring');
-        assert.equal(list.data[1].repository.id, '5');
-        assert.equal(mounts.get('4'), 1);
-        assert.equal(mounts.get('5'), 1);
-        assert.deepEqual(impressions, ['480', '5'], 'retention pins do not relax impression visibility');
-        assert.deepEqual(scrolls.at(-1), { offset: 480, animated: false }, 'preserve both partial rows at the same screen coordinates');
+        if (resize) {
+          assert.equal(mounts.get('0'), 2, 'width-only resize remounts the native list');
+          assert.deepEqual(scrolls.at(-1), { offset: 0, animated: false }, 'replacement list starts with matching scroll tracking');
+        } else {
+          assert.equal(list.data[1].repository.id, '5');
+          assert.equal(mounts.get('4'), 1);
+          assert.equal(mounts.get('5'), 1);
+          assert.deepEqual(impressions, ['480', '5'], 'retention pins do not relax impression visibility');
+          assert.deepEqual(scrolls.at(-1), { offset: 480, animated: false }, 'preserve both partial rows at the same screen coordinates');
+        }
       } else {
         assert.equal(list.data[470].feedId, anchor.feedId);
         assert.equal(mounts.get('480'), 1, 'visible card instance survives prefix eviction');

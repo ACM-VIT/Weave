@@ -101,6 +101,8 @@ export default function HomeScreen() {
   });
   const pageWidth = viewport.width;
   const pageHeight = viewport.height;
+  const listKey = `${pageWidth}-${pageHeight}`;
+  const committedListKey = useRef(listKey);
 
   
   const flushActivityBatch = useCallback(async () => {
@@ -148,8 +150,9 @@ export default function HomeScreen() {
   }, [data?.pages, feedProjection]);
 
   useLayoutEffect(() => {
-    if (committedViewerKey.current !== feedQueryKey) {
+    if (committedViewerKey.current !== feedQueryKey || committedListKey.current !== listKey) {
       committedViewerKey.current = feedQueryKey;
+      committedListKey.current = listKey;
       visibleIds.current = [];
       retentionPins.current = [];
       scrollOffset.current = 0;
@@ -170,7 +173,7 @@ export default function HomeScreen() {
       listRef.current?.scrollToOffset({ offset, animated: false });
     }
     retentionPins.current = feedViewportIds(feedItems, scrollOffset.current, pageHeight);
-  }, [data, feedItems, pageHeight, feedQueryKey, pagination, queryClient]);
+  }, [data, feedItems, listKey, pageHeight, feedQueryKey, pagination, queryClient]);
 
   const handleQueueActivity = useCallback((repository: RepositoryData, event: ActivityInput, flushNow?: boolean) => {
     const currentLikeOverrides = queryClient.getQueryData<ProfileLikeOverrides>(
@@ -403,7 +406,7 @@ export default function HomeScreen() {
       <View style={[styles.feedShell, { width: pageWidth, height: pageHeight }]}>
         <FlatList
           ref={listRef}
-          key={`${pageWidth}-${pageHeight}`}
+          key={listKey}
           data={feedItems}
           keyExtractor={(item) => item.feedId}
           renderItem={({ item, index }) => (
