@@ -93,15 +93,19 @@ export async function canonicalFeedbackAttribution(tx:TransactionSql,lane:Locked
       && String(row.current_started_ms)===String(row.intent_epoch_started_ms) && row.current_witness===row.intent_epoch_witness_sha256,
     witness_sha256:String(row.intent_epoch_witness_sha256)};
 }
-/** Newly accepted product activity only; caller holds parent/feed locks. */
-export async function touchCurrentIntentPresence(tx:TransactionSql,lane:LockedModelLane,serveId:string):Promise<void>{
-  const attribution=await canonicalFeedbackAttribution(tx,lane,serveId);
-  if(!attribution?.active_at_acceptance)return;
-  await tx`UPDATE telemetry.feed_intent_sessions
-    SET last_presence_ms=GREATEST(last_presence_ms,floor(extract(epoch FROM clock_timestamp())*1000)::bigint)
-    WHERE session_id=${attribution.session_id}::uuid AND user_id=${lane.userId}::uuid AND status='active'
-      AND policy_sha256=${lane.policySha256} AND intent_epoch=${attribution.epoch}::bigint
-      AND epoch_started_ms=${attribution.epoch_started_ms}::bigint AND epoch_witness_sha256=${attribution.witness_sha256}`;
+/** Accepted serve IDs from the bounded product batch; caller holds parent/feed locks. */
+export async function touchCurrentIntentPresence(tx:TransactionSql,lane:LockedModelLane,serveIds:readonly string[]):Promise<void>{
+  if(!serveIds.length)return;
+  // One owner-scoped update also locks the matching current sessions. Historical
+  // serves, epochs and witnesses can never renew their replacement session.
+  await tx`UPDATE telemetry.feed_intent_sessions current
+    SET last_presence_ms=GREATEST(current.last_presence_ms,floor(extract(epoch FROM clock_timestamp())*1000)::bigint)
+    FROM telemetry.feed_serves served
+    WHERE served.serve_id=ANY(${[...serveIds]}::uuid[]) AND served.user_id=${lane.userId}::uuid
+      AND current.user_id=${lane.userId}::uuid AND current.session_id=served.session_id AND current.status='active'
+      AND served.intent_policy_sha256=${lane.policySha256} AND current.policy_sha256=${lane.policySha256}
+      AND current.intent_epoch=served.intent_epoch AND current.epoch_started_ms=served.intent_epoch_started_ms
+      AND current.epoch_witness_sha256=served.intent_epoch_witness_sha256`;
 }
 export async function enqueueModelFeedback(tx:TransactionSql,lane:LockedModelLane,eventId:string,feedbackVersion:string,
   originalFeedbackJson:string,serveId:string|null):Promise<void>{

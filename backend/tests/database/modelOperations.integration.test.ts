@@ -329,3 +329,36 @@ integration('backend role can lock a fresh generation without context or expiry 
  const [privileges]=await sqlClient`SELECT has_column_privilege('ghsocial_backend','telemetry.feed_model_generations','applied_context','UPDATE') AS context,has_column_privilege('ghsocial_backend','telemetry.feed_model_generations','valid_until_ms','UPDATE') AS expiry`;
  assert.deepEqual({...privileges},{context:false,expiry:false});
 });
+
+integration('50 distinct newly accepted serves update presence with one SQL statement',async()=>{
+ const owner=await fixture(),session=crypto.randomUUID();const begin=await controls.control(owner,{kind:'begin',request_id:crypto.randomUUID(),session_id:session});
+ const sources=Array.from({length:50},(_,index)=>({repo_id:crypto.randomUUID(),serve_id:crypto.randomUUID(),request_id:crypto.randomUUID(),github_id:String(Date.now()*100+index)}));
+ await sqlClient`INSERT INTO app.repos(repo_id,github_id,full_name,owner,name,url,status)
+  SELECT repo_id,github_id::bigint,'fixture/'||repo_id::text,'fixture',repo_id::text,'https://github.com/fixture/'||repo_id::text,'active'
+  FROM jsonb_to_recordset(${JSON.stringify(sources)}::jsonb) AS s(repo_id uuid,github_id text)`;
+ try{
+  await sqlClient`INSERT INTO telemetry.feed_serves(serve_id,feed_request_id,user_id,session_id,feed_version,source,intent_epoch,intent_epoch_started_ms,intent_epoch_witness_sha256,intent_policy_sha256)
+   SELECT serve_id,request_id,${owner}::uuid,${session}::uuid,1,'personalized',1,${begin.session.epochStartedMs}::bigint,${begin.session.witnessSha256},${policy}
+   FROM jsonb_to_recordset(${JSON.stringify(sources)}::jsonb) AS s(serve_id uuid,request_id uuid)`;
+  await sqlClient`INSERT INTO telemetry.feed_serve_items(serve_id,position,repo_id,source)
+   SELECT serve_id,0,repo_id,'personalized' FROM jsonb_to_recordset(${JSON.stringify(sources)}::jsonb) AS s(serve_id uuid,repo_id uuid)`;
+  await sqlClient`UPDATE telemetry.feed_intent_sessions SET last_presence_ms=1 WHERE session_id=${session}::uuid`;
+  const events=sources.map(row=>({event_id:crypto.randomUUID(),schema_version:2 as const,session_id:session,serve_id:row.serve_id,repo_id:row.repo_id,position:0,event_type:'impression' as const,dwell_ms:null,client_occurred_at:new Date().toISOString(),context:{}}));
+  let presenceStatements=0;const previous=sqlClient.options.debug;
+  sqlClient.options.debug=(_connection,query)=>{
+   if((query.includes('SELECT serve.session_id')&&query.includes('current.epoch_witness'))||query.includes('SET last_presence_ms='))presenceStatements++;
+  };
+  try{const result=await processInteractionBatchV2(owner,events);assert.equal(result.accepted,50);}finally{sqlClient.options.debug=previous;}
+  console.log(JSON.stringify({newAcceptedServes:50,presenceStatements}));
+  assert.ok(BigInt(String((await sqlClient`SELECT last_presence_ms FROM telemetry.feed_intent_sessions WHERE session_id=${session}::uuid`)[0].last_presence_ms))>1n);
+  assert.equal((await sqlClient`SELECT count(*)::int n FROM telemetry.interaction_events WHERE user_id=${owner}::uuid`)[0].n,50);
+  const [state]=await sqlClient`SELECT feedback_version,model_operation_version FROM app.user_feed_state WHERE user_id=${owner}::uuid`;
+  assert.equal(String(state.feedback_version),'0');assert.equal(String(state.model_operation_version),'1','impressions cannot allocate learned model work');
+  assert.equal(String((await sqlClient`SELECT sum(views_count) AS views FROM app.repo_engagement WHERE repo_id=ANY(${sources.map(row=>row.repo_id)}::uuid[])`)[0].views),'50');
+  assert.equal(presenceStatements,1,'accepted batch presence must have constant SQL work');
+ }finally{
+  await sqlClient`DELETE FROM telemetry.interaction_events WHERE user_id=${owner}::uuid`;
+  await sqlClient`DELETE FROM telemetry.feed_serves WHERE user_id=${owner}::uuid`;
+  await sqlClient`DELETE FROM app.repos WHERE repo_id=ANY(${sources.map(row=>row.repo_id)}::uuid[])`;
+ }
+});

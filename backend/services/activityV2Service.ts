@@ -209,7 +209,7 @@ export async function processInteractionBatchV2InTransaction(
   }
   if(modelLane){
     const currentServes=[...new Set(inputs.filter(event=>accepted.has(event.event_id)&&event.serve_id!==null).map(event=>event.serve_id!))];
-    for(const serveId of currentServes)await touchCurrentIntentPresence(tx,modelLane,serveId);
+    await touchCurrentIntentPresence(tx,modelLane,currentServes);
   }
   if (invalidateFeed) feedVersion++;
   await tx`UPDATE app.user_feed_state SET feed_version=${feedVersion.toString()}::bigint,
