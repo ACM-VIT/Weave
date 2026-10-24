@@ -8,6 +8,7 @@ import { create } from 'react-test-renderer';
 import { QueryClient, QueryClientProvider, QueryObserver } from '@tanstack/react-query';
 import ts from 'typescript';
 import type { RepositoryData } from '../src/data/repositories';
+import { repositoryDetailQueryKey } from '../src/models/repository';
 import { authSessionLifecycle } from '../src/api/session-lifecycle';
 import { listRepositoryQueryKey } from '../src/services/accountQueryCache';
 import { subscribeToHomeFeedInvalidations } from '../src/utils/home-feed';
@@ -39,6 +40,7 @@ function feed(ids: string[], reducedMotion = false, attribution?: { ownerId: str
   let saveCollections: any[] = [];
   let openExternal: () => Promise<void> = async () => undefined;
   let shareHeight=800;
+  let loadReadme: () => Promise<any> = async () => ({ ...repository('canonical'), readmeFull: '# Canonical fetched README' });
   let root: ReturnType<typeof create>;
   const animation = () => ({
     start: (callback?: (result: { finished: boolean }) => void) => { if (callback) closeAnimations.push(callback); },
@@ -97,6 +99,7 @@ function feed(ids: string[], reducedMotion = false, attribution?: { ownerId: str
       createRepositoryList: () => createCollection(),
       syncRepositoryLists: () => saveRepository(),
     },
+    '@/api/repositories': { repositoryDetailQueryKey, fetchRepositoryDetail: async (id: string) => { requests.push(`readme:${id}`); return loadReadme(); } },
     '@/api/repository-actions': {
       getSaveCollections: async (id: string) => { requests.push(`save:${id}`); return saveCollections; },
       getRepositoryShareDetails: async (id: string) => { requests.push(`share:${id}`); return {}; },
@@ -123,7 +126,7 @@ function feed(ids: string[], reducedMotion = false, attribution?: { ownerId: str
     const boundary = (specifier: string) => {
       if (specifier in mocks) return mocks[specifier];
       if (specifier.startsWith('@/')) return loadSource(`src/${specifier.slice(2)}.ts`);
-      if (/^\.\/(CommentSheet|ReadmePopup|save-popup|share-repository-sheet)$/.test(specifier)) {
+      if (/^\.\/(CommentSheet|ReadmePopup|FeedReadmePopup|save-popup|share-repository-sheet)$/.test(specifier)) {
         return loadSource(`src/components/home/${specifier.slice(2)}.tsx`);
       }
       return nativeRequire(specifier);
@@ -147,6 +150,9 @@ function feed(ids: string[], reducedMotion = false, attribution?: { ownerId: str
     requests, events, client,
     setExternalOpen(value: () => Promise<void>) {openExternal=value;},
     setHeight(value:number) {shareHeight=value;},
+    setReadme(value: () => Promise<any>) {loadReadme=value;},
+    get readmePopupProps() {return root.root.findAllByType(overlayTypes[3])[0]?.props;},
+    get renderedReadmeHtml() {return root.root.findAllByType('RenderHtml').map(node=>node.props.source.html).join('');},
     get githubActionScrollable() {return this.button('Open on GitHub').findAllByType('Text').length>0
       && root.root.findAllByType('ScrollView').some(scroll=>scroll.findAllByType('Pressable').some(node=>node.props.accessibilityLabel==='Open on GitHub'));},
     setCommentPages(value: (cursor: string | null) => Promise<any>) { loadComments = value; },
@@ -507,5 +513,92 @@ test('callback-only row renders do not rescan retained feed history after the or
     for (let render = 0; render < 10; render++) await app.rerender();
     t.diagnostic(`10 callback changes,10000 retained rows: cache reads=${reads}`);
     assert.equal(reads, 0, 'cached row attribution requires no history reconciliation');
+  } finally { await app.unmount(); }
+});
+
+
+async function waitForReadmeState(predicate: () => boolean) {
+  for (let attempt = 0; attempt < 50 && !predicate(); attempt++) {
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 5)); });
+  }
+  assert.ok(predicate(), 'README query state did not settle');
+}
+
+test('one feed action opens the original README viewer without repository navigation', async () => {
+  const app = feed(['repo'], true);
+  await app.mount();
+  try {
+    await app.open(0, 'onOpenReadme');
+    assert.equal(app.mountedOverlays, 1);
+    assert.ok(app.messages.includes('README'));
+    assert.ok(app.renderedReadmeHtml.includes('README'));
+    assert.ok(!app.messages.includes('README SUMMARY'));
+    assert.deepEqual(app.requests, [], 'canonical bytes already on the card need no new request');
+    assert.equal(app.events[0].action, 'readme_open');
+    assert.equal(app.events[0].serve_id, 'repo');
+    assert.equal(app.events[0].position, 3);
+  } finally { await app.unmount(); }
+});
+
+test('feed README viewer loads canonical bytes and retries failures without a second open', async () => {
+  const app = feed(['repo'], true, { ownerId: 'viewer', repository: { readmeFull: null } });
+  let finish!: (value: unknown) => void;
+  app.setReadme(() => new Promise(resolve => { finish=resolve; }));
+  await app.mount();
+  try {
+    await app.open(0, 'onOpenReadme');
+    assert.ok(app.messages.includes('Loading README…'));
+    assert.deepEqual(app.requests, ['readme:repo']);
+    await act(async () => { finish({ ...repository('repo'), readmeFull: '# Original canonical source' }); await new Promise(resolve=>setTimeout(resolve,0)); });
+    await waitForReadmeState(() => app.renderedReadmeHtml.includes('Original canonical source'));
+    assert.ok(app.renderedReadmeHtml.includes('Original canonical source'));
+    assert.ok(app.client.getQueryData(repositoryDetailQueryKey('repo', 'viewer')));
+    await app.requestClose();
+    await app.open(0, 'onOpenReadme');
+    assert.deepEqual(app.requests, ['readme:repo'], 'reopening uses the owner-scoped canonical cache');
+    await app.requestClose();
+    app.client.clear();
+    app.setReadme(async () => {throw new Error('Read failed');});
+    await app.open(0, 'onOpenReadme');
+    assert.ok(app.messages.includes('Read failed'));
+    app.setReadme(async () => ({ ...repository('repo'), readmeFull: '# Recovered README' }));
+    await app.press('Retry loading README');
+    await waitForReadmeState(() => app.renderedReadmeHtml.includes('Recovered README'));
+    assert.ok(app.renderedReadmeHtml.includes('Recovered README'));
+  } finally { await app.unmount(); }
+});
+
+test('a retired account cannot publish a late canonical README response', async () => {
+  const app = feed(['repo'], true, { ownerId: 'viewer', repository: { readmeFull: null } });
+  let finish!: (value: unknown) => void;
+  app.setReadme(() => new Promise(resolve => { finish=resolve; }));
+  await app.mount();
+  try {
+    await app.open(0, 'onOpenReadme');
+    await act(async () => {
+      authSessionLifecycle.retire(authSessionLifecycle.currentGeneration());
+      finish({ ...repository('repo'), readmeFull: '# Previous account README' });
+      await new Promise(resolve=>setTimeout(resolve,0));
+    });
+    await waitForReadmeState(() => app.client.getQueryCache().getAll().some(query=>query.state.status==='error'));
+    assert.ok(!app.renderedReadmeHtml.includes('Previous account README'));
+    assert.ok(app.client.getQueryCache().getAll().every(query=>query.state.data===undefined));
+  } finally { await app.unmount(); }
+});
+
+test('a failed background refresh retains the cached original README', async () => {
+  const app = feed(['repo'], true, { ownerId: 'viewer', repository: { readmeFull: null } });
+  const key = repositoryDetailQueryKey('repo', 'viewer');
+  app.client.setQueryData(key, { ...repository('repo'), readmeFull: '# Cached original README' }, { updatedAt: Date.now() - 120_000 });
+  app.setReadme(async () => { throw new Error('Background refresh unavailable'); });
+  await app.mount();
+  try {
+    await app.open(0, 'onOpenReadme');
+    await waitForReadmeState(() => app.client.getQueryState(key)?.status === 'error');
+    assert.equal(app.client.getQueryData<any>(key)?.readmeFull, '# Cached original README', 'React Query retains the unchanged stale canonical data');
+    assert.equal(app.readmePopupProps.errorMessage, null);
+    assert.equal(app.readmePopupProps.loading, false);
+    assert.ok(app.renderedReadmeHtml.includes('Cached original README'), 'background failure must not replace cached content');
+    assert.ok(!app.messages.includes('Background refresh unavailable'));
   } finally { await app.unmount(); }
 });

@@ -34,6 +34,7 @@ import {
 import { CommentSheet, type CommentComposerState } from './CommentSheet';
 import { SaveSwipeGestureContext } from './DescriptionCard';
 import { ReadmePopup } from './ReadmePopup';
+import { FeedReadmePopup } from './FeedReadmePopup';
 import { prepareReadmeSummaryDocument } from '@/utils/readme';
 import { RepositoryScreen } from './RepositoryScreen';
 import { SavePopup, type SavePopupMutationState } from './save-popup';
@@ -84,6 +85,7 @@ export function RepositoryFeedItem({
   const [saveMutations, setSaveMutations] = useState<SavePopupMutationState>({ save: false, create: false, error: null });
   const [isShareVisible, setIsShareVisible] = useState(false);
   const [isReadmeVisible, setIsReadmeVisible] = useState(false);
+  const [isOriginalReadmeVisible, setIsOriginalReadmeVisible] = useState(false);
   const [expandedSummary, setExpandedSummary] = useState<string | null>(null);
   const [isCommentsVisible, setIsCommentsVisible] = useState(false);
   const [isSaveRevealOpen, setIsSaveRevealOpen] = useState(false);
@@ -116,7 +118,7 @@ export function RepositoryFeedItem({
   const impressionSentRef = useRef(false);
   const saveRevealTranslateX = useSharedValue(0);
   const saveRevealHapticSent = useSharedValue(false);
-  const overlaysOpen = isSaveVisible || isShareVisible || isReadmeVisible || isCommentsVisible;
+  const overlaysOpen = isSaveVisible || isShareVisible || isReadmeVisible || isOriginalReadmeVisible || isCommentsVisible;
   const measurementActive = isViewable && isAppActive && !overlaysOpen;
   const {user}=useAuth();
   const queryClient=useQueryClient();
@@ -340,6 +342,10 @@ export function RepositoryFeedItem({
               onOwnerPress={onOwnerPress}
               onRepositoryPress={openRepository}
               onQueueActivity={queueRepositoryActivity}
+              onOpenReadme={() => {
+                queueRepositoryActivity({ repo_id: repository.id, action: FEEDBACK_ACTIONS.readmeOpen }, true);
+                setIsOriginalReadmeVisible(true);
+              }}
               onReadFullPress={(digest) => {
                 setExpandedSummary(prepareReadmeSummaryDocument({ ...repository, readmeDigest: digest }));
                 queueRepositoryActivity(
@@ -408,6 +414,7 @@ export function RepositoryFeedItem({
         onCommentCountChange={setCommentCount}
         repoId={repository.id}
       /> : null}
+      {isOriginalReadmeVisible ? <FeedReadmePopup repository={repository} onClose={() => setIsOriginalReadmeVisible(false)} /> : null}
       {isReadmeVisible ? (
         <ReadmePopup
           isVisible
