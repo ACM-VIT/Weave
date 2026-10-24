@@ -227,12 +227,12 @@ try {
   }
 
   const [retentionGrants] = await client`
-    SELECT has_sequence_privilege('ghsocial_backend','app.topics_topic_id_seq','USAGE') AS topics,
-      has_function_privilege('ghsocial_backend','telemetry.prune_runtime_history(integer,integer)','EXECUTE') AS retention,
-      has_table_privilege('ghsocial_backend','telemetry.ml_outbox','DELETE') AS journal_delete,
-      has_table_privilege('ghsocial_backend','telemetry.generation_attempts','DELETE') AS generation_delete,
+    SELECT has_sequence_privilege('ghsocial_backend',to_regclass('app.topics_topic_id_seq'),'USAGE') AS topics,
+      has_function_privilege('ghsocial_backend',to_regprocedure('telemetry.prune_runtime_history(integer,integer)'),'EXECUTE') AS retention,
+      has_table_privilege('ghsocial_backend',to_regclass('telemetry.ml_outbox'),'DELETE') AS journal_delete,
+      has_table_privilege('ghsocial_backend',to_regclass('telemetry.generation_attempts'),'DELETE') AS generation_delete,
       EXISTS(SELECT 1 FROM pg_proc p, LATERAL aclexplode(COALESCE(p.proacl,acldefault('f',p.proowner))) acl
-        WHERE p.oid='telemetry.prune_runtime_history(integer,integer)'::regprocedure
+        WHERE p.oid=to_regprocedure('telemetry.prune_runtime_history(integer,integer)')
           AND acl.grantee=0 AND acl.privilege_type='EXECUTE') AS public_retention
   `;
   if (!retentionGrants.topics) missing.push('required-grant:ghsocial_backend:app.topics_topic_id_seq:USAGE');
