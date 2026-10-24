@@ -392,6 +392,13 @@
       "when": 1794787200000,
       "tag": "0052_idle_intent_presence",
       "breakpoints": true
+    },
+    {
+      "idx": 56,
+      "version": "7",
+      "when": 1794873600000,
+      "tag": "0053_model_generation_lock_privilege",
+      "breakpoints": true
     }
   ]
 }

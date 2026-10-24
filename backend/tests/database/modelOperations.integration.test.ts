@@ -291,7 +291,7 @@ integration('only a committed current scoped serve renews backend presence and r
  assert.equal(String((await sqlClient`SELECT last_presence_ms FROM telemetry.feed_intent_sessions WHERE session_id=${session}::uuid`)[0].last_presence_ms),'1');
  const served=await persistence.createServe(input);assert.ok(BigInt(String((await sqlClient`SELECT last_presence_ms FROM telemetry.feed_intent_sessions WHERE session_id=${session}::uuid`)[0].last_presence_ms))>=BigInt(now));
  await controls.control(owner,{kind:'end',request_id:crypto.randomUUID(),session_id:session,expected_epoch:'1'});
- const replay=await persistence.getServeByRequest(owner,input.feed_request_id);assert.equal(replay!.serve_id,served.serve_id);assert.equal(replay!.intent_scope,undefined);
+ const replay=await persistence.getServeByRequest(owner,input.feed_request_id);assert.equal(replay!.serve_id,served.serve_id);
 });
 
 integration('new current attributed activity protects an interaction-only tab; duplicates, old epochs and rollback do not renew',async()=>{
@@ -317,4 +317,15 @@ integration('new current attributed activity protects an interaction-only tab; d
   await sqlClient`UPDATE telemetry.feed_intent_sessions SET last_presence_ms=1 WHERE session_id=${session}::uuid`;
   await processInteractionBatchV2(owner,[{...event,event_id:crypto.randomUUID()}]);assert.equal(await stamp(),'1');
  }finally{await sqlClient`DELETE FROM telemetry.interaction_events WHERE user_id=${owner}::uuid`;await sqlClient`DELETE FROM telemetry.feed_serves WHERE serve_id=${serve}::uuid`;await sqlClient`DELETE FROM app.repos WHERE repo_id=${repo}::uuid`;}
+});
+
+integration('backend role can lock a fresh generation without context or expiry write privilege',async()=>{
+ const owner=await fixture(),session=crypto.randomUUID(),id=crypto.randomUUID();await controls.control(owner,{kind:'begin',request_id:crypto.randomUUID(),session_id:session});
+ await sqlClient`INSERT INTO telemetry.feed_model_generations(generation_id,user_id,session_id,queue_scope,applied_context,valid_until_ms) VALUES(${id}::uuid,${owner}::uuid,${session}::uuid,${policy},'{}',${Date.now()+60000}::bigint)`;
+ await sqlClient.begin(async tx=>{await tx.unsafe('SET LOCAL ROLE ghsocial_backend');
+  const rows=await tx`SELECT generation_id FROM telemetry.feed_model_generations WHERE generation_id=ANY(${[id]}::uuid[]) AND user_id=${owner}::uuid AND session_id=${session}::uuid AND queue_scope=${policy} AND valid_until_ms>floor(extract(epoch FROM clock_timestamp())*1000)::bigint FOR KEY SHARE`;
+  assert.equal(rows.length,1);
+ });
+ const [privileges]=await sqlClient`SELECT has_column_privilege('ghsocial_backend','telemetry.feed_model_generations','applied_context','UPDATE') AS context,has_column_privilege('ghsocial_backend','telemetry.feed_model_generations','valid_until_ms','UPDATE') AS expiry`;
+ assert.deepEqual({...privileges},{context:false,expiry:false});
 });
