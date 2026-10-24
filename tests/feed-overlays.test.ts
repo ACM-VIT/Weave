@@ -78,6 +78,7 @@ function feed(ids: string[], reducedMotion = false, attribution?: { ownerId: str
     },
     'react-native-worklets': {scheduleOnRN: (fn: (...args: any[]) => void, ...args: any[]) => fn(...args)},
     'react-native-gesture-handler': {Gesture: {Pan: () => gesture}, GestureDetector: ({children}: any) => children},
+    './ReadmeVideo': {ReadmeVideo: 'ReadmeVideo'},
     './SafeReadmeImage': {SafeReadmeImageRenderer: 'SafeReadmeImageRenderer'},
     './DescriptionCard': {SaveSwipeGestureContext: React.createContext(null)},
     '@/components/keyboard/keyboard-layout': {KeyboardSurface: 'KeyboardSurface'},
@@ -152,6 +153,7 @@ function feed(ids: string[], reducedMotion = false, attribution?: { ownerId: str
     setHeight(value:number) {shareHeight=value;},
     setReadme(value: () => Promise<any>) {loadReadme=value;},
     get readmePopupProps() {return root.root.findAllByType(overlayTypes[3])[0]?.props;},
+    get videoUrls() {return root.root.findAllByType('ReadmeVideo').map(node=>node.props.url);},
     get renderedReadmeHtml() {return root.root.findAllByType('RenderHtml').map(node=>node.props.source.html).join('');},
     get githubActionScrollable() {return this.button('Open on GitHub').findAllByType('Text').length>0
       && root.root.findAllByType('ScrollView').some(scroll=>scroll.findAllByType('Pressable').some(node=>node.props.accessibilityLabel==='Open on GitHub'));},
@@ -600,5 +602,23 @@ test('a failed background refresh retains the cached original README', async () 
     assert.equal(app.readmePopupProps.loading, false);
     assert.ok(app.renderedReadmeHtml.includes('Cached original README'), 'background failure must not replace cached content');
     assert.ok(!app.messages.includes('Background refresh unavailable'));
+  } finally { await app.unmount(); }
+});
+
+
+test('Read more keeps the summary and lazily hydrates original README videos', async () => {
+  const app = feed(['repo'], true, { ownerId: 'viewer', repository: { readmeFull: null } });
+  app.setReadme(async () => ({ ...repository('repo'), readmeFull: '<video src="https://cdn.example.com/demo.mp4"></video>' }));
+  await app.mount();
+  try {
+    assert.deepEqual(app.requests, []);
+    await app.open(0, 'onReadFullPress');
+    await waitForReadmeState(() => app.videoUrls.length > 0);
+    assert.deepEqual(app.requests, ['readme:repo']);
+    assert.equal(app.readmePopupProps.contentKind, 'summary');
+    assert.ok(app.renderedReadmeHtml.includes('Summary.'));
+    assert.deepEqual(app.videoUrls, ['https://cdn.example.com/demo.mp4']);
+    await app.requestClose();
+    assert.deepEqual(app.videoUrls, [], 'closing unmounts the player');
   } finally { await app.unmount(); }
 });

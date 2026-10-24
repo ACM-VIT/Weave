@@ -7,9 +7,10 @@ import { getStorageItem } from '@/utils/storage';
 import { ReadmePopup } from './ReadmePopup';
 
 /** Mounted only when the viewer opens the original README from a feed row. */
-export function FeedReadmePopup({ repository, onClose }: {
+export function FeedReadmePopup({ repository, onClose, summaryText }: {
   repository: RepositoryData;
   onClose: () => void;
+  summaryText?: string | null;
 }) {
   const { user } = useAuth();
   const generation = authSessionLifecycle.currentGeneration();
@@ -29,9 +30,12 @@ export function FeedReadmePopup({ repository, onClose }: {
     },
   });
   const source = repository.readmeFull ? repository : query.data ?? repository;
-  return <ReadmePopup isVisible onClose={onClose} title={repository.name} contentKind="readme"
-    readmeText={source.readmeFull} loading={!repository.readmeFull && query.isPending}
-    errorMessage={!source.readmeFull && query.error instanceof Error ? query.error.message : null}
+  return <ReadmePopup isVisible onClose={onClose} title={repository.name} contentKind={summaryText === undefined ? "readme" : "summary"}
+    readmeText={summaryText === undefined ? source.readmeFull : summaryText} mediaMarkdown={source.readmeFull}
+    mediaMessage={summaryText !== undefined && !repository.readmeFull
+      ? query.isError ? 'Could not load README videos.' : query.isPending ? 'Checking README for videos…' : null : null}
+    loading={summaryText === undefined && !repository.readmeFull && query.isPending}
+    errorMessage={summaryText === undefined && !source.readmeFull && query.error instanceof Error ? query.error.message : null}
     onRetry={() => void query.refetch()} readmeSource={{ fullName: source.fullName, githubUrl: source.githubUrl,
       readmeBaseUrl: source.readmeBaseUrl, readmeDefaultBranch: source.readmeDefaultBranch,
       readmeSourcePath: source.readmeSourcePath }} />;

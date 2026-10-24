@@ -28,6 +28,8 @@ import {
   renderReadmeMarkdown,
   type ReadmeImageContext,
 } from '@/utils/readme-images';
+import { extractReadmeVideos } from '@/utils/readme-videos';
+import { ReadmeVideo } from './ReadmeVideo';
 import { SafeReadmeImageRenderer } from './SafeReadmeImage';
 
 interface ReadmePopupProps {
@@ -35,6 +37,8 @@ interface ReadmePopupProps {
   onClose: () => void;
   title: string;
   readmeText: string | null;
+  mediaMessage?: string | null;
+  mediaMarkdown?: string | null;
   contentKind?: 'readme' | 'summary';
   loading?: boolean;
   errorMessage?: string | null;
@@ -170,6 +174,8 @@ export function ReadmePopup({
   title,
   readmeText,
   contentKind = 'readme',
+  mediaMarkdown,
+  mediaMessage,
   readmeSource,
   loading = false,
   errorMessage = null,
@@ -184,6 +190,8 @@ export function ReadmePopup({
   const content = useMemo(() => contentKind === 'summary'
     ? readmeText || README_SUMMARY_PENDING
     : prepareReadmeForDisplay(readmeText), [contentKind, readmeText]);
+  const videos = useMemo(() => extractReadmeVideos(mediaMarkdown ?? (contentKind === 'readme' ? readmeText : null), readmeSource),
+    [mediaMarkdown, contentKind, readmeText, readmeSource]);
   const markdownHtml = useMemo(
     () => renderReadmeMarkdown(content, readmeSource),
     [content, readmeSource],
@@ -385,6 +393,13 @@ export function ReadmePopup({
                 systemFonts={markdownFonts}
                 tagsStyles={markdownTagStyles}
               />}
+              {mediaMessage ? <View>
+                <Text style={{ color: REFERENCE_THEME.textSecondary }}>{mediaMessage}</Text>
+                {onRetry ? <Pressable accessibilityRole="button" onPress={onRetry} style={styles.retryButton}>
+                  <Text style={styles.headerText}>Retry loading videos</Text>
+                </Pressable> : null}
+              </View> : null}
+              {isVisible ? videos.map((url) => <ReadmeVideo key={url} url={url} />) : null}
             </Animated.View>
           </ScrollView>
         </Animated.View>

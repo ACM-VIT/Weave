@@ -33,7 +33,6 @@ import {
 } from '../../constants/feedbackActions';
 import { CommentSheet, type CommentComposerState } from './CommentSheet';
 import { SaveSwipeGestureContext } from './DescriptionCard';
-import { ReadmePopup } from './ReadmePopup';
 import { FeedReadmePopup } from './FeedReadmePopup';
 import { prepareReadmeSummaryDocument } from '@/utils/readme';
 import { RepositoryScreen } from './RepositoryScreen';
@@ -416,20 +415,8 @@ export function RepositoryFeedItem({
       /> : null}
       {isOriginalReadmeVisible ? <FeedReadmePopup repository={repository} onClose={() => setIsOriginalReadmeVisible(false)} /> : null}
       {isReadmeVisible ? (
-        <ReadmePopup
-          isVisible
-          onClose={() => setIsReadmeVisible(false)}
-          contentKind="summary"
-          readmeText={expandedSummary}
-          readmeSource={{
-            fullName: repository.fullName,
-            githubUrl: repository.githubUrl,
-            readmeBaseUrl: repository.readmeBaseUrl,
-            readmeDefaultBranch: repository.readmeDefaultBranch,
-            readmeSourcePath: repository.readmeSourcePath,
-          }}
-          title={repository.name}
-        />
+        <FeedReadmePopup repository={repository} onClose={() => setIsReadmeVisible(false)}
+          summaryText={expandedSummary} />
       ) : null}
     </View>
   );

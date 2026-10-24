@@ -30,6 +30,7 @@
     "expo-status-bar": "~56.0.4",
     "expo-symbols": "~56.0.7",
     "expo-system-ui": "~56.0.5",
+    "expo-video": "~56.1.4",
     "expo-web-browser": "~56.0.6",
     "express": "^5.2.1",
     "lucide-react-native": "^1.21.0",
