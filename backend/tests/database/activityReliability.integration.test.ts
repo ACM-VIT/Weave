@@ -11,7 +11,7 @@ import { assertDisposableDatabase } from './disposableDatabase.js';
 
 const enabled = process.env.RUN_ACTIVITY_RELIABILITY_INTEGRATION === '1';
 if (enabled) assertDisposableDatabase();
-const membershipEnabled = process.env.RUN_DATABASE_INTEGRATION === '1';
+const membershipEnabled = enabled || process.env.RUN_DATABASE_INTEGRATION === '1';
 if (membershipEnabled) assertDisposableDatabase();
 test.after(async()=>{if(enabled||membershipEnabled){const {sqlClient}=await import('../../db/index.js');await sqlClient.end({timeout:1});}});
 
