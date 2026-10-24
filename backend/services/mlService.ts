@@ -140,15 +140,36 @@ function containsCopiedPassage(
   allowedSource?: string | null,
 ): boolean {
   if (!readme) return false;
-  const candidate = normalizedProse(summary);
   const source = normalizedProse(readme);
-  // Windows retain word-boundary spaces inside the README/summary. Preserve
-  // those same boundaries around the independently trimmed allowed source.
-  const allowed = allowedSource ? ` ${normalizedProse(allowedSource)} ` : '';
-  if (candidate.length < 80 || source.length < 80) return false;
-  for (let index = 0; index <= candidate.length - 80; index++) {
-    const passage = candidate.slice(index, index + 80);
-    if (source.includes(passage) && !allowed.includes(passage)) return true;
+  const allowed = normalizedProse(allowedSource ?? '');
+  if (source.length < 80) return false;
+  let segments = [normalizedProse(summary)];
+  if (allowed) {
+    // Canonical description sentences (including bounded excerpts) are source
+    // material, not README-only copying. Keep every other contiguous span;
+    // never join prose across an approved sentence or split adjacent unknowns.
+    segments = [];
+    const endings = [...maskSummaryAbbreviations(summary).matchAll(
+      new RegExp(SUMMARY_SENTENCE_END_PATTERN, 'gu'),
+    )].map(match => match.index! + match[0].length);
+    if (endings.at(-1) !== summary.length) endings.push(summary.length);
+    let start = 0;
+    let pending: string[] = [];
+    for (const end of endings) {
+      const sentence = normalizedProse(summary.slice(start, end));
+      start = end;
+      if (sentence && allowed.includes(sentence)) {
+        if (pending.length) segments.push(pending.join(' '));
+        pending = [];
+      } else if (sentence) pending.push(sentence);
+    }
+    if (pending.length) segments.push(pending.join(' '));
+  }
+  for (const segment of segments) {
+    for (let index = 0; index <= segment.length - 80; index++) {
+      const passage = segment.slice(index, index + 80);
+      if (source.includes(passage) && !allowed.includes(passage)) return true;
+    }
   }
   return false;
 }
