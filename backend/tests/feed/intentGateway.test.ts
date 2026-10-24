@@ -73,14 +73,59 @@ test('retiring scopes retain capacity while admission waits are bounded and canc
   for(const value of scopes.slice(0,128))value.applied.valid_until_ms='0';
   const next=scopes[128],input={...request,session_id:next.sessionId};
   await assert.rejects(gateway.getFeed(next.userId,input),/MODEL_FEED_CAPACITY/);
+  const waiters=(gateway as unknown as {capacityWaiters:Set<()=>void>}).capacityWaiters;
+  assert.equal(waiters.size,0,'timed out requests must release their capacity subscription');
   assert.equal(created,128,'pending retirements must not free slots prematurely');
   const controller=new AbortController();const pending=gateway.getFeed(next.userId,input,controller.signal);
   const cancelled=assert.rejects(pending,/cancelled capacity wait/);
   await new Promise(resolve=>setImmediate(resolve));controller.abort(new Error('cancelled capacity wait'));await cancelled;
+  assert.equal(waiters.size,0,'cancelled requests must release their capacity subscription');
   assert.equal(created,128);
   release();await new Promise(resolve=>setImmediate(resolve));
   await gateway.getFeed(next.userId,input);assert.equal(created,129);
  } finally {release();await gateway.stop();}
+});
+test('admission wakes when any retirement finishes, including an earlier expired scope',async()=>{
+ const scopes=Array.from({length:129},(_,index)=>scoped(index+1500)),byUser=new Map(scopes.map(value=>[value.userId,value]));
+ let releaseFirst!:()=>void,releaseOthers!:()=>void;
+ const firstDrain=new Promise<void>(resolve=>{releaseFirst=resolve;}),otherDrain=new Promise<void>(resolve=>{releaseOthers=resolve;});
+ let created=0,delivered=false;
+ const gateway=new IntentFeedGateway({getFeed:async()=>response,stop:async()=>{}},{getServeByRequest:async()=>null},{
+  snapshot:async userId=>({...snapshot,...byUser.get(userId)!}),restoreCursor:async()=>scope.applied,resolve:async userId=>byUser.get(userId)!,
+ },value=>{created++;return {getFeed:async()=>response,stop:async()=>{await (value===scopes[0]?firstDrain:otherDrain);}};});
+ let pending:Promise<FeedResponseV2>|undefined;
+ try {
+  for(const value of scopes.slice(0,128))await gateway.getFeed(value.userId,{...request,session_id:value.sessionId});
+  scopes[0].applied.valid_until_ms='0';
+  const next=scopes[128];pending=gateway.getFeed(next.userId,{...request,session_id:next.sessionId}).then(value=>{delivered=true;return value;});
+  await new Promise(resolve=>setImmediate(resolve));releaseFirst();await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(delivered,true,'an earlier drain frees room even while the newly selected idle service is still stopping');
+  assert.equal(created,129);
+ } finally {releaseFirst();releaseOthers();await pending;await gateway.stop();}
+});
+test('competing admissions share one timeout budget across lost capacity races',async t=>{
+ t.mock.timers.enable({apis:['setTimeout']});let now=0;t.mock.method(performance,'now',()=>now);
+ const scopes=Array.from({length:130},(_,index)=>scoped(index+1800)),byUser=new Map(scopes.map(value=>[value.userId,value]));
+ let releaseFirst!:()=>void,releaseOthers!:()=>void,releaseActive!:()=>void,created=0;
+ const firstDrain=new Promise<void>(resolve=>{releaseFirst=resolve;}),otherDrain=new Promise<void>(resolve=>{releaseOthers=resolve;});
+ const active=new Promise<void>(resolve=>{releaseActive=resolve;});let rejected=0;
+ const gateway=new IntentFeedGateway({getFeed:async()=>response,stop:async()=>{}},{getServeByRequest:async()=>null},{
+  snapshot:async userId=>({...snapshot,...byUser.get(userId)!}),restoreCursor:async()=>scope.applied,resolve:async userId=>byUser.get(userId)!,
+ },value=>{created++;return {getFeed:async()=>{if(value===scopes[128]||value===scopes[129])await active;return response;},
+  stop:async()=>{await (value===scopes[0]?firstDrain:otherDrain);}};},undefined,100);
+ const pending:Promise<FeedResponseV2>[]=[];
+ try {
+  for(const value of scopes.slice(0,128))await gateway.getFeed(value.userId,{...request,session_id:value.sessionId});
+  for(const value of scopes.slice(0,128))value.applied.valid_until_ms='0';
+  for(const value of scopes.slice(128)){
+   const operation=gateway.getFeed(value.userId,{...request,session_id:value.sessionId});pending.push(operation);
+   void operation.catch(error=>{assert.match(String(error),/MODEL_FEED_CAPACITY/);rejected++;});
+  }
+  await new Promise(resolve=>setImmediate(resolve));now=90;t.mock.timers.tick(90);releaseFirst();
+  await new Promise(resolve=>setImmediate(resolve));assert.equal(created,129);assert.equal(rejected,0);
+  now=100;t.mock.timers.tick(10);await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(rejected,1,'the losing waiter retains only the original 10ms budget');
+ } finally {releaseFirst();releaseOthers();releaseActive();await Promise.allSettled(pending);await gateway.stop();}
 });
 test('129 sequential fresh scopes evict idle acceleration and restore the evicted durable cursor scope',async()=>{
  const scopes=Array.from({length:129},(_,index)=>scoped(index));let stopped=0,created=0,restores=0;

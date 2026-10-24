@@ -13,6 +13,7 @@ export class IntentFeedGateway {
   private readonly slots = new Map<string, ScopedFeed>();
   private stopping = false;
   private readonly retiring = new Set<Promise<void>>();
+  private readonly capacityWaiters = new Set<() => void>();
   private readonly inFlight = new Set<Promise<FeedResponseV2>>();
   private readonly cursor: FeedCursorCodec;
   constructor(private readonly legacy: FeedService,
@@ -41,35 +42,40 @@ export class IntentFeedGateway {
   private retire(key:string,slot:ScopedFeed):Promise<void> {
     if(this.slots.get(key)!==slot||slot.active!==0)return Promise.resolve();
     this.slots.delete(key);
-    const drain=Promise.resolve().then(()=>slot.service.stop()).finally(()=>this.retiring.delete(drain));
+    const drain=Promise.resolve().then(()=>slot.service.stop()).finally(()=>{
+      this.retiring.delete(drain);
+      for(const notify of [...this.capacityWaiters])notify();
+    });
     this.retiring.add(drain);
+    void drain.catch(()=>console.warn('[IntentFeedGateway] Scope retirement failed.'));
     return drain;
   }
-  private waitForRetirement(work:Promise<void>,remainingMs:number,signal?:AbortSignal):Promise<void> {
+  private waitForRetirement(remainingMs:number,signal?:AbortSignal):Promise<void> {
     return new Promise((resolve,reject)=>{
       let settled=false;
       const finish=(failed:boolean,error?:unknown)=>{
         if(settled)return;
         settled=true;clearTimeout(timer);signal?.removeEventListener('abort',abort);
+        this.capacityWaiters.delete(notify);
         if(failed)reject(error);else resolve();
       };
       const abort=()=>finish(true,signal?.reason);
+      const notify=()=>finish(false);
       const timer=setTimeout(()=>finish(true,new ModelOperationError('MODEL_FEED_CAPACITY',503)),remainingMs);
       signal?.addEventListener('abort',abort,{once:true});
-      work.then(()=>finish(false),error=>finish(true,error));
+      this.capacityWaiters.add(notify);
       if(signal?.aborted)abort();
     });
   }
-  private async makeRoom(signal?:AbortSignal):Promise<void> {
-    const deadline=performance.now()+this.capacityWaitMs;
+  private async makeRoom(deadline:number,signal?:AbortSignal):Promise<void> {
     while(this.slots.size+this.retiring.size>=128){
       signal?.throwIfAborted();
       const remaining=deadline-performance.now();
       if(remaining<=0)throw new ModelOperationError('MODEL_FEED_CAPACITY',503);
       const idle=[...this.slots].find(([,slot])=>slot.active===0);
-      const work=idle?this.retire(...idle):this.retiring.size?Promise.race(this.retiring):null;
-      if(!work)throw new ModelOperationError('MODEL_FEED_CAPACITY',503);
-      await this.waitForRetirement(work,remaining,signal);
+      if(idle)this.retire(...idle);
+      if(!this.retiring.size)throw new ModelOperationError('MODEL_FEED_CAPACITY',503);
+      await this.waitForRetirement(remaining,signal);
       if(this.stopping)throw new ModelOperationError();
     }
   }
@@ -89,7 +95,7 @@ export class IntentFeedGateway {
       if (slot.active === 0 && BigInt(slot.scope.applied.valid_until_ms) <= BigInt(Date.now())) {
         // stop() can own a slow background refill. Retain its capacity reservation
         // while allowing unrelated ready requests to use other available slots.
-        void this.retire(key,slot).catch(()=>console.warn('[IntentFeedGateway] Expired scope retirement failed.'));
+        this.retire(key,slot);
       }
     }
     const base = this.scopeKey(snapshot);
@@ -108,8 +114,9 @@ export class IntentFeedGateway {
     slot = signedScope ? this.slots.get(signedScope) : this.currentSlot(this.scopeKey(scope));
     if (slot && (slot.scope.applied.head !== scope.applied.head || slot.scope.applied.state_sha256 !== scope.applied.state_sha256
       || BigInt(slot.scope.applied.valid_until_ms) <= BigInt(Date.now()))) throw new StaleFeedCursorError();
+    const admissionDeadline=performance.now()+this.capacityWaitMs;
     while (!slot) {
-      await this.makeRoom(signal);
+      await this.makeRoom(admissionDeadline,signal);
       signal?.throwIfAborted();
       if(this.stopping)throw new ModelOperationError();
       // A peer may restore this same durable scope while an idle service drains.
