@@ -22,6 +22,7 @@ import { sendControllerError, sendError, sendSuccess } from '../utils/response.j
 import { readProductPage, productPageResult, type ProductPage, type ProductPageScope } from '../utils/productKeyset.js';
 import { validateOnboardingTaxonomy } from '../services/onboardingTaxonomy.js';
 import { normalizeOnboardingTopic } from '../contracts/onboardingTaxonomy.js';
+import { replaceUserTopics } from '../services/userTopicsService.js';
 
 // Bind cursor timestamps as text before SQL casts: the driver's timestamptz
 // serializer passes strings through Date and would discard PostgreSQL microseconds.
@@ -238,12 +239,7 @@ export async function completeOnboarding(req: AuthRequest, res: Response): Promi
         INSERT INTO app.user_feed_state(user_id,feed_version) VALUES(${id}::uuid,2)
         ON CONFLICT(user_id) DO UPDATE SET feed_version=app.user_feed_state.feed_version+1,updated_at=now()
       `;
-      await tx`DELETE FROM app.user_topics WHERE user_id=${id}::uuid`;
-      for (const slug of uniqueTopics) {
-        const topic = await tx`INSERT INTO app.topics(slug,display_name) VALUES (${slug},${slug})
-          ON CONFLICT(slug) DO UPDATE SET display_name=EXCLUDED.display_name RETURNING topic_id`;
-        await tx`INSERT INTO app.user_topics(user_id,topic_id) VALUES (${id}::uuid,${topic[0].topic_id})`;
-      }
+      await replaceUserTopics(tx, id, uniqueTopics, { overwriteDisplayNames: true });
       const version = String(updated[0].profile_version);
       const job = buildMlOnboardingJob(id, Number(version), {
         username: String(updated[0].username),

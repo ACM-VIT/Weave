@@ -27,6 +27,7 @@ integration('consented public import uses actual HTTP/SQL/Redis, rolls back fail
   const githubId = String(crypto.randomInt(1_000_000_000, 2_000_000_000));
   const repoGithubId = String(crypto.randomInt(3_000_000_000, 4_000_000_000));
   const handle = `consent-${githubId}`;
+  const importTopic = `consent-topic-${githubId}`;
   let providerRequests = 0;
   let hold = false, release!: () => void, arrived!: () => void;
   let blocked = Promise.resolve();
@@ -40,7 +41,7 @@ integration('consented public import uses actual HTTP/SQL/Redis, rolls back fail
       if (hold) { arrived(); await blocked; }
       response.end(JSON.stringify([{ id: repoGithubId, owner: { id: githubId, login: handle }, name: 'public-repo',
         full_name: `${handle}/public-repo`, html_url: `https://github.com/${handle}/public-repo`, private: false,
-        visibility: 'public', fork: false, description: 'Sourced public repository', language: 'TypeScript', topics: ['typescript', 'testing'],
+        visibility: 'public', fork: false, description: 'Sourced public repository', language: 'TypeScript', topics: ['typescript', importTopic],
         updated_at: '2026-10-01T00:00:00Z', stargazers_count: 17, forks_count: 3, open_issues_count: 2 }]));
     } else if (url.pathname === '/graphql') response.end(JSON.stringify({ data: { user: { databaseId: githubId,
       repositoriesContributedTo: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } } } } }));
@@ -84,6 +85,7 @@ integration('consented public import uses actual HTTP/SQL/Redis, rolls back fail
       await sqlClient`INSERT INTO app.user_stats(user_id) VALUES(${id}::uuid)`;
       await sqlClient`INSERT INTO app.user_feed_state(user_id) VALUES(${id}::uuid)`;
     }
+    await sqlClient`INSERT INTO app.topics(slug,display_name) VALUES(${importTopic},'Preserved import label')`;
     assert.equal((await send('/preview', 'POST', { consent: false })).status, 400);
     assert.equal((await send('/preview', 'POST', { consent: true, user_id: peer })).status, 400);
     assert.equal(providerRequests, 0);
@@ -139,6 +141,8 @@ integration('consented public import uses actual HTTP/SQL/Redis, rolls back fail
     assert.equal(profile.skills[0], 'devops');
     assert.equal(profile.tech_stack[0], 'rust');
     assert.equal(profile.onboarding_completed, true);
+    assert.equal((await sqlClient`SELECT display_name FROM app.topics WHERE slug=${importTopic}`)[0].display_name,
+      'Preserved import label', 'importing preferences preserves existing topic display labels');
     assert.equal((await new PostgresFeedPersistence().getGenerationContext(user))?.delivered, false);
     const status = await data<Status>(await send(''));
     assert.equal(status.active, true);
@@ -180,6 +184,7 @@ integration('consented public import uses actual HTTP/SQL/Redis, rolls back fail
     await sqlClient`DELETE FROM app.social_profiles WHERE provider='github' AND provider_subject=${githubId}`;
     await sqlClient`DELETE FROM app.users WHERE user_id=ANY(${[user, peer]}::uuid[])`;
     await sqlClient`DELETE FROM auth.users WHERE id=ANY(${[user, peer]}::uuid[])`;
+    await sqlClient`DELETE FROM app.topics WHERE slug=${importTopic}`;
     redis.disconnect(); await sqlClient.end({ timeout: 1 });
   }
 });
