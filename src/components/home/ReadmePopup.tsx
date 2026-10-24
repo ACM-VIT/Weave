@@ -26,13 +26,14 @@ import { prepareReadmeForDisplay, README_SUMMARY_PENDING } from '@/utils/readme'
 import { openReadmeExternalLink } from '@/utils/readme-external-link';
 import {
   renderReadmeMarkdown,
+  extractReadmeSummaryImages,
   type ReadmeImageContext,
 } from '@/utils/readme-images';
 import { extractReadmeVideos } from '@/utils/readme-videos';
 import { readmePopupBlocks } from '@/utils/readme-popup-content';
 import { ReadmeVideoPopup } from './ReadmeVideoPopup';
 import { ReadmeVideo } from './ReadmeVideo';
-import { SafeReadmeImageRenderer } from './SafeReadmeImage';
+import { SafeReadmeImage, SafeReadmeImageRenderer } from './SafeReadmeImage';
 
 interface ReadmePopupProps {
   isVisible: boolean;
@@ -199,12 +200,14 @@ function VisibleReadmePopup({
     : prepareReadmeForDisplay(readmeText), [contentKind, readmeText]);
   const videos = useMemo(() => extractReadmeVideos(mediaMarkdown ?? (contentKind === 'readme' ? readmeText : null), readmeSource),
     [mediaMarkdown, contentKind, readmeText, readmeSource]);
+  const images = useMemo(() => contentKind === 'summary' ? extractReadmeSummaryImages(mediaMarkdown,readmeSource) : [],
+    [contentKind,mediaMarkdown,readmeSource]);
   const markdownHtml = useMemo(
     () => renderReadmeMarkdown(content, readmeSource),
     [content, readmeSource],
   );
-  const blocks = useMemo(() => readmePopupBlocks(markdownHtml, videos, contentKind === 'summary'),
-    [markdownHtml, videos, contentKind]);
+  const blocks = useMemo(() => readmePopupBlocks(markdownHtml, videos, contentKind === 'summary',images),
+    [markdownHtml, videos, contentKind,images]);
   const cardAnimationStyle = useMemo(() => ({
     opacity,
     transform: [
@@ -376,6 +379,7 @@ function VisibleReadmePopup({
                     onPress={onRetry} style={styles.retryButton}><Text style={styles.headerText}>Retry</Text></Pressable> : null}
                 </View> : blocks.map((block, index) => block.kind === 'video'
                   ? <ReadmeVideo key={block.url} url={block.url} onPress={() => setVideoUrl(block.url)} />
+                  : block.kind === 'image' ? <SafeReadmeImage key={block.url} alt={block.alt} url={block.url} maximumWidth={cardWidth - 44} />
                   : <RenderHtml key={`section-${index}`}
                 contentWidth={cardWidth - 44}
                 defaultTextProps={{ selectable: true }}

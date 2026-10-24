@@ -13,3 +13,10 @@ test('short summaries keep their text and append bounded media without duplicati
     {kind:'html',content:'<h2>Original</h2><p>Source.</p>'},{kind:'video',url:'a'},
   ]);
 });
+
+test('summary images and videos appear between sections without losing any summary text',()=>{
+  const html='<p>Overview.</p><h2>Features</h2><p>Features.</p><h2>Use</h2><p>Use.</p>';
+  const blocks=readmePopupBlocks(html,['video.mp4'],true,[{url:'screen.png',alt:'Screenshot'}]);
+  assert.deepEqual(blocks.map(block=>block.kind),['html','image','html','video','html']);
+  assert.equal(blocks.filter(block=>block.kind==='html').map(block=>block.content).join(''),html);
+});

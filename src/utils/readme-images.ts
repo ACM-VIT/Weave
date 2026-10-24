@@ -273,3 +273,23 @@ export function renderReadmeMarkdown(
   const html = marked.parse(markdown, { async: false, gfm: true, renderer }) as string;
   return html.replace(/<img\b[^>]*>/gi, (tag) => sanitizeHtmlImageTag(tag, context));
 }
+
+/** Bounded original README media for the digest, excluding badges and code examples. */
+export function extractReadmeSummaryImages(markdown: string | null | undefined, context: ReadmeImageContext): {alt: string; url: string}[] {
+  const images: {alt: string; url: string}[]=[];
+  const seen=new Set<string>();
+  const add=(candidate: ImageCandidate)=>{
+    const url=resolveReadmeImageUrl(candidate.source,context);
+    const alt=decodeBasicHtmlEntities(candidate.alt).trim();
+    if (!url || seen.has(url) || isBadgeImage(url,alt) || images.length>=3) return;
+    seen.add(url);images.push({alt:alt||'Repository image',url});
+  };
+  marked.walkTokens(marked.lexer((markdown??'').slice(0,1_000_000)),token=>{
+    if(token.type==='image')add({source:token.href,alt:token.text});
+    if(token.type==='html'){
+      const html=token.raw.replace(/<!--[\s\S]*?-->|<(script|style)\b[^>]*>[\s\S]*?<\/\1>/gi,'');
+      for(const candidate of readmeImageCandidates(html))add(candidate);
+    }
+  });
+  return images;
+}

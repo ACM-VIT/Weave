@@ -80,7 +80,7 @@ function feed(ids: string[], reducedMotion = false, attribution?: { ownerId: str
     'react-native-gesture-handler': {Gesture: {Pan: () => gesture}, GestureDetector: ({children}: any) => children},
     './ReadmeVideoPopup': {ReadmeVideoPopup: 'ReadmeVideoPopup'},
     './ReadmeVideo': {ReadmeVideo: 'ReadmeVideo'},
-    './SafeReadmeImage': {SafeReadmeImageRenderer: 'SafeReadmeImageRenderer'},
+    './SafeReadmeImage': {SafeReadmeImage: 'SafeReadmeImage', SafeReadmeImageRenderer: 'SafeReadmeImageRenderer'},
     './DescriptionCard': {SaveSwipeGestureContext: React.createContext(null)},
     '@/components/keyboard/keyboard-layout': {KeyboardSurface: 'KeyboardSurface'},
     'expo-blur': { BlurView: 'BlurView' },
