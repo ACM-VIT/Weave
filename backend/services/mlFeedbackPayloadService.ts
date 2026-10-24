@@ -6,8 +6,8 @@ export function buildMlFeedbackEvent(
   event: InteractionEventV2,
   feedbackVersion: string,
 ): MlFeedbackEvent {
-  if (event.event_type === 'impression') {
-    throw new Error('Impressions are backend telemetry and cannot be forwarded to ML.');
+  if (event.event_type === 'impression' || event.event_type === 'follow' || event.event_type === 'unfollow') {
+    throw new Error('Product-only actions are backend telemetry and cannot be forwarded to ML.');
   }
   return {
     event_id: event.event_id,

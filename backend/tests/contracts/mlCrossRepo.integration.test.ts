@@ -75,6 +75,59 @@ const recommendationPath = '/api/v2/recommendations/generate';
 const incompatible: MlRequest<typeof recommendationPath> = { schema_version: 2, events: [] };
 void incompatible;
 
+
+test('lifecycle refresh crosses real Node/Python routes and local Qdrant without erasing stable projects', {
+  skip: !mlRoot, timeout: 45_000,
+}, async t => {
+  assert.ok(mlRoot && path.isAbsolute(mlRoot));
+  const child = spawn(path.join(mlRoot, '.venv/bin/python'), ['-c',
+    "import runpy; runpy.run_path('tests/fixtures/lifecycle_contract_server.py', run_name='__main__')"], {
+    cwd: mlRoot, env: { ...process.env, APP_ENV: 'development',
+      QDRANT_URL: 'http://127.0.0.1:9', REDIS_URL: 'redis://127.0.0.1:9' },
+    stdio: ['ignore', 'pipe', 'inherit'],
+  });
+  t.after(() => stopFixtureProcess(child));
+  const port = await new Promise<string>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('Lifecycle fixture did not bind.')), 15_000);
+    let output = '';
+    child.stdout.on('data', chunk => {
+      output += String(chunk);
+      const match = /CONTRACT_PORT=(\d+)/.exec(output);
+      if (match) { clearTimeout(timer); resolve(match[1]!); }
+    });
+    child.once('error', error => { clearTimeout(timer); reject(error); });
+    child.once('exit', () => { clearTimeout(timer); reject(new Error('Lifecycle fixture exited.')); });
+  });
+  const client = new MlV2Client({ baseUrl: `http://127.0.0.1:${port}`, internalSecret: 'local-contract-secret',
+    timeoutMs: 5000, deliveryTimeoutMs: 5000, repositoryIndexTimeoutMs: 5000, maxResponseBytes: 1_000_000 });
+  const repo = '00000000-0000-4000-8000-000000000003';
+  const jobId = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
+  const indexed = await client.deliverRepositoryIndex({ job_id: jobId(50), repo_id: repo, content_version: 1,
+    repository: { full_name: 'fixture/stable', description: 'Stable repository with a useful mature developer tool.',
+      content_hash: 'lifecycle-fixture', pushed_days_ago: 50_000 } });
+  assert.equal(indexed.accepted, true, indexed.detail);
+  const selected = async () => (await client.generate({ schema_version: 2, generation_id: jobId(99),
+    user_id: jobId(2), feed_version: 1, limit: 10, exclude_repo_ids: [], context: { cold_start: true } })).items.map(item => item.repo_id);
+  const status = (day: number, archived: boolean) => ({ status: 'verified' as const,
+    source: 'github-graphql-repository' as const, observed_at: `2026-01-0${day}T00:00:00Z`, archived, disabled: false });
+  assert.deepEqual(await selected(), [repo], 'unknown legacy status and old push age remain eligible');
+  for (const [version, lifecycle, expected] of [
+    [10, status(2, true), []],
+    [11, { status: 'unavailable', source: 'github-graphql-repository', observed_at: '2026-01-04T00:00:00Z' }, []],
+    [12, status(1, false), []], [13, status(3, false), [repo]],
+  ] as const) {
+    const refreshed = await client.deliverRepositoryRefresh({ job_id: jobId(50 + version), repo_id: repo,
+      feature_version: version, features: { lifecycle } });
+    assert.equal(refreshed.accepted, true, refreshed.detail);
+    assert.deepEqual(await selected(), expected);
+  }
+  assert.equal((await client.deliverRepositoryRefresh({ job_id: jobId(90), repo_id: repo,
+    feature_version: 100, features: { star_count: 500 } })).accepted, true);
+  assert.equal((await client.deliverRepositoryRefresh({ job_id: jobId(91), repo_id: repo,
+    feature_version: 14, features: { lifecycle: status(5, true) } })).accepted, true);
+  assert.deepEqual(await selected(), []);
+});
+
 // Keep provider's strict capture/decimal pairing visible to the generated client.
 const captureBase={schema_version:2 as const,generation_id:'00000000-0000-4000-8000-000000000007',
   user_id:'00000000-0000-4000-8000-000000000002',limit:10,exclude_repo_ids:[],context:{cold_start:false}};

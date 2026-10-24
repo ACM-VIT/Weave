@@ -167,6 +167,7 @@ export function RepositoryScreen({
   isSaved,
   commentCount,
   onReadFullPress,
+  onOpenReadme,
   onSavePress,
   onSharePress,
   onCommentPress,
@@ -181,6 +182,7 @@ export function RepositoryScreen({
   isSaved?: boolean;
   commentCount?: number;
   onReadFullPress: (digest?: ReadmeDigest | null) => void;
+  onOpenReadme?: () => void;
   onSavePress: () => void;
   onSharePress: () => void;
   onCommentPress: () => void;
@@ -303,6 +305,7 @@ export function RepositoryScreen({
           isActive={isActive}
           repository={repository}
           onReadFullPress={onReadFullPress}
+          onOpenReadme={onOpenReadme}
           compact={compact}
         />
 
@@ -343,6 +346,10 @@ export function RepositoryScreen({
                 isFollowing={repository.viewerFollowsOwner === true}
                 neutral
                 onFollowingChange={handleOwnerFollowingChange}
+                onFollowingCommitted={(following) => onQueueActivity?.({
+                  repo_id: repository.id,
+                  action: following ? FEEDBACK_ACTIONS.follow : FEEDBACK_ACTIONS.unfollow,
+                }, true)}
                 stateKnown={ownerFollowStateKnown}
                 targetProfileId={repository.ownerProfileId}
                 targetUserId={repository.ownerUserId}
@@ -451,7 +458,7 @@ export function RepositoryScreen({
           onPress={toggleLike}
         />
         <ActionButton
-          accessibilityLabel={disliked ? 'Remove dislike' : 'Dislike repository'}
+          accessibilityLabel={disliked ? 'Undo not interested' : 'Not interested in this repository'}
           active={disliked}
           activeColor={REFERENCE_THEME.danger}
           dense={veryShort}

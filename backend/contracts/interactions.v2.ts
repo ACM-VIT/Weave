@@ -12,6 +12,8 @@ export const INTERACTION_EVENT_TYPES = [
   'save',
   'unsave',
   'share',
+  'follow',
+  'unfollow',
 ] as const;
 
 export type InteractionEventType = typeof INTERACTION_EVENT_TYPES[number];

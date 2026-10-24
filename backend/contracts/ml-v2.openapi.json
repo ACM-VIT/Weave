@@ -1882,6 +1882,16 @@
             ],
             "title": "Fork Count"
           },
+          "lifecycle": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RepositoryLifecycleObservation"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "mentionable_users_count": {
             "anyOf": [
               {
@@ -2072,6 +2082,62 @@
           "repository"
         ],
         "title": "RepositoryJob",
+        "type": "object"
+      },
+      "RepositoryLifecycleObservation": {
+        "additionalProperties": false,
+        "description": "One backend-owned GitHub response, never inferred from push recency.\n\nUnavailable includes permission errors, timeouts and ambiguous not-found\nresponses. It supplies no archive/disable evidence and cannot revive a repo.",
+        "properties": {
+          "archived": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Archived"
+          },
+          "disabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Disabled"
+          },
+          "observed_at": {
+            "format": "date-time",
+            "title": "Observed At",
+            "type": "string"
+          },
+          "source": {
+            "enum": [
+              "github-graphql-repository",
+              "github-rest-repository"
+            ],
+            "title": "Source",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "verified",
+              "unavailable"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "observed_at",
+          "source"
+        ],
+        "title": "RepositoryLifecycleObservation",
         "type": "object"
       },
       "RepositoryRefreshJob": {
@@ -2519,6 +2585,16 @@
             "maxItems": 100,
             "title": "Languages",
             "type": "array"
+          },
+          "lifecycle": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RepositoryLifecycleObservation"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "lineage_observed_at": {
             "anyOf": [

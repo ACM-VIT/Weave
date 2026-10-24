@@ -184,6 +184,37 @@ keys and scores are Redis-clock lease deadlines in milliseconds. Reserve/refill
 maintains the lease and commit/release removes membership. Reconciliation must
 reuse this index contract rather than introduce competing reservation tracking.
 
+Fresh feed delivery excludes repositories served, impressed or interacted with during the last
+`FEED_RECENT_EXPOSURE_DAYS` elapsed days (default 7, integer 1–365), across browsing
+sessions and feed versions. Interaction exposure uses the server receipt time in
+`telemetry.interaction_events`, never the phone-supplied occurrence time or its
+aggregate `last_event_at`. Keep receipt events for at least the configured window.
+The existing viewer/receipt-time index supports these window queries.
+A durable prepared serve counts as exposure before
+HTTP completion; retries with the same request ID replay that immutable serve.
+The existing 500-ID exclusion list remains a bounded ML hint. Candidate checks
+and the transactional delivery fence inspect exact requested IDs against the
+full recent window, so falling outside that hint list never permits redelivery.
+The existing user/feed-state lock serializes competing fresh serves, while
+negative preferences remain independently authoritative regardless of age.
+
+Publication, queued delivery, durable recovery and configured fallback apply the
+window. Recovery/fallback SQL filters before its LIMIT. Raced stale reservations
+are discarded rather than recycled; filtering a nonempty batch remains retryable
+and never fabricates end-of-feed. Only a successful empty generation establishes
+personalized exhaustion. This can reduce available cards when a provider ignores
+exclusions; it preserves the existing bounded retry/unavailable behavior instead
+of returning recent cards. Expired exposure can be reused unless another current
+preference or eligibility rule excludes it. Existing telemetry indexes are used;
+no schema migration is introduced. All API writers must run compatible code to
+enforce this policy across processes; older writers do not perform the new fence.
+
+Run the scoped disposable PostgreSQL regression with
+`RUN_FEED_EXPOSURE_INTEGRATION=1 DATABASE_URL=postgresql://postgres@127.0.0.1:55420/weave_scroll npm exec -- tsx --test tests/database/feedExposure.integration.test.ts`
+from `backend/`. It creates and removes its own synthetic rows and exercises
+cross-session isolation beyond 500 hints, expiry, current dislikes, atomic
+concurrent creation, immutable replay and terminal empty generation.
+
 Reconciliation reuses that index with a bounded legacy repair pass, even while
 indexed refill is disabled or writers are mixed. Each cycle performs exactly two
 SCAN calls: up to 16 reservation indexes (8 members each), plus up to 128 legacy
@@ -784,3 +815,50 @@ empty disposable `weave_scroll` database. It rolls back its own minimal schema.
 It intentionally does not run under the migrated-suite `RUN_DATABASE_INTEGRATION`
 flag. Operator logs classify unavailable inventory as configuration, timeout,
 missing schema or unexpected failure without recording cursors or error text.
+
+
+## Recommendation action observations
+
+Card owner Follow/Unfollow records `follow`/`unfollow` through the existing durable
+interaction outbox after the authoritative follow request succeeds. These are
+client observations: recording one does not change follow state, engagement
+counters, preference versions, or ML feedback. The existing follow endpoints
+remain authoritative. Initial follow-status reads do not create action events.
+The explicit Not interested action uses the existing `dislike` signal; Undo uses
+`undislike`, preserving the current preference and ML contract. Save, share,
+README open and GitHub open retain their separate event types. No List names,
+categories or dismissal reasons are collected by this change.
+
+Deploy the backend event allowlist before distributing the app that emits the
+new observations. Old apps continue to work against the new backend; an older
+backend rejects unknown event types, so app-first deployment can block a batch.
+No ML schema update or database migration is needed.
+
+For feed action counts by public recommendation source, an authorized analyst
+can use the existing serve attribution without returning identities or scores:
+
+```sql
+WITH observations AS (
+  SELECT CASE WHEN item.source IN ('semantic','personalized','trending','popular',
+    'fresh','fallback') THEN item.source ELSE 'unknown' END AS source,
+    event.event_type, count(*) AS observations
+  FROM telemetry.interaction_events event
+  JOIN telemetry.feed_serves serve ON serve.serve_id=event.serve_id
+    AND serve.user_id=event.user_id AND serve.session_id=event.session_id
+  JOIN telemetry.feed_serve_items item ON item.serve_id=serve.serve_id
+    AND item.repo_id=event.repo_id AND item.position=event.position
+  WHERE event.server_received_at >= now()-interval '7 days'
+  GROUP BY 1,2
+), impressions AS (
+  SELECT source,observations FROM observations WHERE event_type='impression'
+)
+SELECT event.source,event.event_type,event.observations,
+  round(event.observations::numeric/nullif(impressions.observations,0),4)
+    AS actions_per_recorded_impression
+FROM observations event LEFT JOIN impressions USING(source)
+ORDER BY source,event_type;
+```
+
+This is an observation ratio, not a unique-user conversion rate; repeated actions
+may exceed one per impression. Missing impressions yield NULL. Product-detail
+actions without feed attribution are outside this query.

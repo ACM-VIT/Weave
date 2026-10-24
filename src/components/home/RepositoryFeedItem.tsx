@@ -33,7 +33,7 @@ import {
 } from '../../constants/feedbackActions';
 import { CommentSheet, type CommentComposerState } from './CommentSheet';
 import { SaveSwipeGestureContext } from './DescriptionCard';
-import { ReadmePopup } from './ReadmePopup';
+import { FeedReadmePopup } from './FeedReadmePopup';
 import { prepareReadmeSummaryDocument } from '@/utils/readme';
 import { RepositoryScreen } from './RepositoryScreen';
 import { SavePopup, type SavePopupMutationState } from './save-popup';
@@ -84,6 +84,7 @@ export function RepositoryFeedItem({
   const [saveMutations, setSaveMutations] = useState<SavePopupMutationState>({ save: false, create: false, error: null });
   const [isShareVisible, setIsShareVisible] = useState(false);
   const [isReadmeVisible, setIsReadmeVisible] = useState(false);
+  const [isOriginalReadmeVisible, setIsOriginalReadmeVisible] = useState(false);
   const [expandedSummary, setExpandedSummary] = useState<string | null>(null);
   const [isCommentsVisible, setIsCommentsVisible] = useState(false);
   const [isSaveRevealOpen, setIsSaveRevealOpen] = useState(false);
@@ -116,7 +117,7 @@ export function RepositoryFeedItem({
   const impressionSentRef = useRef(false);
   const saveRevealTranslateX = useSharedValue(0);
   const saveRevealHapticSent = useSharedValue(false);
-  const overlaysOpen = isSaveVisible || isShareVisible || isReadmeVisible || isCommentsVisible;
+  const overlaysOpen = isSaveVisible || isShareVisible || isReadmeVisible || isOriginalReadmeVisible || isCommentsVisible;
   const measurementActive = isViewable && isAppActive && !overlaysOpen;
   const {user}=useAuth();
   const queryClient=useQueryClient();
@@ -288,6 +289,7 @@ export function RepositoryFeedItem({
     updateSaveRevealState,
   ]);
 
+  const boundaryHeight = boundary ? 56 : 0;
   const saveRevealAnimatedStyle = useAnimatedStyle(() => ({
     transform: [{ translateX: saveRevealTranslateX.get() }],
   }));
@@ -300,7 +302,7 @@ export function RepositoryFeedItem({
         accessibilityElementsHidden={!isSaveRevealOpen}
         importantForAccessibility={isSaveRevealOpen ? 'yes' : 'no-hide-descendants'}
         pointerEvents={isSaveRevealOpen ? 'auto' : 'none'}
-        style={[styles.saveReveal, { width: SAVE_REVEAL_WIDTH }]}
+        style={[styles.saveReveal, { width: SAVE_REVEAL_WIDTH, bottom: boundaryHeight }]}
       >
         <Pressable
           accessibilityHint="Opens the Save dialog to choose a list"
@@ -340,6 +342,10 @@ export function RepositoryFeedItem({
               onOwnerPress={onOwnerPress}
               onRepositoryPress={openRepository}
               onQueueActivity={queueRepositoryActivity}
+              onOpenReadme={() => {
+                queueRepositoryActivity({ repo_id: repository.id, action: FEEDBACK_ACTIONS.readmeOpen }, true);
+                setIsOriginalReadmeVisible(true);
+              }}
               onReadFullPress={(digest) => {
                 setExpandedSummary(prepareReadmeSummaryDocument({ ...repository, readmeDigest: digest }));
                 queueRepositoryActivity(
@@ -350,7 +356,7 @@ export function RepositoryFeedItem({
               }}
               onSavePress={openSavePopup}
               onSharePress={() => setIsShareVisible(true)}
-              pageHeight={Math.max(1, pageHeight - (boundary ? 56 : 0))}
+              pageHeight={Math.max(1, pageHeight - boundaryHeight)}
               pageWidth={pageWidth}
               repository={repository}
             />
@@ -408,21 +414,10 @@ export function RepositoryFeedItem({
         onCommentCountChange={setCommentCount}
         repoId={repository.id}
       /> : null}
+      {isOriginalReadmeVisible ? <FeedReadmePopup repository={repository} onClose={() => setIsOriginalReadmeVisible(false)} /> : null}
       {isReadmeVisible ? (
-        <ReadmePopup
-          isVisible
-          onClose={() => setIsReadmeVisible(false)}
-          contentKind="summary"
-          readmeText={expandedSummary}
-          readmeSource={{
-            fullName: repository.fullName,
-            githubUrl: repository.githubUrl,
-            readmeBaseUrl: repository.readmeBaseUrl,
-            readmeDefaultBranch: repository.readmeDefaultBranch,
-            readmeSourcePath: repository.readmeSourcePath,
-          }}
-          title={repository.name}
-        />
+        <FeedReadmePopup repository={repository} onClose={() => setIsReadmeVisible(false)}
+          summaryText={expandedSummary} />
       ) : null}
     </View>
   );

@@ -10,6 +10,6 @@ test('v2 contracts freeze schema versions and canonical actions', () => {
   assert.equal(ML_SCHEMA_VERSION, 2);
   assert.deepEqual(INTERACTION_EVENT_TYPES, [
     'impression', 'dwell', 'readme_open', 'github_open', 'like', 'unlike',
-    'dislike', 'undislike', 'save', 'unsave', 'share',
+    'dislike', 'undislike', 'save', 'unsave', 'share', 'follow', 'unfollow',
   ]);
 });

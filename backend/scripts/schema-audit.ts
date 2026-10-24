@@ -120,7 +120,8 @@ try {
   ) ?? '';
   if (!readmeMetadataDefinition.includes('raw')
     || !readmeMetadataDefinition.includes('githubusercontent')
-    || !readmeMetadataDefinition.includes('refs/heads')) {
+    || !readmeMetadataDefinition.includes('refs/heads')
+    || !readmeMetadataDefinition.includes('[a-f0-9]{40}')) {
     missing.push('constraint:app.repo_content.repo_content_readme_metadata_check:canonical-host');
   }
 

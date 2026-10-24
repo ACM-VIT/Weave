@@ -12,6 +12,7 @@ const fixture = JSON.parse(readFileSync(new URL('../fixtures/scoring-capture-v1.
 
 integration('durable item provenance rejects foreign/stale references atomically and survives private deletion', async () => {
   const sql = postgres(process.env.DATABASE_URL!, { max: 2, prepare: false });
+  const fixturePassword = crypto.randomBytes(24).toString('hex');
   const suffix = crypto.randomBytes(6).toString('hex'), owner = fixture.context.user_id, repo = fixture.packet.snapshot.repo_id;
   const peer = crypto.randomUUID(), generation = fixture.context.generation_id;
   const role = 'provenance_product_' + suffix;
@@ -31,8 +32,8 @@ integration('durable item provenance rejects foreign/stale references atomically
       finalScore:0.3,source:'semantic',retrievalScores:{}}], { userId:owner,generationId:generation,
       feedVersion:BigInt(fixture.context.feed_version) });
     await sql`SELECT private_scoring.persist_generation(${validated.serializeForPersistence({policyId:'fixture',policyVersion:'1',retentionDays:30})})`;
-    await sql.unsafe(`CREATE ROLE ${role} LOGIN IN ROLE ghsocial_backend`); roleCreated = true;
-    const url = new URL(process.env.DATABASE_URL!); url.username = role; url.password = '';
+    await sql.unsafe(`CREATE ROLE ${role} LOGIN PASSWORD '${fixturePassword}' IN ROLE ghsocial_backend`); roleCreated = true;
+    const url = new URL(process.env.DATABASE_URL!); url.username = role; url.password = fixturePassword;
     product = postgres(url.toString(), { max:1,prepare:false });
     await assert.rejects(product`SELECT input_bytes FROM private_scoring.scoring_inputs`, {code:'42501'});
     const digest = validated.references[0].record_digest;

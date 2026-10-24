@@ -32,8 +32,10 @@ integration('fresh scoring migration and pre-scoring upgrade preserve baseline r
     const impression = journal.entries.find((row: { tag: string })=>row.tag==='0045_original_impression_links');
     const lookup = journal.entries.find((row: { tag: string })=>row.tag==='0048_scoring_publication_lookup');
     const retention = journal.entries.find((row: { tag: string })=>row.tag==='0049_scoring_retention_lock_bounds');
+    const lookupPaths = journal.entries.find((row: { tag: string })=>row.tag==='0055_owner_function_lookup_paths');
     assert.equal(retention.idx,52);
     assert.equal(lookup.idx,51);
+    assert.equal(lookupPaths.idx,58);
     assert.equal(impression.idx,48);
     assert.equal(exporting.idx,47);
     assert.equal(serving.idx,46);
@@ -48,6 +50,7 @@ integration('fresh scoring migration and pre-scoring upgrade preserve baseline r
       assert.equal(Number((await tx`SELECT count(*) FROM private_scoring.scoring_generations`)[0].count),0);
       assert.equal((await tx`DELETE FROM drizzle.__drizzle_migrations WHERE created_at=${lookup.when} RETURNING hash`).length,1);
       assert.equal((await tx`DELETE FROM drizzle.__drizzle_migrations WHERE created_at=${retention.when} RETURNING hash`).length,1);
+      assert.equal((await tx`DELETE FROM drizzle.__drizzle_migrations WHERE created_at=${lookupPaths.when} RETURNING hash`).length,1);
       await tx.unsafe('DROP TABLE telemetry.feed_item_provenance');
       await tx.unsafe('DROP SCHEMA private_scoring CASCADE');
       await tx.unsafe('ALTER TABLE telemetry.interaction_events DROP COLUMN impression_event_id');
@@ -65,7 +68,7 @@ integration('fresh scoring migration and pre-scoring upgrade preserve baseline r
     const [functionRow]=await admin`SELECT prosecdef,proconfig,
       EXISTS(SELECT 1 FROM aclexplode(COALESCE(proacl,acldefault('f',proowner))) WHERE grantee=0 AND privilege_type='EXECUTE') AS public_execute
       FROM pg_proc WHERE oid='private_scoring.persist_generation(text)'::regprocedure`;
-    assert.equal(functionRow.prosecdef,true); assert.ok(functionRow.proconfig.includes('search_path=pg_catalog'));
+    assert.equal(functionRow.prosecdef,true); assert.ok(functionRow.proconfig.includes('search_path=pg_catalog, pg_temp'));
     assert.equal(functionRow.public_execute,false);
     for(const role of ['ghsocial_scoring_writer','ghsocial_scoring_exporter','ghsocial_scoring_retention']) {
       const [record]=await admin`SELECT rolcanlogin,rolsuper,rolbypassrls FROM pg_roles WHERE rolname=${role}`;

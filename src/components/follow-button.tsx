@@ -28,6 +28,8 @@ export type FollowButtonProps = {
   neutral?: boolean;
   disabled?: boolean;
   onFollowingChange?: (following: boolean) => void;
+  /** Successful request observation; runs even if the initiating control unmounts. */
+  onFollowingCommitted?: (following: boolean) => void;
   onError?: (error: Error) => void;
   style?: StyleProp<ViewStyle>;
   followingStyle?: StyleProp<ViewStyle>;
@@ -46,6 +48,7 @@ export function FollowButton({
   neutral = false,
   disabled = false,
   onFollowingChange,
+  onFollowingCommitted,
   onError,
   style,
   followingStyle,
@@ -88,7 +91,7 @@ export function FollowButton({
   const pending = useIsMutating({ mutationKey, exact: true });
   type Change = { following: boolean; previous: boolean; generation: number; viewer: string;
     identity: string; userId?: string | null; profileId?: string | null;
-    changed?: (following: boolean) => void; failed?: (error: Error) => void };
+    changed?: (following: boolean) => void; committed?: (following: boolean) => void; failed?: (error: Error) => void };
   const mutation = useMutation<void, Error, Change>({
     mutationKey,
     mutationFn: async ({ following, generation, userId, profileId }) => {
@@ -111,6 +114,8 @@ export function FollowButton({
     },
     onSuccess: async (_result, change) => {
       if (!authSessionLifecycle.isCurrent(change.generation)) return;
+      try { change.committed?.(change.following); }
+      catch { console.warn('[FollowButton] Could not record follow observation.'); }
       await settleFollowCache(queryClient, change.viewer, { userId: change.userId, profileId: change.profileId }, change.following, change.generation);
       if (!authSessionLifecycle.isCurrent(change.generation)) return;
       if (mounted.current) change.changed?.(change.following);
@@ -153,7 +158,7 @@ export function FollowButton({
     setFailureState({ identity: controlIdentity, failed: false });
 
     mutation.mutate({ following: next, previous, generation, viewer, identity: followIdentity,
-      userId: targetUserId, profileId: targetProfileId, changed: onFollowingChange, failed: onError });
+      userId: targetUserId, profileId: targetProfileId, changed: onFollowingChange, committed: onFollowingCommitted, failed: onError });
   };
 
   return (

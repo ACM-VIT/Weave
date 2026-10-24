@@ -8,6 +8,8 @@ export const FEEDBACK_ACTIONS = {
   like: 'like',
   unlike: 'unlike',
   share: 'share',
+  follow: 'follow',
+  unfollow: 'unfollow',
   dislike: 'dislike',
   undislike: 'undislike',
 } as const;

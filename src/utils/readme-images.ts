@@ -98,10 +98,22 @@ function encodePathSegments(value: string): string {
 
 function rawRepositoryRoot(context: ReadmeImageContext): URL | null {
   const parts = repositoryParts(context);
+  if (!parts) return null;
+  const repositoryRoot = new URL(
+    `https://raw.githubusercontent.com/${encodeURIComponent(parts.owner)}/${encodeURIComponent(parts.repo)}/`,
+  );
+  try {
+    const pinned = new URL(context.readmeBaseUrl ?? '');
+    const commit = pinned.pathname.slice(repositoryRoot.pathname.length).split('/')[0];
+    if (isPublicHttpsUrl(pinned) && pinned.origin === repositoryRoot.origin
+      && pinned.pathname.startsWith(repositoryRoot.pathname) && /^[a-f0-9]{40}$/.test(commit)
+      && !pinned.search && !pinned.hash && pinned.pathname.endsWith('/')) {
+      return new URL(`${commit}/`, repositoryRoot);
+    }
+  } catch { /* Missing or untrusted metadata retains the branch-based root. */ }
   const branch = context.readmeDefaultBranch?.trim();
   if (
-    !parts
-    || !branch
+    !branch
     || branch.split('/').some((segment) => segment === '.' || segment === '..')
   ) return null;
 
@@ -260,4 +272,24 @@ export function renderReadmeMarkdown(
 
   const html = marked.parse(markdown, { async: false, gfm: true, renderer }) as string;
   return html.replace(/<img\b[^>]*>/gi, (tag) => sanitizeHtmlImageTag(tag, context));
+}
+
+/** Bounded original README media for the digest, excluding badges and code examples. */
+export function extractReadmeSummaryImages(markdown: string | null | undefined, context: ReadmeImageContext): {alt: string; url: string}[] {
+  const images: {alt: string; url: string}[]=[];
+  const seen=new Set<string>();
+  const add=(candidate: ImageCandidate)=>{
+    const url=resolveReadmeImageUrl(candidate.source,context);
+    const alt=decodeBasicHtmlEntities(candidate.alt).trim();
+    if (!url || seen.has(url) || isBadgeImage(url,alt) || images.length>=3) return;
+    seen.add(url);images.push({alt:alt||'Repository image',url});
+  };
+  marked.walkTokens(marked.lexer((markdown??'').slice(0,1_000_000)),token=>{
+    if(token.type==='image')add({source:token.href,alt:token.text});
+    if(token.type==='html'){
+      const html=token.raw.replace(/<!--[\s\S]*?-->|<(script|style)\b[^>]*>[\s\S]*?<\/\1>/gi,'');
+      for(const candidate of readmeImageCandidates(html))add(candidate);
+    }
+  });
+  return images;
 }

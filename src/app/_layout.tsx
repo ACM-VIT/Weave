@@ -134,10 +134,10 @@ function Layout() {
   return (
     <>
       <Head>
-        <title>Weave — Discover open source</title>
+        <title>weave</title>
         <meta name="description" content="Discover open-source repositories and connect with developers." />
         <meta name="theme-color" content="#151110" />
-        <meta property="og:title" content="Weave — Discover open source" />
+        <meta property="og:title" content="weave" />
         <meta property="og:description" content="Discover open-source repositories and connect with developers." />
       </Head>
       <QueryClientProvider client={queryClient}>

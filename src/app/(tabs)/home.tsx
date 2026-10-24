@@ -1,5 +1,4 @@
 import { feedSessions } from '@/api/feed-sessions';
-import {retainOriginalFeedImpressions} from '@/services/feedImpressionAttribution';
 import { useState, useCallback, useEffect, useLayoutEffect, useMemo, useRef } from 'react';
 import {
   ActivityIndicator,
@@ -26,6 +25,8 @@ import {
   type InfiniteData,
 } from '@tanstack/react-query';
 import * as SecureStore from '../../utils/storage';
+import { feedViewportIds, retainHomeFeedHistory, retainedFeedScrollOffset, shareHomeFeedHistory } from '@/services/feedHistory';
+import type { FeedItem } from '@/utils/feed-items';
 import { markFeedFirstVisible } from '@/services/feedTiming';
 import { fetchHomeFeed } from '@/api/home-feed';
 import { profileRepositoryInvalidationFilters } from '@/api/profile-section-queries';
@@ -72,6 +73,11 @@ export default function HomeScreen() {
   const queryClient = useQueryClient();
   const feedQueryKey = useMemo(() => getFeedQueryKey(user?.user_id), [user?.user_id]);
   const listRef = useRef<FlatList<{ feedId: string; repository: RepositoryData }> | null>(null);
+  const committedViewerKey = useRef(feedQueryKey);
+  const visibleIds = useRef<string[]>([]);
+  const retentionPins = useRef<string[]>([]);
+  const scrollOffset = useRef(0);
+  const committedItems = useRef<FeedItem[]>([]);
   const pagination = useMemo(() => {
     const controller = new FeedPaginationController(async (cursor, signal, requestId, sessionId, initialPage) => {
       const token = await SecureStore.getItemAsync('access_token');
@@ -95,6 +101,8 @@ export default function HomeScreen() {
   });
   const pageWidth = viewport.width;
   const pageHeight = viewport.height;
+  const listKey = `${pageWidth}-${pageHeight}`;
+  const committedListKey = useRef(listKey);
 
   
   const flushActivityBatch = useCallback(async () => {
@@ -121,8 +129,8 @@ export default function HomeScreen() {
     isRefetching,
   } = useInfiniteQuery({
     queryKey: feedQueryKey,
-    structuralSharing: retainOriginalFeedImpressions,
     queryFn: ({ pageParam, signal }) => pagination.controller.load(pageParam, signal),
+    structuralSharing: (previous, next) => shareHomeFeedHistory(previous, next, retentionPins.current),
     retry: false,
     staleTime: Infinity,
     refetchOnMount: false,
@@ -140,6 +148,32 @@ export default function HomeScreen() {
   const feedItems = useMemo(() => {
     return feedProjection.mapPages(data?.pages);
   }, [data?.pages, feedProjection]);
+
+  useLayoutEffect(() => {
+    if (committedViewerKey.current !== feedQueryKey || committedListKey.current !== listKey) {
+      committedViewerKey.current = feedQueryKey;
+      committedListKey.current = listKey;
+      visibleIds.current = [];
+      retentionPins.current = [];
+      scrollOffset.current = 0;
+      committedItems.current = [];
+      listRef.current?.scrollToOffset({ offset: 0, animated: false });
+    }
+    const bounded = data ? retainHomeFeedHistory(data, retentionPins.current) : undefined;
+    if (bounded && bounded !== data) {
+      queryClient.setQueryData(feedQueryKey, bounded);
+      return;
+    }
+    pagination.controller.commitPages(data?.pages ?? []);
+    const offset = retainedFeedScrollOffset(committedItems.current, feedItems,
+      scrollOffset.current, pageHeight, retentionPins.current);
+    committedItems.current = feedItems;
+    if (offset !== undefined) {
+      scrollOffset.current = offset;
+      listRef.current?.scrollToOffset({ offset, animated: false });
+    }
+    retentionPins.current = feedViewportIds(feedItems, scrollOffset.current, pageHeight);
+  }, [data, feedItems, listKey, pageHeight, feedQueryKey, pagination, queryClient]);
 
   const handleQueueActivity = useCallback((repository: RepositoryData, event: ActivityInput, flushNow?: boolean) => {
     const currentLikeOverrides = queryClient.getQueryData<ProfileLikeOverrides>(
@@ -270,7 +304,8 @@ export default function HomeScreen() {
   useLayoutEffect(() => { visiblePages.current = data?.pages; }, [data?.pages]);
   const [viewableItems, setViewableItems] = useState<string[]>([]);
   const onViewableItemsChanged = useCallback(({ viewableItems }: any) => {
-    setViewableItems(viewableItems.map((v: any) => v.item.feedId));
+    visibleIds.current = viewableItems.filter((v: any) => v.isViewable !== false).map((v: any) => v.item.feedId);
+    setViewableItems(visibleIds.current);
     for (const page of visiblePages.current ?? []) {
       if (viewableItems.some((visible: any) => visible.isViewable !== false
         && page.items.some(item => item.repo_id === visible.item.repository.id))) {
@@ -303,6 +338,10 @@ export default function HomeScreen() {
     const preserveSession=token?await feedSessions(token).reset(pagination.controller.getSessionId()):false;
     await queryClient.cancelQueries({ queryKey: feedQueryKey, exact: true });
     pagination.controller.reset({preserveSession});
+    visibleIds.current = [];
+    retentionPins.current = [];
+    scrollOffset.current = 0;
+    committedItems.current = [];
     listRef.current?.scrollToOffset({ offset: 0, animated: false });
     await queryClient.resetQueries({ queryKey: feedQueryKey, exact: true });
     }catch{setSessionError('Could not refresh. Try again.');}finally{resettingSessionRef.current=false;setResettingSession(false);}
@@ -367,7 +406,7 @@ export default function HomeScreen() {
       <View style={[styles.feedShell, { width: pageWidth, height: pageHeight }]}>
         <FlatList
           ref={listRef}
-          key={`${pageWidth}-${pageHeight}`}
+          key={listKey}
           data={feedItems}
           keyExtractor={(item) => item.feedId}
           renderItem={({ item, index }) => (
@@ -406,6 +445,11 @@ export default function HomeScreen() {
           initialNumToRender={4}
           maxToRenderPerBatch={4}
           removeClippedSubviews={false}
+          onScroll={event => {
+            scrollOffset.current = Math.max(0, event.nativeEvent.contentOffset.y);
+            retentionPins.current = feedViewportIds(committedItems.current, scrollOffset.current, pageHeight);
+          }}
+          scrollEventThrottle={16}
           onViewableItemsChanged={onViewableItemsChanged}
           viewabilityConfig={VIEWABILITY_CONFIG}
         />

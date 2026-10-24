@@ -1,3 +1,4 @@
+import { unfamiliarRepositorySql, canonicalGithubIdSql } from '../services/familiarRepositoryEligibility.js';
 import { lockModelLane } from '../services/modelOperationService.js';
 import { lockedSession } from '../services/feedIntentSessionService.js';
 import { ModelOperationError } from '../contracts/modelOperations.js';
@@ -12,7 +13,9 @@ import type {
   StoredServeItem,
 } from '../contracts/feed.v2.js';
 import { loadNegativePreferenceEligibleIds } from '../services/negativePreferenceEligibility.js';
-import { FeedServeOverlapError, FeedPreferenceChangedError, MAX_FEED_SERVE_LOOKUP_BATCH } from '../ports/feedPersistencePort.js';
+import { loadRecentExposureEligibleIds } from '../services/feedExposureEligibility.js';
+import { feedRecentExposureDays } from '../config/feedExposure.js';
+import { FeedExposureChangedError, FeedServeOverlapError, FeedPreferenceChangedError, MAX_FEED_SERVE_LOOKUP_BATCH } from '../ports/feedPersistencePort.js';
 import type {
   FeedPersistencePort, FeedReconciliationPersistencePort, FeedServeRequest, RepositoryIdentityProjection,
 } from '../ports/feedPersistencePort.js';
@@ -62,6 +65,14 @@ function projection(row: Record<string, unknown>): RepositoryProjection {
 }
 
 export class PostgresFeedPersistence implements FeedPersistencePort, FeedReconciliationPersistencePort {
+  private readonly recentExposureDays = feedRecentExposureDays();
+
+  async listExposureEligibleRepositoryIds(userId: string, repoIds: string[]): Promise<string[]> {
+    return loadRecentExposureEligibleIds({
+      query: async (text, parameters) => [...await sqlClient.unsafe(text, [...parameters])],
+    }, userId, repoIds, this.recentExposureDays);
+  }
+
   async listPreferenceEligibleRepositoryIds(userId: string, repoIds: string[]): Promise<string[]> {
     return loadNegativePreferenceEligibleIds({
       query: async (text, parameters) => [...await sqlClient.unsafe(text, [...parameters])],
@@ -167,13 +178,34 @@ export class PostgresFeedPersistence implements FeedPersistencePort, FeedReconci
     if (!boundedLimit) return [];
     const rows = await sqlClient`
       WITH exposures AS (
+        -- Preserve the original serve/interaction history budget first. Exact
+        -- familiarity eligibility remains authoritative beyond these ML hints.
+        SELECT repo.repo_id,NULL::timestamptz AS observed_at,2 AS priority
+        FROM app.users feed_viewer JOIN app.repos repo
+          ON repo.owner_github_id=${sqlClient.unsafe(canonicalGithubIdSql('feed_viewer.github_id'))}
+        WHERE feed_viewer.user_id=${userId}::uuid AND feed_viewer.github_identity_verified_at IS NOT NULL
+          AND repo.status='active'
+        UNION ALL
+        SELECT repo.repo_id,NULL::timestamptz AS observed_at,2 AS priority
+        FROM app.users feed_viewer JOIN app.user_github_imports imported
+          ON imported.user_id=feed_viewer.user_id AND imported.github_id=feed_viewer.github_id
+          AND imported.accepted_at IS NOT NULL AND imported.revoked_at IS NULL
+        CROSS JOIN LATERAL jsonb_array_elements(CASE WHEN jsonb_typeof(imported.provenance->'repository_ids')='array'
+          THEN imported.provenance->'repository_ids' ELSE '[]'::jsonb END) known(value)
+        JOIN app.repos repo ON repo.github_id=${sqlClient.unsafe(canonicalGithubIdSql("known.value->>'github_id'"))}
+        WHERE feed_viewer.user_id=${userId}::uuid AND feed_viewer.github_identity_verified_at IS NOT NULL
+          AND repo.status='active'
+        UNION ALL
         SELECT item.repo_id,serve.created_at AS observed_at,0 AS priority
         FROM telemetry.feed_serves serve
         JOIN telemetry.feed_serve_items item ON item.serve_id=serve.serve_id
-        WHERE serve.user_id=${userId}::uuid AND serve.session_id=${sessionId ?? null}::uuid
+        WHERE serve.user_id=${userId}::uuid
+          AND (serve.session_id=${sessionId ?? null}::uuid
+            OR serve.created_at>=now()-(${this.recentExposureDays * 86400}::integer * interval '1 second'))
         UNION ALL
-        SELECT repo_id,last_event_at AS observed_at,1 AS priority
-        FROM telemetry.user_repo_engagement WHERE user_id=${userId}::uuid
+        SELECT repo_id,server_received_at AS observed_at,1 AS priority
+        FROM telemetry.interaction_events WHERE user_id=${userId}::uuid
+          AND server_received_at>=now()-(${this.recentExposureDays * 86400}::integer * interval '1 second')
       )
       SELECT repo_id FROM exposures GROUP BY repo_id
       ORDER BY min(priority),max(observed_at) DESC,repo_id LIMIT ${boundedLimit}
@@ -248,6 +280,7 @@ export class PostgresFeedPersistence implements FeedPersistencePort, FeedReconci
         WHERE serve.user_id=${userId}::uuid
           AND serve.feed_version=${feedVersion.toString()}::bigint
           AND serve.source='personalized'
+          AND ${sqlClient.unsafe(unfamiliarRepositorySql('serve.user_id'))}
           AND NOT (item.repo_id=ANY(${excludeRepoIds}::uuid[]))
           AND NOT EXISTS (
             SELECT 1 FROM telemetry.feed_serves delivered
@@ -259,6 +292,17 @@ export class PostgresFeedPersistence implements FeedPersistencePort, FeedReconci
             SELECT 1 FROM app.reactions negative
             WHERE negative.user_id=serve.user_id AND negative.repo_id=item.repo_id
               AND negative.reaction='dislike'
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM telemetry.feed_serves recent_serve
+            JOIN telemetry.feed_serve_items seen_item ON seen_item.serve_id=recent_serve.serve_id
+            WHERE recent_serve.user_id=${userId}::uuid AND seen_item.repo_id=item.repo_id
+              AND recent_serve.created_at>=now()-(${this.recentExposureDays * 86400}::integer * interval '1 second')
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM telemetry.interaction_events recent_event
+            WHERE recent_event.user_id=${userId}::uuid AND recent_event.repo_id=item.repo_id
+              AND recent_event.server_received_at>=now()-(${this.recentExposureDays * 86400}::integer * interval '1 second')
           )
       )
       SELECT repo_id,score,source,model_version,summary_id,generation_id,record_digest,capture_status,legacy_generation_hint
@@ -568,6 +612,12 @@ export class PostgresFeedPersistence implements FeedPersistencePort, FeedReconci
         query: async (text, parameters) => [...await tx.unsafe(text, [...parameters])],
       }, input.user_id, input.items.map(item => item.repo_id)));
       if (input.items.some(item => !eligible.has(item.repo_id))) throw new FeedPreferenceChangedError();
+      // The existing per-user feed-state lock serializes this check with every
+      // fresh serve, including other sessions. Same-request replay exits above.
+      const unexposed = new Set(await loadRecentExposureEligibleIds({
+        query: async (text, parameters) => [...await tx.unsafe(text, [...parameters])],
+      }, input.user_id, input.items.map(item => item.repo_id), this.recentExposureDays));
+      if (input.items.some(item => !unexposed.has(item.repo_id))) throw new FeedExposureChangedError();
       let provenance: Array<Record<string, unknown>> = [];
       if (input.items.length) {
         const items = input.items.map(item => ({ position: item.position,repo_id: item.repo_id,score: item.score,
@@ -717,8 +767,25 @@ export class PostgresFeedPersistence implements FeedPersistencePort, FeedReconci
       SELECT item.repo_id FROM app.trending_snapshot_items item
       JOIN app.trending_snapshots snapshot ON snapshot.snapshot_id=item.snapshot_id
       JOIN app.repos repo ON repo.repo_id=item.repo_id
+      LEFT JOIN app.users feed_viewer ON feed_viewer.user_id=${viewerUserId ?? null}::uuid
       WHERE snapshot.complete AND snapshot.active AND repo.status='active'
+        AND ${sqlClient.unsafe(unfamiliarRepositorySql('feed_viewer.user_id'))}
         AND NOT (item.repo_id = ANY(${excludeRepoIds}::uuid[]))
+        AND NOT EXISTS (
+          SELECT 1 FROM app.reactions negative WHERE negative.user_id=${viewerUserId ?? null}::uuid
+            AND negative.repo_id=item.repo_id AND negative.reaction='dislike'
+        )
+        AND NOT EXISTS (
+          SELECT 1 FROM telemetry.feed_serves recent_serve
+          JOIN telemetry.feed_serve_items seen_item ON seen_item.serve_id=recent_serve.serve_id
+          WHERE recent_serve.user_id=${viewerUserId ?? null}::uuid AND seen_item.repo_id=item.repo_id
+            AND recent_serve.created_at>=now()-(${this.recentExposureDays * 86400}::integer * interval '1 second')
+        )
+        AND NOT EXISTS (
+          SELECT 1 FROM telemetry.interaction_events recent_event
+          WHERE recent_event.user_id=${viewerUserId ?? null}::uuid AND recent_event.repo_id=item.repo_id
+            AND recent_event.server_received_at>=now()-(${this.recentExposureDays * 86400}::integer * interval '1 second')
+        )
       ORDER BY snapshot.activated_at DESC, item.position ASC LIMIT ${limit}
     `;
     const ids = rows.map((row) => String(row.repo_id));

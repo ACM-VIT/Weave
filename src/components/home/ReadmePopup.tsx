@@ -1,6 +1,6 @@
 "use no memo";
 
-import React, { useEffect, useMemo, useRef } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Animated,
   Easing,
@@ -26,16 +26,27 @@ import { prepareReadmeForDisplay, README_SUMMARY_PENDING } from '@/utils/readme'
 import { openReadmeExternalLink } from '@/utils/readme-external-link';
 import {
   renderReadmeMarkdown,
+  extractReadmeSummaryImages,
   type ReadmeImageContext,
 } from '@/utils/readme-images';
-import { SafeReadmeImageRenderer } from './SafeReadmeImage';
+import { extractReadmeVideos } from '@/utils/readme-videos';
+import { readmePopupBlocks } from '@/utils/readme-popup-content';
+import { ReadmeImagePopup } from './ReadmeImagePopup';
+import { ReadmeVideoPopup } from './ReadmeVideoPopup';
+import { ReadmeVideo } from './ReadmeVideo';
+import { SafeReadmeImage, SafeReadmeImageRenderer } from './SafeReadmeImage';
 
 interface ReadmePopupProps {
   isVisible: boolean;
   onClose: () => void;
   title: string;
   readmeText: string | null;
+  mediaMessage?: string | null;
+  mediaMarkdown?: string | null;
   contentKind?: 'readme' | 'summary';
+  loading?: boolean;
+  errorMessage?: string | null;
+  onRetry?: () => void;
   readmeSource: ReadmeImageContext;
 }
 
@@ -161,13 +172,22 @@ const markdownTagStyles = {
   },
 } as const;
 
-export function ReadmePopup({
+export function ReadmePopup(props: ReadmePopupProps) {
+  return props.isVisible ? <VisibleReadmePopup {...props} /> : null;
+}
+
+function VisibleReadmePopup({
   isVisible,
   onClose,
   title,
   readmeText,
   contentKind = 'readme',
+  mediaMarkdown,
+  mediaMessage,
   readmeSource,
+  loading = false,
+  errorMessage = null,
+  onRetry,
 }: ReadmePopupProps) {
   const { width, height } = useWindowDimensions();
   const insets = useSafeAreaInsets();
@@ -175,13 +195,20 @@ export function ReadmePopup({
   const opacity = useMemo(() => new Animated.Value(0), []);
   const contentProgress = useMemo(() => new Animated.Value(0), []);
   const closingRef = useRef(false);
+  const [media, setMedia] = useState<{kind:'video';url:string}|{kind:'image';url:string;alt:string}|null>(null);
   const content = useMemo(() => contentKind === 'summary'
     ? readmeText || README_SUMMARY_PENDING
     : prepareReadmeForDisplay(readmeText), [contentKind, readmeText]);
+  const videos = useMemo(() => extractReadmeVideos(mediaMarkdown ?? (contentKind === 'readme' ? readmeText : null), readmeSource),
+    [mediaMarkdown, contentKind, readmeText, readmeSource]);
+  const images = useMemo(() => contentKind === 'summary' ? extractReadmeSummaryImages(mediaMarkdown,readmeSource) : [],
+    [contentKind,mediaMarkdown,readmeSource]);
   const markdownHtml = useMemo(
     () => renderReadmeMarkdown(content, readmeSource),
     [content, readmeSource],
   );
+  const blocks = useMemo(() => readmePopupBlocks(markdownHtml, videos, contentKind === 'summary',images),
+    [markdownHtml, videos, contentKind,images]);
   const cardAnimationStyle = useMemo(() => ({
     opacity,
     transform: [
@@ -253,6 +280,7 @@ export function ReadmePopup({
   const closeAnimated = () => {
     if (closingRef.current) return;
     closingRef.current = true;
+    setMedia(null);
     opacity.stopAnimation();
     contentProgress.stopAnimation();
 
@@ -311,6 +339,8 @@ export function ReadmePopup({
 
         <Animated.View
           accessibilityViewIsModal
+          accessibilityElementsHidden={Boolean(media)}
+          importantForAccessibility={media ? "no-hide-descendants" : "auto"}
           style={[
             styles.card,
             {
@@ -343,7 +373,20 @@ export function ReadmePopup({
           >
             <Animated.View style={contentAnimationStyle}>
               <Text style={styles.repoTitle}>{title}</Text>
-              <RenderHtml
+              {loading ? <Text style={styles.repoTitle} accessibilityLiveRegion="polite">Loading README…</Text>
+                : errorMessage ? <View>
+                  <Text style={styles.repoTitle} accessibilityRole="alert">{errorMessage}</Text>
+                  {onRetry ? <Pressable accessibilityRole="button" accessibilityLabel="Retry loading README"
+                    onPress={onRetry} style={styles.retryButton}><Text style={styles.headerText}>Retry</Text></Pressable> : null}
+                </View> : blocks.map((block, index) => block.kind === 'video'
+                  ? <ReadmeVideo key={block.url} url={block.url} onPress={() => setMedia({kind:'video',url:block.url})} />
+                  : block.kind === 'image' ? <Pressable key={block.url} accessibilityRole="button"
+                      accessibilityLabel={`Enlarge README image: ${block.alt}`}
+                      accessibilityHint="Opens a larger image viewer with zoom controls"
+                      onPress={() => setMedia({kind:'image',url:block.url,alt:block.alt})}>
+                      <SafeReadmeImage alt={block.alt} url={block.url} maximumWidth={cardWidth - 44} />
+                    </Pressable>
+                  : <RenderHtml key={`section-${index}`}
                 contentWidth={cardWidth - 44}
                 defaultTextProps={{ selectable: true }}
                 enableExperimentalMarginCollapsing
@@ -370,19 +413,32 @@ export function ReadmePopup({
                     },
                   },
                 }}
-                source={{ html: markdownHtml }}
+                source={{ html: block.content }}
                 systemFonts={markdownFonts}
                 tagsStyles={markdownTagStyles}
-              />
+              />)}
+              {mediaMessage ? <View>
+                <Text style={{ color: REFERENCE_THEME.textSecondary }}>{mediaMessage}</Text>
+                {onRetry ? <Pressable accessibilityRole="button" onPress={onRetry} style={styles.retryButton}>
+                  <Text style={styles.headerText}>Retry loading videos</Text>
+                </Pressable> : null}
+              </View> : null}
             </Animated.View>
           </ScrollView>
         </Animated.View>
+        {media?.kind === 'video' && isVisible ? <ReadmeVideoPopup key={media.url} url={media.url} onClose={() => setMedia(null)} /> : null}
+        {media?.kind === 'image' && isVisible ? <ReadmeImagePopup key={media.url} url={media.url} alt={media.alt} onClose={() => setMedia(null)} /> : null}
       </View>
     </Modal>
   );
 }
 
 const styles = StyleSheet.create({
+  retryButton: {
+    minHeight: 44,
+    alignSelf: 'flex-start',
+    justifyContent: 'center',
+  },
   root: {
     flex: 1,
     alignItems: 'center',

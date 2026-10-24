@@ -438,14 +438,20 @@ integration('registered v2 HTTP paths complete controlled integration flows', as
     assert.equal(unknownFollow.status, 404);
 
     await seedRecommendation();
-    const followedFeed = await fetch(`${base}/api/v2/feed`, {
+    const recentExposure = await fetch(`${base}/api/v2/feed`, {
       method: 'POST', headers: authHeaders,
       body: JSON.stringify({
         feed_request_id: crypto.randomUUID(), session_id: sessionId, limit: 10, cursor: null,
       }),
     });
+    assert.equal(recentExposure.status, 409, 'a fresh request cannot serve the same recently exposed repository');
+    const followedFeed = await fetch(`${base}/api/v2/feed`, {
+      method: 'POST', headers: authHeaders,
+      body: JSON.stringify({ feed_request_id: feedRequestId, session_id: sessionId, limit: 10, cursor: null }),
+    });
     assert.equal(followedFeed.status, 200);
     const followedItems = (await followedFeed.json()) as {
+      serve_id: string;
       items: Array<{
         repo_id: string;
         repository: {
@@ -454,8 +460,8 @@ integration('registered v2 HTTP paths complete controlled integration flows', as
         };
       }>;
     };
-    // This fixture explicitly publishes a queue entry; generation exclusions are
-    // exercised by the generation/database suites, not bypassed here via fallback.
+    assert.equal(followedItems.serve_id, served.serve_id, 'same-request replay preserves the original durable serve');
+    // Replay preserves attribution while hydrating the viewer's current follow state.
     assert.equal(followedItems.items[0].repository.owner_user_id, ownerUserId);
     assert.equal(followedItems.items[0].repository.viewer_follows_owner, true);
     assert.deepEqual(await feedPersistence.listFollowedRepositoryIds(userId, 10), [repoId]);

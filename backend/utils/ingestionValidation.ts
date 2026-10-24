@@ -1,3 +1,4 @@
+import { validateRepositoryLifecycle } from '../services/repositoryLifecycle.js';
 import { validateRepositoryLineage, type RepositoryLineage } from '../services/repositoryLineage.js';
 import type { RepositoryUpsert } from '../contracts/ingestion.v2.js';
 
@@ -33,7 +34,9 @@ function optionalHttpsDirectory(value: unknown): boolean {
       && parsed.port === '' && parsed.username === '' && parsed.password === ''
       && parsed.search === '' && parsed.hash === '' && parsed.pathname.endsWith('/')
       && parsed.toString() === value
-      && segments.length >= 5 && segments[2] === 'refs' && segments[3] === 'heads';
+      && parsed.pathname.split('/').slice(1, -1).every(Boolean)
+      && ((segments.length >= 3 && /^[a-f0-9]{40}$/.test(segments[2]))
+        || (segments.length >= 5 && segments[2] === 'refs' && segments[3] === 'heads'));
   } catch {
     return false;
   }
@@ -55,6 +58,7 @@ export function isRepositoryUpsert(value: unknown): value is RepositoryUpsert {
   if (typeof item.github_id !== 'string' || !/^[0-9]{1,32}$/.test(item.github_id)) return false;
   if (typeof item.owner_github_id !== 'string' || !/^[0-9]{1,32}$/.test(item.owner_github_id)) return false;
   try { validateRepositoryLineage(item as RepositoryLineage,item.github_id); } catch { return false; }
+  try { if (item.lifecycle != null) validateRepositoryLifecycle(item.lifecycle); } catch { return false; }
   const githubId = BigInt(item.github_id);
   const ownerGithubId = BigInt(item.owner_github_id);
   return githubId > 0n && githubId <= POSTGRES_BIGINT_MAX

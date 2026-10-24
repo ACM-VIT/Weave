@@ -124,10 +124,11 @@ test('rendered feed qualification, original IDs, durable retry/navigation and ac
  assert.ok(await evaluate('window.fixture.storageReadFailures>0'),'actual localStorage initial read/import failed before the impression was retained');
  await evaluate('window.fixture.storageUnavailable=false;sessionStorage.setItem("fixture-storage-recovered","1");window.fixture.flush().catch(()=>{})');
  await until('window.fixture.pending().then(count=>count>=3)');
- const durableFirst=await evaluate('Array.from({length:localStorage.length},(_,index)=>localStorage.key(index)).filter(key=>key?.startsWith("ghsocial.activity-outbox.")).map(key=>localStorage.getItem(key)).find(value=>value?.includes("'+first.event_id+'"))');
- assert.ok(durableFirst&&durableFirst.includes(first.client_occurred_at),'the exact first UUID/time reach durable storage after recovery');
+ const durableFirst=await evaluate('Array.from({length:localStorage.length},(_,index)=>localStorage.key(index)).filter(key=>key?.startsWith("ghsocial.activity-outbox.")).map(key=>localStorage.getItem(key)).filter(Boolean).flatMap(value=>JSON.parse(value)).find(event=>event.event_id==="'+first.event_id+'")');
+ assert.ok(durableFirst,'the original impression record reaches durable storage after recovery');
+ assert.equal(durableFirst.client_occurred_at,first.client_occurred_at,'the original impression timestamp is preserved');
 
- await evaluate('window.fixture.unmount()');await wait(50);await evaluate('window.fixture.mount()');await wait(80);await evaluate('window.fixture.show()');await wait(1200);await click('Dislike repository');
+ await evaluate('window.fixture.unmount()');await wait(50);await evaluate('window.fixture.mount()');await wait(80);await evaluate('window.fixture.show()');await wait(1200);await click('Not interested in this repository');
  assert.equal(await evaluate('window.fixture.prepared.find(event=>event.action==="dislike").impression_event_id'),first.event_id,'remount/repeated impression retains the first original UUID');
  await until('(localStorage.getItem("fixture-cache-"+window.fixture.owner)||"").includes("'+first.event_id+'")');
  await send('Page.reload');await until('!!window.fixture?.flush');await evaluate('window.fixture.offline=false;window.fixture.flush()');
