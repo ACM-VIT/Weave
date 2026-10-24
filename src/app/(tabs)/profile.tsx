@@ -1,8 +1,9 @@
+import GitHubIcon from '@/assets/icons/github.svg';
 import { useReducedMotion } from 'react-native-reanimated';
 import { KeyboardForm } from '@/components/keyboard/keyboard-layout';
 import React, { useState } from "react"
 import { ActivityIndicator, Modal, Pressable, Text, TextInput, View, useWindowDimensions } from "react-native"
-import { LogOut } from "lucide-react-native"
+import { ChevronRight, LogOut } from "lucide-react-native"
 import { router, type Href } from "expo-router"
 import { SafeAreaProvider, useSafeAreaInsets } from "react-native-safe-area-context"
 import { useQuery } from "@tanstack/react-query"
@@ -17,9 +18,8 @@ import { getStorageItem } from "@/utils/storage"
 import { formatCompactCount } from "@/utils/format-count"
 import { isValidUsername, USERNAME_GUIDANCE } from "@/utils/username"
 import { loadPinnedRepositories } from "@/services/pinnedRepositoryStorage"
-import { GitHubUnlinkPanel } from '@/components/onboarding/GitHubUnlinkPanel'
-import { GitHubImportPanel } from '@/components/onboarding/GitHubImportPanel'
-import { APP_THEME, Fonts, Spacing } from '@/constants/theme'
+import { GitHubPreferencesPopup } from '@/components/profile/GitHubPreferencesPopup'
+import { APP_THEME, REFERENCE_THEME } from '@/constants/theme'
 
 function requestError(error: unknown, fallback: string) {
   if (error instanceof TypeError) return `Unable to connect to the local backend at ${API_URL}.`
@@ -41,7 +41,6 @@ export default function ProfileScreen() {
   const reducedMotion = useReducedMotion()
   const [editVisible, setEditVisible] = useState(false)
   const [githubPreferencesVisible, setGithubPreferencesVisible] = useState(false)
-  const [githubControlRevision, setGithubControlRevision] = useState(0)
   const [logoutVisible, setLogoutVisible] = useState(false)
   const [loggingOut, setLoggingOut] = useState(false)
   const [logoutError, setLogoutError] = useState("")
@@ -136,11 +135,15 @@ export default function ProfileScreen() {
           </View>
 
           <View className="w-full" style={{ gap: isTablet ? 22 : 18 }}>
-            <Pressable accessibilityRole="button" accessibilityLabel="GitHub activity preferences" accessibilityState={{ expanded: githubPreferencesVisible }}
-              onPress={() => setGithubPreferencesVisible(value => !value)} style={{ minHeight: 48, justifyContent: 'center', paddingVertical: Spacing.two }}>
-              <Text style={{ fontFamily: Fonts.sans, color: APP_THEME.primary, fontSize: 15 }}>GitHub activity preferences</Text>
+            <Pressable accessibilityRole="button" accessibilityLabel="GitHub activity preferences" accessibilityHint="Opens GitHub activity and account settings" accessibilityState={{ expanded: githubPreferencesVisible }}
+              onPress={() => setGithubPreferencesVisible(true)} style={({ pressed }) => ({ minHeight: 72, flexDirection: 'row', alignItems: 'center', gap: 12, padding: 14, borderRadius: 17, borderWidth: 1, borderColor: REFERENCE_THEME.border, backgroundColor: pressed ? REFERENCE_THEME.surfaceElevated : REFERENCE_THEME.surface })}>
+              <View style={{ width: 40, height: 40, borderRadius: 12, alignItems: 'center', justifyContent: 'center', backgroundColor: '#63E08A18' }}><GitHubIcon width={22} height={22} fill={APP_THEME.primary} /></View>
+              <View style={{ flex: 1, minWidth: 0, gap: 4 }}>
+                <Text className="font-nataSemiBold" style={{ color: REFERENCE_THEME.text, fontSize: 15 }}>GitHub preferences</Text>
+                <Text className="font-nata" style={{ color: REFERENCE_THEME.textSecondary, fontSize: 12 }}>Public activity and account connection</Text>
+              </View>
+              <ChevronRight size={19} color={REFERENCE_THEME.textSecondary} />
             </Pressable>
-            {githubPreferencesVisible && user ? <View><GitHubImportPanel key={`${user.user_id}:${githubControlRevision}`} userId={user.user_id} onSaved={checkOnboardingStatus} /><GitHubUnlinkPanel userId={user.user_id} onSaved={async () => { await checkOnboardingStatus(); setGithubControlRevision(value => value + 1) }} /></View> : null}
             <Text className="text-white font-nataBold" style={{ fontSize: isCompact ? 18 : 22 }}>Lists</Text>
           </View>
         </View>
@@ -158,6 +161,9 @@ export default function ProfileScreen() {
         collections={sections.collections} pinned={pinnedRepositoriesQuery}
         openList={params => router.push(boardHref(params))}
       />
+
+      {user ? <GitHubPreferencesPopup visible={githubPreferencesVisible} userId={user.user_id}
+        onClose={() => setGithubPreferencesVisible(false)} onSaved={checkOnboardingStatus} /> : null}
 
       <ConnectionSheet
         onClose={() => setStatSheetType(null)}

@@ -6,10 +6,10 @@ import { githubUnlinkApi, type GithubUnlinkResult } from '../../api/githubUnlink
 import { startGithubUnlink } from '../../services/githubUnlink';
 
 type Props = { recoveryOnly?: boolean; userId: string; onSaved: () => Promise<unknown>; authorize?: typeof startGithubUnlink; api?: typeof githubUnlinkApi };
-function UnlinkAction({ label, onPress, disabled }: { label: string; onPress: () => void; disabled: boolean }) {
+function UnlinkAction({ label, onPress, disabled, destructive = false }: { label: string; onPress: () => void; disabled: boolean; destructive?: boolean }) {
   return <Pressable accessibilityRole="button" accessibilityLabel={label} accessibilityState={{ disabled }} disabled={disabled}
-    onPress={onPress} style={{ minHeight: 48, justifyContent: 'center', opacity: disabled ? 0.5 : 1 }}>
-    <Text style={{ color: APP_THEME.primary, fontFamily: Fonts.sans, fontSize: 15 }}>{label}</Text>
+    onPress={onPress} style={({ pressed }) => ({ minHeight: 48, justifyContent: 'center', alignItems: 'center', padding: Spacing.three, borderRadius: 12, borderWidth: 1, borderColor: destructive ? '#FF453A40' : REFERENCE_THEME.border, backgroundColor: destructive ? '#FF453A12' : REFERENCE_THEME.surfaceElevated, opacity: disabled ? 0.5 : pressed ? 0.7 : 1 })}>
+    <Text style={{ color: destructive ? REFERENCE_THEME.danger : REFERENCE_THEME.textStrong, fontFamily: Fonts.sans, fontSize: 15, textAlign: 'center' }}>{label}</Text>
   </Pressable>;
 }
 export function GitHubUnlinkPanel(props: Props) { return <UnlinkBody key={props.userId} {...props} />; }
@@ -53,9 +53,9 @@ function UnlinkBody({ userId, onSaved, recoveryOnly = false, authorize = startGi
       {result?.status === 'pending' ? <Text style={{ color: REFERENCE_THEME.textSecondary, fontFamily: Fonts.sans }}>{result.message ?? 'Disconnect is pending verification. Activity imports are paused.'}</Text> : null}
       {result?.status === 'refused' ? <Text style={{ color: REFERENCE_THEME.textSecondary, fontFamily: Fonts.sans }}>The provider refused the disconnect. GitHub remains linked; imported preferences were revoked.</Text> : null}
       {result?.status === 'superseded' ? <Text style={{ color: REFERENCE_THEME.textSecondary, fontFamily: Fonts.sans }}>Your GitHub identity changed. The newer login was preserved.</Text> : null}
-      {(result?.status !== 'pending' || result.retryable === true) ? <>{confirmed ? <UnlinkAction label={result?.status === 'pending' ? 'Reauthenticate and retry disconnect' : 'Reauthenticate and disconnect GitHub'} onPress={() => { void run(false); }} disabled={busy} />
-        : <UnlinkAction label={result?.status === 'pending' ? 'Retry pending GitHub disconnect' : 'Disconnect GitHub login'} onPress={() => setConfirmed(true)} disabled={busy} />}
-      {confirmed ? <UnlinkAction label={result?.status === 'pending' ? 'Back to disconnect status' : 'Keep GitHub login'} onPress={() => setConfirmed(false)} disabled={busy} /> : null}</> : null}
+      {(result?.status !== 'pending' || result.retryable === true) ? <>{confirmed ? <UnlinkAction destructive label={result?.status === 'pending' ? 'Reauthenticate and retry disconnect' : 'Reauthenticate and disconnect GitHub'} onPress={() => { void run(false); }} disabled={busy} />
+        : <UnlinkAction destructive label={result?.status === 'pending' ? 'Retry pending GitHub disconnect' : 'Disconnect GitHub login'} onPress={() => setConfirmed(true)} disabled={busy} />}
+      {confirmed ? <UnlinkAction destructive label={result?.status === 'pending' ? 'Back to disconnect status' : 'Keep GitHub login'} onPress={() => setConfirmed(false)} disabled={busy} /> : null}</> : null}
     </>}
     <UnlinkAction label="Check disconnect status" onPress={() => { void run(true); }} disabled={busy} />
     {busy ? <ActivityIndicator accessibilityLabel="Verifying GitHub disconnect" color={APP_THEME.primary} /> : null}
