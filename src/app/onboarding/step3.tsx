@@ -3,8 +3,6 @@ import { useState } from "react";
 import {  View, Text } from "react-native";
 import { useAuth } from "../../store/AuthContext";
 import { useOnboarding } from "../../store/OnboardingContext";
-import * as SecureStore from '../../utils/storage';
-import { setupOnboarding } from "../../api/onboarding";
 
 import ProgressBar from "@/components/onboarding/ProgressBar";
 import PrimaryButton from "@/components/onboarding/PrimaryButton";
@@ -17,7 +15,7 @@ export default function Step3() {
   const { data: onboardingData } = useOnboarding();
   const selectedCategoryIds = onboardingData.skills ?? [];
   const [selectedInterests, setSelectedInterests] = useState<string[]>(onboardingData.interests ?? []);
-  const { checkOnboardingStatus } = useAuth();
+  const { finishOnboarding } = useAuth();
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState("");
 
@@ -34,10 +32,7 @@ export default function Step3() {
       setIsSubmitting(true);
       setErrorMsg("");
       try {
-        const token = await SecureStore.getItemAsync('access_token');
-        if (!token) throw new Error("No access token found");
-        
-        await setupOnboarding(token, {
+        await finishOnboarding({
           ...onboardingData,
           username: onboardingData.username || "",
           full_name: onboardingData.full_name || "",
@@ -46,7 +41,6 @@ export default function Step3() {
           skills: selectedCategoryIds,
         });
         
-        await checkOnboardingStatus();
         // The _layout.tsx will now automatically redirect to (tabs)
       } catch (err: any) {
         setErrorMsg(err.message || 'Failed to save profile');

@@ -16,6 +16,8 @@ integration('registered onboarding persists stable taxonomy and batches topic wr
     import('express'), import('jsonwebtoken'), import('../../db/index.js'), import('../../routes/productV2Routes.js'), import('../../config/redis.js'),
   ]);
   const userId = crypto.randomUUID(), peerId = crypto.randomUUID();
+  const completionUsers: string[] = [];
+  const completionFault = 'fixture_completion_' + userId.replaceAll('-', '');
   const generatedTopics = new Set<string>();
   const app = express(); app.use(express.json()); app.use('/api/v2', router);
   const server = app.listen(0, '127.0.0.1');
@@ -119,9 +121,57 @@ integration('registered onboarding persists stable taxonomy and batches topic wr
         WHERE membership.user_id=${id}::uuid ORDER BY topic.slug`;
       assert.deepEqual(rows.map(row => row.slug), [...shared].sort(), 'overlapping topic creation keeps both complete memberships');
     }
+    const atomicId = crypto.randomUUID(); completionUsers.push(atomicId);
+    await sqlClient`INSERT INTO auth.users(id) VALUES(${atomicId}::uuid)`;
+    await sqlClient`INSERT INTO app.users(user_id,username,status) VALUES(${atomicId}::uuid,${'pending_'+atomicId.replaceAll('-','')},'active')`;
+    await sqlClient`INSERT INTO app.user_stats(user_id) VALUES(${atomicId}::uuid)`;
+    await sqlClient`INSERT INTO app.user_feed_state(user_id) VALUES(${atomicId}::uuid)`;
+    const atomicToken = jwt.sign({ userId: atomicId }, process.env.JWT_SECRET!, { expiresIn: '5m' });
+    const call = (path: string, method = 'GET', body?: unknown) => fetch(`http://127.0.0.1:${address.port}/api/v2${path}`, {
+      method, headers: { Authorization: `Bearer ${atomicToken}`, 'Content-Type': 'application/json' },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    });
+    const slug = 'atomic-' + atomicId.slice(0,8); generatedTopics.add(slug);
+    const identity = { username: 'complete_'+atomicId.replaceAll('-',''), full_name: ' Atomic User ', date_of_birth: '2005-01-01', avatar_url: null };
+    const completion = { profile: identity, bio: ' Rust ', skills: [slug], interests: [], tech_stack: [] };
+    const snapshot = async () => (await call('/users/me')).json() as Promise<{data:Record<string,unknown>}>;
+    const beforeAtomic = (await snapshot()).data;
+    for (const profile of [{...identity, date_of_birth:'2005-02-30'},{...identity,full_name:''},{...identity,avatar_url:12},
+      {...identity,username:'bad space'},{...identity,user_id:peerId}]) {
+      assert.equal((await call('/onboarding/complete','PUT',{...completion,profile})).status,400);
+    }
+    assert.equal((await call('/onboarding/complete','PUT',{...completion,profile:{...identity,username:'import_'+peerId.replaceAll('-','')}})).status,409);
+    assert.deepEqual((await snapshot()).data,beforeAtomic,'validation/username conflicts leave identity and completion untouched');
+    const malformed = await call('/onboarding/complete','PUT',{...completion,taxonomy_selections:{version:1,skills:[{id:'data',label:'forged'}],interests:[]}});
+    assert.equal(malformed.status,400);assert.deepEqual((await snapshot()).data,beforeAtomic);
+    // Fail after profile, feed and topics changed, when queuing the ML delivery.
+    await sqlClient.unsafe(`CREATE FUNCTION telemetry.${completionFault}() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN
+      IF NEW.aggregate_id='${atomicId}'::uuid THEN RAISE EXCEPTION 'fixture_completion_outbox_failure'; END IF;RETURN NEW;END $$`);
+    await sqlClient.unsafe(`CREATE TRIGGER ${completionFault} BEFORE INSERT ON telemetry.ml_outbox FOR EACH ROW EXECUTE FUNCTION telemetry.${completionFault}()`);
+    assert.equal((await call('/onboarding/complete','PUT',completion)).status,500);
+    assert.deepEqual((await snapshot()).data,beforeAtomic,'all onboarding writes roll back if durable delivery cannot be queued');
+    assert.equal((await sqlClient`SELECT 1 FROM telemetry.ml_outbox WHERE aggregate_id=${atomicId}::uuid`).length,0);
+    await sqlClient.unsafe(`DROP TRIGGER ${completionFault} ON telemetry.ml_outbox`);await sqlClient.unsafe(`DROP FUNCTION telemetry.${completionFault}()`);
+    for (const ordered of [false,true]) {
+      if(ordered) await sqlClient`UPDATE app.user_feed_state SET model_policy_sha256=${'a'.repeat(64)},
+        model_policy_limits=${JSON.stringify({input_bytes:131072,max_sessions:2,generation_freshness_ms:10000,idle_expiry_ms:60000})}::jsonb WHERE user_id=${atomicId}::uuid`;
+      const before=(await snapshot()).data;
+      const response=await call('/onboarding/complete','PUT',completion);assert.equal(response.status,200,await response.clone().text());
+      const result=(await response.json() as {data:{completed:boolean;viewer:Record<string,unknown>}}).data;
+      assert.equal(result.completed,true);assert.deepEqual(result.viewer,(await snapshot()).data,'the transaction returns the same authoritative viewer projection as GET');
+      assert.equal(result.viewer.onboarding_completed,true);assert.equal(result.viewer.full_name,'Atomic User');assert.equal(result.viewer.bio,'Rust');
+      assert.equal(BigInt(String(result.viewer.profile_version)),BigInt(String(before.profile_version))+1n);
+      assert.equal(BigInt(String(result.viewer.feed_version)),BigInt(String(before.feed_version))+1n);
+      const deliveries=await sqlClient`SELECT job_type,payload,operation_json FROM telemetry.ml_outbox WHERE aggregate_id=${atomicId}::uuid ORDER BY created_at`;
+      assert.equal(deliveries.length,ordered?2:1,'one atomic finish produces one delivery');
+      const deliveredProfile=ordered?JSON.parse(deliveries.at(-1)!.operation_json).operation.original_profile_context:deliveries[0].payload.profile;
+      assert.equal(deliveredProfile.full_name,'Atomic User');assert.deepEqual(deliveredProfile.skills,[slug]);
+    }
   } finally {
     server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve()));
-    for (const id of [userId, peerId]) {
+    await sqlClient.unsafe(`DROP TRIGGER IF EXISTS ${completionFault} ON telemetry.ml_outbox`);
+    await sqlClient.unsafe(`DROP FUNCTION IF EXISTS telemetry.${completionFault}()`);
+    for (const id of [userId, peerId, ...completionUsers]) {
       await sqlClient`DELETE FROM telemetry.ml_outbox WHERE aggregate_id=${id}::uuid`;
       await sqlClient`DELETE FROM app.users WHERE user_id=${id}::uuid`;
       await sqlClient`DELETE FROM auth.users WHERE id=${id}::uuid`;
