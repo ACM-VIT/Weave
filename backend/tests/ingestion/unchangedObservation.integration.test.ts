@@ -95,6 +95,24 @@ test('unchanged and stats-only observations preserve content/topic tuples and de
   assert.equal(revised.counts.indexes, Number(original.counts.indexes) + 1);
   await persistence.bulkUpsert([topicChange]);
   assert.deepEqual(await state(), revised, 'a changed observation becomes a no-op on replay too');
+  const previousLifecycleMode = process.env.ML_REPOSITORY_LIFECYCLE_OBSERVATIONS;
+  t.after(() => {
+    if (previousLifecycleMode === undefined) delete process.env.ML_REPOSITORY_LIFECYCLE_OBSERVATIONS;
+    else process.env.ML_REPOSITORY_LIFECYCLE_OBSERVATIONS = previousLifecycleMode;
+  });
+  process.env.ML_REPOSITORY_LIFECYCLE_OBSERVATIONS = 'verified-status-v1';
+  const lifecycle = { status: 'verified' as const, source: 'github-graphql-repository' as const,
+    observed_at: '2026-10-21T03:00:00Z', archived: true, disabled: false };
+  const [statusOnly] = await persistence.bulkUpsert([{ ...topicChange, observed_at: lifecycle.observed_at, lifecycle }]);
+  assert.equal(statusOnly.changed, false, 'archive transitions are independent of content');
+  const archived = await state();
+  assert.deepEqual(archived.content, revised.content);
+  assert.equal(archived.counts.indexes, revised.counts.indexes);
+  assert.equal(archived.counts.refreshes, Number(revised.counts.refreshes) + 1);
+  const lifecycleJobs = archived.jobs.filter(row => row.payload.features?.lifecycle);
+  assert.equal(lifecycleJobs.length, 1);
+  assert.deepEqual(lifecycleJobs[0].payload.features.lifecycle, lifecycle);
+  assert.equal(lifecycleJobs[0].payload.required_content_version, Number(revised.content.content_version));
   t.diagnostic(JSON.stringify({ contentTuplePreservedOnNoopAndStats: true, topicTuplesPreservedOnNoopAndStats: true,
     statsSnapshotsAdded: observed.snapshots - original.snapshots, equivalentRefreshJobsOnReplay: 0,
     topicChangeVersionIncrement: Number(revised.content.content_version) - Number(original.content.content_version) }));

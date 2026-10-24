@@ -1,3 +1,4 @@
+import { lifecycleForMl } from './repositoryLifecycle.js';
 import crypto from 'node:crypto';
 import { canonicalGithubRepositoryId, LINEAGE_FIELDS } from './repositoryLineage.js';
 
@@ -36,7 +37,7 @@ export function repositoryContentHash(repository: RepositoryUpsert): string {
     ...buildMlRepositorySource(repository, 'pending'),
   } as Record<string, unknown>;
   for (const key of [
-    'lineage_observed_at', 'content_hash', 'star_count', 'fork_count', 'open_issues_count', 'pushed_days_ago',
+    'lifecycle', 'lineage_observed_at', 'content_hash', 'star_count', 'fork_count', 'open_issues_count', 'pushed_days_ago',
     'delta_3d', 'delta_7d', 'delta_30d', 'mentionable_users_count', 'readme_length',
     'updated_at', 'pushed_at',
     'discovery_category', 'discovery_band',
@@ -59,7 +60,9 @@ export function buildMlRepositorySource(
   contentHash: string,
 ): MlRepositorySource {
   const canonical = normalizeCanonicalRepositoryReadme(repository);
+  const lifecycle = lifecycleForMl(canonical.lifecycle);
   return {
+    ...(lifecycle ? { lifecycle } : {}),
     github_id: canonicalGithubRepositoryId(canonical.github_id),
     owner_github_id: canonicalGithubRepositoryId(canonical.owner_github_id),
     ...Object.fromEntries(LINEAGE_FIELDS.filter(key => canonical[key]!=null).map(key => [key,canonical[key]])),
@@ -101,7 +104,9 @@ export function buildMlRepositorySource(
 export function buildMlRepositoryFeaturePatch(
   repository: RepositoryUpsert,
 ): MlRepositoryFeaturePatch {
+  const lifecycle = lifecycleForMl(repository.lifecycle);
   return {
+    ...(lifecycle ? { lifecycle } : {}),
     star_count: repository.star_count ?? 0,
     fork_count: repository.fork_count ?? 0,
     open_issues_count: repository.open_issues_count ?? 0,
