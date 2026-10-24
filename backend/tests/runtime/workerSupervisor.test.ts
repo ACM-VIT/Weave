@@ -1,3 +1,5 @@
+import { runReadmeSummaryWorker } from '../../workers/readmeSummaryWorker.js';
+import { ReadmeRequestLimiter } from '../../services/readmeSummaryGenerator.js';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { setTimeout as wait } from 'node:timers/promises';
@@ -143,4 +145,72 @@ test('worker telemetry retains its overlap guard until the real Redis call settl
   assert.equal(calls, 1);
   finish(1);
   await first;
+});
+
+
+test('bounded once processing lets ready jobs pass a stalled peer and preserves the total limit',async()=>{
+  let release!:()=>void;const stalled=new Promise<void>(resolve=>{release=resolve;});
+  let calls=0,active=0,maximum=0,finished=false;const delivered:string[]=[];
+  const repoIds=['scoped-repo'];
+  const running=runReadmeSummaryWorker({processOne:async ids=>{
+    assert.equal(ids,repoIds);const index=calls++;active++;maximum=Math.max(maximum,active);
+    if(index===0)await stalled;else await new Promise(resolve=>setImmediate(resolve));
+    active--;return {status:'completed',repo_id:String(index)};
+  }},{limit:5,concurrency:2,once:true,repoIds,onResult:result=>{delivered.push(result.repo_id!);}}).then(result=>{finished=true;return result;});
+  try {
+    for(let turn=0;delivered.length<4&&turn<100;turn++)await new Promise(resolve=>setImmediate(resolve));
+    assert.deepEqual(delivered,['1','2','3','4']);assert.equal(maximum,2);assert.equal(calls,5);assert.equal(finished,false);
+  } finally {release();}
+  assert.deepEqual(await running,{processed:5,failures:0});assert.equal(active,0);
+});
+
+test('daemon drains beyond its turn limit while a peer stalls and backs off only on an empty queue',async()=>{
+  let release!:()=>void;const stalled=new Promise<void>(resolve=>{release=resolve;});
+  const stop=new AbortController();let calls=0,sleeps=0,finished=false;
+  const delivered:string[]=[];
+  const running=runReadmeSummaryWorker({processOne:async()=>{
+    const index=calls++;
+    if(index===0)await stalled;
+    if(index===9)return {status:'idle'};
+    return {status:'completed',repo_id:String(index)};
+  }},{limit:1,concurrency:2,once:false,signal:stop.signal,onResult:result=>{delivered.push(result.repo_id!);},
+    sleep:async milliseconds=>{assert.equal(milliseconds,3000);sleeps++;stop.abort();},
+  }).then(result=>{finished=true;return result;});
+  try {
+    for(let turn=0;!sleeps&&turn<100;turn++)await new Promise(resolve=>setImmediate(resolve));
+    assert.deepEqual(delivered,['1','2','3','4','5','6','7','8']);
+    assert.equal(sleeps,1);assert.equal(finished,false,'stop still owns the stalled processing slot');
+  } finally {release();stop.abort();}
+  assert.deepEqual(await running,{processed:9,failures:0});
+});
+
+for(const failure of ['summary_provider_daily_quota_exhausted','claim-error']) test(`worker stops new claims and drains peers after ${failure}`,async()=>{
+  let release!:()=>void;const stalled=new Promise<void>(resolve=>{release=resolve;});let calls=0,settled=false;
+  const running=runReadmeSummaryWorker({processOne:async()=>{
+    if(calls++===0){if(failure==='claim-error')throw new Error(failure);return {status:'failed',error:failure};}
+    await stalled;return {status:'completed'};
+  }},{limit:10,concurrency:2,once:false,onResult:()=>{}});
+  const observed=running.then(result=>({result}),error=>({error})).then(result=>{settled=true;return result;});
+  try {
+    await new Promise(resolve=>setImmediate(resolve));assert.equal(calls,2);assert.equal(settled,false);
+  } finally {release();}
+  const outcome=await observed;assert.equal(calls,2);
+  if(failure==='claim-error'){assert.ok('error' in outcome);assert.equal(outcome.error.message,'claim-error');}
+  else {assert.ok('result' in outcome);assert.deepEqual(outcome.result,{processed:2,failures:1});}
+});
+
+test('stop wakes idle workers without waiting for their next poll or claiming more work',async()=>{
+  const stop=new AbortController();let calls=0,finished=false;
+  const running=runReadmeSummaryWorker({processOne:async()=>{calls++;return {status:'idle'};}},
+    {limit:10,concurrency:2,once:false,signal:stop.signal,onResult:()=>{}}).then(()=>{finished=true;});
+  await new Promise(resolve=>setImmediate(resolve));assert.equal(calls,2);assert.equal(finished,false);
+  stop.abort();await new Promise(resolve=>setImmediate(resolve));assert.equal(finished,true);assert.equal(calls,2);await running;
+});
+
+
+test('concurrent digest attempts and repairs share distinct provider RPM reservations',async()=>{
+  const waits:number[]=[];
+  const limiter=new ReadmeRequestLimiter(1,()=>0,async milliseconds=>{waits.push(milliseconds);});
+  await Promise.all(Array.from({length:4},()=>limiter.wait()));
+  assert.deepEqual(waits,[60000,120000,180000]);
 });

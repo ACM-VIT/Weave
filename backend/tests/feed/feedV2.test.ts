@@ -1,5 +1,8 @@
+import { IntentFeedGateway } from '../../services/intentFeedGateway.js';
+import type { FeedIntentScope } from '../../contracts/feedIntent.js';
+import type { FeedResponseV2 } from '../../contracts/feed.v2.js';
 import assert from 'node:assert/strict';
-import test from 'node:test';
+import test, { describe } from 'node:test';
 import { createServer } from 'node:http';
 import { MlV2Client } from '../../services/mlService.js';
 import { FeedGenerationService } from '../../services/feedGenerationService.js';
@@ -971,4 +974,112 @@ test('capture-required cohorts retire plain queued entries but preserve pre-exis
   assert.equal(queue.committed,1,'retire the plain reservation so retry can request a captured generation');
   const original=await new FeedV2Service(persistence,new FakeQueue()).getFeed(user,request);
   assert.deepEqual(await required.getFeed(user,request),original,'capture activation cannot rewrite historical same-request replay');
+});
+
+
+describe('intent scope retirement admission',()=>{
+const owner='00000000-0000-4000-8000-000000000001',session='00000000-0000-4000-8000-000000000002';
+const snapshot={generationFreshnessMs:60000,userId:owner,sessionId:session,feedVersion:'1',profileVersion:'1',acceptedOperationVersion:'2',feedbackVersion:'0',
+ epoch:'1',epochStartedMs:'1',witnessSha256:'a'.repeat(64),policySha256:'b'.repeat(64)};
+const scope:FeedIntentScope={...snapshot,queueScope:'c'.repeat(64),context:{schema_version:1,session_id:session,epoch:'1',as_of_ms:'1',
+ policy_sha256:snapshot.policySha256,minimum_applied_operation_version:'2',required_profile_version:'1'},
+ applied:{schema_version:1,user_id:owner,session_id:session,epoch:'1',as_of_ms:'1',policy_sha256:snapshot.policySha256,profile_version:'1',
+  applied_operation_version:'2',applied_feedback_version:'0',state_sha256:'d'.repeat(64),head:'e'.repeat(64),effective_vector_sha256:'f'.repeat(64),
+  session_witness_sha256:snapshot.witnessSha256,valid_until_ms:String(Date.now()+60000),explicit_negative_repo_ids:[]}};
+const response:FeedResponseV2={serve_id:owner,session_id:session,feed_version:'1',source:'personalized',model_version:'fixture',items:[],next_cursor:null};
+const request={feed_request_id:owner,session_id:session,limit:2,cursor:null};
+function cryptoId(index:number){return `00000000-0000-4000-8000-${String(index+100).padStart(12,'0')}`;}
+function scoped(index:number):FeedIntentScope {
+ const user=cryptoId(index),sessionId=cryptoId(index+1000);
+ return {...scope,userId:user,sessionId,queueScope:(index+1).toString(16).padStart(64,'0'),
+  context:{...scope.context,session_id:sessionId},applied:{...scope.applied,user_id:user,session_id:sessionId}};
+}
+test('expired scope drainage does not block an unrelated ready request or escape shutdown', async t => {
+ const expired=scoped(200),ready=scoped(201),byUser=new Map([expired,ready].map(value=>[value.userId,value]));
+ let release!:()=>void;const drain=new Promise<void>(resolve=>{release=resolve;});let drained=false,delivered=false,stopped=false;
+ const gateway=new IntentFeedGateway({getFeed:async()=>response,stop:async()=>{}},{getServeByRequest:async()=>null},{
+  snapshot:async userId=>({...snapshot,...byUser.get(userId)!}),restoreCursor:async()=>scope.applied,resolve:async userId=>byUser.get(userId)!,
+ },value=>({getFeed:async()=>response,stop:async()=>{if(value===expired){await drain;drained=true;}}}));
+ await gateway.getFeed(expired.userId,{...request,session_id:expired.sessionId});
+ expired.applied.valid_until_ms='0';
+ const started=performance.now();
+ const pending=gateway.getFeed(ready.userId,{...request,session_id:ready.sessionId}).then(value=>{delivered=true;return value;});
+ let stopping:Promise<void>|undefined;
+ try {
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(delivered,true,'a ready user must not await an unrelated expired scope stop');
+  assert.equal(drained,false);
+  t.diagnostic(JSON.stringify({readyMilliseconds:Math.round((performance.now()-started)*100)/100,retirementStillPending:!drained}));
+  stopping=gateway.stop().then(()=>{stopped=true;});
+  await new Promise(resolve=>setImmediate(resolve));assert.equal(stopped,false,'shutdown still owns the detached drain');
+ } finally {release();await pending;await (stopping??gateway.stop());}
+ assert.equal(drained,true);
+});
+
+test('retiring scopes retain capacity while admission waits are bounded and cancellable',async()=>{
+ const scopes=Array.from({length:129},(_,index)=>scoped(index+500)),byUser=new Map(scopes.map(value=>[value.userId,value]));
+ let release!:()=>void;const drain=new Promise<void>(resolve=>{release=resolve;});let created=0;
+ const gateway=new IntentFeedGateway({getFeed:async()=>response,stop:async()=>{}},{getServeByRequest:async()=>null},{
+  snapshot:async userId=>({...snapshot,...byUser.get(userId)!}),restoreCursor:async()=>scope.applied,resolve:async userId=>byUser.get(userId)!,
+ },()=>{created++;return {getFeed:async()=>response,stop:async()=>{await drain;}};},undefined,40);
+ try {
+  for(const value of scopes.slice(0,128))await gateway.getFeed(value.userId,{...request,session_id:value.sessionId});
+  for(const value of scopes.slice(0,128))value.applied.valid_until_ms='0';
+  const next=scopes[128],input={...request,session_id:next.sessionId};
+  await assert.rejects(gateway.getFeed(next.userId,input),/MODEL_FEED_CAPACITY/);
+  const waiters=(gateway as unknown as {capacityWaiters:Set<()=>void>}).capacityWaiters;
+  assert.equal(waiters.size,0,'timed out requests must release their capacity subscription');
+  assert.equal(created,128,'pending retirements must not free slots prematurely');
+  const controller=new AbortController();const pending=gateway.getFeed(next.userId,input,controller.signal);
+  const cancelled=assert.rejects(pending,/cancelled capacity wait/);
+  await new Promise(resolve=>setImmediate(resolve));controller.abort(new Error('cancelled capacity wait'));await cancelled;
+  assert.equal(waiters.size,0,'cancelled requests must release their capacity subscription');
+  assert.equal(created,128);
+  release();await new Promise(resolve=>setImmediate(resolve));
+  await gateway.getFeed(next.userId,input);assert.equal(created,129);
+ } finally {release();await gateway.stop();}
+});
+test('admission wakes when any retirement finishes, including an earlier expired scope',async()=>{
+ const scopes=Array.from({length:129},(_,index)=>scoped(index+1500)),byUser=new Map(scopes.map(value=>[value.userId,value]));
+ let releaseFirst!:()=>void,releaseOthers!:()=>void;
+ const firstDrain=new Promise<void>(resolve=>{releaseFirst=resolve;}),otherDrain=new Promise<void>(resolve=>{releaseOthers=resolve;});
+ let created=0,delivered=false;
+ const gateway=new IntentFeedGateway({getFeed:async()=>response,stop:async()=>{}},{getServeByRequest:async()=>null},{
+  snapshot:async userId=>({...snapshot,...byUser.get(userId)!}),restoreCursor:async()=>scope.applied,resolve:async userId=>byUser.get(userId)!,
+ },value=>{created++;return {getFeed:async()=>response,stop:async()=>{await (value===scopes[0]?firstDrain:otherDrain);}};});
+ let pending:Promise<FeedResponseV2>|undefined;
+ try {
+  for(const value of scopes.slice(0,128))await gateway.getFeed(value.userId,{...request,session_id:value.sessionId});
+  scopes[0].applied.valid_until_ms='0';
+  const next=scopes[128];pending=gateway.getFeed(next.userId,{...request,session_id:next.sessionId}).then(value=>{delivered=true;return value;});
+  await new Promise(resolve=>setImmediate(resolve));releaseFirst();await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(delivered,true,'an earlier drain frees room even while the newly selected idle service is still stopping');
+  assert.equal(created,129);
+ } finally {releaseFirst();releaseOthers();await pending;await gateway.stop();}
+});
+test('competing admissions share one timeout budget across lost capacity races',async t=>{
+ t.mock.timers.enable({apis:['setTimeout']});let now=0;t.mock.method(performance,'now',()=>now);
+ const scopes=Array.from({length:130},(_,index)=>scoped(index+1800)),byUser=new Map(scopes.map(value=>[value.userId,value]));
+ let releaseFirst!:()=>void,releaseOthers!:()=>void,releaseActive!:()=>void,created=0;
+ const firstDrain=new Promise<void>(resolve=>{releaseFirst=resolve;}),otherDrain=new Promise<void>(resolve=>{releaseOthers=resolve;});
+ const active=new Promise<void>(resolve=>{releaseActive=resolve;});let rejected=0;
+ const gateway=new IntentFeedGateway({getFeed:async()=>response,stop:async()=>{}},{getServeByRequest:async()=>null},{
+  snapshot:async userId=>({...snapshot,...byUser.get(userId)!}),restoreCursor:async()=>scope.applied,resolve:async userId=>byUser.get(userId)!,
+ },value=>{created++;return {getFeed:async()=>{if(value===scopes[128]||value===scopes[129])await active;return response;},
+  stop:async()=>{await (value===scopes[0]?firstDrain:otherDrain);}};},undefined,100);
+ const pending:Promise<FeedResponseV2>[]=[];
+ try {
+  for(const value of scopes.slice(0,128))await gateway.getFeed(value.userId,{...request,session_id:value.sessionId});
+  for(const value of scopes.slice(0,128))value.applied.valid_until_ms='0';
+  for(const value of scopes.slice(128)){
+   const operation=gateway.getFeed(value.userId,{...request,session_id:value.sessionId});pending.push(operation);
+   void operation.catch(error=>{assert.match(String(error),/MODEL_FEED_CAPACITY/);rejected++;});
+  }
+  await new Promise(resolve=>setImmediate(resolve));now=90;t.mock.timers.tick(90);releaseFirst();
+  await new Promise(resolve=>setImmediate(resolve));assert.equal(created,129);assert.equal(rejected,0);
+  now=100;t.mock.timers.tick(10);await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(rejected,1,'the losing waiter retains only the original 10ms budget');
+ } finally {releaseFirst();releaseOthers();releaseActive();await Promise.allSettled(pending);await gateway.stop();}
+});
+
 });
