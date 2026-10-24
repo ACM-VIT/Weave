@@ -42,6 +42,7 @@ type ReadmeCardProps = {
   availableWidth: number;
   isActive?: boolean;
   onReadFullPress: (digest?: ReadmeDigest | null) => void;
+  onOpenReadme?: () => void;
   compact?: boolean;
 };
 
@@ -52,6 +53,7 @@ export default function ReadmeCard({
   availableWidth,
   isActive = true,
   onReadFullPress,
+  onOpenReadme,
   compact = false,
 }: ReadmeCardProps) {
   const reduceMotion = useReducedMotion();
@@ -82,6 +84,7 @@ export default function ReadmeCard({
     ],
   );
   const statusText = summaryQuery.isError ? "Couldn’t load the README summary."
+    : summaryQuery.data?.status==='failed' ? 'README summary unavailable.'
     : summaryQuery.data?.status==='pending' || summaryQuery.data?.status==='processing' ? 'Preparing README summary…'
       : summaryQuery.isLoading ? 'Loading README summary…' : preview.markdown;
   const typedSummary = useTypewriterText(preview.source==='summary' ? preview.markdown : statusText, {
@@ -212,7 +215,6 @@ export default function ReadmeCard({
     <Animated.View style={[
       styles.card,
       compact && styles.cardCompact,
-      preview.source === 'pending' && styles.cardUnavailable,
       animatedCardStyle,
     ]}>
       <View style={[styles.header, compact && styles.headerCompact]}>
@@ -315,6 +317,14 @@ export default function ReadmeCard({
             accessibilityHint="Checks whether a summary is available" onPress={() => void summaryQuery.refetch()}
             style={[styles.readFull,compact && styles.readFullCompact]}>
             <Text style={[styles.readFullText,compact && styles.readFullTextCompact]}>Check again</Text>
+          </Pressable>
+        ) : null}
+        {preview.source === 'pending' && onOpenReadme ? (
+          <Pressable accessibilityRole="button" accessibilityLabel={`Open README for ${repository.name}`}
+            accessibilityHint="Opens the repository details to read the original README"
+            onPress={onOpenReadme} style={[styles.readFull, styles.readmeAction, compact && styles.readFullCompact]}>
+            <Text style={[styles.readFullText, compact && styles.readFullTextCompact]}>Open README</Text>
+            <ChevronRight size={compact ? 10 : 11} color={REFERENCE_THEME.accentLight} strokeWidth={2.4} />
           </Pressable>
         ) : null}
       </View>
@@ -455,6 +465,9 @@ const styles = StyleSheet.create({
     borderColor: 'rgba(135,228,158,0.22)',
     borderRadius: 999,
     backgroundColor: 'rgba(48,209,88,0.09)',
+  },
+  readmeAction: {
+    marginTop: 8,
   },
   readFullCompact: {
     minHeight: 44,

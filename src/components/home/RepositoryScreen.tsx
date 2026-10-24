@@ -303,6 +303,7 @@ export function RepositoryScreen({
           isActive={isActive}
           repository={repository}
           onReadFullPress={onReadFullPress}
+          onOpenReadme={onRepositoryPress}
           compact={compact}
         />
 
