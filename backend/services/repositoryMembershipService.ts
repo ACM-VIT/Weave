@@ -10,6 +10,7 @@ import {
 } from './savedRepositoryService.js';
 
 type TransactionSql = postgres.TransactionSql;
+const MEMBERSHIP_BATCH_SIZE = 256;
 
 export interface RepositoryMembershipState {
   repository_id: string;
@@ -69,9 +70,12 @@ async function lockRepositoryMemberships(
   repositoryIds: string[],
 ): Promise<string[]> {
   const ordered = [...new Set(repositoryIds)].sort();
-  for (const repositoryId of ordered) {
+  for (let offset=0;offset<ordered.length;offset+=MEMBERSHIP_BATCH_SIZE) {
     await tx`
-      SELECT pg_advisory_xact_lock(hashtextextended(${`${userId}:${repositoryId}`},0))
+      SELECT pg_advisory_xact_lock(hashtextextended(${userId}::text || ':' || input.repository_id,0))
+      FROM unnest(${ordered.slice(offset,offset+MEMBERSHIP_BATCH_SIZE)}::text[])
+        WITH ORDINALITY AS input(repository_id,position)
+      ORDER BY input.position
     `;
   }
   return ordered;
@@ -148,12 +152,56 @@ async function recomputeMany(
   userId: string,
   repositoryIds: string[],
 ): Promise<RepositoryMembershipState[]> {
+  const ordered = [...new Set(repositoryIds)].sort();
+  // Shared counters use the same sorted engagement-lock order as interaction
+  // batches. Acquire all of them before applying any counter transitions.
+  for (let offset=0;offset<ordered.length;offset+=MEMBERSHIP_BATCH_SIZE) {
+    const batch=ordered.slice(offset,offset+MEMBERSHIP_BATCH_SIZE);
+    await tx`INSERT INTO app.repo_engagement(repo_id)
+      SELECT repo_id FROM unnest(${batch}::uuid[]) AS input(repo_id) ORDER BY repo_id ON CONFLICT DO NOTHING`;
+    await tx`SELECT repo_id FROM app.repo_engagement WHERE repo_id=ANY(${batch}::uuid[]) ORDER BY repo_id FOR UPDATE`;
+  }
   const states: RepositoryMembershipState[] = [];
-  for (const repositoryId of [...new Set(repositoryIds)].sort()) {
-    states.push(await recomputeRepositorySaved(tx, userId, repositoryId));
+  let netDelta=0,minimumPrefix=Infinity;
+  for (let offset=0;offset<ordered.length;offset+=MEMBERSHIP_BATCH_SIZE) {
+    const batch=ordered.slice(offset,offset+MEMBERSHIP_BATCH_SIZE);
+    const desired=await tx`SELECT input.repo_id AS repository_id,
+      (EXISTS(SELECT 1 FROM app.collection_repos membership JOIN app.board_collections collection USING(collection_id)
+        WHERE membership.repo_id=input.repo_id AND collection.user_id=${userId}::uuid)
+      OR EXISTS(SELECT 1 FROM app.board_repos membership JOIN app.boards board USING(board_id)
+        WHERE membership.repo_id=input.repo_id AND board.user_id=${userId}::uuid)) AS saved
+      FROM unnest(${batch}::uuid[]) AS input(repo_id) ORDER BY input.repo_id`;
+    const savedIds=desired.filter(row=>row.saved===true).map(row=>String(row.repository_id));
+    const unsavedIds=desired.filter(row=>row.saved!==true).map(row=>String(row.repository_id));
+    const inserted=savedIds.length?await tx`INSERT INTO app.saves(user_id,repo_id)
+      SELECT ${userId}::uuid,repo_id FROM unnest(${savedIds}::uuid[]) AS input(repo_id)
+      ORDER BY repo_id ON CONFLICT(user_id,repo_id) DO NOTHING RETURNING repo_id`:[];
+    const removed=unsavedIds.length?await tx`DELETE FROM app.saves
+      WHERE user_id=${userId}::uuid AND repo_id=ANY(${unsavedIds}::uuid[]) RETURNING repo_id`:[];
+    const changedIds=new Set([...inserted,...removed].map(row=>String(row.repo_id)));
+    const deltas:{repo_id:string;delta:number}[]=[];
+    for(const row of desired){
+      const id=String(row.repository_id),saved=row.saved===true,changed=changedIds.has(id);
+      states.push({repository_id:id,saved,save_state_changed:changed});
+      if(changed){
+        const delta=saved?1:-1;deltas.push({repo_id:id,delta});
+        netDelta+=delta;minimumPrefix=Math.min(minimumPrefix,netDelta);
+      }
+    }
+    if(deltas.length)await tx`UPDATE app.repo_engagement target
+      SET saves_count=GREATEST(0,target.saves_count+input.delta),updated_at=now()
+      FROM jsonb_to_recordset(${JSON.stringify(deltas)}::jsonb) AS input(repo_id uuid,delta integer)
+      WHERE target.repo_id=input.repo_id`;
   }
   const changed = states.filter(state => state.save_state_changed);
   if (changed.length) {
+    await tx`INSERT INTO app.user_stats(user_id) VALUES(${userId}::uuid) ON CONFLICT DO NOTHING`;
+    // Preserve the old sorted per-transition GREATEST(0,count+delta), even
+    // when stored counts drift: final=max(0,initial+sum,sum-min(prefix)).
+    // Prefixes include each real transition, excluding the empty prefix.
+    await tx`UPDATE app.user_stats
+      SET saved_repos_count=GREATEST(0,saved_repos_count+${netDelta},${netDelta-minimumPrefix}),updated_at=now()
+      WHERE user_id=${userId}::uuid`;
     await invalidateFutureFeed(tx, userId);
     await processInteractionBatchV2InTransaction(tx, userId, changed.map(createServerMembershipEvent));
   }
