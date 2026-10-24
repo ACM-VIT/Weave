@@ -151,6 +151,7 @@ function feed(ids: string[], reducedMotion = false, attribution?: { ownerId: str
     setExternalOpen(value: () => Promise<void>) {openExternal=value;},
     setHeight(value:number) {shareHeight=value;},
     setReadme(value: () => Promise<any>) {loadReadme=value;},
+    get readmePopupProps() {return root.root.findAllByType(overlayTypes[3])[0]?.props;},
     get renderedReadmeHtml() {return root.root.findAllByType('RenderHtml').map(node=>node.props.source.html).join('');},
     get githubActionScrollable() {return this.button('Open on GitHub').findAllByType('Text').length>0
       && root.root.findAllByType('ScrollView').some(scroll=>scroll.findAllByType('Pressable').some(node=>node.props.accessibilityLabel==='Open on GitHub'));},
@@ -582,5 +583,22 @@ test('a retired account cannot publish a late canonical README response', async 
     await waitForReadmeState(() => app.client.getQueryCache().getAll().some(query=>query.state.status==='error'));
     assert.ok(!app.renderedReadmeHtml.includes('Previous account README'));
     assert.ok(app.client.getQueryCache().getAll().every(query=>query.state.data===undefined));
+  } finally { await app.unmount(); }
+});
+
+test('a failed background refresh retains the cached original README', async () => {
+  const app = feed(['repo'], true, { ownerId: 'viewer', repository: { readmeFull: null } });
+  const key = repositoryDetailQueryKey('repo', 'viewer');
+  app.client.setQueryData(key, { ...repository('repo'), readmeFull: '# Cached original README' }, { updatedAt: Date.now() - 120_000 });
+  app.setReadme(async () => { throw new Error('Background refresh unavailable'); });
+  await app.mount();
+  try {
+    await app.open(0, 'onOpenReadme');
+    await waitForReadmeState(() => app.client.getQueryState(key)?.status === 'error');
+    assert.equal(app.client.getQueryData<any>(key)?.readmeFull, '# Cached original README', 'React Query retains the unchanged stale canonical data');
+    assert.equal(app.readmePopupProps.errorMessage, null);
+    assert.equal(app.readmePopupProps.loading, false);
+    assert.ok(app.renderedReadmeHtml.includes('Cached original README'), 'background failure must not replace cached content');
+    assert.ok(!app.messages.includes('Background refresh unavailable'));
   } finally { await app.unmount(); }
 });

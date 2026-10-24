@@ -31,7 +31,7 @@ export function FeedReadmePopup({ repository, onClose }: {
   const source = repository.readmeFull ? repository : query.data ?? repository;
   return <ReadmePopup isVisible onClose={onClose} title={repository.name} contentKind="readme"
     readmeText={source.readmeFull} loading={!repository.readmeFull && query.isPending}
-    errorMessage={!repository.readmeFull && query.error instanceof Error ? query.error.message : null}
+    errorMessage={!source.readmeFull && query.error instanceof Error ? query.error.message : null}
     onRetry={() => void query.refetch()} readmeSource={{ fullName: source.fullName, githubUrl: source.githubUrl,
       readmeBaseUrl: source.readmeBaseUrl, readmeDefaultBranch: source.readmeDefaultBranch,
       readmeSourcePath: source.readmeSourcePath }} />;
