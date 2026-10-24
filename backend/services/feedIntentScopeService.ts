@@ -45,7 +45,7 @@ export class FeedIntentScopeService {
  async restoreCursor(current:NonNullable<Awaited<ReturnType<FeedIntentScopeService['snapshot']>>>,queueScope:string):Promise<MlAppliedModelContext>{
   const [row]=await this.db`SELECT applied_context FROM telemetry.feed_model_generations
     WHERE user_id=${current.userId}::uuid AND session_id=${current.sessionId}::uuid AND queue_scope=${queueScope}
-      AND valid_until_ms>floor(extract(epoch FROM clock_timestamp())*1000)::bigint ORDER BY generation_id LIMIT 1`;
+      AND applied_context IS NOT NULL AND valid_until_ms>floor(extract(epoch FROM clock_timestamp())*1000)::bigint ORDER BY generation_id LIMIT 1`;
   if(!row)throw new StaleFeedCursorError();
   const applied=parseAppliedModelContext(row.applied_context);
   if(applied.user_id!==current.userId||applied.session_id!==current.sessionId||applied.epoch!==current.epoch

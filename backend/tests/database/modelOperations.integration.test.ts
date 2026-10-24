@@ -1,4 +1,5 @@
 import {OutboxService} from '../../services/outboxService.js';
+import {RetentionWorker} from '../../workers/retentionWorker.js';
 import {OutboxWorker} from '../../workers/outboxWorker.js';
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
@@ -113,6 +114,19 @@ integration('real product feedback remains durable before genesis and drains onc
  const frozen=JSON.parse(rows[1].operation_json);assert.equal(frozen.operation.original_feedback_json,pending[0].original_feedback_json);
  assert.equal(frozen.accepted_at_ms,String(pending[0].accepted_at_ms));
  assert.equal('canonical_attribution' in frozen.operation,false);
+ const retention=new RetentionWorker();
+ await sqlClient`UPDATE app.user_feed_state SET model_initialized=true WHERE user_id=${owner}::uuid`;
+ let unlock!:()=>void,started!:()=>void;const ready=new Promise<void>(r=>started=r),release=new Promise<void>(r=>unlock=r);
+ const delivering=sqlClient.begin(async tx=>{
+  await tx`UPDATE telemetry.ml_outbox SET status='delivered',delivered_at=now()-interval '40 days' WHERE aggregate_id=${owner}::uuid`;started();await release;
+ });
+ await ready;
+ try{await retention.pruneModelCopies();assert.equal((await sqlClient`SELECT 1 FROM telemetry.pending_model_feedback WHERE user_id=${owner}::uuid`).length,1);}
+ finally{unlock();await delivering;}
+ await retention.runOnce();
+ assert.equal((await sqlClient`SELECT 1 FROM telemetry.pending_model_feedback WHERE user_id=${owner}::uuid`).length,0);
+ assert.deepEqual((await sqlClient`SELECT operation_json FROM telemetry.ml_outbox WHERE aggregate_id=${owner}::uuid ORDER BY model_operation_version`).map(r=>r.operation_json),rows.map(r=>r.operation_json));
+
  }finally{await sqlClient`DELETE FROM telemetry.pending_model_feedback WHERE user_id=${owner}::uuid`;await sqlClient`DELETE FROM telemetry.interaction_events WHERE user_id=${owner}::uuid`;await sqlClient`DELETE FROM app.repos WHERE repo_id=${repo}::uuid`;}
 });
 
@@ -219,4 +233,19 @@ integration('the backend role can withdraw a pending profile without gaining fro
  const [privileges]=await sqlClient`SELECT has_column_privilege('ghsocial_backend','telemetry.ml_outbox','withdrawal_json','UPDATE') AS withdrawal,
   has_column_privilege('ghsocial_backend','telemetry.ml_outbox','operation_json','UPDATE') AS frozen`;
  assert.deepEqual({...privileges},{withdrawal:true,frozen:false});
+});
+
+integration('bounded context cleanup skips leased rows and preserves live bodies and expired headers',async()=>{
+ const owner=await fixture(),session=crypto.randomUUID();await controls.control(owner,{kind:'begin',request_id:crypto.randomUUID(),session_id:session});
+ const ids=Array.from({length:4},()=>crypto.randomUUID());
+ for(let i=0;i<ids.length;i++)await sqlClient`INSERT INTO telemetry.feed_model_generations(generation_id,user_id,session_id,queue_scope,applied_context,valid_until_ms)
+  VALUES(${ids[i]}::uuid,${owner}::uuid,${session}::uuid,${policy},'{}',${Date.now()+(i===3?60000:-60000)}::bigint)`;
+ const worker=new RetentionWorker();let unlock!:()=>void,locked!:()=>void;const ready=new Promise<void>(r=>locked=r),release=new Promise<void>(r=>unlock=r);
+ const held=sqlClient.begin(async tx=>{await tx`SELECT generation_id FROM telemetry.feed_model_generations WHERE generation_id=${ids[0]}::uuid FOR UPDATE`;locked();await release;});
+ await ready;
+ try{assert.equal((await worker.pruneModelCopies(1)).contexts,1);
+ assert.equal((await sqlClient`SELECT count(*)::int n FROM telemetry.feed_model_generations WHERE user_id=${owner}::uuid AND applied_context IS NULL`)[0].n,1);}
+ finally{unlock();await held;}
+ await worker.pruneModelCopies();const rows=await sqlClient`SELECT generation_id,applied_context FROM telemetry.feed_model_generations WHERE user_id=${owner}::uuid`;
+ assert.equal(rows.length,4);assert.equal(rows.filter(r=>r.applied_context===null).length,3);assert.deepEqual(rows.find(r=>r.generation_id===ids[3])!.applied_context,{});
 });

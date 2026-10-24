@@ -727,7 +727,8 @@ export const feedModelGenerations = telemetrySchema.table('feed_model_generation
   generationId: uuid('generation_id').primaryKey(),
   userId: uuid('user_id').notNull().references(() => appUsers.userId,{onDelete:'cascade'}),
   sessionId: uuid('session_id').notNull().references(() => feedIntentSessions.sessionId),
-  queueScope: text('queue_scope').notNull(), appliedContext: jsonb('applied_context').notNull(),
+  queueScope: text('queue_scope').notNull(), appliedContext: jsonb('applied_context'),
   validUntilMs: bigint('valid_until_ms',{mode:'bigint'}).notNull(),
   createdAt: timestamp('created_at',{withTimezone:true}).notNull().defaultNow(),
-},table=>[index('feed_model_generations_scope').on(table.userId,table.queueScope,table.validUntilMs)]);
+},table=>[index('feed_model_generations_scope').on(table.userId,table.queueScope,table.validUntilMs),
+  index('feed_model_generations_expired_body').on(table.validUntilMs,table.generationId).where(sql`${table.appliedContext} IS NOT NULL`)]);

@@ -378,6 +378,13 @@
       "when": 1794614400000,
       "tag": "0050_model_withdrawal_privilege",
       "breakpoints": true
+    },
+    {
+      "idx": 54,
+      "version": "7",
+      "when": 1794700800000,
+      "tag": "0051_model_transient_retention",
+      "breakpoints": true
     }
   ]
 }
