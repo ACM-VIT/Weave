@@ -143,7 +143,7 @@ export async function updateMe(req: AuthRequest, res: Response): Promise<void> {
       const profiles = await tx`
         SELECT user_id,username,full_name,date_of_birth,bio,github_handle,avatar_url,interests,skills,tech_stack,
           profile_version,updated_at,
-          (username IS DISTINCT FROM COALESCE(${usernameValue ?? null},username)
+          (username::text IS DISTINCT FROM COALESCE(${usernameValue ?? null},username::text)
             OR full_name IS DISTINCT FROM CASE WHEN ${req.body.full_name !== undefined} THEN ${fullName ?? null} ELSE full_name END
             OR date_of_birth IS DISTINCT FROM CASE WHEN ${req.body.date_of_birth !== undefined} THEN ${dateOfBirth ?? null}::date ELSE date_of_birth END
             OR bio IS DISTINCT FROM CASE WHEN ${req.body.bio !== undefined} THEN ${bio ?? null} ELSE bio END

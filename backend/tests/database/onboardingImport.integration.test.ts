@@ -101,6 +101,13 @@ integration('registered onboarding and profile edits persist canonical context w
     const cleared = await patch({avatar_url:null});
     assert.equal(cleared.status,200);assert.equal(cleared.body.data.avatar_url,null);
     assert.deepEqual((await patch({avatar_url:null})).body.data,cleared.body.data);
+    const beforeCase=await frontier();
+    const caseEdit=await patch({username:username.toUpperCase()});
+    assert.equal(caseEdit.status,200);assert.equal(caseEdit.body.data.username,username.toUpperCase(),'citext storage still preserves display case');
+    const afterCase=await frontier();
+    for(const key of ['profile_version','feed_version','model_operation_version','jobs'])assert.equal(BigInt(afterCase[key]),BigInt(beforeCase[key])+1n);
+    assert.deepEqual((await patch({username:username.toUpperCase()})).body.data,caseEdit.body.data,'an identical display-case retry is a no-op');
+    assert.equal((await patch({username})).body.data.username,username);
     const beforeInvalid = await frontier();
     for (const body of [{date_of_birth:null},{date_of_birth:'2005-02-30'},{username:null},{full_name:'x'.repeat(101)},{unknown:true}]) {
       assert.equal((await patch(body)).status,400,'no-op detection cannot bypass existing validation');
