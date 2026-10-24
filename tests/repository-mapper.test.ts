@@ -176,3 +176,10 @@ test('pinned mapping preserves the canonical repository UUID, not the storage ke
   assert.equal(repository.id, repositoryId);
   assert.notEqual(repository.id, 'local-storage-key');
 });
+
+test('current detail Lists exclude hidden board memberships without changing saved truth', () => {
+  const repository = mapRepositoryDetail({repo_id: repositoryId, full_name: 'owner/repo', viewer_saved: true,
+    selected_list_ids: ['collection:current', 'legacy-board:hidden']});
+  assert.equal(repository.viewerSaved, true);
+  assert.deepEqual(repository.selectedListIds, ['collection:current']);
+});

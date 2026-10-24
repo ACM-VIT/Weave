@@ -61,7 +61,7 @@ function listIds(payload: RepositoryApiPayload): string[] {
   const candidates = payload.selected_list_ids
     ?? payload.selected_collection_ids
     ?? payload.collection_ids;
-  return stringArray(candidates);
+  return stringArray(candidates).filter(id => !id.startsWith('legacy-board:'));
 }
 
 function splitFullName(value: string): { owner: string; name: string } | null {

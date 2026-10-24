@@ -1,14 +1,16 @@
+import GitHubIcon from '@/assets/icons/github.svg';
 import { useReducedMotion } from 'react-native-reanimated';
 import { KeyboardForm } from '@/components/keyboard/keyboard-layout';
 import React, { useState } from "react"
 import { ActivityIndicator, Modal, Pressable, Text, TextInput, View, useWindowDimensions } from "react-native"
-import { LogOut, SquarePen } from "lucide-react-native"
+import { ChevronRight, LogOut } from "lucide-react-native"
 import { router, type Href } from "expo-router"
 import { SafeAreaProvider, useSafeAreaInsets } from "react-native-safe-area-context"
 import { useQuery } from "@tanstack/react-query"
 import { API_URL } from "@/api/config"
 import { apiV2 } from "@/api/client"
 import { useProfileSections } from "@/hooks/useProfileSections"
+import { ProfileHeader } from "@/components/profile/ProfileHeader"
 import { ProfileContentLists } from "@/components/profile/ProfileContentLists"
 import { ConnectionSheet, type ProfileStatType } from "@/components/connection-sheet"
 import { useAuth } from "@/store/AuthContext"
@@ -16,9 +18,8 @@ import { getStorageItem } from "@/utils/storage"
 import { formatCompactCount } from "@/utils/format-count"
 import { isValidUsername, USERNAME_GUIDANCE } from "@/utils/username"
 import { loadPinnedRepositories } from "@/services/pinnedRepositoryStorage"
-import { GitHubUnlinkPanel } from '@/components/onboarding/GitHubUnlinkPanel'
-import { GitHubImportPanel } from '@/components/onboarding/GitHubImportPanel'
-import { APP_THEME, Fonts, Spacing } from '@/constants/theme'
+import { GitHubPreferencesPopup } from '@/components/profile/GitHubPreferencesPopup'
+import { APP_THEME, REFERENCE_THEME } from '@/constants/theme'
 
 function requestError(error: unknown, fallback: string) {
   if (error instanceof TypeError) return `Unable to connect to the local backend at ${API_URL}.`
@@ -40,7 +41,6 @@ export default function ProfileScreen() {
   const reducedMotion = useReducedMotion()
   const [editVisible, setEditVisible] = useState(false)
   const [githubPreferencesVisible, setGithubPreferencesVisible] = useState(false)
-  const [githubControlRevision, setGithubControlRevision] = useState(0)
   const [logoutVisible, setLogoutVisible] = useState(false)
   const [loggingOut, setLoggingOut] = useState(false)
   const [logoutError, setLogoutError] = useState("")
@@ -126,72 +126,24 @@ export default function ProfileScreen() {
     { value: formatCompactCount(user?.following_count), label: "following", onPress: () => setStatSheetType("following") },
   ]
 
-  const avatarLetter = username.trim().charAt(0).toUpperCase() || name.charAt(0).toUpperCase() || "?"
-  const usernameText = username ? `@${username}` : ""
   const horizontalPadding = isTablet ? 48 : 24
-  const contentWidth = Math.min(Math.max(width - (horizontalPadding * 2), 0), isTablet ? 760 : 600)
-  const avatarWidth = Math.min(contentWidth * (isTablet ? 0.31 : 0.25), 116)
-  const headerGapWidth = contentWidth * 0.08
-  const actionIconWidth = isCompact ? 21 : 26
-  const detailsWidth = Math.max(contentWidth - avatarWidth - headerGapWidth - actionIconWidth, 1)
-  const usernameWidth = Math.max(detailsWidth - (detailsWidth * 0.03) - (isCompact ? 17 : 20), 1)
-  const fitSingleLineText = (value: string, baseSize: number, availableWidth: number) => {
-    const widthUnits = Array.from(value).reduce((total, character) => {
-      if (character === " ") return total + 0.32
-      if (/[ilI1.,'`]/.test(character)) return total + 0.3
-      if (/[MW@#%&]/.test(character)) return total + 0.9
-      return total + 0.58
-    }, 0)
-    return Math.max(1, Math.min(baseSize, Math.floor((availableWidth * 0.94) / Math.max(widthUnits, 1))))
-  }
-  const primaryFontSize = fitSingleLineText(usernameText, isCompact ? 17 : isTablet ? 23 : 21, usernameWidth)
-  const jobFontSize = fitSingleLineText(job, isCompact ? 12 : 15, detailsWidth)
-  const fullNameFontSize = fitSingleLineText(name, isCompact ? 11 : 14, detailsWidth)
-
   const header = (
       <View className="w-full" style={{ maxWidth: isTablet ? 760 : 600, gap: isTablet ? 34 : 28 }}>
         <View className="w-full" style={{ gap: isTablet ? 34 : 28 }}>
           <View className="w-full" style={{ gap: isTablet ? 30 : 25 }}>
-            <View className="w-full flex-row items-center" style={{ minHeight: isCompact ? 74 : isTablet ? 128 : 96, gap: "4%" }}>
-              <View className="items-center justify-center bg-[#9B4FE4]" style={{ width: isTablet ? "31%" : "25%", maxWidth: 116, aspectRatio: 1, borderRadius: 999 }}><Text className="text-white font-nataBold" style={{ fontSize: isCompact ? 25 : isTablet ? 38 : 32 }}>{avatarLetter}</Text></View>
-              <View className="flex-1 justify-center" style={{ minWidth: 0 }}>
-                <View className="w-full flex-row items-start" style={{ gap: "3%" }}>
-                  <Text selectable numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.05} className="flex-1 text-white font-nataBold" style={{ flexShrink: 1, fontSize: primaryFontSize, lineHeight: Math.ceil(primaryFontSize * 1.2) }}>{usernameText}</Text>
-                  <Pressable accessibilityRole="button" accessibilityLabel="Edit profile" onPress={openEditor} style={{ minWidth: 48, minHeight: 48 }} className="items-center justify-center"><SquarePen size={isCompact ? 17 : 20} color="#97969C" /></Pressable>
-                </View>
-                <Text numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.05} className="text-[#8A898F] font-nata" style={{ flexShrink: 1, fontSize: jobFontSize, lineHeight: Math.ceil(jobFontSize * 1.25) }}>{job}</Text>
-                <Text selectable numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.05} className="text-[#68676D] font-nata" style={{ flexShrink: 1, fontSize: fullNameFontSize, lineHeight: Math.ceil(fullNameFontSize * 1.25) }}>{name}</Text>
-              </View>
-              <Pressable accessibilityLabel="Log out" onPress={() => { setLogoutError(""); setLogoutVisible(true) }} hitSlop={12} className="self-start items-center justify-center" style={{ paddingTop: "3%" }}><LogOut size={isCompact ? 21 : 26} color="#96959B" /></Pressable>
-            </View>
-
-            <View
-              className="w-full flex-row self-center"
-              style={{
-                maxWidth: isTablet ? 560 : 480,
-                paddingVertical: isTablet ? 12 : 8,
-                gap: isCompact ? 2 : 4,
-              }}
-            >
-              {stats.slice(0, 2).map((stat) => <Pressable key={stat.label} accessibilityRole="button" onPress={stat.onPress} className="flex-1 items-center justify-center rounded-[10px]" style={({ pressed }) => ({ minWidth: 0, paddingVertical: 5, opacity: pressed ? 0.68 : 1, backgroundColor: pressed ? "#171717" : "transparent" })}>
-                <Text className="text-white font-nataBold" style={{ fontSize: isCompact ? 15 : 19, fontVariant: ["tabular-nums"] }}>{stat.value}</Text>
-                <Text numberOfLines={1} className="text-[#77767C] font-nata" style={{ fontSize: isCompact ? 9 : 12 }}>{stat.label}</Text>
-              </Pressable>)}
-              <View className="flex-[2] flex-row">
-                {stats.slice(2).map((stat, index) => <Pressable key={stat.label} accessibilityRole="button" onPress={stat.onPress} className="flex-1 items-center justify-center rounded-[9px]" style={({ pressed }) => ({ minWidth: 0, paddingVertical: 4, opacity: pressed ? 0.68 : 1, backgroundColor: pressed ? "#202020" : "transparent", borderLeftWidth: index === 1 ? 0.5 : 0, borderLeftColor: "#292929" })}>
-                  <Text className="text-white font-nataBold" style={{ fontSize: isCompact ? 15 : 19, fontVariant: ["tabular-nums"] }}>{stat.value}</Text>
-                  <Text numberOfLines={1} className="text-[#77767C] font-nata" style={{ fontSize: isCompact ? 9 : 12 }}>{stat.label}</Text>
-                </Pressable>)}
-              </View>
-            </View>
+            <ProfileHeader username={username} name={name} job={job} isTablet={isTablet} isCompact={isCompact} stats={stats} onEdit={openEditor} onLogout={() => { setLogoutError(""); setLogoutVisible(true) }} />
           </View>
 
           <View className="w-full" style={{ gap: isTablet ? 22 : 18 }}>
-            <Pressable accessibilityRole="button" accessibilityLabel="GitHub activity preferences" accessibilityState={{ expanded: githubPreferencesVisible }}
-              onPress={() => setGithubPreferencesVisible(value => !value)} style={{ minHeight: 48, justifyContent: 'center', paddingVertical: Spacing.two }}>
-              <Text style={{ fontFamily: Fonts.sans, color: APP_THEME.primary, fontSize: 15 }}>GitHub activity preferences</Text>
+            <Pressable accessibilityRole="button" accessibilityLabel="GitHub activity preferences" accessibilityHint="Opens GitHub activity and account settings" accessibilityState={{ expanded: githubPreferencesVisible }}
+              onPress={() => setGithubPreferencesVisible(true)} style={({ pressed }) => ({ minHeight: 72, flexDirection: 'row', alignItems: 'center', gap: 12, padding: 14, borderRadius: 17, borderWidth: 1, borderColor: REFERENCE_THEME.border, backgroundColor: pressed ? REFERENCE_THEME.surfaceElevated : REFERENCE_THEME.surface })}>
+              <View style={{ width: 40, height: 40, borderRadius: 12, alignItems: 'center', justifyContent: 'center', backgroundColor: '#63E08A18' }}><GitHubIcon width={22} height={22} fill={APP_THEME.primary} /></View>
+              <View style={{ flex: 1, minWidth: 0, gap: 4 }}>
+                <Text className="font-nataSemiBold" style={{ color: REFERENCE_THEME.text, fontSize: 15 }}>GitHub preferences</Text>
+                <Text className="font-nata" style={{ color: REFERENCE_THEME.textSecondary, fontSize: 12 }}>Public activity and account connection</Text>
+              </View>
+              <ChevronRight size={19} color={REFERENCE_THEME.textSecondary} />
             </Pressable>
-            {githubPreferencesVisible && user ? <View><GitHubImportPanel key={`${user.user_id}:${githubControlRevision}`} userId={user.user_id} onSaved={checkOnboardingStatus} /><GitHubUnlinkPanel userId={user.user_id} onSaved={async () => { await checkOnboardingStatus(); setGithubControlRevision(value => value + 1) }} /></View> : null}
             <Text className="text-white font-nataBold" style={{ fontSize: isCompact ? 18 : 22 }}>Lists</Text>
           </View>
         </View>
@@ -206,9 +158,12 @@ export default function ProfileScreen() {
         horizontalPadding={horizontalPadding} maxWidth={isTablet ? 760 : 600}
         paddingTop={Math.max(insets.top, 20) + (isTablet ? 28 : 16)}
         paddingBottom={Math.max(insets.bottom, 20) + (isTablet ? 28 : 16)}
-        boards={sections.boards} collections={sections.collections} pinned={pinnedRepositoriesQuery}
+        collections={sections.collections} pinned={pinnedRepositoriesQuery}
         openList={params => router.push(boardHref(params))}
       />
+
+      {user ? <GitHubPreferencesPopup visible={githubPreferencesVisible} userId={user.user_id}
+        onClose={() => setGithubPreferencesVisible(false)} onSaved={checkOnboardingStatus} /> : null}
 
       <ConnectionSheet
         onClose={() => setStatSheetType(null)}

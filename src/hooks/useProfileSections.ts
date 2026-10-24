@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query';
-import { getProfileBoards, getProfileCollections } from '../api/profile';
+import { getProfileCollections } from '../api/profile';
 import { profileSectionQueries } from '../api/profile-section-queries';
 import { getStorageItem } from '../utils/storage';
 
@@ -12,8 +12,7 @@ async function tokenForRequest(signal: AbortSignal): Promise<string> {
 
 export function useProfileSections(viewer: string | undefined) {
   const options = profileSectionQueries(viewer, {
-    boards: async signal => getProfileBoards(await tokenForRequest(signal), signal),
     collections: async signal => getProfileCollections(await tokenForRequest(signal), signal),
   });
-  return { boards: useQuery(options.boards), collections: useQuery(options.collections) };
+  return { collections: useQuery(options.collections) };
 }

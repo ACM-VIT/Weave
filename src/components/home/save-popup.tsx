@@ -76,7 +76,7 @@ type SavePopupProps = {
 
 const SHEET_HORIZONTAL_MARGIN = 24;
 const SHEET_MAX_WIDTH = 480;
-const COLLECTION_GRID_GAP = 14;
+const COLLECTION_GRID_GAP = 12;
 
 const palette = {
   background: REFERENCE_THEME.surface,
@@ -183,6 +183,7 @@ export function SavePopup({
     retryDelay: 500,
   });
 
+  const listsUnavailable = !listsQuery.isSuccess || listsQuery.isFetching;
   const lists = useMemo(() => listsQuery.data ?? [], [listsQuery.data]);
   const serverSelectedIds = useMemo(
     () => new Set(lists.filter((list) => list.selected).map(listMembershipKey)),
@@ -199,7 +200,7 @@ export function SavePopup({
     );
   }, [lists, search]);
   const sheetWidth = Math.min(Math.max(width - SHEET_HORIZONTAL_MARGIN, 0), SHEET_MAX_WIDTH);
-  const sheetHeight = Math.min(460, modalHeight * 0.82);
+  const sheetMaxHeight = Math.min(460, height * 0.82);
 
   const haptic = useCallback(async (kind: 'selection' | 'success' = 'selection') => {
     if (process.env.EXPO_OS === 'web') return;
@@ -279,6 +280,7 @@ export function SavePopup({
     },
     mutationFn: async (generation: number) => {
       authSessionLifecycle.assertCurrent(generation);
+      if (listsUnavailable) throw new Error('Load your Lists before creating a new one.');
       const name = newListName.trim();
       if (!name) throw new Error('List name is required.');
       const token = await SecureStore.getItemAsync('access_token');
@@ -370,7 +372,7 @@ export function SavePopup({
       ).values()];
       setMessage({
         type: 'success',
-        text: result.saved
+        text: result.selectedListIds.length > 0
           ? `Saved to ${result.selectedListIds.length} ${result.selectedListIds.length === 1 ? 'List' : 'Lists'}.`
           : 'Removed from Lists.',
       });
@@ -441,9 +443,10 @@ export function SavePopup({
   const isSaving = saveMutation.isPending || pending.save;
   const isCreatingList = createMutation.isPending || pending.create;
   const mutationBusy = isSaving || isCreatingList;
+  const selectionBlocked = mutationBusy || listsUnavailable;
 
   const toggleList = (listId: string) => {
-    if (mutationBusy) return;
+    if (selectionBlocked) return;
     setMessage(null);
     const next = new Set(selectedIds);
     if (next.has(listId)) next.delete(listId);
@@ -453,7 +456,7 @@ export function SavePopup({
   };
 
   const beginListCreation = () => {
-    if (mutationBusy) return;
+    if (selectionBlocked) return;
     setMessage(null);
     setIsCreating(true);
     void haptic();
@@ -494,15 +497,15 @@ export function SavePopup({
               {
                 backgroundColor: palette.background,
                 borderColor: palette.border,
-                height: sheetHeight,
+                maxHeight: sheetMaxHeight,
                 marginBottom: Math.max(insets.bottom, 12),
                 transform: [{ translateY }],
                 width: sheetWidth,
               },
             ]}
           >
-            <View style={{ flex: 1, minHeight: 0 }} accessibilityElementsHidden={isCreating} importantForAccessibility={isCreating ? "no-hide-descendants" : "auto"}>
-            <ScrollView style={{ flex: 1, minHeight: 0 }} keyboardDismissMode="on-drag" keyboardShouldPersistTaps="handled" contentContainerStyle={{ flexGrow: 1 }}>
+            <View style={{ flexShrink: 1, minHeight: 0 }} accessibilityElementsHidden={isCreating} importantForAccessibility={isCreating ? "no-hide-descendants" : "auto"}>
+            <ScrollView style={{ flexGrow: 0, flexShrink: 1, minHeight: 0 }} keyboardDismissMode="on-drag" keyboardShouldPersistTaps="handled">
             <View style={styles.header}>
               <View style={styles.headerText}>
                 <Text style={[styles.title, { color: palette.text }]}>Save repository</Text>
@@ -533,12 +536,27 @@ export function SavePopup({
               ) : null}
             </View>
 
+            {listsQuery.isError ? (
+              <View style={{ alignItems: 'center', gap: 12, paddingVertical: 16 }}>
+                <Text accessibilityLiveRegion="polite" style={{ color: palette.danger, textAlign: 'center' }}>
+                  Could not load all your Lists. Retry before saving.
+                </Text>
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel="Retry loading Lists"
+                  accessibilityState={{ disabled: listsQuery.isFetching }}
+                  disabled={listsQuery.isFetching}
+                  onPress={() => void listsQuery.refetch()}
+                  style={{ minHeight: 44, paddingHorizontal: 20, justifyContent: 'center', borderRadius: 12, backgroundColor: palette.elevated }}
+                >
+                  <Text style={{ color: palette.text }}>Retry</Text>
+                </Pressable>
+              </View>
+            ) : null}
             <View style={styles.collectionList}>
               {listsQuery.isLoading && lists.length === 0 ? (
                 <ListLayoutPreview loading />
-              ) : listsQuery.isError && lists.length === 0 ? (
-                <ListLayoutPreview />
-              ) : filteredLists.length ? (
+              ) : listsQuery.isError && lists.length === 0 ? null : filteredLists.length ? (
                 <>
                   <View style={styles.collectionGrid}>
                     {filteredLists.map((list) => {
@@ -582,8 +600,8 @@ export function SavePopup({
                           <Pressable
                             accessibilityLabel={`${list.name}, ${list.repositoryCount} repositories`}
                             accessibilityRole="checkbox"
-                            accessibilityState={{ checked: selected, disabled: mutationBusy }}
-                            disabled={mutationBusy}
+                            accessibilityState={{ checked: selected, disabled: selectionBlocked }}
+                            disabled={selectionBlocked}
                             onPress={() => toggleList(membershipId)}
                             style={StyleSheet.absoluteFill}
                           />
@@ -621,6 +639,7 @@ export function SavePopup({
                     {
                       backgroundColor: palette.elevatedStrong,
                       borderColor: '#55555A',
+                      opacity: selectionBlocked ? 0.5 : 1,
                     },
                   ]}
                 >
@@ -644,8 +663,8 @@ export function SavePopup({
                   <Pressable
                     accessibilityLabel="Create new List"
                     accessibilityRole="button"
-                    accessibilityState={{ disabled: mutationBusy }}
-                    disabled={mutationBusy}
+                    accessibilityState={{ disabled: selectionBlocked }}
+                    disabled={selectionBlocked}
                     onPress={beginListCreation}
                     style={StyleSheet.absoluteFill}
                   />
@@ -725,11 +744,11 @@ export function SavePopup({
                   </View>
                   <TextInput
                     accessibilityLabel="List name"
-                    editable={!mutationBusy}
+                    editable={!selectionBlocked}
                     ref={createInputRef}
                     maxLength={100}
                     onChangeText={(value) => { setNewListName(value); if (message) setMessage(null); }}
-                    onSubmitEditing={() => { if (newListName.trim() && !mutationBusy) createMutation.mutate(renderGeneration); }}
+                    onSubmitEditing={() => { if (newListName.trim() && !selectionBlocked) createMutation.mutate(renderGeneration); }}
                     placeholder="List name"
                     placeholderTextColor={palette.secondary}
                     returnKeyType="done"
@@ -741,13 +760,13 @@ export function SavePopup({
                   ) : null}
                   <Pressable
                     accessibilityRole="button"
-                    accessibilityState={{ disabled: !newListName.trim() || mutationBusy }}
-                    disabled={!newListName.trim() || mutationBusy}
-                    onPress={() => { if (newListName.trim() && !mutationBusy) createMutation.mutate(renderGeneration); }}
+                    accessibilityState={{ disabled: !newListName.trim() || selectionBlocked }}
+                    disabled={!newListName.trim() || selectionBlocked}
+                    onPress={() => { if (newListName.trim() && !selectionBlocked) createMutation.mutate(renderGeneration); }}
                     style={({ pressed }) => [
                       styles.createSubmit,
                       { backgroundColor: palette.saveAccent },
-                      (!newListName.trim() || mutationBusy) && styles.disabled,
+                      (!newListName.trim() || selectionBlocked) && styles.disabled,
                       pressed && styles.pressed,
                     ]}
                   >
@@ -780,15 +799,15 @@ const styles = StyleSheet.create({
   collectionList: { padding: 14, gap: 9 },
   loadingList: { minHeight: 190, position: 'relative' },
   previewLoadingOverlay: { position: 'absolute', left: 0, top: 0, right: 0, bottom: 0, alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(29,29,31,0.34)' },
-  skeletonGrid: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between', rowGap: COLLECTION_GRID_GAP },
-  skeleton: { width: '30%', minHeight: 108, flexGrow: 0, flexShrink: 0, borderWidth: 1, borderRadius: 15, padding: 10, gap: 8 },
+  skeletonGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: COLLECTION_GRID_GAP },
+  skeleton: { flexBasis: '45%', maxWidth: '49%', minHeight: 108, flexGrow: 1, flexShrink: 0, borderWidth: 1, borderRadius: 15, padding: 10, gap: 8 },
   skeletonTopRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   skeletonIcon: { width: 32, height: 32, borderRadius: 10 },
   skeletonCheck: { width: 20, height: 20, borderWidth: 1.4, borderRadius: 7 },
   skeletonLine: { width: '72%', height: 9, borderRadius: 5 },
   skeletonLineShort: { width: '48%', height: 7, borderRadius: 4 },
-  collectionGrid: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between', rowGap: COLLECTION_GRID_GAP },
-  collectionCard: { width: '31.5%', minHeight: 92, flexGrow: 0, flexShrink: 0, borderWidth: 1.2, borderRadius: 16, overflow: 'hidden', boxShadow: '0 4px 14px rgba(0,0,0,0.18)' },
+  collectionGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: COLLECTION_GRID_GAP },
+  collectionCard: { flexBasis: '45%', maxWidth: '49%', minHeight: 92, flexGrow: 1, flexShrink: 0, borderWidth: 1.2, borderRadius: 16, overflow: 'hidden', boxShadow: '0 4px 14px rgba(0,0,0,0.18)' },
   collectionCardContent: { flex: 1, padding: 10, gap: 7 },
   collectionTopRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   collectionIcon: { width: 32, height: 32, borderRadius: 10, alignItems: 'center', justifyContent: 'center' },
@@ -800,7 +819,7 @@ const styles = StyleSheet.create({
   centerState: { minHeight: 174, paddingHorizontal: 24, alignItems: 'center', justifyContent: 'center', gap: 8 },
   stateTitle: { fontFamily: 'NataSans-Bold', fontSize: 16, textAlign: 'center' },
   stateBody: { fontFamily: 'NataSans-Regular', fontSize: 12.5, lineHeight: 18, textAlign: 'center' },
-  footer: { borderTopWidth: 1, paddingHorizontal: 14, paddingTop: 10, paddingBottom: 14, gap: 9 },
+  footer: { flexShrink: 0, borderTopWidth: 1, paddingHorizontal: 14, paddingTop: 10, paddingBottom: 14, gap: 9 },
   footerActions: { flexDirection: 'row', alignItems: 'center', gap: 10 },
   newButtonFrame: {
     flex: 1,

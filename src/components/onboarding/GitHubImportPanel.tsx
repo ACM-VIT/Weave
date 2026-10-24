@@ -101,7 +101,7 @@ function GitHubImportPanelBody({ userId, identityDraft, onSaved, onManual, api =
     {current.busy ? <View accessibilityLiveRegion="polite" style={{ flexDirection: 'row', gap: Spacing.two, alignItems: 'center' }}>
       <ActivityIndicator color={APP_THEME.primary} /><Text style={{ fontFamily: Fonts.sans, color: REFERENCE_THEME.textStrong }}>{current.busy}…</Text>
     </View> : null}
-    {current.error ? <Text accessibilityRole="alert" style={{ fontFamily: Fonts.sans, color: REFERENCE_THEME.text, fontSize: 14, lineHeight: 21 }}>{current.error}</Text> : null}
+    {current.error ? <Text accessibilityRole="alert" style={{ fontFamily: Fonts.sans, color: REFERENCE_THEME.danger, fontSize: 14, lineHeight: 21 }}>{current.error}</Text> : null}
     {current.cleanupNeeded ? <ImportButton label="Retry closing preview" onPress={() => void closePreview()} disabled={Boolean(current.busy)} /> : null}
     {current.refreshNeeded && !current.cleanupNeeded ? <ImportButton label="Retry account refresh" onPress={() => void run('Refreshing account', async (_signal, isCurrent) => {
       await onSaved(); if (isCurrent()) update(userId, { refreshNeeded: false }); continueManual(isCurrent);
@@ -133,8 +133,8 @@ function GitHubImportPanelBody({ userId, identityDraft, onSaved, onManual, api =
 function ImportButton({ label, onPress, primary = false, disabled = false }: { label: string; onPress: () => unknown; primary?: boolean; disabled?: boolean }) {
   return <Pressable accessibilityRole="button" accessibilityLabel={label} accessibilityState={{ disabled }}
       disabled={disabled} onPress={onPress} style={({ pressed }) => ({ minHeight: 48, justifyContent: 'center', alignItems: 'center',
-        padding: Spacing.three, borderRadius: 18, opacity: disabled ? 0.45 : pressed ? 0.7 : 1,
-        backgroundColor: primary ? APP_THEME.primary : 'transparent' })}>
+        padding: Spacing.three, borderRadius: 12, borderWidth: 1, borderColor: primary ? APP_THEME.primary : REFERENCE_THEME.border, opacity: disabled ? 0.45 : pressed ? 0.7 : 1,
+        backgroundColor: primary ? APP_THEME.primary : REFERENCE_THEME.surfaceElevated })}>
       <Text style={{ fontFamily: Fonts.sans, fontSize: 15, fontWeight: '600', color: primary ? APP_THEME.primaryForeground : REFERENCE_THEME.textStrong }}>{label}</Text>
     </Pressable>;
 }

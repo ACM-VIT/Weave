@@ -1,6 +1,7 @@
 import { KeyboardSurface } from '@/components/keyboard/keyboard-layout';
 import { useMemo, useState } from 'react';
-import { ActivityIndicator, FlatList, Pressable, ScrollView, StatusBar, Text, View } from 'react-native';
+import { ActivityIndicator, Pressable, ScrollView, StatusBar, Text, View } from 'react-native';
+import { FlashList } from '@shopify/flash-list';
 import { router } from 'expo-router';
 import { randomUUID } from 'expo-crypto';
 import { useNetInfo } from '@react-native-community/netinfo';
@@ -76,6 +77,7 @@ export default function ExploreScreen() {
     : mergeExplorePages(browse.data?.pages ?? []).map(repo => ({ type: 'repository', id: repo.id, data: repo })),
   [searching,search.data?.pages,browse.data?.pages]);
   const current = searching ? search : browse;
+  const twoColumns = searching || activeTab === 'Latest';
   const periods = browse.data?.pages[0]?.availablePeriods ?? [];
   const selectedPeriod = browse.data?.pages[0]?.period ?? period;
   const fallback = searching && search.data?.pages.some(page => page.mode === 'lexical');
@@ -98,20 +100,26 @@ export default function ExploreScreen() {
         </Pressable>)}
       </ScrollView> : null}
     </View>
-    <FlatList<SearchItem>
+    <FlashList<SearchItem>
       key={`${searching ? group : activeTab}:${query}:${selectedPeriod ?? ''}`}
       data={items}
       keyExtractor={item => `${item.type}:${item.id}`}
-      numColumns={!searching && activeTab === 'Latest' ? 2 : 1}
-      columnWrapperStyle={!searching && activeTab === 'Latest' ? { gap: 10 } : undefined}
-      renderItem={({ item }) => !searching && activeTab === 'Latest' && item.type === 'repository'
-        ? <View style={{ flex: 1 }}><RepoCard repo={item.data} onPress={() => router.push(searchResultHref(item))} /></View>
-        : <SearchRow item={item} />}
+      numColumns={twoColumns ? 2 : 1}
+      masonry={twoColumns}
+      optimizeItemArrangement={false}
+      getItemType={item => item.type}
+      renderItem={({ item }) => (
+        <View style={{ minWidth: 0, paddingHorizontal: 5, paddingBottom: 10 }}>
+          {twoColumns && item.type === 'repository'
+            ? <RepoCard repo={item.data} onPress={() => router.push(searchResultHref(item))} />
+            : <SearchRow item={item} />}
+        </View>
+      )}
+      showsVerticalScrollIndicator={false}
       keyboardDismissMode="on-drag"
       keyboardShouldPersistTaps="handled"
       contentInsetAdjustmentBehavior="automatic"
-      initialNumToRender={8} maxToRenderPerBatch={8} windowSize={7}
-      contentContainerStyle={{ paddingHorizontal: 20, paddingTop: 8, paddingBottom: Math.max(120,insets.bottom+96), gap: 10 }}
+      contentContainerStyle={{ paddingHorizontal: 15, paddingTop: 8, paddingBottom: Math.max(120,insets.bottom+96) }}
       ListHeaderComponent={<>
         {offline && items.length > 0 ? <Text accessibilityLiveRegion="polite" style={{ color: '#FFD60A', paddingBottom: 10 }}>You’re offline. Showing previous results.</Text> : null}
         {fallback ? <Text accessibilityLiveRegion="polite" style={{ color: '#FFD60A', paddingBottom: 10 }}>Showing keyword matches. Some related results may be unavailable.</Text> : null}

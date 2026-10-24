@@ -19,7 +19,7 @@ type Props = {
   maxWidth: number;
   paddingTop: number;
   paddingBottom: number;
-  boards: SectionQuery<ListDto[]>;
+  boards?: SectionQuery<ListDto[]>;
   collections: SectionQuery<ListDto[]>;
   pinned: SectionQuery<unknown[]>;
   openList: (params: Record<string, string>) => void;
@@ -33,11 +33,11 @@ type ListRow =
 
 export function ProfileContentLists(props: Props) {
   const { viewer, compact, boards, collections, pinned, openList } = props;
-  const boardItems = boards.data;
+  const boardItems = boards?.data;
   const collectionItems = collections.data;
   const pinnedItems = pinned.data;
-  const boardsPending = boards.isPending;
-  const boardsError = boards.isError;
+  const boardsPending = boards?.isPending ?? false;
+  const boardsError = boards?.isError ?? false;
   const collectionsPending = collections.isPending;
   const collectionsError = collections.isError;
   const pinnedPending = pinned.isPending;
@@ -57,7 +57,7 @@ export function ProfileContentLists(props: Props) {
     const ready = [...(boardItems ?? []), ...(collectionItems ?? [])]
       .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
     result.push(...ready.map(item => ({ key: `${item.source}:${item.id}`, kind: 'list' as const, item })));
-    if (boardItems?.length === 0 && collectionItems?.length === 0 && !boardsError && !collectionsError) {
+    if ((boardItems?.length ?? 0) === 0 && collectionItems?.length === 0 && !boardsPending && !boardsError && !collectionsError) {
       result.push({ key: 'empty', kind: 'empty' });
     }
     return result;
@@ -77,7 +77,8 @@ export function ProfileContentLists(props: Props) {
         onPress={() => openList({ boardName: 'Pinned', collectionType: 'pinned' })} />;
     } else if (row.kind === 'state') {
       const query = props[row.section];
-      const label = row.section === 'pinned' ? 'pinned repositories' : row.section === 'boards' ? 'legacy Lists' : 'Lists';
+      if (!query) return null;
+      const label = row.section === 'pinned' ? 'pinned repositories' : 'Lists';
       content = <View style={{ minHeight: 70, alignItems: 'center', justifyContent: 'center', gap: 10, paddingVertical: 12 }}>
         {query.isPending ? <>
           <ActivityIndicator color="#63E08A" accessibilityLabel={`Loading ${label}`} />
