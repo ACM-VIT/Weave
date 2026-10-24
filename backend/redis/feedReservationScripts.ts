@@ -62,6 +62,14 @@ if #discarded > 0 then
     if not seen[cjson.decode(item).repo_id] then redis.call('rpush', KEYS[3], item) end
   end
 end
+-- Refill may drain a queue whose publication renewed or shortened its TTL.
+-- Capture that exact deadline before the final LPOP deletes the list key.
+local queueTtl = redis.call('pttl', KEYS[1])
+if queueTtl > 0 then
+  local time = redis.call('time')
+  local now = tonumber(time[1])*1000+math.floor(tonumber(time[2])/1000)
+  redis.call('hset', KEYS[2], 'queue_deadline_ms', now+queueTtl)
+end
 for i = 1, tonumber(ARGV[2]) do
   local item = redis.call('lpop', KEYS[1])
   if not item then break end
