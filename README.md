@@ -61,6 +61,20 @@ Home keeps at most 500 cards for back-scroll and in-memory offline history.
 The retention policy and local validation are documented in
 [Home feed history](docs/runbooks/home-feed-history.md).
 
+## Validation exception
+
+`npm run doctor` keeps all checks enabled, with one package-level React Native
+Directory metadata exception: `react-native-render-html` 6.3.4 is reported as
+unmaintained. We retain the existing pure-JavaScript renderer for canonical
+README content instead of changing rendering behavior as part of the CI baseline.
+This accepts the maintenance warning; it does not establish ongoing upstream
+support or native-device compatibility. Its use remains covered by the existing
+README sanitization/link tests, typecheck and app build checks. Dependency-version
+checks and `npm audit` remain enabled. Revisit this exception when replacing or
+upgrading the renderer; do not add other packages merely to silence Doctor.
+
+The package-specific setting uses [Expo's documented Doctor configuration](https://docs.expo.dev/versions/latest/config/package-json/#reactnativedirectorycheck).
+
 ## Contributing
 
 Read [CONTRIBUTING.md](CONTRIBUTING.md) and [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md). Backend/ML work must also follow the file ownership, contract-freeze, migration-numbering, and controlled-integration rules in the two-person work plan.
