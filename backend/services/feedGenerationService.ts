@@ -256,13 +256,17 @@ export class FeedGenerationService {
         incrementMetric('feed_v2_invalid_repository_recommendations_total');
       }
       if (items.length > 0 && canonicalItems.length === 0) throw new Error('ML returned no active canonical repositories.');
+      const exposureEligible = this.persistence.listExposureEligibleRepositoryIds
+        ? new Set(await this.persistence.listExposureEligibleRepositoryIds(userId, canonicalItems.map(item => item.repo_id)))
+        : activeRepoIds;
       const eligible = new Set(await this.persistence.listPreferenceEligibleRepositoryIds(userId, canonicalItems.map(item => item.repo_id)));
-      const usableItems = canonicalItems.filter(item => eligible.has(item.repo_id));
+      const usableItems = canonicalItems.filter(item => eligible.has(item.repo_id) && exposureEligible.has(item.repo_id));
       if (canonicalItems.length > 0 && usableItems.length === 0) {
         await this.persistence.recordGenerationAttempt?.({
           generation_id: generationId, user_id: userId, feed_version: feedVersion, mode,
           status: 'coalesced', latency_ms: Date.now() - started, result_count: 0,
-          error_code: 'FEED_PREFERENCE_FILTERED',
+          error_code: canonicalItems.some(item => eligible.has(item.repo_id))
+            ? 'FEED_RECENT_EXPOSURE_FILTERED' : 'FEED_PREFERENCE_FILTERED',
         });
         return { status: 'capacity', feedVersion };
       }
@@ -285,7 +289,7 @@ export class FeedGenerationService {
         });
       // A nonempty ML batch filtered entirely by existing exclusions is not
       // proof of exhaustion either. Never publish it as a terminal empty page.
-      if (this.indexedRefill && response.items.length > 0 && canonical.length === 0) {
+      if (response.items.length > 0 && canonical.length === 0) {
         await this.persistence.recordGenerationAttempt?.({
           generation_id: generationId, user_id: userId, feed_version: feedVersion, mode,
           status: 'coalesced', latency_ms: Date.now() - started, result_count: 0,

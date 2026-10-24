@@ -27,6 +27,7 @@ integration('real SQL precedes Redis publication and mixed generation provenance
   const persistence = new PostgresFeedPersistence();
   const user = crypto.randomUUID(), suffix=user.replaceAll('-',''), repos=[crypto.randomUUID(),crypto.randomUUID()];
   const writerRole = 'pipeline_writer_'+suffix, feedVersion=9007199254740993n;
+  const fixturePassword = crypto.randomBytes(24).toString('hex');
   let writer: ReturnType<typeof postgres> | undefined, seeded=false, roleCreated=false, selected=0;
   const generations: string[]=[];
   try {
@@ -42,8 +43,8 @@ integration('real SQL precedes Redis publication and mixed generation provenance
     await persistence.getFeedVersion(user);
     await sql`UPDATE app.user_feed_state SET feed_version=${feedVersion.toString()}::bigint WHERE user_id=${user}::uuid`;
     await persistence.recordMlProfileDelivered(user,1n);
-    await sql.unsafe(`CREATE ROLE ${writerRole} LOGIN IN ROLE ghsocial_scoring_writer`);roleCreated=true;
-    const writerUrl = new URL(process.env.DATABASE_URL!);writerUrl.username=writerRole;writerUrl.password='';
+    await sql.unsafe(`CREATE ROLE ${writerRole} LOGIN PASSWORD '${fixturePassword}' IN ROLE ghsocial_scoring_writer`);roleCreated=true;
+    const writerUrl = new URL(process.env.DATABASE_URL!);writerUrl.username=writerRole;writerUrl.password=fixturePassword;
     writer=postgres(writerUrl.toString(),{prepare:false,max:2});
     const storage = new PostgresScoringPersistence(writer);
     const config: Extract<ScoringCaptureConfig,{enabled:true}> = {enabled:true,policy:{policyId:'fixture',policyVersion:'1',retentionDays:30},
@@ -141,6 +142,14 @@ integration('real SQL precedes Redis publication and mixed generation provenance
     assert.doesNotMatch(JSON.stringify(delivered),/record_digest|scoring_reference|input_base64|scoring_context/);
     const replay=await feed.getFeed(user,request);
     assert.deepEqual(replay.items.map(item=>[item.generation_id,item.exposure_id]),delivered.items.map(item=>[item.generation_id,item.exposure_id]));
+    assert.deepEqual(await persistence.getRecentPersonalizedEntries(user,feedVersion,2,[],crypto.randomUUID()), [],
+      'newly delivered captures remain excluded in another browsing session');
+    // Later phases test private provenance recovery after the product exposure
+    // window, retaining the exact captured rows and original serve identities.
+    const ageExposures = async () => {
+      await sql`UPDATE telemetry.feed_serves SET created_at=now()-interval '8 days' WHERE user_id=${user}::uuid`;
+    };
+    await ageExposures();
     const historical=await persistence.getRecentPersonalizedEntries(user,feedVersion,2,[],crypto.randomUUID());
     assert.deepEqual(historical.map(item=>item.generation_id),[generationA,generationB]);
     assert.ok(historical.every(item=>item.scoring_reference?.generation_id===item.generation_id));
@@ -184,6 +193,7 @@ integration('real SQL precedes Redis publication and mixed generation provenance
     // reservation, then let a fresh request regenerate. No impression/seen
     // state may be invented for a valid neighbour in the rejected batch.
     for(const failure of ['revoked','expired','purged'] as const) {
+      await ageExposures();
       selected=0;await service().generate(user,1);const invalidGeneration=generations.at(-1)!;
       selected=1;await service().generate(user,1);
       if(failure==='revoked')await sql`INSERT INTO private_scoring.generation_witnesses(generation_id,event_type) VALUES(${invalidGeneration}::uuid,'revoked')`;

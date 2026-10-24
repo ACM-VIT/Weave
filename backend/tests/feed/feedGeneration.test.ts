@@ -108,6 +108,22 @@ class CapturingRecommendations implements RecommendationPort {
   }
 }
 
+for (const remaining of [[otherRepoId], []]) {
+  test(`generation filters exact recent exposure before publication (${remaining.length} unseen)`, async () => {
+    const persistence = new GenerationPersistence();
+    Object.assign(persistence, { listExposureEligibleRepositoryIds: async () => remaining });
+    const queue = new GenerationQueue();
+    const result = await new FeedGenerationService(persistence, queue, new CapturingRecommendations()).generate(userId);
+    if (remaining.length) {
+      assert.deepEqual(result, { status: 'generated', feedVersion: 1n, count: 1 });
+      assert.deepEqual(queue.entries.map(item => item.repo_id), remaining);
+    } else {
+      assert.equal(result.status, 'capacity');
+      assert.equal(queue.published, false, 'filtering a nonempty provider batch must not publish false exhaustion');
+    }
+  });
+}
+
 test('feed generation sends followed-owner repositories as bounded ML context', async () => {
   const persistence = new GenerationPersistence();
   const queue = new GenerationQueue();
@@ -547,4 +563,14 @@ test('mixed inactive and disliked candidates retain invalid diagnostics and a fi
   assert.equal(invalidRecommendations()-before,1);
   assert.equal(records.length,1); assert.equal(records[0].status,'coalesced');
   assert.equal(records[0].error_code,'FEED_PREFERENCE_FILTERED');
+});
+
+test('a batch entirely excluded by cross-session hints remains retryable in default queue mode', async () => {
+  const persistence = new GenerationPersistence();
+  persistence.listExcludedRepositoryIds = async () => [socialRepoId, otherRepoId];
+  const queue = new GenerationQueue();
+  const result = await new FeedGenerationService(persistence, queue, new CapturingRecommendations()).generate(userId);
+  assert.deepEqual(result, { status: 'capacity', feedVersion: 1n });
+  assert.equal(queue.published, false);
+  assert.equal(queue.released, true);
 });

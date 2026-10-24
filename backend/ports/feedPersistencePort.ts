@@ -34,6 +34,10 @@ export class FeedPreferenceChangedError extends Error {
   constructor() { super('Current repository preferences changed; retry the feed request.'); }
 }
 
+export class FeedExposureChangedError extends Error {
+  constructor() { super('A repository was recently delivered or impressed; retry with fresh candidates.'); }
+}
+
 export class FeedProvenanceDependencyError extends Error {
   constructor() { super('FEED_PROVENANCE_DEPENDENCY_UNAVAILABLE'); }
 }
@@ -45,6 +49,8 @@ export class FeedProvenanceUnavailableError extends Error {
 export interface FeedPersistencePort {
   /** Current explicit negatives are independent of bounded exposure exclusions. */
   listPreferenceEligibleRepositoryIds(userId: string, repoIds: string[]): Promise<string[]>;
+  /** Exact cross-session window check; implementations also fence at createServe. */
+  listExposureEligibleRepositoryIds?(userId: string, repoIds: string[]): Promise<string[]>;
   getGenerationContext?(userId: string): Promise<FeedGenerationContext | null>;
   recordMlProfileDelivered?(userId: string, profileVersion: bigint): Promise<boolean>;
   hasServedFeed?(userId: string, feedVersion: bigint): Promise<boolean>;

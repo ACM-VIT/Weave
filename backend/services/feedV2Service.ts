@@ -1,5 +1,5 @@
 import type { FeedIntentScope } from '../contracts/feedIntent.js';
-import { FeedPreferenceChangedError } from '../ports/feedPersistencePort.js';
+import { FeedExposureChangedError, FeedPreferenceChangedError } from '../ports/feedPersistencePort.js';
 import crypto from 'node:crypto';
 import { performance } from 'node:perf_hooks';
 
@@ -417,6 +417,7 @@ export class FeedV2Service {
         for (const repository of fallback) {
           if (repository.status === 'active') byId.set(repository.repo_id, repository);
         }
+        if (entries.length === 0) throw new PersonalizedFeedUnavailableError(generationError);
         source = 'fallback';
         incrementMetric('feed_v2_fallback_total');
       } else if (!generationCompleted) throw new PersonalizedFeedUnavailableError(generationError);
@@ -426,8 +427,15 @@ export class FeedV2Service {
     // to the immutable same-request replay returned above.
     try {
       const eligible = new Set(await this.persistence.listPreferenceEligibleRepositoryIds(userId, entries.map(entry => entry.repo_id)));
-      const allowed = entries.filter(entry => eligible.has(entry.repo_id)
-        && (!this.captureRequired(userId) || Boolean(entry.scoring_reference)));
+      const unexposed = this.persistence.listExposureEligibleRepositoryIds
+        ? new Set(await this.persistence.listExposureEligibleRepositoryIds(userId, entries.map(entry => entry.repo_id)))
+        : eligible;
+      const seen = new Set<string>();
+      const allowed = entries.filter(entry => {
+        if (!eligible.has(entry.repo_id) || !unexposed.has(entry.repo_id) || seen.has(entry.repo_id)
+          || (this.captureRequired(userId) && !entry.scoring_reference)) return false;
+        seen.add(entry.repo_id); return true;
+      });
       if (entries.length > 0 && allowed.length === 0) {
         if (queueAvailable) await this.queue.commit(userId, version, request.feed_request_id, token);
         throw new FeedRequestInProgressError();
@@ -507,6 +515,11 @@ export class FeedV2Service {
         this.serveWaits.notify(this.requestKey(userId, request.feed_request_id));
         if (queueAvailable) await this.queue.commit(userId, version, request.feed_request_id, token);
         return responseFromServe(replayAfterFailure);
+      }
+      if (error instanceof FeedExposureChangedError) {
+        // Returning this raced page to Redis would retry the same stale cards.
+        if (queueAvailable) await this.queue.commit(userId, version, request.feed_request_id, token);
+        throw new FeedRequestInProgressError();
       }
       if (queueAvailable && error instanceof FeedProvenanceUnavailableError) {
         // SQL proved this unserved reservation cannot be used (expired,
