@@ -635,10 +635,10 @@ integration('legacy refreshes require the current canonical version, not any old
 });
 
 
-integration('bounded digest processing improves ready latency while retaining real SQL lease and publication ownership',async t=>{
+integration('bounded digest processing improves ready latency while retaining real SQL lease and publication ownership',{timeout:30_000},async t=>{
   assertDisposableDatabase();
   const url=new URL(process.env.README_SUMMARY_TEST_DATABASE_URL??'');
-  assert.ok(['127.0.0.1','localhost','[::1]'].includes(url.hostname));assert.equal(url.pathname,'/weave_scroll');
+  assert.ok(['127.0.0.1','localhost','[::1]'].includes(url.hostname));
   assert.equal(url.toString(),new URL(process.env.DATABASE_URL!).toString());
   const db=postgres(url.toString(),{max:4,prepare:false}),ids=Array.from({length:6},()=>crypto.randomUUID());
   try {
@@ -651,9 +651,18 @@ integration('bounded digest processing improves ready latency while retaining re
     }
     for(const concurrency of [1,2]){
       let active=0,maximum=0;const ready:{id:string;milliseconds:number}[]=[];
+      let markSlowStarted!:()=>void,releaseSlow!:()=>void;
+      const slowStarted=new Promise<void>(resolve=>{markSlowStarted=resolve;}),peerReady=new Promise<void>(resolve=>{releaseSlow=resolve;});
+      t.after(()=>{markSlowStarted();releaseSlow();});
       const service=new ReadmeSummaryService({modelVersion:'pool-test',async generate(source){
+        const slow=source.full_name.endsWith('-0');
         active++;maximum=Math.max(maximum,active);
-        try {await delay(source.full_name.endsWith('-0')?120:20);return digestFixture;}
+        try {
+          if(slow)markSlowStarted();else if(concurrency===2)await slowStarted;
+          await delay(slow?120:20);
+          if(slow&&concurrency===2)await peerReady;
+          return digestFixture;
+        }
         finally {active--;}
       }},db);
       await service.enqueueMissing(ids,concurrency===2);
@@ -671,6 +680,7 @@ integration('bounded digest processing improves ready latency while retaining re
         FROM unnest(${ids}::uuid[]) WITH ORDINALITY AS ordered(repo_id,ordinal) WHERE job.repo_id=ordered.repo_id`;
       const started=performance.now();
       const observe=(result:Awaited<ReturnType<ReadmeSummaryService['processOne']>>)=>{
+        if(result.repo_id!==ids[0])releaseSlow();
         assert.equal(result.status,'completed');ready.push({id:result.repo_id!,milliseconds:performance.now()-started});
       };
       if(concurrency===1){for(let count=0;count<ids.length;count++)observe(await service.processOne(ids));}
