@@ -399,7 +399,7 @@ export function RepositoryDetailScreen({ repositoryId,navigationToken }: { repos
       {summaryVisible ? <ReadmePopup
         isVisible contentKind="summary" onClose={() => setSummaryVisible(false)}
         readmeText={prepareReadmeSummaryDocument({ ...repository, readmeDigest: summaryQuery.digest })}
-        readmeSource={{ fullName: repository.fullName, githubUrl: repository.githubUrl }}
+        readmeSource={readmeSource} mediaMarkdown={repository.readmeFull}
         title={repository.name}
       /> : null}
       {readmeVisible ? <ReadmePopup

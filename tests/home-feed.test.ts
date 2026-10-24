@@ -7,32 +7,21 @@ const unavailable = Object.assign(new Error('Preparing recommendations'), { stat
 const repository = { repo_id:'10000000-0000-4000-8000-000000000001', full_name:'team/project', likes_count:7,
   viewer_reaction:null, description:'Source description', readme_md:'# Source README' };
 
-test('Home browses canonical repositories after first-page ML unavailability and preserves real counters',async()=>{
-  const calls:string[]=[];
-  const page=await loadHomeFeedPage(null,{
-    personalized:async()=>{calls.push('personalized');throw unavailable;},
-    discovery:async(offset,limit)=>{calls.push(`catalogue:${offset}:${limit}`);return [{...repository,serve_id:'unexpected-attribution',position:99}];},
-  });
-  assert.deepEqual(calls,['personalized','catalogue:0:10']);
-  assert.equal(page.mode,'discovery');assert.equal(page.nextCursor,null);
-  const mapped=mapFeedRepository(page.items[0]);assert.ok(mapped);
-  assert.equal(mapped.stats.likes,7);assert.equal(mapped.description,'Source description');
-  assert.equal(mapped.serveId,null);assert.equal(mapped.feedPosition,null);
-  assert.equal(canContinueHomeFeed(page.mode,1),true,'Product reactions do not invalidate catalogue pagination');
-  assert.equal(canContinueHomeFeed('personalized',1),false,'Personalized cursors still respect feed-version invalidation');
+test('Home propagates an unavailable personalized feed instead of showing recently imported repositories',async()=>{
+  let catalogueCalls=0;
+  await assert.rejects(loadHomeFeedPage(null,{
+    personalized:async()=>{throw unavailable;},
+    discovery:async()=>{catalogueCalls++;return [repository];},
+  }),error=>error===unavailable);
+  assert.equal(catalogueCalls,0);
 });
 
-test('discovery pagination stays in catalogue mode without repeatedly calling unavailable ML',async()=>{
-  let personalizedCalls=0;
-  const readers={personalized:async()=>{personalizedCalls++;throw unavailable;},discovery:async(offset:number,limit:number)=>{
-    assert.equal(limit,10);return Array.from({length:10},(_,index)=>({...repository,repo_id:`repo-${offset+index}`}));
-  }};
-  const first=await loadHomeFeedPage(null,readers);
-  const second=await loadHomeFeedPage(first.nextCursor,readers);
-  assert.equal(first.nextCursor,'discovery:10');assert.equal(second.nextCursor,'discovery:20');
-  assert.equal(personalizedCalls,1);assert.equal(second.items[0].repo_id,'repo-10');
-  const overlap={...second,items:[first.items[9],...second.items]};
-  assert.equal(homeFeedItems([first,overlap]).length,20);
+test('old catalogue cursors expire rather than continuing a nonpersonalized Home feed',async()=>{
+  let calls=0;
+  await assert.rejects(loadHomeFeedPage('discovery:10',{
+    personalized:async()=>{calls++;throw unavailable;},discovery:async()=>{calls++;return [];},
+  }),error=>(error as {code?:string}).code==='FEED_CURSOR_STALE');
+  assert.equal(calls,0);
 });
 
 test('authentication, offline, generic API failures and later personalized-page errors do not trigger discovery',async()=>{
@@ -54,7 +43,7 @@ test('available personalized feed stays intact; deliberate first-page refresh ca
 });
 
 test('catalogue reaction patches preserve item identity, counts and source mode',async()=>{
-  const page=await loadHomeFeedPage(null,{personalized:async()=>{throw unavailable;},discovery:async()=>[repository]});
+  const page={mode:'discovery' as const,feedVersion:'0',items:[repository],nextCursor:null};
   const before=mapFeedRepository(page.items[0]);assert.ok(before);
   const patched=patchFeedReaction({pages:[page],pageParams:[null]},{repoId:repository.repo_id},'like');assert.ok(patched);
   const after=mapFeedRepository(patched.pages[0].items[0]);assert.ok(after);
@@ -76,4 +65,21 @@ test('direct follow invalidation blocks old personalized cursors without droppin
   assert.equal(client.getQueryData(key),loaded,'Cards stay mounted with their original query data');
   assert.equal(canContinueHomeFeed('discovery',invalidations),true);
   stop();client.clear();
+});
+
+
+test('a slow first generation retries the same request and keeps personalized attribution',async()=>{
+  const { requestFeedWithRetry }=await import('../src/services/feedTransport');
+  const request={feed_request_id:'request',session_id:'session',limit:10,cursor:null};
+  const sent:unknown[]=[];let catalogueCalls=0;
+  const expected={items:[{...repository,serve_id:'durable-serve',position:0}],nextCursor:null,feedVersion:'1'};
+  const page=await loadHomeFeedPage(null,{
+    personalized:()=>requestFeedWithRetry(request,async body=>{
+      sent.push(body);if(sent.length===1)throw unavailable;return expected;
+    },undefined,async()=>undefined,true),
+    discovery:async()=>{catalogueCalls++;return [repository];},
+  });
+  assert.equal(sent.length,2);assert.equal(sent[0],sent[1]);
+  assert.equal(page.mode,'personalized');assert.equal(page.items[0].serve_id,'durable-serve');
+  assert.equal(catalogueCalls,0);
 });

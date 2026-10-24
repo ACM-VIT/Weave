@@ -2,36 +2,18 @@ import type { QueryClient } from '@tanstack/react-query';
 import type { FeedPage } from '../api/feed';
 import type { RepositoryApiPayload } from '../api/repositories';
 
-export const DISCOVERY_PAGE_SIZE = 10;
-const DISCOVERY_CURSOR = /^discovery:(0|[1-9]\d{0,5})$/;
-
 type HomeFeedReaders = {
   personalized: (cursor: string | null) => Promise<FeedPage>;
-  discovery: (offset: number, limit: number) => Promise<RepositoryApiPayload[]>;
+  discovery?: (offset: number, limit: number) => Promise<RepositoryApiPayload[]>;
 };
 
-/** Browse the canonical catalogue only after an explicit first-page ML failure. */
+/** Home retains recommendation semantics when generation outlives one HTTP wait. */
 export async function loadHomeFeedPage(cursor: string | null, readers: HomeFeedReaders): Promise<FeedPage> {
-  let offset = 0;
   if (cursor?.startsWith('discovery:')) {
-    const match = DISCOVERY_CURSOR.exec(cursor);
-    if (!match) throw new Error('The repository page has expired. Refresh Home to start again.');
-    offset = Number(match[1]);
-  } else {
-    try {
-      return { ...await readers.personalized(cursor), mode: 'personalized' };
-    } catch (error) {
-      const failure = error as { status?: number; code?: string };
-      if (cursor !== null || failure.status !== 503 || failure.code !== 'PERSONALIZED_FEED_UNAVAILABLE') throw error;
-    }
+    throw Object.assign(new Error('The repository page has expired. Refresh Home to start again.'),
+      { status: 400, code: 'FEED_CURSOR_STALE' });
   }
-  const items = await readers.discovery(offset, DISCOVERY_PAGE_SIZE);
-  // Catalogue entries have no recommendation serve/position attribution.
-  const canonicalItems = items.map(({ serve_id: _serve, position: _position, feed_version: _version, ...item }) => item);
-  return {
-    mode: 'discovery', feedVersion: '0', items: canonicalItems,
-    nextCursor: items.length === DISCOVERY_PAGE_SIZE ? `discovery:${offset + DISCOVERY_PAGE_SIZE}` : null,
-  };
+  return { ...await readers.personalized(cursor), mode: 'personalized' };
 }
 
 /** Offset pages may overlap when ingestion updates the catalogue during browsing. */

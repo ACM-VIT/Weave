@@ -33,7 +33,6 @@ import {
 } from '../../constants/feedbackActions';
 import { CommentSheet, type CommentComposerState } from './CommentSheet';
 import { SaveSwipeGestureContext } from './DescriptionCard';
-import { ReadmePopup } from './ReadmePopup';
 import { FeedReadmePopup } from './FeedReadmePopup';
 import { prepareReadmeSummaryDocument } from '@/utils/readme';
 import { RepositoryScreen } from './RepositoryScreen';
@@ -290,6 +289,7 @@ export function RepositoryFeedItem({
     updateSaveRevealState,
   ]);
 
+  const boundaryHeight = boundary ? 56 : 0;
   const saveRevealAnimatedStyle = useAnimatedStyle(() => ({
     transform: [{ translateX: saveRevealTranslateX.get() }],
   }));
@@ -302,7 +302,7 @@ export function RepositoryFeedItem({
         accessibilityElementsHidden={!isSaveRevealOpen}
         importantForAccessibility={isSaveRevealOpen ? 'yes' : 'no-hide-descendants'}
         pointerEvents={isSaveRevealOpen ? 'auto' : 'none'}
-        style={[styles.saveReveal, { width: SAVE_REVEAL_WIDTH }]}
+        style={[styles.saveReveal, { width: SAVE_REVEAL_WIDTH, bottom: boundaryHeight }]}
       >
         <Pressable
           accessibilityHint="Opens the Save dialog to choose a list"
@@ -356,7 +356,7 @@ export function RepositoryFeedItem({
               }}
               onSavePress={openSavePopup}
               onSharePress={() => setIsShareVisible(true)}
-              pageHeight={Math.max(1, pageHeight - (boundary ? 56 : 0))}
+              pageHeight={Math.max(1, pageHeight - boundaryHeight)}
               pageWidth={pageWidth}
               repository={repository}
             />
@@ -416,20 +416,8 @@ export function RepositoryFeedItem({
       /> : null}
       {isOriginalReadmeVisible ? <FeedReadmePopup repository={repository} onClose={() => setIsOriginalReadmeVisible(false)} /> : null}
       {isReadmeVisible ? (
-        <ReadmePopup
-          isVisible
-          onClose={() => setIsReadmeVisible(false)}
-          contentKind="summary"
-          readmeText={expandedSummary}
-          readmeSource={{
-            fullName: repository.fullName,
-            githubUrl: repository.githubUrl,
-            readmeBaseUrl: repository.readmeBaseUrl,
-            readmeDefaultBranch: repository.readmeDefaultBranch,
-            readmeSourcePath: repository.readmeSourcePath,
-          }}
-          title={repository.name}
-        />
+        <FeedReadmePopup repository={repository} onClose={() => setIsReadmeVisible(false)}
+          summaryText={expandedSummary} />
       ) : null}
     </View>
   );

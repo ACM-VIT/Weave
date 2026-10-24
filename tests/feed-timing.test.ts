@@ -31,15 +31,14 @@ test('ready and first-visible have distinct clocks through actual pagination and
   assert.ok(!JSON.stringify(snapshotFeedTiming()).includes('private-repository'));
 });
 
-test('fallback readiness includes the failed personalized attempt; cancellation is separate from success', async () => {
+test('unavailable recommendations record failure; cancellation is separate from success', async () => {
   let clock = 0;
-  const discovery = await measureFeedLoad(() => loadHomeFeedPage(null, {
-    personalized: async () => { clock = 40; throw { status: 503, code: 'PERSONALIZED_FEED_UNAVAILABLE' }; },
-    discovery: async () => { clock = 90; return []; },
-  }), true, () => clock);
-  assert.equal(discovery.timing?.readyAtMs, 90);
-  assert.equal(discovery.timing?.mode, 'discovery');
-  assert.equal(count('feed_ready', 'discovery', 'empty'), 1);
+  const before = count('feed_ready', 'unknown', 'failure');
+  const unavailable = { status: 503, code: 'PERSONALIZED_FEED_UNAVAILABLE' };
+  await assert.rejects(measureFeedLoad(() => loadHomeFeedPage(null, {
+    personalized: async () => { clock = 40; throw unavailable; },
+  }), true, () => clock), error => error === unavailable);
+  assert.equal(count('feed_ready', 'unknown', 'failure'), before + 1);
   const failed = count('feed_ready', 'unknown', 'cancelled');
   const error = Object.assign(new Error('cancelled private token'), { name: 'AbortError' });
   await assert.rejects(measureFeedLoad(async () => { throw error; }, true), error);

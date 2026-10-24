@@ -81,3 +81,28 @@ test('full README rendering keeps safe images and strips unsafe image attributes
   assert.doesNotMatch(html, /http:\/\/localhost/);
   assert.match(html, />Private<\/span>/);
 });
+
+test('commit-pinned README images retain the source revision for relative and root paths', () => {
+  const commit = '9006287f27e720000cc8763ae4cd150789b8571d';
+  const root = `https://raw.githubusercontent.com/ACM-VIT/weave/${commit}/`;
+  const pinned = { ...context, readmeBaseUrl: `${root}docs/` };
+  assert.equal(resolveReadmeImageUrl('./images/demo.png', pinned), `${root}docs/images/demo.png`);
+  assert.equal(resolveReadmeImageUrl('../assets/demo.png', pinned), `${root}assets/demo.png`);
+  assert.equal(resolveReadmeImageUrl('/assets/demo.png', pinned), `${root}assets/demo.png`);
+  assert.equal(resolveReadmeImageUrl('../../other-repo/demo.png', pinned), null);
+  assert.equal(resolveReadmeImageUrl('./demo.png', { ...pinned,
+    readmeBaseUrl: `https://raw.githubusercontent.com/other/repo/${commit}/docs/` }),
+    'https://raw.githubusercontent.com/ACM-VIT/weave/refs/heads/main/docs/demo.png');
+});
+
+test('summary media keeps real screenshots and GIFs while excluding badges and code examples', async () => {
+  const {extractReadmeSummaryImages}=await import('../src/utils/readme-images');
+  const markdown='![build](https://img.shields.io/badge/build-green)\n'
+    +'![Screenshot](./images/screen.png)\n<img src="./demo.gif" alt="Demo">\n'
+    +'```md\n![Example](https://cdn.example.com/fake.png)\n```\n'
+    +'![duplicate](./images/screen.png)';
+  assert.deepEqual(extractReadmeSummaryImages(markdown,context),[
+    {alt:'Screenshot',url:'https://raw.githubusercontent.com/ACM-VIT/weave/refs/heads/main/docs/images/screen.png'},
+    {alt:'Demo',url:'https://raw.githubusercontent.com/ACM-VIT/weave/refs/heads/main/docs/demo.gif'},
+  ]);
+});

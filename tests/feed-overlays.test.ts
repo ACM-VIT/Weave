@@ -26,7 +26,7 @@ function repository(id: string): RepositoryData {
 
 // Keep the real row, all four overlays, React state and QueryClient observers.
 // Replace only native rendering/animation and external I/O boundaries.
-function feed(ids: string[], reducedMotion = false, attribution?: { ownerId: string; repository: Partial<RepositoryData> }) {
+function feed(ids: string[], reducedMotion = false, attribution?: { ownerId: string; repository: Partial<RepositoryData>; boundary?: React.ReactNode }) {
   const client = new QueryClient({ defaultOptions: {
     queries: { retry: false, gcTime: Infinity }, mutations: { retry: false },
   } });
@@ -78,7 +78,10 @@ function feed(ids: string[], reducedMotion = false, attribution?: { ownerId: str
     },
     'react-native-worklets': {scheduleOnRN: (fn: (...args: any[]) => void, ...args: any[]) => fn(...args)},
     'react-native-gesture-handler': {Gesture: {Pan: () => gesture}, GestureDetector: ({children}: any) => children},
-    './SafeReadmeImage': {SafeReadmeImageRenderer: 'SafeReadmeImageRenderer'},
+    './ReadmeImagePopup': {ReadmeImagePopup: 'ReadmeImagePopup'},
+    './ReadmeVideoPopup': {ReadmeVideoPopup: 'ReadmeVideoPopup'},
+    './ReadmeVideo': {ReadmeVideo: 'ReadmeVideo'},
+    './SafeReadmeImage': {SafeReadmeImage: 'SafeReadmeImage', SafeReadmeImageRenderer: 'SafeReadmeImageRenderer'},
     './DescriptionCard': {SaveSwipeGestureContext: React.createContext(null)},
     '@/components/keyboard/keyboard-layout': {KeyboardSurface: 'KeyboardSurface'},
     'expo-blur': { BlurView: 'BlurView' },
@@ -143,7 +146,7 @@ function feed(ids: string[], reducedMotion = false, attribution?: { ownerId: str
     loadSource('src/components/home/ReadmePopup.tsx').ReadmePopup,
   ];
   const renderRows = () => React.createElement(QueryClientProvider, { client },
-    ids.map(id => React.createElement(Row, { key: id, repository: { ...repository(id), ...attribution?.repository }, pageWidth: 400, pageHeight: 800,
+    ids.map(id => React.createElement(Row, { key: id, repository: { ...repository(id), ...attribution?.repository }, boundary: attribution?.boundary, pageWidth: 400, pageHeight: 800,
       onQueueActivity: (event: unknown) => events.push(event) })),
   );
   return {
@@ -152,6 +155,18 @@ function feed(ids: string[], reducedMotion = false, attribution?: { ownerId: str
     setHeight(value:number) {shareHeight=value;},
     setReadme(value: () => Promise<any>) {loadReadme=value;},
     get readmePopupProps() {return root.root.findAllByType(overlayTypes[3])[0]?.props;},
+    get saveRevealBottom() {
+      const layers=root.root.findAllByType('View').map(node=>Object.assign({},...(Array.isArray(node.props.style)?node.props.style:[node.props.style])));
+      return layers.find(style=>style.backgroundColor==='#123520')?.bottom;
+    },
+    get imagePopup() {return root.root.findAllByType('ReadmeImagePopup')[0];},
+    get previewImages() {return root.root.findAllByType('SafeReadmeImage').map(node=>node.props.url);},
+    async openImage() {await act(async()=>{root.root.findAllByType('Pressable').find(node=>node.props.accessibilityLabel?.startsWith('Enlarge README image:'))!.props.onPress();});},
+    async closeImage() {await act(async()=>{this.imagePopup.props.onClose();});},
+    get videoPopup() {return root.root.findAllByType('ReadmeVideoPopup')[0];},
+    async openVideo() {await act(async () => {root.root.findAllByType('ReadmeVideo')[0].props.onPress();});},
+    async closeVideo() {await act(async () => {this.videoPopup.props.onClose();});},
+    get videoUrls() {return root.root.findAllByType('ReadmeVideo').map(node=>node.props.url);},
     get renderedReadmeHtml() {return root.root.findAllByType('RenderHtml').map(node=>node.props.source.html).join('');},
     get githubActionScrollable() {return this.button('Open on GitHub').findAllByType('Text').length>0
       && root.root.findAllByType('ScrollView').some(scroll=>scroll.findAllByType('Pressable').some(node=>node.props.accessibilityLabel==='Open on GitHub'));},
@@ -601,4 +616,77 @@ test('a failed background refresh retains the cached original README', async () 
     assert.ok(app.renderedReadmeHtml.includes('Cached original README'), 'background failure must not replace cached content');
     assert.ok(!app.messages.includes('Background refresh unavailable'));
   } finally { await app.unmount(); }
+});
+
+test('a failed background refresh retains cached summary media without a false error', async () => {
+  const app = feed(['repo'], true, { ownerId: 'viewer', repository: { readmeFull: null } });
+  const key = repositoryDetailQueryKey('repo', 'viewer');
+  const cached = '![Architecture](https://cdn.example.com/diagram.png)\n<video src="https://cdn.example.com/demo.mp4"></video>';
+  app.client.setQueryData(key, { ...repository('repo'), readmeFull: cached }, { updatedAt: Date.now() - 120_000 });
+  app.setReadme(async () => { throw new Error('Background refresh unavailable'); });
+  await app.mount();
+  try {
+    await app.open(0, 'onReadFullPress');
+    await waitForReadmeState(() => app.client.getQueryState(key)?.status === 'error');
+    assert.equal(app.client.getQueryData<any>(key)?.readmeFull, cached);
+    assert.ok(app.renderedReadmeHtml.includes('Summary.'));
+    assert.deepEqual(app.previewImages, ['https://cdn.example.com/diagram.png']);
+    assert.deepEqual(app.videoUrls, ['https://cdn.example.com/demo.mp4']);
+    assert.equal(app.readmePopupProps.mediaMessage, null);
+    assert.equal(app.readmePopupProps.errorMessage, null);
+    assert.equal(app.readmePopupProps.loading, false);
+    assert.ok(!app.messages.includes('Could not load README videos.'));
+  } finally { await app.unmount(); }
+});
+
+
+test('Read more keeps the summary and lazily hydrates original README videos', async () => {
+  const app = feed(['repo'], true, { ownerId: 'viewer', repository: { readmeFull: null } });
+  app.setReadme(async () => ({ ...repository('repo'), readmeFull: '<video src="https://cdn.example.com/demo.mp4"></video>' }));
+  await app.mount();
+  try {
+    assert.deepEqual(app.requests, []);
+    await app.open(0, 'onReadFullPress');
+    await waitForReadmeState(() => app.videoUrls.length > 0);
+    assert.deepEqual(app.requests, ['readme:repo']);
+    assert.equal(app.readmePopupProps.contentKind, 'summary');
+    assert.ok(app.renderedReadmeHtml.includes('Summary.'));
+    assert.deepEqual(app.videoUrls, ['https://cdn.example.com/demo.mp4']);
+    assert.equal(app.videoPopup, undefined, 'summary previews do not mount a player');
+    await app.openVideo();
+    assert.equal(app.videoPopup.props.url, 'https://cdn.example.com/demo.mp4');
+    await app.closeVideo();
+    assert.equal(app.videoPopup, undefined);
+    assert.ok(app.renderedReadmeHtml.includes('Summary.'), 'closing video preserves the summary');
+    await app.requestClose();
+    assert.deepEqual(app.videoUrls, [], 'closing removes the previews');
+  } finally { await app.unmount(); }
+});
+
+
+test('the swipe-save background excludes the last-card loading footer', async()=>{
+  const app=feed(['repo'],true,{ownerId:'viewer',repository:{},boundary:React.createElement('View',{style:{height:56}})});
+  await app.mount();
+  try {assert.equal(app.saveRevealBottom,56,'the green reveal must end above the loading footer');}
+  finally {await app.unmount();}
+});
+
+
+test('summary image tap opens a separate viewer and returns to the retained digest',async()=>{
+  const app=feed(['repo'],true,{ownerId:'viewer',repository:{readmeFull:null}});
+  app.setReadme(async()=>({...repository('repo'),readmeFull:'![Architecture](https://cdn.example.com/diagram.png)'}));
+  await app.mount();
+  try{
+    await app.open(0,'onReadFullPress');
+    await waitForReadmeState(()=>app.previewImages.length===1);
+    assert.equal(app.imagePopup,undefined);
+    await app.openImage();
+    assert.equal(app.imagePopup.props.url,'https://cdn.example.com/diagram.png');
+    assert.equal(app.imagePopup.props.alt,'Architecture');
+    assert.equal(app.videoPopup,undefined);
+    await app.closeImage();
+    assert.equal(app.imagePopup,undefined);
+    assert.ok(app.renderedReadmeHtml.includes('Summary.'));
+    assert.equal(app.mountedOverlays,1);
+  }finally{await app.unmount();}
 });

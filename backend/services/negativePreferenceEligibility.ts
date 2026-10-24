@@ -1,3 +1,4 @@
+import { unfamiliarRepositorySql } from './familiarRepositoryEligibility.js';
 /** Authoritative current product preferences, independent of bounded exposures.
  * Read before NEW candidate publication/serving; never rewrite durable replay.
  * This reader is not a concurrent fresh-serve fence (owned by the serving flow).
@@ -10,6 +11,7 @@ const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 export const NEGATIVE_PREFERENCE_ELIGIBILITY_SQL = `
 SELECT repo.repo_id FROM app.repos repo
 WHERE repo.repo_id=ANY($1::uuid[]) AND repo.status='active'
+  AND ${unfamiliarRepositorySql('$2::uuid')}
   AND EXISTS(SELECT 1 FROM app.users viewer WHERE viewer.user_id=$2::uuid AND viewer.status='active')
   AND NOT EXISTS(
     SELECT 1 FROM app.reactions negative

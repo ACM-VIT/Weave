@@ -115,6 +115,26 @@ test('future compatible provider uses explicit endpoint, model and key without O
   });
 });
 
+test('OpenAI Luna digest requests use supported completion budget and sampling mode', async () => {
+  await withProviderEnvironment({README_SUMMARY_PROVIDER:'openai-compatible',README_SUMMARY_API_KEY:'openai-test-key',
+    README_SUMMARY_MODEL_ID:'gpt-6-luna',README_SUMMARY_BASE_URL:'https://api.openai.com/v1',README_SUMMARY_RPM_LIMIT:'0'},async()=>{
+    let request:Record<string,any>={};
+    const fetcher:typeof fetch=async(url,options)=>{
+      assert.equal(url,'https://api.openai.com/v1/chat/completions');
+      request=JSON.parse(String(options?.body));
+      return new Response(JSON.stringify({choices:[{finish_reason:'stop',message:{content:JSON.stringify(digestFixture)}}]}));
+    };
+    const generator=createReadmeSummaryGenerator(fetcher);
+    assert.equal(generator.modelVersion,'openai-compatible:gpt-6-luna');
+    assert.deepEqual(await generator.generate(source),digestFixture);
+    assert.equal(request.max_tokens,undefined);
+    assert.equal(request.max_completion_tokens,1400);
+    assert.equal(request.reasoning_effort,'none');
+    assert.equal(request.provider,undefined);
+    assert.equal(request.response_format.json_schema.strict,true);
+  });
+});
+
 test('provider configuration fails closed instead of silently sending a key to another service',async()=>{
   await withProviderEnvironment({README_SUMMARY_PROVIDER:'unknown'},async()=>{
     assert.throws(()=>createReadmeSummaryGenerator(),/readme_summary_provider_invalid/);
