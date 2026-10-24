@@ -155,7 +155,7 @@ export default function ProfileScreen() {
         horizontalPadding={horizontalPadding} maxWidth={isTablet ? 760 : 600}
         paddingTop={Math.max(insets.top, 20) + (isTablet ? 28 : 16)}
         paddingBottom={Math.max(insets.bottom, 20) + (isTablet ? 28 : 16)}
-        boards={sections.boards} collections={sections.collections} pinned={pinnedRepositoriesQuery}
+        collections={sections.collections} pinned={pinnedRepositoriesQuery}
         openList={params => router.push(boardHref(params))}
       />
 

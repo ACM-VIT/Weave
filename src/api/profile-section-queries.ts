@@ -2,7 +2,7 @@ import type { ListDto } from '../models/list';
 import type { ProfileRepositoryPage } from './profile-data';
 
 type SectionLoaders = {
-  boards: (signal: AbortSignal) => Promise<ListDto[]>;
+  boards?: (signal: AbortSignal) => Promise<ListDto[]>;
   collections: (signal: AbortSignal) => Promise<ListDto[]>;
 };
 
@@ -16,8 +16,11 @@ export function profileSectionQueries(viewer: string | undefined, loaders: Secti
   const key = (section: string) => ['profile-content', viewer, section] as const;
   return {
     boards: {
-      queryKey: key('boards'), enabled: Boolean(viewer), staleTime: 60_000,
-      queryFn: ({ signal }: { signal: AbortSignal }) => loaders.boards(signal),
+      queryKey: key('boards'), enabled: Boolean(viewer && loaders.boards), staleTime: 60_000,
+      queryFn: ({ signal }: { signal: AbortSignal }) => {
+        if (!loaders.boards) throw new Error('Legacy Lists are disabled.');
+        return loaders.boards(signal);
+      },
     },
     collections: {
       queryKey: key('collections'), enabled: Boolean(viewer), staleTime: 60_000,

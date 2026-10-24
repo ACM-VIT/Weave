@@ -87,14 +87,8 @@ export async function getRepositoryLists(
   signal?: AbortSignal,
 ): Promise<ListDto[]> {
   const query = `repository_id=${encodeURIComponent(repositoryId)}`;
-  const [collections, boards] = await Promise.all([
-    apiV2<{ items: CollectionListRecord[] }>(`/collections?${query}`, { signal }, token),
-    apiV2<{ items: LegacyBoardListRecord[] }>(`/boards?${query}`, { signal }, token),
-  ]);
-  return [
-    ...collections.items.map(mapCollectionList),
-    ...boards.items.map(mapLegacyBoardList),
-  ];
+  const collections = await apiV2<{ items: CollectionListRecord[] }>(`/collections?${query}`, { signal }, token);
+  return collections.items.map(mapCollectionList);
 }
 
 export async function createRepositoryList(
@@ -115,6 +109,7 @@ export async function syncRepositoryLists(
   event: InteractionEventV2,
 ): Promise<ListMembershipSyncResult> {
   const { collectionIds, boardIds } = partitionListMembershipKeys(selectedListIds);
+  if (boardIds.length) throw new Error('Refresh your Lists before saving.');
   const result = await apiV2<{
     repository_id: string;
     collection_ids: string[];
@@ -124,15 +119,12 @@ export async function syncRepositoryLists(
     save_state_changed: boolean;
   }>('/collections/save', {
     method: 'POST',
-    body: JSON.stringify({ repositoryId, collectionIds, boardIds, event }),
+    body: JSON.stringify({ repositoryId, collectionIds, event }),
   }, token);
 
   return {
     repositoryId: result.repository_id,
-    selectedListIds: result.selected_list_ids ?? [
-      ...result.collection_ids.map((id) => listMembershipKey({ source: 'collection', id })),
-      ...result.board_ids.map((id) => listMembershipKey({ source: 'legacy-board', id })),
-    ],
+    selectedListIds: result.collection_ids.map((id) => listMembershipKey({ source: 'collection', id })),
     saved: result.saved,
     saveStateChanged: result.save_state_changed,
   };
