@@ -3,7 +3,6 @@
   "main": "index.js",
   "version": "2.0.0",
   "dependencies": {
-    "@expo-google-fonts/noto-sans": "^0.4.2",
     "@expo/ui": "~56.0.26",
     "@expo/vector-icons": "^15.0.2",
     "@react-native-community/datetimepicker": "9.1.0",
@@ -66,13 +65,12 @@
   "scripts": {
     "start": "expo start",
     "dev": "expo start --web",
-    "reset-project": "node ./scripts/reset-project.js",
     "android": "expo start --android",
     "ios": "expo start --ios",
     "web": "expo start --web",
     "lint": "expo lint",
     "typecheck": "tsc --noEmit",
-    "test": "tsx --test tests/**/*.test.ts",
+    "test": "tsx --test --test-concurrency=4 tests/**/*.test.ts",
     "doctor": "expo-doctor",
     "export:all": "expo export --platform all",
     "build:android:artifact": "node ./scripts/build-android-artifact.mjs"

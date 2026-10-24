@@ -57,3 +57,8 @@ backend/dist/
 .env.development
 .env.production
 .package-lock.json
+
+# Generated QA builds and one-off ingestion output
+/artifacts/
+/repositories-batch-01.json
+/repositories-batch-01-result.json
