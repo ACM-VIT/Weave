@@ -11,12 +11,12 @@
     ],
     "telemetry": [
       "counter_reconciliation_progress", "feed_prewarm_jobs", "feed_serve_items", "feed_item_provenance", "feed_serves", "generation_attempts", "interaction_events",
-      "ml_outbox", "readme_summary_jobs", "sessions", "user_repo_engagement"
+      "ml_outbox", "feed_intent_sessions", "pending_model_feedback", "feed_model_generations", "readme_summary_jobs", "sessions", "user_repo_engagement"
     ],
     "private_scoring": ["scoring_generations", "scoring_inputs", "generation_witnesses", "export_admission_fence", "export_authorizations", "subject_revocations", "subject_export_fences", "export_snapshots", "export_snapshot_labels"]
   },
   "indexes": [
-    "feed_serves_feed_request_id_key", "feed_serves_user_created_idx", "feed_serves_user_session_idx",
+    "feed_model_generations_expired_body", "feed_model_generations_scope", "model_outbox_owner_version", "feed_intent_sessions_owner", "feed_serves_feed_request_id_key", "feed_serves_user_created_idx", "feed_serves_user_session_idx",
     "interaction_events_serve_repo_idx", "interaction_events_user_received_idx",
     "feed_prewarm_ready_idx", "feed_prewarm_expiry_idx", "generation_attempts_published_idx", "ml_outbox_idempotency_key_key", "ml_outbox_ready_idx", "ml_outbox_feedback_predecessor_idx", "app_refresh_tokens_user_idx",
     "app_comments_repo_idx", "app_comments_user_idx", "app_boards_user_idx",
@@ -35,9 +35,9 @@
     "repo_readme_summaries_active_uidx", "readme_summary_jobs_pkey",
     "readme_summary_jobs_repo_id_content_version_content_hash_pr_key", "readme_summary_jobs_pending_idx",
     "repo_card_summaries_repo_active_idx", "repos_full_name_key",
-    "repos_github_id_key", "trending_one_active_period_uidx", "export_snapshots_expiry_idx", "export_snapshots_principal_idx", "scoring_generations_expiry_idx", "feed_item_provenance_owner_created_idx", "feed_item_provenance_exposure_key"
+    "repos_github_id_key", "trending_one_active_period_uidx", "export_snapshots_expiry_idx", "export_snapshots_principal_idx", "scoring_generations_expiry_idx", "feed_item_provenance_owner_created_idx", "feed_item_provenance_generation_owner_idx", "feed_item_provenance_exposure_key"
   ],
-  "functions": ["private_scoring.export_timestamp", "private_scoring.lock_subject", "private_scoring.enforce_subject_capture_barrier", "private_scoring.authorize_export", "private_scoring.create_export_snapshot", "private_scoring.seal_export_labels", "private_scoring.read_export_snapshot", "private_scoring.revoke_subject_capture", "private_scoring.purge_scoring_private","activate_repo_summary", "enforce_comment_parent_repo",
+  "functions": ["telemetry.prune_model_transients", "private_scoring.export_timestamp", "private_scoring.lock_subject", "private_scoring.enforce_subject_capture_barrier", "private_scoring.authorize_export", "private_scoring.create_export_snapshot", "private_scoring.seal_export_labels", "private_scoring.read_export_snapshot", "private_scoring.revoke_subject_capture", "private_scoring.purge_scoring_private","activate_repo_summary", "enforce_comment_parent_repo",
     "private_scoring.reconcile_publication_witnesses", "private_scoring.record_generation_witness", "private_scoring.validate_feed_item_provenance", "private_scoring.persist_generation", "private_scoring.exact_keys", "private_scoring.finite_input", "private_scoring.reject_update"],
   "roles": ["ghsocial_backend", "ghsocial_scoring_writer", "ghsocial_scoring_exporter", "ghsocial_scoring_retention"],
   "columns": ["telemetry.interaction_events.impression_event_id","private_scoring.export_snapshots.frozen_rows", "private_scoring.export_snapshot_labels.labels", "private_scoring.subject_revocations.revoked_at","app.user_github_unlinks.provider_identity_id", "telemetry.feed_item_provenance.exposure_id",

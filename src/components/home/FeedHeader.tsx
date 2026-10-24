@@ -8,7 +8,7 @@ import { REFERENCE_THEME } from '@/constants/theme';
 
 const WEAVE_LOGO = require('../../../assets/images/logo/weavelogo.png');
 
-export function FeedHeader({ pageWidth, discovery = false, onRefresh, refreshing = false }: { pageWidth: number; discovery?: boolean; onRefresh?: () => void; refreshing?: boolean }) {
+export function FeedHeader({ pageWidth, discovery = false, onRefresh, refreshing = false,statusMessage }: { pageWidth: number; discovery?: boolean; onRefresh?: () => void; refreshing?: boolean;statusMessage?:string|null }) {
   const insets = useSafeAreaInsets();
   const compact = pageWidth < 360;
   const outerGutter = pageWidth < 330 ? 10 : 14;
@@ -62,7 +62,7 @@ export function FeedHeader({ pageWidth, discovery = false, onRefresh, refreshing
             Wea<Text style={styles.brandAccent}>v</Text>e
           </Text>
         </View>
-        {discovery ? <Text accessibilityLabel="Recently updated repositories. Not personalized recommendations."
+        {statusMessage?<Text accessibilityLiveRegion="polite" style={styles.sourceLabel}>{statusMessage}</Text>:discovery ? <Text accessibilityLabel="Recently updated repositories. Not personalized recommendations."
           style={styles.sourceLabel}>Recently updated{'\n'}Not personalized</Text> : null}
         {onRefresh && <Pressable accessibilityRole="button" accessibilityLabel="Refresh recommendations"
           disabled={refreshing} onPress={onRefresh} style={styles.refresh}>

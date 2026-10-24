@@ -1,3 +1,7 @@
+import type { FeedIntentScope } from '../contracts/feedIntent.js';
+import { ModelLaneAuthorityService } from '../services/modelLaneAuthorityService.js';
+import { FeedIntentScopeService } from '../services/feedIntentScopeService.js';
+import { IntentFeedGateway } from '../services/intentFeedGateway.js';
 import {getScoringExportConfig} from '../config/scoringExport.js';
 import {createPrivateScoringExport} from '../adapters/postgresScoringExport.js';
 import {createPrivateScoringRetention,getScoringRetentionConfig} from '../workers/scoringRetentionWorker.js';
@@ -90,6 +94,8 @@ export class ApplicationRuntime {
   readonly ml = this.flags.ML_V2_RECOMMENDATIONS || this.flags.ML_FEEDBACK_OUTBOX
     ? new MlV2Client()
     : null;
+  readonly orderedProfiles=this.ml?new ModelLaneAuthorityService(this.ml):null;
+  readonly modelScopes=this.orderedProfiles?new FeedIntentScopeService(this.orderedProfiles):null;
   readonly generation = this.ml && this.flags.ML_V2_RECOMMENDATIONS
     ? new FeedGenerationService(
       this.persistence,
@@ -97,7 +103,7 @@ export class ApplicationRuntime {
       this.ml,
       600,
       15_000,
-      new PersonaRepairService(this.persistence, this.ml),
+      new PersonaRepairService(this.persistence, this.ml,this.orderedProfiles??undefined),
       this.indexedFeedRefill,
       socialCandidatesConfiguration(),
       feedGenerationBudget(),
@@ -108,7 +114,7 @@ export class ApplicationRuntime {
   readonly shadow = this.ml ? new FeedShadowService(this.persistence, this.ml) : null;
   readonly outbox = new OutboxService();
   readonly prewarm = new FeedPrewarmService(sqlClient, this.generation ? feedGenerationBudget().timeoutMs + 60_000 : 60_000);
-  readonly feed = new FeedV2Service(
+  readonly legacyFeed = new FeedV2Service(
     this.persistence,
     this.queue,
     this.generation
@@ -128,6 +134,34 @@ export class ApplicationRuntime {
     } : undefined,
     userId => this.scoringCapture.enabled && this.scoringCapture.userIds.has(userId),
   );
+  readonly feed=this.modelScopes?new IntentFeedGateway(this.legacyFeed,this.persistence,this.modelScopes,scope=>this.createIntentFeed(scope),process.env.JWT_SECRET):this.legacyFeed;
+  private createIntentFeed(scope:FeedIntentScope):FeedV2Service{
+    if(!this.ml||!this.modelScopes)throw new Error('Model feed dependencies are unavailable.');
+    const persistence=new PostgresFeedPersistence();
+    const context=persistence.getGenerationContext.bind(persistence);
+    persistence.getGenerationContext=async userId=>{
+      const current=await context(userId);
+      return current&&userId===scope.userId&&current.modelPolicySha256===scope.policySha256?{...current,delivered:true}:null;
+    };
+    const recent=persistence.getRecentPersonalizedEntries.bind(persistence);
+    persistence.getRecentPersonalizedEntries=async(...args)=>{
+      const entries=await recent(...args);
+      const ids=entries.map(item=>item.generation_id).filter((id):id is string=>Boolean(id));
+      const rows=await sqlClient`SELECT generation_id FROM telemetry.feed_model_generations WHERE generation_id=ANY(${ids}::uuid[])
+        AND user_id=${scope.userId}::uuid AND queue_scope=${scope.queueScope} AND valid_until_ms>floor(extract(epoch FROM clock_timestamp())*1000)::bigint`;
+      const valid=new Set(rows.map(row=>String(row.generation_id)));return entries.filter(entry=>entry.generation_id&&valid.has(entry.generation_id));
+    };
+    const queue=this.queue.withScope(scope.queueScope);
+    const generation=new FeedGenerationService(persistence,queue,this.ml,600,15000,undefined,this.indexedFeedRefill,
+      socialCandidatesConfiguration(),feedGenerationBudget(),this.scoringCapture.enabled&&this.privateScoring?
+        {config:this.scoringCapture,persistence:this.privateScoring.port}:undefined,
+      {scope,isCurrent:()=>this.modelScopes!.isCurrent(scope),persist:(id,applied)=>this.modelScopes!.persistGeneration(scope,id,applied)});
+    return new FeedV2Service(persistence,queue,(owner,limit,excluded,session)=>generation.generate(owner,Math.max(45,limit),excluded,'live',session),
+      false,1500,25,process.env.JWT_SECRET,mlTimeoutMs('FEED_FOREGROUND_WAIT_MS',5000),this.indexedFeedRefill?{
+        lowWatermark:this.indexedFeedRefill.lowWatermark,generate:(owner,version,session)=>generation.generate(owner,this.indexedFeedRefill!.maxQueueDepth,[],'live',session,undefined,
+          {expectedVersion:version,lowWatermark:this.indexedFeedRefill!.lowWatermark})}:undefined,
+      owner=>this.scoringCapture.enabled&&this.scoringCapture.userIds.has(owner),scope);
+  }
   readonly supervisor = new WorkerSupervisor();
   readonly privateScoringExport: ReturnType<typeof createPrivateScoringExport>;
   readonly privateScoringRetention: ReturnType<typeof createPrivateScoringRetention>;

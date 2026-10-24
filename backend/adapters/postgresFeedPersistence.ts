@@ -1,3 +1,6 @@
+import { lockModelLane } from '../services/modelOperationService.js';
+import { lockedSession } from '../services/feedIntentSessionService.js';
+import { ModelOperationError } from '../contracts/modelOperations.js';
 import { FeedProvenanceUnavailableError, FeedProvenanceDependencyError } from '../ports/feedPersistencePort.js';
 import { loadSocialNeighborhoodRows } from '../services/socialNeighborhoodProjection.js';
 import { projectSocialCandidates, type SocialCandidateProjection } from '../services/socialCandidateProjection.js';
@@ -79,14 +82,15 @@ export class PostgresFeedPersistence implements FeedPersistencePort, FeedReconci
   async getGenerationContext(userId: string) {
     await this.getFeedVersion(userId);
     const rows = await sqlClient`
-      SELECT state.feed_version,u.profile_version,
+      SELECT state.feed_version,u.profile_version,state.model_policy_sha256,
         COALESCE(job.profile_version=u.profile_version,false) AS delivered
       FROM app.users u JOIN app.user_feed_state state USING(user_id)
       LEFT JOIN telemetry.feed_prewarm_jobs job USING(user_id)
       WHERE u.user_id=${userId}::uuid AND u.status='active'
     `;
     return rows[0] ? { feedVersion: BigInt(rows[0].feed_version),
-      profileVersion: BigInt(rows[0].profile_version), delivered: rows[0].delivered === true } : null;
+      profileVersion: BigInt(rows[0].profile_version), delivered: rows[0].delivered === true,
+      ...(rows[0].model_policy_sha256?{modelPolicySha256:String(rows[0].model_policy_sha256)}:{}) } : null;
   }
 
   async recordMlProfileDelivered(userId: string, profileVersion: bigint): Promise<boolean> {
@@ -95,7 +99,8 @@ export class PostgresFeedPersistence implements FeedPersistencePort, FeedReconci
       // access and reject an acknowledgement for a superseded profile.
       const users = await tx`SELECT user_id FROM app.users
         WHERE user_id=${userId}::uuid AND status='active'
-          AND profile_version=${profileVersion.toString()}::bigint FOR KEY SHARE`;
+          AND profile_version=${profileVersion.toString()}::bigint
+          AND NOT EXISTS(SELECT 1 FROM app.user_feed_state WHERE user_id=app.users.user_id AND model_policy_sha256 IS NOT NULL) FOR KEY SHARE`;
       if (!users.length) return false;
       await tx`INSERT INTO app.user_feed_state(user_id) VALUES(${userId}::uuid)
         ON CONFLICT(user_id) DO NOTHING`;
@@ -194,6 +199,7 @@ export class PostgresFeedPersistence implements FeedPersistencePort, FeedReconci
              profile_version,onboarding_completed
       FROM app.users
       WHERE user_id=${userId}::uuid AND status='active'
+        AND NOT EXISTS(SELECT 1 FROM app.user_feed_state WHERE user_id=app.users.user_id AND model_policy_sha256 IS NOT NULL)
       LIMIT 1
     `;
     const row = rows[0];
@@ -516,6 +522,22 @@ export class PostgresFeedPersistence implements FeedPersistencePort, FeedReconci
       await tx`SELECT user_id FROM app.users WHERE user_id=${input.user_id}::uuid FOR KEY SHARE`;
       await tx`INSERT INTO app.user_feed_state(user_id) VALUES(${input.user_id}::uuid) ON CONFLICT DO NOTHING`;
       await tx`SELECT user_id FROM app.user_feed_state WHERE user_id=${input.user_id}::uuid FOR UPDATE`;
+      const lane=await lockModelLane(tx,input.user_id);
+      if(lane){
+        const scope=input.intent_scope;
+        if(!scope||!lane.initialized||scope.userId!==input.user_id||scope.sessionId!==input.session_id||scope.policySha256!==lane.policySha256)throw new ModelOperationError('MODEL_SESSION_PENDING',409);
+        const session=await lockedSession(tx,lane,input.session_id);
+        const [frontier]=await tx`SELECT state.feed_version,state.model_operation_version,u.profile_version FROM app.user_feed_state state JOIN app.users u USING(user_id) WHERE state.user_id=${input.user_id}::uuid`;
+        if(session.status!=='active'||session.epoch!==scope.epoch||session.witnessSha256!==scope.witnessSha256
+          ||String(frontier.feed_version)!==scope.feedVersion||String(frontier.profile_version)!==scope.profileVersion
+          ||String(frontier.model_operation_version)!==scope.acceptedOperationVersion||scope.applied.applied_operation_version!==scope.acceptedOperationVersion)throw new ModelOperationError('MODEL_SESSION_PENDING',409);
+        const ids=[...new Set(input.items.map(item=>item.generation_id).filter((id):id is string=>Boolean(id)))];
+        if(input.items.some(item=>!item.generation_id))throw new ModelOperationError();
+        const generations=await tx`SELECT generation_id FROM telemetry.feed_model_generations WHERE generation_id=ANY(${ids}::uuid[])
+          AND user_id=${input.user_id}::uuid AND session_id=${input.session_id}::uuid AND queue_scope=${scope.queueScope}
+          AND valid_until_ms>floor(extract(epoch FROM clock_timestamp())*1000)::bigint FOR KEY SHARE`;
+        if(generations.length!==ids.length||BigInt(scope.applied.valid_until_ms)<=BigInt(Date.now()))throw new ModelOperationError('MODEL_SESSION_PENDING',409);
+      }else if(input.intent_scope)throw new ModelOperationError();
       // Serialize final delivery decisions within one viewer/session. A queued
       // page and durable recovery may both pass their earlier exclusion read;
       // only one may commit overlapping candidates. Retain the user-before-feed
@@ -524,10 +546,13 @@ export class PostgresFeedPersistence implements FeedPersistencePort, FeedReconci
         'feed-serve:' || ${input.user_id}::uuid::text || ':' || ${input.session_id}::uuid::text,0))`;
       const headers = await tx`
         INSERT INTO telemetry.feed_serves (
-          feed_request_id,user_id,session_id,feed_version,generation_id,source,model_version,next_cursor
+          feed_request_id,user_id,session_id,feed_version,generation_id,source,model_version,next_cursor,
+          intent_epoch,intent_epoch_started_ms,intent_epoch_witness_sha256,intent_policy_sha256
         ) SELECT
           ${input.feed_request_id}::uuid,${input.user_id}::uuid,${input.session_id}::uuid,
-          ${input.feed_version.toString()}::bigint,${input.generation_id}::uuid,${input.source},${input.model_version},${input.next_cursor}
+          ${input.feed_version.toString()}::bigint,${input.generation_id}::uuid,${input.source},${input.model_version},${input.next_cursor},
+          ${input.intent_scope?.epoch??null}::bigint,${input.intent_scope?.epochStartedMs??null}::bigint,
+          ${input.intent_scope?.witnessSha256??null},${input.intent_scope?.policySha256??null}
         WHERE ${input.source !== 'personalized'} OR NOT EXISTS (
           SELECT 1 FROM telemetry.feed_serves delivered
           JOIN telemetry.feed_serve_items seen ON seen.serve_id=delivered.serve_id
@@ -565,6 +590,11 @@ export class PostgresFeedPersistence implements FeedPersistencePort, FeedReconci
           RETURNING position,exposure_id
         `];
       }
+      // Only a successfully committed, current scoped serve counts as backend
+      // presence. Any later failure rolls this stamp back with the serve.
+      if(lane)await tx`UPDATE telemetry.feed_intent_sessions
+        SET last_presence_ms=GREATEST(last_presence_ms,floor(extract(epoch FROM clock_timestamp())*1000)::bigint)
+        WHERE session_id=${input.session_id}::uuid AND user_id=${input.user_id}::uuid AND status='active'`;
       return {serve_id:String(header.serve_id),created_at:header.created_at,provenance};
     }).catch(error => {
       if (error?.code === 'P0001' && ['FEED_PROVENANCE_INVALID','SCORING_CAPTURE_EXPIRED'].includes(error.message)) throw new FeedProvenanceUnavailableError();

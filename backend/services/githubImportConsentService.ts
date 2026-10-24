@@ -1,4 +1,4 @@
-import { withOutboxTrace } from '../observability/tracing.js';
+import { enqueueProfileDelivery, lockModelLane, withdrawPendingProfiles } from './modelOperationService.js';
 import crypto from 'node:crypto';
 import type { Sql, TransactionSql } from 'postgres';
 import { sqlClient } from '../db/index.js';
@@ -150,8 +150,7 @@ export class GitHubImportConsentService {
     const job = buildMlOnboardingJob(userId, version, { username: profile.username, fullName: profile.full_name,
       bio: profile.bio, githubUsername: profile.github_handle, avatarUrl: profile.avatar_url,
       interests: preferences.interests, skills: preferences.skills, techStack: preferences.tech_stack });
-    if (hasMlEmbeddingContext(job.profile)) await tx`INSERT INTO telemetry.ml_outbox(job_type,aggregate_id,idempotency_key,payload)
-      VALUES('onboard',${userId}::uuid,${`onboard:${userId}:${version}`},${JSON.stringify(withOutboxTrace(job))}::jsonb) ON CONFLICT DO NOTHING`;
+    if (hasMlEmbeddingContext(job.profile)) await enqueueProfileDelivery(tx,job);
     return { profile_version: String(version), completed, profile_delivery: hasMlEmbeddingContext(job.profile) ? 'pending' : 'requires_manual_context' };
   }
 
@@ -217,6 +216,8 @@ export class GitHubImportConsentService {
         if (JSON.stringify(current[field]) === JSON.stringify(applied[field])) next[field] = baseline[field];
       }
       if (state.accepted_at && !state.revoked_at) {
+        const lane=await lockModelLane(tx,userId);
+        if(lane)await withdrawPendingProfiles(tx,lane,String(profile.profile_version));
         // Retire old preference deliveries in the same transaction that revokes
         // consent, before enqueuing any restored manual-context version. Clearing
         // the token also fences workers which claimed but have not admitted I/O.

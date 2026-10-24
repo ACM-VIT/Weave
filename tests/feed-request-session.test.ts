@@ -41,3 +41,11 @@ test('a delayed feed response keeps the exact request session after caller reset
   assert.equal(sent[0].session_id, original);
   assert.equal(page.items[0].feed_session_id, original);
 });
+
+test('a historical request replay retains the backend canonical session after a new Begin',async()=>{
+  const {decodeFeedPage}=await import('../src/api/feed-data');
+  const original='00000000-0000-4000-8000-000000000001',newSession='00000000-0000-4000-8000-000000000002';
+  const page=decodeFeedPage({serve_id:original,session_id:original,feed_version:'1',next_cursor:null,
+    items:[{repo_id:newSession,position:3,repository:{}}]},newSession);
+  assert.equal(page.sessionId,original);assert.equal(page.items[0].feed_session_id,original);assert.equal(page.items[0].position,3);
+});

@@ -1,3 +1,5 @@
+import { ModelOperationError } from '../contracts/modelOperations.js';
+import { lockModelLane } from './modelOperationService.js';
 import crypto from 'node:crypto';
 import { mlTimeoutMs, resolveMlTimeouts } from '../config/ml.js';
 import { validateRepositoryCardSummary } from './mlService.js';
@@ -9,10 +11,11 @@ import { isObsoleteIdentityOnboardingJob } from './mlOnboardingService.js';
 
 export interface OutboxRow {
   outbox_id: string;
-  job_type: 'feedback' | 'onboard' | 'repo_index' | 'repo_refresh';
+  job_type: 'feedback' | 'onboard' | 'repo_index' | 'repo_refresh' | 'model_operation';
   aggregate_id: string;
   idempotency_key: string;
   payload: Record<string, unknown>;
+  operation_json?: string; source_envelope_sha256?: string; model_operation_version?: string; withdrawal_json?: string | null;
   attempts: number;
   created_at: string;
   claim_token: string;
@@ -29,7 +32,7 @@ function validateClaim(limit: number, options: OutboxClaimOptions): void {
     throw new Error('Outbox claim limit must be an integer between 1 and 1000.');
   }
   if (options.jobTypes && (!options.jobTypes.length || options.jobTypes.some(type =>
-    !['feedback', 'onboard', 'repo_index', 'repo_refresh'].includes(type)))) {
+    !['feedback', 'onboard', 'repo_index', 'repo_refresh', 'model_operation'].includes(type)))) {
     throw new Error('Outbox claim requires valid job types.');
   }
   if (options.attempts && !['first', 'retry'].includes(options.attempts)) {
@@ -108,10 +111,14 @@ export class OutboxService {
           (candidate.status='pending' AND candidate.available_at<=now())
           OR (candidate.status='claimed' AND candidate.claimed_at < now()-(${leaseMs}::text || ' milliseconds')::interval)
         )
-        AND candidate.job_type=ANY(${options.jobTypes ?? ['feedback', 'onboard', 'repo_index', 'repo_refresh']}::text[])
+        AND candidate.job_type=ANY(${options.jobTypes ?? ['feedback', 'onboard', 'repo_index', 'repo_refresh', 'model_operation']}::text[])
         AND (${options.attempts ?? null}::text IS NULL
           OR (${options.attempts ?? null}='first' AND candidate.attempts=0)
           OR (${options.attempts ?? null}='retry' AND candidate.attempts>0))
+        AND (candidate.job_type<>'model_operation' OR candidate.withdrawal_json IS NOT NULL OR NOT EXISTS(
+          SELECT 1 FROM telemetry.ml_outbox predecessor WHERE predecessor.job_type='model_operation'
+            AND predecessor.aggregate_id=candidate.aggregate_id AND predecessor.model_operation_version<candidate.model_operation_version
+            AND predecessor.status<>'delivered'))
         AND (
           candidate.job_type<>'feedback'
           OR NOT EXISTS (
@@ -156,11 +163,13 @@ export class OutboxService {
         )
         ORDER BY
           CASE candidate.job_type
+            WHEN 'model_operation' THEN 0
             WHEN 'onboard' THEN 0
             WHEN 'feedback' THEN 1
             WHEN 'repo_index' THEN 2
             ELSE 3
           END,
+          CASE WHEN candidate.job_type='model_operation' THEN candidate.model_operation_version END,
           candidate.created_at,
           CASE WHEN candidate.job_type='feedback' THEN candidate.aggregate_id END,
           CASE WHEN candidate.job_type='feedback'
@@ -191,7 +200,7 @@ export class OutboxService {
           ELSE claimed_at+(${leaseMs}::text || ' milliseconds')::interval END AS deadline
         FROM telemetry.ml_outbox
         WHERE status IN ('pending','claimed')
-          AND job_type=ANY(${options.jobTypes ?? ['feedback', 'onboard', 'repo_index', 'repo_refresh']}::text[])
+          AND job_type=ANY(${options.jobTypes ?? ['feedback', 'onboard', 'repo_index', 'repo_refresh', 'model_operation']}::text[])
           AND (${options.attempts ?? null}::text IS NULL
             OR (${options.attempts ?? null}='first' AND attempts=0)
             OR (${options.attempts ?? null}='retry' AND attempts>0))
@@ -229,7 +238,26 @@ export class OutboxService {
     });
   }
 
+  async prepareModelDelivery(row:OutboxRow):Promise<OutboxRow|null>{
+    try{return await sqlClient.begin(async tx=>{
+      const [owner]=await tx`SELECT user_id FROM app.users WHERE user_id=${row.aggregate_id}::uuid AND status='active' FOR KEY SHARE`;
+      if(!owner)return null;
+      const lane=await lockModelLane(tx,row.aggregate_id);if(!lane)return null;
+      const [current]=await tx`SELECT operation_json,source_envelope_sha256,model_operation_version,withdrawal_json FROM telemetry.ml_outbox
+        WHERE outbox_id=${row.outbox_id}::uuid AND aggregate_id=${row.aggregate_id}::uuid AND job_type='model_operation'
+          AND status='claimed' AND claim_token=${row.claim_token}::uuid FOR UPDATE`;
+      return current?{...row,operation_json:String(current.operation_json),source_envelope_sha256:String(current.source_envelope_sha256),
+        model_operation_version:String(current.model_operation_version),withdrawal_json:current.withdrawal_json==null?null:String(current.withdrawal_json)}:null;
+    });}catch{throw new ModelOperationError();}
+  }
+
   async markDelivered(row: OutboxRow): Promise<boolean> {
+    if(row.job_type==='model_operation'){
+      try{const rows=await sqlClient`UPDATE telemetry.ml_outbox SET status='delivered',delivered_at=now(),claim_token=NULL,claimed_at=NULL,last_error=NULL
+        WHERE outbox_id=${row.outbox_id}::uuid AND claim_token=${row.claim_token}::uuid AND status='claimed' RETURNING outbox_id`;
+        return rows.length===1;
+      }catch{throw new ModelOperationError();}
+    }
     if (row.job_type === 'onboard') {
       return sqlClient.begin(async tx => {
         // Revocation/provisioning lock the user before touching onboarding jobs.
@@ -411,6 +439,10 @@ export class OutboxService {
   }
 
   async markFailed(row: OutboxRow, error: string, retryable: boolean, retryAfterMs?: number): Promise<void> {
+    try{await this.markFailedInDatabase(row,error,retryable,retryAfterMs);}
+    catch(failure){if(row.job_type==='model_operation')throw new ModelOperationError();throw failure;}
+  }
+  private async markFailedInDatabase(row: OutboxRow, error: string, retryable: boolean, retryAfterMs?: number): Promise<void> {
     const ageMs = Date.now() - Date.parse(row.created_at);
     const dead = !retryable || row.attempts >= 10 || ageMs > 7 * 24 * 60 * 60_000;
     const delay = retryAfterMs == null ? retryDelayMs(row.attempts) : Math.min(15 * 60_000, Math.max(0, retryAfterMs));

@@ -3,7 +3,7 @@ import crypto from 'node:crypto';
 import { performance } from 'node:perf_hooks';
 import { observeStage, type StageOutcome } from './metrics.js';
 
-const operations = new Set(['http', 'recommendations', 'search', 'feedback', 'onboard', 'repo_index', 'repo_refresh', 'health', 'other']);
+const operations = new Set(['http', 'recommendations', 'search', 'feedback', 'onboard', 'repo_index', 'repo_refresh', 'health', 'model_operation', 'model_withdrawal', 'model_status', 'model_authority', 'other']);
 const stages = new Set(['http_completion', 'ml_transport', 'outbox_delivery']);
 interface Context { traceId: string; spanId: string; sampled: boolean }
 interface SpanRecord {
@@ -86,6 +86,8 @@ export function mlOperation(path: string): string {
     '/api/v2/feedback/batch': 'feedback', '/api/v2/users/onboard': 'onboard',
     '/api/v2/repositories/embed': 'repo_index', '/api/v2/repositories/refresh': 'repo_refresh',
     '/api/v2/health': 'health',
+    '/api/v2/model-operations': 'model_operation', '/api/v2/model-operation-withdrawals': 'model_withdrawal',
+    '/api/v2/model-operation-status': 'model_status', '/api/v2/model-authority': 'model_authority',
   };
   return Object.hasOwn(paths, path) ? paths[path] : 'other';
 }

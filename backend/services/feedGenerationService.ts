@@ -1,3 +1,6 @@
+import type { FeedIntentScope } from '../contracts/feedIntent.js';
+import type { MlAppliedModelContext } from '../contracts/ml.v2.js';
+import { parseAppliedModelContext } from './modelOperationValidation.js';
 import type { MlRecommendationRequest } from '../contracts/ml.v2.js';
 import type { ScoringCaptureConfig } from '../config/scoringCapture.js';
 import type { ScoringPersistencePort } from '../ports/scoringPersistencePort.js';
@@ -42,6 +45,7 @@ export class FeedGenerationService {
     private readonly socialCandidatesEnabled = false,
     private readonly budget = feedGenerationBudget(),
     private readonly scoringCapture?: { config: Extract<ScoringCaptureConfig, {enabled:true}>; persistence: ScoringPersistencePort },
+    private readonly intent?:{scope:FeedIntentScope;isCurrent:()=>Promise<boolean>;persist:(generationId:string,applied:MlAppliedModelContext)=>Promise<void>},
   ) {
     if (!Number.isSafeInteger(budget.timeoutMs) || budget.timeoutMs < 1
       || !Number.isSafeInteger(budget.repairTimeoutMs) || budget.repairTimeoutMs < 1) {
@@ -69,6 +73,7 @@ export class FeedGenerationService {
       if (deadline - performance.now() <= minimumMs) throw new FeedGenerationDeadlineError();
     };
     const context = await this.persistence.getGenerationContext?.(userId);
+    if(context?.modelPolicySha256&&!this.intent)return {status:'stale',feedVersion:context.feedVersion};
     const feedVersion = context?.feedVersion ?? await this.persistence.getFeedVersion(userId);
     if (this.persistence.getGenerationContext && !context) return { status: 'stale', feedVersion };
     if (refill && (!this.indexedRefill || refill.expectedVersion !== feedVersion)) {
@@ -79,6 +84,7 @@ export class FeedGenerationService {
     let generationId = crypto.randomUUID();
     const started = Date.now();
     const current = async () => {
+      if(this.intent&&!await this.intent.isCurrent())return false;
       const latest = await this.persistence.getGenerationContext?.(userId);
       const unchanged = context
         ? latest?.feedVersion === feedVersion && latest.profileVersion === context.profileVersion && latest.delivered
@@ -182,10 +188,12 @@ export class FeedGenerationService {
         social_repo_ids: socialRepoIds,
         ...(socialCandidates === undefined ? {} : { social_candidates: socialCandidates }),
         context: { cold_start: false },
+
       } as const;
       const request: MlRecommendationRequest = capture
-        ? { ...requestBase, feed_version: feedVersion.toString(), scoring_capture: {schema_version:1,encoding:'float32-le-v1'} }
-        : { ...requestBase, feed_version: Number(feedVersion) };
+        ? { ...requestBase, feed_version: feedVersion.toString(), scoring_capture: {schema_version:1,encoding:'float32-le-v1'},...(this.intent?{model_context:this.intent.scope.context}:{}) }
+        : this.intent?{ ...requestBase,feed_version:feedVersion.toString(),model_context:this.intent.scope.context }
+        : { ...requestBase,feed_version:Number(feedVersion) };
       let response: Awaited<ReturnType<RecommendationPort['generate']>>;
       try {
         response = await this.recommendations.generate(request, { deadline, ...(capture ? { scoringCaptureCapability: capture.config.capability } : {}) });
@@ -206,6 +214,7 @@ export class FeedGenerationService {
         }, { deadline, ...(capture ? { scoringCaptureCapability: capture.config.capability } : {}) });
       }
       requireBudget();
+      if(this.intent)await this.intent.persist(generationId,parseAppliedModelContext('model_context' in response?response.model_context:undefined));
       if (leaseLost || !await current()) {
         await this.persistence.recordGenerationAttempt?.({
           generation_id: generationId, user_id: userId, feed_version: feedVersion, mode,
@@ -286,11 +295,13 @@ export class FeedGenerationService {
       }
       if (leaseLost || !await current()) return { status: 'stale', feedVersion };
       requireBudget();
+      const queueTtl=this.intent?Math.min(this.queueTtlSeconds,Math.floor((Number(this.intent.scope.applied.valid_until_ms)-Date.now())/1000)):this.queueTtlSeconds;
+      if(queueTtl<1)return {status:'stale',feedVersion};
       let published: boolean;
       let count = canonical.length;
       if (this.indexedRefill) {
         const appended = await this.queue.append!(userId, feedVersion, token, canonical,
-          this.queueTtlSeconds, this.indexedRefill.maxQueueDepth, mode === 'prewarm');
+          queueTtl, this.indexedRefill.maxQueueDepth, mode === 'prewarm');
         if (!appended || appended.status === 'capacity') {
           await this.persistence.recordGenerationAttempt?.({
             generation_id: generationId, user_id: userId, feed_version: feedVersion, mode,
@@ -306,7 +317,7 @@ export class FeedGenerationService {
         published = true;
       } else {
         published = await this.queue.publishGeneration(userId, feedVersion, token, canonical,
-          this.queueTtlSeconds, mode === 'prewarm');
+          queueTtl, mode === 'prewarm');
       }
       // Publication has begun: finish durable acknowledgement even if the
       // budget expires now. Redis retains an eight-day crash recovery witness.

@@ -343,6 +343,62 @@
       "when": 1794182400000,
       "tag": "0045_original_impression_links",
       "breakpoints": true
+    },
+    {
+      "idx": 49,
+      "version": "7",
+      "when": 1794268800000,
+      "tag": "0046_ordered_model_operations",
+      "breakpoints": true
+    },
+    {
+      "idx": 50,
+      "version": "7",
+      "when": 1794355200000,
+      "tag": "0047_session_scoped_serving",
+      "breakpoints": true
+    },
+    {
+      "idx": 51,
+      "version": "7",
+      "when": 1794441600000,
+      "tag": "0048_scoring_publication_lookup",
+      "breakpoints": true
+    },
+    {
+      "idx": 52,
+      "version": "7",
+      "when": 1794528000000,
+      "tag": "0049_scoring_retention_lock_bounds",
+      "breakpoints": true
+    },
+    {
+      "idx": 53,
+      "version": "7",
+      "when": 1794614400000,
+      "tag": "0050_model_withdrawal_privilege",
+      "breakpoints": true
+    },
+    {
+      "idx": 54,
+      "version": "7",
+      "when": 1794700800000,
+      "tag": "0051_model_transient_retention",
+      "breakpoints": true
+    },
+    {
+      "idx": 55,
+      "version": "7",
+      "when": 1794787200000,
+      "tag": "0052_idle_intent_presence",
+      "breakpoints": true
+    },
+    {
+      "idx": 56,
+      "version": "7",
+      "when": 1794873600000,
+      "tag": "0053_model_generation_lock_privilege",
+      "breakpoints": true
     }
   ]
 }

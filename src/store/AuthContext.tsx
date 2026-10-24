@@ -1,3 +1,5 @@
+import {retireFeedBeforeLogout} from '../services/feedSessionLogout';
+import { feedSessions } from '../api/feed-sessions';
 import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import { getStorageItem } from '../utils/storage';
 import { logout as logoutRequest } from '../api/auth';
@@ -257,6 +259,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     startupController.current = null;
     setStartupError(null);
     const previousUser = user;
+    const retirementGeneration=authSessionLifecycle.currentGeneration();
+    if(previousUser){
+      const retired=await retireFeedBeforeLogout({readToken:()=>getStorageItem('access_token'),
+        retire:token=>feedSessions(token).endAll(),isCurrent:()=>authSessionLifecycle.isCurrent(retirementGeneration)});
+      if(!retired)console.warn('Feed session retirement will retry when this account reconnects.');
+    }
+    if(!authSessionLifecycle.isCurrent(retirementGeneration))return;
     const logout = logoutRequest();
     const logoutGeneration = authSessionLifecycle.currentGeneration();
     clearAccountQueryCache(queryClient);

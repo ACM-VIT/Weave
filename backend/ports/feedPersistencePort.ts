@@ -23,7 +23,7 @@ export interface FeedReconciliationPersistencePort {
   listServedRequests(requests: FeedServeRequest[]): Promise<FeedServeRequest[]>;
 }
 
-export interface FeedGenerationContext { feedVersion: bigint; profileVersion: bigint; delivered: boolean }
+export interface FeedGenerationContext { feedVersion: bigint; profileVersion: bigint; delivered: boolean; modelPolicySha256?:string }
 
 /** A different request committed one of these session candidates first. */
 export class FeedServeOverlapError extends Error {

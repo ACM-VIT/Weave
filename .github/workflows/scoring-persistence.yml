@@ -57,6 +57,14 @@ jobs:
         run: npx --no-install tsx --test tests/migrations/scoringCaptureUpgrade.integration.test.ts
         env:
           RUN_SCORING_MIGRATION_INTEGRATION: '1'
+      - name: Bound publication repair lookups by captured generation
+        run: npx --no-install tsx --test tests/database/scoringRepairIndex.integration.test.ts
+        env:
+          RUN_SCORING_REPAIR_INTEGRATION: '1'
+      - name: Bound retention subject locks and preserve busy work
+        run: npx --no-install tsx --test tests/database/scoringRetentionBounds.integration.test.ts
+        env:
+          RUN_SCORING_RETENTION_BOUNDS_INTEGRATION: '1'
       - name: Exercise immutable storage, SQL faults and least-privilege roles
         run: npx --no-install tsx --test tests/database/scoringPersistence.integration.test.ts
         env:

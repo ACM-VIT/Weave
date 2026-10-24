@@ -1,6 +1,10 @@
 import { sqlClient } from '../db/index.js';
 
 export class RetentionWorker {
+  async pruneModelCopies(batchSize=1000):Promise<{contexts:number;feedbackCopies:number}>{
+    const [row]=await sqlClient`SELECT * FROM telemetry.prune_model_transients(${batchSize}::integer)`;
+    return {contexts:Number(row.contexts),feedbackCopies:Number(row.feedback_copies)};
+  }
   async runOnce(deliveredDays = 30, generationDays = 30): Promise<{ outbox: number; generations: number }> {
     const outbox = await sqlClient`
       WITH versioned_indexes AS (
@@ -17,7 +21,7 @@ export class RetentionWorker {
         ORDER BY aggregate_id,content_version DESC,created_at DESC,outbox_id DESC
       )
       DELETE FROM telemetry.ml_outbox expired
-      WHERE expired.status='delivered' AND expired.delivered_at < now()-(${deliveredDays}::text || ' days')::interval
+      WHERE expired.job_type<>'model_operation' AND expired.status='delivered' AND expired.delivered_at < now()-(${deliveredDays}::text || ' days')::interval
         -- Keep both the legacy/latest-time witness and the highest valid int32
         -- content version. A same-transaction UUID or malformed newer payload
         -- must not erase the index prerequisite for a numeric successor.
@@ -34,6 +38,7 @@ export class RetentionWorker {
       DELETE FROM telemetry.generation_attempts WHERE created_at < now()-(${generationDays}::text || ' days')::interval
       RETURNING generation_id
     `;
+    await this.pruneModelCopies();
     return { outbox: outbox.length, generations: generations.length };
   }
 }

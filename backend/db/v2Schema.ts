@@ -93,6 +93,10 @@ export const userFeedState = appSchema.table('user_feed_state', {
   lastPublishedFeedVersion: bigint('last_published_feed_version', { mode: 'bigint' }).notNull().default(0n),
   feedbackVersion: bigint('feedback_version', { mode: 'bigint' }).notNull().default(0n),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  modelOperationVersion: bigint('model_operation_version',{mode:'bigint'}).notNull().default(0n),
+  modelAcceptedAtMs: bigint('model_accepted_at_ms',{mode:'bigint'}).notNull().default(0n),
+  modelPolicySha256: text('model_policy_sha256'), modelPolicyLimits: jsonb('model_policy_limits'),
+  modelInitialized: boolean('model_initialized').notNull().default(false),
 });
 
 export const feedPrewarmJobs = telemetrySchema.table('feed_prewarm_jobs', {
@@ -513,6 +517,8 @@ export const feedServes = telemetrySchema.table('feed_serves', {
   modelVersion: text('model_version'),
   nextCursor: text('next_cursor'),
   status: text('status').notNull().default('prepared'),
+  intentEpoch: bigint('intent_epoch',{mode:'bigint'}), intentEpochStartedMs: bigint('intent_epoch_started_ms',{mode:'bigint'}),
+  intentEpochWitnessSha256: text('intent_epoch_witness_sha256'), intentPolicySha256: text('intent_policy_sha256'),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 }, (table) => [
   index('feed_serves_user_created_idx').on(table.userId, table.createdAt),
@@ -547,6 +553,7 @@ export const feedItemProvenance = telemetrySchema.table('feed_item_provenance', 
   primaryKey({ columns: [table.serveId,table.position] }),
   uniqueIndex('feed_item_provenance_exposure_key').on(table.exposureId),
   index('feed_item_provenance_owner_created_idx').on(table.userId,table.createdAt,table.exposureId),
+  index('feed_item_provenance_generation_owner_idx').on(table.generationId,table.userId).where(sql`${table.captureStatus}='captured'`),
   foreignKey({name:'feed_item_provenance_parent_fkey',columns:[table.serveId,table.position],
     foreignColumns:[feedServeItems.serveId,feedServeItems.position]}).onDelete('cascade'),
   check('feed_item_provenance_legacy_check',sql`${table.captureStatus}<>'captured' OR ${table.legacyGenerationHint} IS NULL`),
@@ -593,6 +600,10 @@ export const mlOutbox = telemetrySchema.table('ml_outbox', {
   idempotencyKey: text('idempotency_key').notNull().unique(),
   payload: jsonb('payload').$type<Record<string, unknown>>().notNull(),
   responsePayload: jsonb('response_payload').$type<Record<string, unknown>>(),
+  modelOperationVersion: bigint('model_operation_version',{mode:'bigint'}),
+  previousModelOperationVersion: bigint('previous_model_operation_version',{mode:'bigint'}),
+  operationJson: text('operation_json'), sourceEnvelopeSha256: text('source_envelope_sha256'),
+  logicalRequestSha256: text('logical_request_sha256'), withdrawalJson: text('withdrawal_json'),
   status: text('status').notNull().default('pending'),
   attempts: integer('attempts').notNull().default(0),
   availableAt: timestamp('available_at', { withTimezone: true }).notNull().defaultNow(),
@@ -693,3 +704,32 @@ export const scoringGenerationWitnesses = privateScoringSchema.table('generation
   unique('generation_witnesses_generation_id_event_type_key').on(table.generationId, table.eventType),
   check('generation_witnesses_event_type_check', sql`${table.eventType} IN ('persisted','published','stale','revoked')`),
 ]);
+
+export const feedIntentSessions = telemetrySchema.table('feed_intent_sessions', {
+  sessionId: uuid('session_id').primaryKey(),
+  userId: uuid('user_id').references(() => appUsers.userId,{onDelete:'set null'}),
+  intentEpoch: bigint('intent_epoch',{mode:'bigint'}).notNull(),
+  epochStartedMs: bigint('epoch_started_ms',{mode:'bigint'}).notNull(),
+  lastPresenceMs: bigint('last_presence_ms',{mode:'bigint'}).notNull().default(sql`floor(extract(epoch FROM clock_timestamp())*1000)::bigint`),
+  policySha256: text('policy_sha256').notNull(), status: text('status').notNull(),
+  beginOperationVersion: bigint('begin_operation_version',{mode:'bigint'}).notNull(),
+  lastControlOperationVersion: bigint('last_control_operation_version',{mode:'bigint'}).notNull(),
+  epochWitnessSha256: text('epoch_witness_sha256').notNull(), retirementWitnessSha256: text('retirement_witness_sha256'),
+});
+export const pendingModelFeedback = telemetrySchema.table('pending_model_feedback', {
+  eventId: uuid('event_id').primaryKey().references(() => interactionEvents.eventId,{onDelete:'cascade'}),
+  userId: uuid('user_id').notNull().references(() => appUsers.userId,{onDelete:'cascade'}),
+  feedbackVersion: bigint('feedback_version',{mode:'bigint'}).notNull(),
+  originalFeedbackJson: text('original_feedback_json').notNull(), acceptedAtMs: bigint('accepted_at_ms',{mode:'bigint'}).notNull(),
+  canonicalAttribution: jsonb('canonical_attribution'), operationId: uuid('operation_id').references(() => mlOutbox.outboxId),
+});
+
+export const feedModelGenerations = telemetrySchema.table('feed_model_generations', {
+  generationId: uuid('generation_id').primaryKey(),
+  userId: uuid('user_id').notNull().references(() => appUsers.userId,{onDelete:'cascade'}),
+  sessionId: uuid('session_id').notNull().references(() => feedIntentSessions.sessionId),
+  queueScope: text('queue_scope').notNull(), appliedContext: jsonb('applied_context'),
+  validUntilMs: bigint('valid_until_ms',{mode:'bigint'}).notNull(),
+  createdAt: timestamp('created_at',{withTimezone:true}).notNull().defaultNow(),
+},table=>[index('feed_model_generations_scope').on(table.userId,table.queueScope,table.validUntilMs),
+  index('feed_model_generations_expired_body').on(table.validUntilMs,table.generationId).where(sql`${table.appliedContext} IS NOT NULL`)]);
