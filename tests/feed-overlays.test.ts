@@ -35,7 +35,7 @@ function feed(ids: string[], reducedMotion = false, attribution?: { ownerId: str
   const closeAnimations: ((result: { finished: boolean }) => void)[] = [];
   let loadComments: (cursor: string | null) => Promise<any> = async () => ({items:[],has_more:false,next_cursor:null});
   let postComment: () => Promise<any> = async () => { throw new Error('Unexpected post'); };
-  let saveRepository: () => Promise<any> = async () => { throw new Error('Unexpected save'); };
+  let saveRepository: (...args: any[]) => Promise<any> = async () => { throw new Error('Unexpected save'); };
   let createCollection: () => Promise<any> = async () => { throw new Error('Unexpected create'); };
   let saveCollections: any[] = [];
   let loadLists = async () => saveCollections;
@@ -108,7 +108,7 @@ function feed(ids: string[], reducedMotion = false, attribution?: { ownerId: str
       ...createRequire(resolve('src/api/lists.ts'))('../models/list'),
       getRepositoryLists: async (id: string) => { requests.push(`save:${id}`); return loadLists(); },
       createRepositoryList: () => createCollection(),
-      syncRepositoryLists: () => saveRepository(),
+      syncRepositoryLists: (...args: any[]) => saveRepository(...args),
     },
     '@/api/repositories': { repositoryDetailQueryKey, fetchRepositoryDetail: async (id: string) => { requests.push(`readme:${id}`); return loadReadme(); } },
     '@/api/repository-actions': {
@@ -165,20 +165,17 @@ function feed(ids: string[], reducedMotion = false, attribution?: { ownerId: str
       const config = this.swipe.gesture.config;
       assert.equal(config.enabled, true, 'right-swipe must be available on web');
       await act(async () => {
-        config.onStart();
-        config.onUpdate({translationX: x, translationY: y});
+        config.onStart?.();
+        config.onUpdate?.({translationX: x, translationY: y});
         config.onEnd({translationX: x, translationY: y});
-        config.onFinalize({}, true);
+        config.onFinalize?.({}, true);
       });
     },
-    async pressRevealSave() {await act(async () => {
-      root.root.findAllByType('Pressable').find(node => node.props.accessibilityHint === 'Opens the Save dialog to choose a list')!.props.onPress();
-      await new Promise(resolve => setTimeout(resolve, 0));
-    });},
     setExternalOpen(value: () => Promise<void>) {openExternal=value;},
     setHeight(value:number) {shareHeight=value;},
     setReadme(value: () => Promise<any>) {loadReadme=value;},
     get readmePopupProps() {return root.root.findAllByType(overlayTypes[3])[0]?.props;},
+    get screenHeight() {return root.root.findByType('RepositoryScreen').props.pageHeight;},
     get saveRevealBottom() {
       const layers=root.root.findAllByType('View').map(node=>Object.assign({},...(Array.isArray(node.props.style)?node.props.style:[node.props.style])));
       return layers.find(style=>style.backgroundColor==='#123520')?.bottom;
@@ -208,7 +205,7 @@ function feed(ids: string[], reducedMotion = false, attribution?: { ownerId: str
     },
     setPost(value: () => Promise<any>) { postComment = value; },
     setListLoader(value: () => Promise<any[]>) {loadLists = value;},
-    setSave(value: () => Promise<any>) {
+    setSave(value: (...args: any[]) => Promise<any>) {
       saveRepository = value;
       saveCollections = [{ id: 'list', source: 'collection', name: 'List', repositoryCount: 0, selected: true }];
     },
@@ -218,6 +215,7 @@ function feed(ids: string[], reducedMotion = false, attribution?: { ownerId: str
     button(label: string) { return root.root.findAllByType('Modal').find(node => node.props.visible)!.findAllByType('Pressable').find(node => node.props.accessibilityLabel === label)!; },
     async press(label: string) { await act(async () => { this.button(label).props.onPress(); await new Promise(resolve => setTimeout(resolve, 0)); }); },
     get messages() { return root.root.findAllByType('Text').flatMap(node => typeof node.props.children === 'string' ? [node.props.children] : []); },
+    get hasNewListForm() {return root.root.findAllByType('TextInput').some(node => node.props.accessibilityLabel === 'List name');},
     get mountedOverlays() { return overlayTypes.reduce((count, type) => count + root.root.findAllByType(type).length, 0); },
     get observers() { return client.getQueryCache().getAll().reduce((count, query) => count + query.getObserversCount(), 0); },
     get input() { return root.root.findAllByType('Modal').find(node => node.props.visible)!.findAllByType('TextInput').find(node => node.props.accessibilityLabel === 'Add a comment')!; },
@@ -689,10 +687,10 @@ test('Read more keeps the summary and lazily hydrates original README videos', a
 });
 
 
-test('the swipe-save background excludes the last-card loading footer', async()=>{
+test('feed has no swipe-reveal panel and still reserves the loading footer', async()=>{
   const app=feed(['repo'],true,{ownerId:'viewer',repository:{},boundary:React.createElement('View',{style:{height:56}})});
   await app.mount();
-  try {assert.equal(app.saveRevealBottom,56,'the green reveal must end above the loading footer');}
+  try {assert.equal(app.saveRevealBottom,undefined,'the green panel is removed');assert.equal(app.screenHeight,744);}
   finally {await app.unmount();}
 });
 
@@ -717,17 +715,13 @@ test('summary image tap opens a separate viewer and returns to the retained dige
 });
 
 
-test('web right-swipe reveals Save and opens the complete list picker without saving immediately', async () => {
+test('one web right-swipe opens the complete List picker without a reveal or saving', async () => {
   const app = feed(['repo'], true, {ownerId: 'viewer', repository: {}, platform: 'web', viewable: true});
   await app.mount();
   try {
     await app.swipeRight();
     assert.equal(app.swipe.touchAction, 'pan-y', 'browser vertical scrolling stays enabled');
-    assert.equal(app.saveRevealed, true);
-    assert.equal(app.mountedOverlays, 0);
-    assert.deepEqual(app.requests, []);
-    await app.pressRevealSave();
-    assert.equal(app.saveRevealed, false);
+    assert.equal(app.saveRevealed, false, 'there is no intermediate Save panel');
     assert.equal(app.mountedOverlays, 1);
     assert.deepEqual(app.requests, ['save:repo']);
     assert.equal(app.swipe.gesture.config.enabled, false, 'an open picker blocks underlying gestures');
@@ -735,14 +729,17 @@ test('web right-swipe reveals Save and opens the complete list picker without sa
   } finally {await app.unmount();}
 });
 
-test('web left and diagonal drags leave Save closed', async () => {
+test('short, left and diagonal drags leave the List picker closed', async () => {
   const app = feed(['repo'], true, {ownerId: 'viewer', repository: {}, platform: 'web', viewable: true});
   await app.mount();
   try {
+    await app.swipeRight(50, 0);
+    assert.equal(app.mountedOverlays, 0);
     await app.swipeRight(-100, 0);
     assert.equal(app.saveRevealed, false);
     await app.swipeRight(76, 80);
     assert.equal(app.saveRevealed, false);
+    assert.equal(app.mountedOverlays, 0);
     assert.deepEqual(app.requests, []);
   } finally {await app.unmount();}
 });
@@ -777,4 +774,27 @@ test('removing current memberships never reports Saved to zero Lists when an old
     assert.ok(app.messages.includes('Removed from Lists.'));
     assert.ok(!app.messages.includes('Saved to 0 Lists.'));
   } finally {await app.unmount();}
+});
+
+
+test('failed-load creation attempts cannot erase memberships after retry and legitimate creation', async()=>{
+  const app=feed(['00000000-0000-4000-8000-000000000011'],true);let creates=0,saves=0;
+  app.setSave(async(_repo, selected)=>{saves++;assert.deepEqual([...selected].sort(),['collection:existing','collection:new']);return{saved:true,selectedListIds:selected,saveStateChanged:false};});
+  app.setListLoader(async()=>{throw new Error('offline');});
+  app.setCreate(async()=>{creates++;return{id:'new',source:'collection',name:'New List',selected:false,repositoryCount:0};});
+  await app.mount();
+  try {
+    await app.open(0,'onSavePress');
+    await act(async()=>{await new Promise(resolve=>setTimeout(resolve,650));});
+    await app.press('Create new List');
+    assert.equal(app.hasNewListForm,false,'the handler also rejects creation while the baseline is unknown');
+    assert.equal(creates,0);
+    app.setListLoader(async()=>[{id:'existing',source:'collection',name:'Existing List',selected:true,repositoryCount:1}]);
+    await app.press('Retry loading Lists');
+    await waitForReadmeState(()=>app.messages.includes('Existing List'));
+    await app.createCollection('New List');
+    assert.equal(creates,1);
+    await app.press('Save repository to selected Lists');
+    assert.equal(saves,1);
+  }finally{await app.unmount();}
 });
