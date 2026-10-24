@@ -68,6 +68,7 @@ export function startup({
     adjustLikesGivenCount: (eventId: string, delta: -1 | 1) => void;
     settleLikesGivenCountAdjustments: (eventIds: readonly string[]) => void;
     checkOnboardingStatus: () => Promise<void>;
+    finishOnboarding: (data: import('../../src/api/onboarding').OnboardingData) => Promise<void>;
   };
   session.promise.then(token => { storedToken = token; });
   const router = { replace: (path: string) => { redirects.push(path); } };
@@ -178,6 +179,9 @@ export function startup({
     mocks['@/api/auth'] = mocks['../api/auth'];
   }
 
+  mocks['../api/onboarding'] = loadSource('src/api/onboarding.ts', {
+    './client': mocks['../api/client'], './session-lifecycle': mocks['../api/session-lifecycle'],
+  });
   const authModule = loadSource('src/store/AuthContext.tsx', mocks);
   function AuthProbe() { auth = authModule.useAuth(); return null; }
   mocks['../store/AuthContext'] = {
