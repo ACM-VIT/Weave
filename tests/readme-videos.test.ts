@@ -42,3 +42,31 @@ test('GitHub file pages remain links rather than unplayable video previews', () 
     'https://cdn.example.com/demo.webm',
   ]);
 });
+
+test('GitHub raw and release downloads remain playable previews', () => {
+  const downloads = [
+    'https://github.com/org/repo/raw/refs/heads/main/demo.mp4',
+    `https://github.com/org/repo/raw/${'a'.repeat(40)}/docs/demo.webm`,
+    'https://github.com/org/repo/releases/download/v1.0/demo.mov',
+  ];
+  const markdown = [
+    '[HTML page](https://github.com/org/repo/blob/main/demo.mp4)',
+    `<video src="${downloads[0]}"></video>`,
+    `<video><source src="${downloads[1]}"></video>`,
+    `[release](${downloads[2]})`,
+    '[duplicate](' + downloads[0] + ')',
+    '[fourth](https://github.com/org/repo/raw/main/extra.mp4)',
+  ].join('\n');
+  assert.deepEqual(extractReadmeVideos(markdown, context), downloads);
+});
+
+test('GitHub pages outside known download routes do not become previews', () => {
+  const pages = [
+    'https://github.com/org/repo/tree/main/demo.mp4',
+    'https://github.com/org/repo/issues/demo.mp4',
+    'https://github.com/org/repo/releases/tag/demo.mp4',
+    'https://github.com/org/repo/raw/demo.mp4',
+    'https://github.com/org/repo/releases/download/demo.mp4',
+  ];
+  assert.deepEqual(extractReadmeVideos(pages.map(url => `[page](${url})`).join('\n'), context), []);
+});
