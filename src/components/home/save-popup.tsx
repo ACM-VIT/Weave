@@ -94,12 +94,12 @@ const palette = {
   danger: REFERENCE_THEME.danger,
 };
 
-function ListLayoutPreview({ loading = false, cardWidth }: { loading?: boolean; cardWidth: number }) {
+function ListLayoutPreview({ loading = false }: { loading?: boolean }) {
   return (
     <View style={styles.loadingList}>
       <View accessibilityLabel="List card layout" style={styles.skeletonGrid}>
         {[0, 1, 2, 3].map((item) => (
-          <View key={item} style={[styles.skeleton, { width: cardWidth }, { backgroundColor: palette.elevated, borderColor: palette.border }]}>
+          <View key={item} style={[styles.skeleton, { backgroundColor: palette.elevated, borderColor: palette.border }]}>
             <View style={styles.skeletonTopRow}>
               <View style={[styles.skeletonIcon, { backgroundColor: palette.elevatedStrong }]} />
               <View style={[styles.skeletonCheck, { borderColor: palette.tertiary }]} />
@@ -200,7 +200,6 @@ export function SavePopup({
     );
   }, [lists, search]);
   const sheetWidth = Math.min(Math.max(width - SHEET_HORIZONTAL_MARGIN, 0), SHEET_MAX_WIDTH);
-  const collectionCardWidth = Math.max(0, (sheetWidth - 28 - COLLECTION_GRID_GAP) / 2);
   const sheetMaxHeight = Math.min(460, height * 0.82);
 
   const haptic = useCallback(async (kind: 'selection' | 'success' = 'selection') => {
@@ -556,7 +555,7 @@ export function SavePopup({
             ) : null}
             <View style={styles.collectionList}>
               {listsQuery.isLoading && lists.length === 0 ? (
-                <ListLayoutPreview loading cardWidth={collectionCardWidth} />
+                <ListLayoutPreview loading />
               ) : listsQuery.isError && lists.length === 0 ? null : filteredLists.length ? (
                 <>
                   <View style={styles.collectionGrid}>
@@ -569,7 +568,6 @@ export function SavePopup({
                           key={membershipId}
                           style={[
                             styles.collectionCard,
-                            { width: collectionCardWidth },
                             {
                               backgroundColor: selected ? `${accent}16` : palette.elevated,
                               borderColor: selected ? accent : palette.border,
@@ -802,14 +800,14 @@ const styles = StyleSheet.create({
   loadingList: { minHeight: 190, position: 'relative' },
   previewLoadingOverlay: { position: 'absolute', left: 0, top: 0, right: 0, bottom: 0, alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(29,29,31,0.34)' },
   skeletonGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: COLLECTION_GRID_GAP },
-  skeleton: { width: '48%', minHeight: 108, flexGrow: 0, flexShrink: 0, borderWidth: 1, borderRadius: 15, padding: 10, gap: 8 },
+  skeleton: { flexBasis: '45%', maxWidth: '49%', minHeight: 108, flexGrow: 1, flexShrink: 0, borderWidth: 1, borderRadius: 15, padding: 10, gap: 8 },
   skeletonTopRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   skeletonIcon: { width: 32, height: 32, borderRadius: 10 },
   skeletonCheck: { width: 20, height: 20, borderWidth: 1.4, borderRadius: 7 },
   skeletonLine: { width: '72%', height: 9, borderRadius: 5 },
   skeletonLineShort: { width: '48%', height: 7, borderRadius: 4 },
   collectionGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: COLLECTION_GRID_GAP },
-  collectionCard: { width: '48%', minHeight: 92, flexGrow: 0, flexShrink: 0, borderWidth: 1.2, borderRadius: 16, overflow: 'hidden', boxShadow: '0 4px 14px rgba(0,0,0,0.18)' },
+  collectionCard: { flexBasis: '45%', maxWidth: '49%', minHeight: 92, flexGrow: 1, flexShrink: 0, borderWidth: 1.2, borderRadius: 16, overflow: 'hidden', boxShadow: '0 4px 14px rgba(0,0,0,0.18)' },
   collectionCardContent: { flex: 1, padding: 10, gap: 7 },
   collectionTopRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   collectionIcon: { width: 32, height: 32, borderRadius: 10, alignItems: 'center', justifyContent: 'center' },
