@@ -44,7 +44,7 @@ test('129 sequential fresh scopes evict idle acceleration and restore the evicte
  const scopes=Array.from({length:129},(_,index)=>scoped(index));let stopped=0,created=0,restores=0;
  const byUser=new Map(scopes.map(value=>[value.userId,value]));const secret='owned-gateway-cursor';const codec=new FeedCursorCodec(secret);
  const gateway=new IntentFeedGateway({getFeed:async()=>response,stop:async()=>{}},{getServeByRequest:async()=>null},{
-  snapshot:async userId=>byUser.get(userId)!,restoreCursor:async(current,queueScope)=>{restores++;const value=byUser.get(current.userId)!;assert.equal(value.queueScope,queueScope);return value.applied;},
+  snapshot:async userId=>({...snapshot,...byUser.get(userId)!}),restoreCursor:async(current,queueScope)=>{restores++;const value=byUser.get(current.userId)!;assert.equal(value.queueScope,queueScope);return value.applied;},
   resolve:async userId=>byUser.get(userId)!,
  },()=>{created++;return {getFeed:async()=>response,stop:async()=>{stopped++;}};},secret);
  try{
@@ -59,7 +59,7 @@ test('129 sequential fresh scopes evict idle acceleration and restore the evicte
 test('128 genuinely active services retain capacity until their owned work exits',async()=>{
  const scopes=Array.from({length:129},(_,index)=>scoped(index));const byUser=new Map(scopes.map(value=>[value.userId,value]));
  let created=0;let release!:()=>void;const gate=new Promise<void>(resolve=>{release=resolve;});
- const gateway=new IntentFeedGateway({getFeed:async()=>response,stop:async()=>{}},{getServeByRequest:async()=>null},{snapshot:async userId=>byUser.get(userId)!,
+ const gateway=new IntentFeedGateway({getFeed:async()=>response,stop:async()=>{}},{getServeByRequest:async()=>null},{snapshot:async userId=>({...snapshot,...byUser.get(userId)!}),
   restoreCursor:async()=>scope.applied,resolve:async userId=>byUser.get(userId)!,
  },()=>{created++;return {getFeed:async()=>{await gate;return response;},stop:async()=>{}};});
  const pending=Promise.allSettled(scopes.map(value=>gateway.getFeed(value.userId,{...request,session_id:value.sessionId})));

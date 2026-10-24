@@ -16,10 +16,11 @@ for(const [scenario,outcome] of [['accepted','success'],['wrong-source','failure
  const count=(stage:string,result:string)=>snapshotHistograms()[JSON.stringify({operation:'model_operation',stage,outcome:result})]?.count??0;
  const beforeAge=count('outbox_age','success'),beforeDelivery=count('outbox_delivery',outcome);
  const service={prepareModelDelivery:async()=>row,markDelivered:async()=>{},markFailed:async()=>{}} as unknown as OutboxService;
- const transport={deliverModelOperations:async()=>scenario==='rejected'?{accepted:false,retryable:true,status_code:429}:
+ const unused=async()=>({accepted:false,retryable:true,status_code:503});
+ const transport:OutboxTransportPort={deliverFeedback:unused,deliverOnboarding:unused,deliverRepositoryIndex:unused,deliverRepositoryRefresh:unused,deliverModelOperations:async()=>scenario==='rejected'?{accepted:false,retryable:true,status_code:429}:
   scenario==='timeout'?{accepted:false,retryable:true,status_code:0,failure_kind:'timeout'}:
   {accepted:true,retryable:false,status_code:202,response_body:{schema_version:1,operations:[{operation_id:row.outbox_id,model_operation_version:'1',
-    source_envelope_sha256:scenario==='wrong-source'?'b'.repeat(64):row.source_envelope_sha256,status:'accepted'}]}}} as OutboxTransportPort;
+    source_envelope_sha256:scenario==='wrong-source'?'b'.repeat(64):row.source_envelope_sha256,status:'accepted'}]}}};
  assert.equal((await new OutboxWorker(service,transport).deliverClaimed(row)).accepted,scenario==='accepted');
  assert.equal(count('outbox_age','success'),beforeAge+1);assert.equal(count('outbox_delivery',outcome),beforeDelivery+1);
  const metrics=snapshotHistograms(),spans=snapshotSpans();assert.doesNotMatch(JSON.stringify({metrics,spans}),/PRIVATE_METRIC_SOURCE|original_feedback_json|private-fixture/);
