@@ -25,12 +25,12 @@ test('feedback payload canonicalizes an accepted offset timestamp to UTC', () =>
 });
 
 
-test('impressions cannot be constructed as online ML feedback', () => {
+for (const event_type of ['impression', 'follow', 'unfollow'] as const) test(`${event_type} cannot be constructed as online ML feedback`, () => {
   assert.throws(() => buildMlFeedbackEvent('00000000-0000-4000-8000-000000000004', {
     event_id: '00000000-0000-4000-8000-000000000001', schema_version: 2,
     session_id: '00000000-0000-4000-8000-000000000002', serve_id: null,
     repo_id: '00000000-0000-4000-8000-000000000003', position: null,
-    event_type: 'impression', dwell_ms: null,
+    event_type, dwell_ms: null,
     client_occurred_at: '2026-10-23T00:00:00Z', context: {},
   }, '1'), /backend telemetry/);
 });

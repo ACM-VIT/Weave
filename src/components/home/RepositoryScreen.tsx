@@ -265,6 +265,7 @@ export function RepositoryScreen({
     const ownerUserId = repository.ownerProfileClaimedUserId ?? repository.ownerUserId ?? null;
     const ownerProfileId = repository.ownerProfileId ?? null;
     if (!viewerUserId || (!ownerUserId && !ownerProfileId)) return;
+    onQueueActivity?.({ repo_id: repository.id, action: following ? FEEDBACK_ACTIONS.follow : FEEDBACK_ACTIONS.unfollow }, true);
     if (ownerUserId) {
       queryClient.setQueryData(
         followStateQueryKey(getProfileFollowIdentity(null, ownerUserId), viewerUserId),
@@ -454,7 +455,7 @@ export function RepositoryScreen({
           onPress={toggleLike}
         />
         <ActionButton
-          accessibilityLabel={disliked ? 'Remove dislike' : 'Dislike repository'}
+          accessibilityLabel={disliked ? 'Undo not interested' : 'Not interested in this repository'}
           active={disliked}
           activeColor={REFERENCE_THEME.danger}
           dense={veryShort}
