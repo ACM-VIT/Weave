@@ -821,10 +821,9 @@ test('failed-load creation attempts cannot erase memberships after retry and leg
 });
 
 test('the windowed save grid retains offscreen memberships while filtering and creating a List', async()=>{
-  const app=feed([],true);let saves=0;
+  const app=feed([],true);const submitted:string[][]=[];
   app.setSave(async(_repo, selected)=>{
-    saves++;
-    assert.deepEqual([...selected].sort(),['collection:0','legacy-board:4999','collection:new'].sort());
+    submitted.push([...selected]);
     return {saved:true,selectedListIds:selected,saveStateChanged:false};
   });
   const lists=Array.from({length:5000},(_,index)=>({id:String(index),source:index%2?'legacy-board':'collection',
@@ -841,6 +840,6 @@ test('the windowed save grid retains offscreen memberships while filtering and c
     assert.ok(app.messages.includes('No matching Lists'));
     await app.createCollection('New List');
     await app.press('Save repository to selected Lists');
-    assert.equal(saves,1);
+    assert.deepEqual(submitted.map(ids=>ids.sort()),[['collection:0','legacy-board:4999','collection:new'].sort()]);
   } finally {await app.unmount();}
 });
