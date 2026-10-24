@@ -226,6 +226,45 @@ try {
     missing.push('required-grant:ghsocial_backend:telemetry.feed_prewarm_jobs:SELECT,INSERT,UPDATE');
   }
 
+  const [retentionGrants] = await client`
+    SELECT has_sequence_privilege('ghsocial_backend',to_regclass('app.topics_topic_id_seq'),'USAGE') AS topics,
+      has_function_privilege('ghsocial_backend',to_regprocedure('telemetry.prune_runtime_history(integer,integer)'),'EXECUTE') AS retention,
+      has_table_privilege('ghsocial_backend',to_regclass('telemetry.ml_outbox'),'DELETE') AS journal_delete,
+      has_table_privilege('ghsocial_backend',to_regclass('telemetry.generation_attempts'),'DELETE') AS generation_delete,
+      EXISTS(SELECT 1 FROM pg_proc p, LATERAL aclexplode(COALESCE(p.proacl,acldefault('f',p.proowner))) acl
+        WHERE p.oid=to_regprocedure('telemetry.prune_runtime_history(integer,integer)')
+          AND acl.grantee=0 AND acl.privilege_type='EXECUTE') AS public_retention
+  `;
+  if (!retentionGrants.topics) missing.push('required-grant:ghsocial_backend:app.topics_topic_id_seq:USAGE');
+  if (!retentionGrants.retention) missing.push('required-grant:ghsocial_backend:telemetry.prune_runtime_history:EXECUTE');
+  if (retentionGrants.journal_delete || retentionGrants.generation_delete || retentionGrants.public_retention) {
+    missing.push('prohibited-grant:unrestricted-runtime-retention');
+  }
+
+  const retentionPaths = await client`
+    SELECT required.signature,p.proconfig
+    FROM (VALUES ('telemetry.prune_runtime_history(integer,integer)'),
+      ('telemetry.prune_model_transients(integer)'),
+      ('private_scoring.purge_scoring_private(integer)'),
+      ('private_scoring.persist_generation(text)'),
+      ('private_scoring.validate_feed_item_provenance()'),
+      ('private_scoring.record_generation_witness(uuid,uuid,text)'),
+      ('private_scoring.reconcile_publication_witnesses(uuid[],integer)'),
+      ('private_scoring.enforce_subject_capture_barrier()'),
+      ('private_scoring.create_export_snapshot(uuid,uuid,timestamptz,timestamptz,text)'),
+      ('private_scoring.seal_export_labels(uuid,uuid,text,text)'),
+      ('private_scoring.read_export_snapshot(uuid,uuid,text,integer,integer)'),
+      ('private_scoring.revoke_subject_capture(uuid,uuid,text)')) required(signature)
+    LEFT JOIN pg_proc p ON p.oid=to_regprocedure(required.signature)
+  `;
+  for (const row of retentionPaths) {
+    const searchPath = (row.proconfig as string[] | null)?.find(value => value.startsWith('search_path='));
+    const schemas = searchPath?.slice('search_path='.length).split(',').map(value => value.trim());
+    if (schemas?.length !== 2 || schemas[0] !== 'pg_catalog' || schemas[1] !== 'pg_temp') {
+      missing.push(`safe-search-path:${row.signature}`);
+    }
+  }
+
   const migrationRows = await client`
     SELECT hash, created_at FROM drizzle.__drizzle_migrations ORDER BY created_at
   `.catch(() => []);

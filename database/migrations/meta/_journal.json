@@ -399,6 +399,20 @@
       "when": 1794873600000,
       "tag": "0053_model_generation_lock_privilege",
       "breakpoints": true
+    },
+    {
+      "idx": 57,
+      "version": "7",
+      "when": 1794960000000,
+      "tag": "0054_restricted_runtime_retention",
+      "breakpoints": true
+    },
+    {
+      "idx": 58,
+      "version": "7",
+      "when": 1795046400000,
+      "tag": "0055_owner_function_lookup_paths",
+      "breakpoints": true
     }
   ]
 }
