@@ -180,3 +180,50 @@ test('Gemini distinguishes exhausted daily quota from a retryable minute limit',
     }
   });
 });
+
+const chineseDigest = {
+  overview: '这个项目通过清晰的文档帮助读者了解主要功能和使用方式。'.repeat(6),
+  capabilities: ['整理项目文档并解释各个主要组成部分的作用。', '按照清晰的主题提供可操作的学习资料。'],
+  use_cases: ['帮助读者了解项目内容并找到适合的使用方式。'],
+  considerations: [],
+};
+const chineseSource = { full_name: 'team/chinese-project', description: null,
+  readme: '# 项目介绍\n\n' + '通过文档介绍项目功能和实际使用方式。'.repeat(30) };
+const lunaEnvironment = { README_SUMMARY_PROVIDER:'openai-compatible', README_SUMMARY_API_KEY:'openai-test-key',
+  README_SUMMARY_MODEL_ID:'gpt-6-luna', README_SUMMARY_BASE_URL:'https://api.openai.com/v1', README_SUMMARY_RPM_LIMIT:'0' };
+
+test('non-English README requests an explicitly English digest', async () => {
+  await withProviderEnvironment(lunaEnvironment, async () => {
+    const requests: Array<{ messages: Array<{ content: string }> }> = [];
+    const fetcher: typeof fetch = async (_url, options) => {
+      requests.push(JSON.parse(String(options?.body)));
+      return new Response(JSON.stringify({choices:[{finish_reason:'stop', message:{content:JSON.stringify(digestFixture)}}]}));
+    };
+    assert.deepEqual(await createReadmeSummaryGenerator(fetcher).generate(chineseSource), digestFixture);
+    assert.equal(requests.length, 1);
+    assert.match(requests[0].messages[0].content, /all (?:output )?fields in English/i);
+    assert.match(JSON.parse(requests[0].messages[1].content).readme, /项目功能/);
+  });
+});
+
+test('length repair includes observed words and English guidance without extra attempts', async () => {
+  for (const repairsSuccessfully of [true, false]) {
+    await withProviderEnvironment(lunaEnvironment, async () => {
+      const requests: Array<{ messages: Array<{ content: string }> }> = [];
+      const fetcher: typeof fetch = async (_url, options) => {
+        requests.push(JSON.parse(String(options?.body)));
+        const output = requests.length === 2 && repairsSuccessfully ? digestFixture : chineseDigest;
+        return new Response(JSON.stringify({choices:[{finish_reason:'stop', message:{content:JSON.stringify(output)}}]}));
+      };
+      const result = createReadmeSummaryGenerator(fetcher).generate(chineseSource);
+      if (repairsSuccessfully) assert.deepEqual(await result, digestFixture);
+      else await assert.rejects(result, (error:unknown) => error instanceof ReadmeSummaryError
+        && error.code === 'invalid_summary_length' && error.retryable);
+      assert.equal(requests.length, 2);
+      const repair = JSON.parse(requests[1].messages[1].content).validation_feedback;
+      assert.match(repair, /received 4 whitespace-separated words/i);
+      assert.match(repair, /all (?:output )?fields in English/i);
+      assert.match(repair, /90[–-]260/);
+    });
+  }
+});

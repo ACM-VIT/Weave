@@ -17,5 +17,5 @@ export interface ReadmeSummaryArtifact extends ReadmeSummaryContent {
   generated_at: string;
 }
 
-export const README_SUMMARY_PROMPT_VERSION = 'readme-digest-v3';
+export const README_SUMMARY_PROMPT_VERSION = 'readme-digest-v4';
 export const README_SUMMARY_FORMAT_VERSION = 'readme-digest-json-v1';
