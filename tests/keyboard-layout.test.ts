@@ -29,7 +29,7 @@ test('every raw TextInput is in the audited inventory and has an accessible name
     'app/(tabs)/profile.tsx', 'app/onboarding/step2.tsx',
     'components/Auth/AuthInput.tsx', 'components/Auth/LoginInput.tsx',
     'components/Auth/ProfileInput.tsx', 'components/Auth/ProfileTextArea.tsx',
-    'components/InputField.tsx', 'components/connection-list.tsx',
+    'components/connection-list.tsx',
     'components/explore/SearchBar.tsx', 'components/home/CommentSheet.tsx',
     'components/home/save-popup.tsx', 'components/profile-repository-list.tsx',
   ].sort(), 'New inputs must be added to the keyboard QA matrix.');
