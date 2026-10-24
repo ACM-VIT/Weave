@@ -430,7 +430,7 @@ test('description fallback may repeat its canonical description even when README
     repository: {
       ...repositoryJob.repository,
       description,
-      readme: `# Project\n\n${description}`,
+      readme: `# Project\n\n${description}\n\nAdditional reference material follows the description.`,
     },
   };
   const fallback = repositoryResponse({
@@ -442,6 +442,13 @@ test('description fallback may repeat its canonical description even when README
     },
   });
   assert.deepEqual(parseMlRepositoryIndexResponse(fallback, fallbackJob), fallback);
+  const readmeOnly = 'Additional README context describes detailed internal routing and worker behavior beyond the canonical project description.';
+  assert.throws(() => parseMlRepositoryIndexResponse(repositoryResponse({
+    card_summary: { ...fallback.card_summary, summary: `${description} ${readmeOnly}` },
+  }), {
+    ...fallbackJob,
+    repository: { ...fallbackJob.repository, readme: `${description} ${readmeOnly}` },
+  }), /invalid bounded content/, 'Description provenance must not allow adjacent README-only text');
   assert.throws(() => parseMlRepositoryIndexResponse(repositoryResponse({
     card_summary: {
       ...fallback.card_summary,
@@ -449,6 +456,38 @@ test('description fallback may repeat its canonical description even when README
       source: 'generated',
     },
   }), fallbackJob), /invalid bounded content/);
+});
+
+function parseDescriptionFallbackForCopyTest(description: string, summary: string, readme: string) {
+  const fallbackJob = { ...repositoryJob, repository: { ...repositoryJob.repository, description, readme } };
+  return parseMlRepositoryIndexResponse(repositoryResponse({ card_summary: {
+    ...repositoryResponse().card_summary, summary,
+    model_version: ML_DESCRIPTION_FALLBACK_MODEL_VERSION, source: 'description_fallback',
+  } }), fallbackJob);
+}
+
+test('description fallback copy checks use source spans rather than crossing sentence boundaries', () => {
+  const description = 'This repository helps engineering teams evaluate unfamiliar projects with focused context and clear discovery guidance.';
+  assert.doesNotThrow(() => parseDescriptionFallbackForCopyTest(description,
+    `${description} Its primary language is TypeScript.`,
+    `${description} Its installation guide contains additional README material.`));
+  assert.doesNotThrow(() => parseDescriptionFallbackForCopyTest(description,
+    `${description} ${description}`, `${description} ${description}`));
+  const longer = `${description} It supports well-defined repository evaluation workflows with reliable metadata and durable delivery.`;
+  const prefix = 'It supports well-defined repository evaluation workflows';
+  assert.doesNotThrow(() => parseDescriptionFallbackForCopyTest(longer,
+    `${prefix}. Its primary language is TypeScript.`, `${prefix}. Its installation requires additional steps.`));
+});
+
+test('fallback copy checks retain adjacent unknown spans without joining across approved descriptions', () => {
+  const description = 'A repository discovery tool with focused context and reliable delivery for engineering teams.';
+  const first = 'Extra README material explains durable queues and matching semantics.';
+  const second = 'More README material describes internal delivery and retries.';
+  assert.ok(first.length < 80 && second.length < 80);
+  assert.throws(() => parseDescriptionFallbackForCopyTest(description,
+    `${description} ${first} ${second}`, `${first} ${second}`), /invalid bounded content/);
+  assert.doesNotThrow(() => parseDescriptionFallbackForCopyTest(description,
+    `${first} ${description} ${second}`, `${first} ${second}`));
 });
 
 test('repository-index transport terminally rejects malformed successful responses', async () => {
