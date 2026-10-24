@@ -1,3 +1,7 @@
+import { lockModelLane } from '../services/modelOperationService.js';
+import { lockedSession } from '../services/feedIntentSessionService.js';
+import { ModelOperationError } from '../contracts/modelOperations.js';
+import { FeedProvenanceUnavailableError, FeedProvenanceDependencyError } from '../ports/feedPersistencePort.js';
 import { loadSocialNeighborhoodRows } from '../services/socialNeighborhoodProjection.js';
 import { projectSocialCandidates, type SocialCandidateProjection } from '../services/socialCandidateProjection.js';
 import { readmeSummaryProjection } from '../services/readmeSummaryService.js';
@@ -8,7 +12,9 @@ import type {
   StoredServeItem,
 } from '../contracts/feed.v2.js';
 import { loadNegativePreferenceEligibleIds } from '../services/negativePreferenceEligibility.js';
-import { FeedServeOverlapError, FeedPreferenceChangedError, MAX_FEED_SERVE_LOOKUP_BATCH } from '../ports/feedPersistencePort.js';
+import { loadRecentExposureEligibleIds } from '../services/feedExposureEligibility.js';
+import { feedRecentExposureDays } from '../config/feedExposure.js';
+import { FeedExposureChangedError, FeedServeOverlapError, FeedPreferenceChangedError, MAX_FEED_SERVE_LOOKUP_BATCH } from '../ports/feedPersistencePort.js';
 import type {
   FeedPersistencePort, FeedReconciliationPersistencePort, FeedServeRequest, RepositoryIdentityProjection,
 } from '../ports/feedPersistencePort.js';
@@ -58,6 +64,14 @@ function projection(row: Record<string, unknown>): RepositoryProjection {
 }
 
 export class PostgresFeedPersistence implements FeedPersistencePort, FeedReconciliationPersistencePort {
+  private readonly recentExposureDays = feedRecentExposureDays();
+
+  async listExposureEligibleRepositoryIds(userId: string, repoIds: string[]): Promise<string[]> {
+    return loadRecentExposureEligibleIds({
+      query: async (text, parameters) => [...await sqlClient.unsafe(text, [...parameters])],
+    }, userId, repoIds, this.recentExposureDays);
+  }
+
   async listPreferenceEligibleRepositoryIds(userId: string, repoIds: string[]): Promise<string[]> {
     return loadNegativePreferenceEligibleIds({
       query: async (text, parameters) => [...await sqlClient.unsafe(text, [...parameters])],
@@ -78,14 +92,15 @@ export class PostgresFeedPersistence implements FeedPersistencePort, FeedReconci
   async getGenerationContext(userId: string) {
     await this.getFeedVersion(userId);
     const rows = await sqlClient`
-      SELECT state.feed_version,u.profile_version,
+      SELECT state.feed_version,u.profile_version,state.model_policy_sha256,
         COALESCE(job.profile_version=u.profile_version,false) AS delivered
       FROM app.users u JOIN app.user_feed_state state USING(user_id)
       LEFT JOIN telemetry.feed_prewarm_jobs job USING(user_id)
       WHERE u.user_id=${userId}::uuid AND u.status='active'
     `;
     return rows[0] ? { feedVersion: BigInt(rows[0].feed_version),
-      profileVersion: BigInt(rows[0].profile_version), delivered: rows[0].delivered === true } : null;
+      profileVersion: BigInt(rows[0].profile_version), delivered: rows[0].delivered === true,
+      ...(rows[0].model_policy_sha256?{modelPolicySha256:String(rows[0].model_policy_sha256)}:{}) } : null;
   }
 
   async recordMlProfileDelivered(userId: string, profileVersion: bigint): Promise<boolean> {
@@ -94,7 +109,8 @@ export class PostgresFeedPersistence implements FeedPersistencePort, FeedReconci
       // access and reject an acknowledgement for a superseded profile.
       const users = await tx`SELECT user_id FROM app.users
         WHERE user_id=${userId}::uuid AND status='active'
-          AND profile_version=${profileVersion.toString()}::bigint FOR KEY SHARE`;
+          AND profile_version=${profileVersion.toString()}::bigint
+          AND NOT EXISTS(SELECT 1 FROM app.user_feed_state WHERE user_id=app.users.user_id AND model_policy_sha256 IS NOT NULL) FOR KEY SHARE`;
       if (!users.length) return false;
       await tx`INSERT INTO app.user_feed_state(user_id) VALUES(${userId}::uuid)
         ON CONFLICT(user_id) DO NOTHING`;
@@ -164,10 +180,13 @@ export class PostgresFeedPersistence implements FeedPersistencePort, FeedReconci
         SELECT item.repo_id,serve.created_at AS observed_at,0 AS priority
         FROM telemetry.feed_serves serve
         JOIN telemetry.feed_serve_items item ON item.serve_id=serve.serve_id
-        WHERE serve.user_id=${userId}::uuid AND serve.session_id=${sessionId ?? null}::uuid
+        WHERE serve.user_id=${userId}::uuid
+          AND (serve.session_id=${sessionId ?? null}::uuid
+            OR serve.created_at>=now()-(${this.recentExposureDays * 86400}::integer * interval '1 second'))
         UNION ALL
-        SELECT repo_id,last_event_at AS observed_at,1 AS priority
-        FROM telemetry.user_repo_engagement WHERE user_id=${userId}::uuid
+        SELECT repo_id,server_received_at AS observed_at,1 AS priority
+        FROM telemetry.interaction_events WHERE user_id=${userId}::uuid
+          AND server_received_at>=now()-(${this.recentExposureDays * 86400}::integer * interval '1 second')
       )
       SELECT repo_id FROM exposures GROUP BY repo_id
       ORDER BY min(priority),max(observed_at) DESC,repo_id LIMIT ${boundedLimit}
@@ -193,6 +212,7 @@ export class PostgresFeedPersistence implements FeedPersistencePort, FeedReconci
              profile_version,onboarding_completed
       FROM app.users
       WHERE user_id=${userId}::uuid AND status='active'
+        AND NOT EXISTS(SELECT 1 FROM app.user_feed_state WHERE user_id=app.users.user_id AND model_policy_sha256 IS NOT NULL)
       LIMIT 1
     `;
     const row = rows[0];
@@ -219,13 +239,16 @@ export class PostgresFeedPersistence implements FeedPersistencePort, FeedReconci
   ) {
     const rows = await sqlClient`
       WITH candidates AS (
-        SELECT item.repo_id,item.score,item.source,item.model_version,current_summary.summary_id,serve.generation_id,
+        SELECT item.repo_id,item.score,item.source,item.model_version,current_summary.summary_id,provenance.generation_id,
+               provenance.record_digest,provenance.capture_status,
+               COALESCE(provenance.legacy_generation_hint,CASE WHEN provenance.serve_id IS NULL THEN serve.generation_id END) AS legacy_generation_hint,
                serve.created_at,item.position,
                row_number() OVER (
                  PARTITION BY item.repo_id ORDER BY serve.created_at DESC,item.position ASC
                ) AS repo_rank
         FROM telemetry.feed_serves serve
         JOIN telemetry.feed_serve_items item USING(serve_id)
+        LEFT JOIN telemetry.feed_item_provenance provenance ON provenance.serve_id=item.serve_id AND provenance.position=item.position
         JOIN app.repos repo ON repo.repo_id=item.repo_id AND repo.status='active'
         JOIN app.repo_content content ON content.repo_id=repo.repo_id
         LEFT JOIN LATERAL (
@@ -250,8 +273,19 @@ export class PostgresFeedPersistence implements FeedPersistencePort, FeedReconci
             WHERE negative.user_id=serve.user_id AND negative.repo_id=item.repo_id
               AND negative.reaction='dislike'
           )
+          AND NOT EXISTS (
+            SELECT 1 FROM telemetry.feed_serves recent_serve
+            JOIN telemetry.feed_serve_items seen_item ON seen_item.serve_id=recent_serve.serve_id
+            WHERE recent_serve.user_id=${userId}::uuid AND seen_item.repo_id=item.repo_id
+              AND recent_serve.created_at>=now()-(${this.recentExposureDays * 86400}::integer * interval '1 second')
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM telemetry.interaction_events recent_event
+            WHERE recent_event.user_id=${userId}::uuid AND recent_event.repo_id=item.repo_id
+              AND recent_event.server_received_at>=now()-(${this.recentExposureDays * 86400}::integer * interval '1 second')
+          )
       )
-      SELECT repo_id,score,source,model_version,summary_id,generation_id
+      SELECT repo_id,score,source,model_version,summary_id,generation_id,record_digest,capture_status,legacy_generation_hint
       FROM candidates WHERE repo_rank=1
       ORDER BY created_at DESC,position ASC
       LIMIT ${Math.max(1, Math.min(100, limit))}
@@ -263,6 +297,9 @@ export class PostgresFeedPersistence implements FeedPersistencePort, FeedReconci
       model_version: String(row.model_version),
       summary_id: row.summary_id == null ? null : String(row.summary_id),
       ...(row.generation_id == null ? {} : { generation_id: String(row.generation_id) }),
+      ...(row.legacy_generation_hint == null ? {} : {legacy_generation_hint:String(row.legacy_generation_hint)}),
+      ...(row.capture_status !== 'captured' ? {} : { scoring_reference: {generation_id:String(row.generation_id),
+        repo_id:String(row.repo_id),record_digest:String(row.record_digest)} }),
     }));
   }
 
@@ -380,6 +417,8 @@ export class PostgresFeedPersistence implements FeedPersistencePort, FeedReconci
     const serve = serves[0];
     const rows = await sqlClient`
       SELECT item.serve_id,item.position,item.repo_id,item.score,item.source,item.model_version,
+             provenance.exposure_id,provenance.generation_id,provenance.record_digest,provenance.capture_status,
+             COALESCE(provenance.legacy_generation_hint,CASE WHEN provenance.serve_id IS NULL THEN ${serve.generation_id ?? null}::uuid END) AS legacy_generation_hint,
              COALESCE(exact_summary.summary_id,current_summary.summary_id) AS summary_id,
              ${sqlClient.unsafe(readmeSummaryProjection('repo','content'))},
              repo.full_name, repo.updated_at, content.description, content.primary_language,
@@ -406,6 +445,7 @@ export class PostgresFeedPersistence implements FeedPersistencePort, FeedReconci
              END AS viewer_follows_owner,
              repo.status
       FROM telemetry.feed_serve_items item
+      LEFT JOIN telemetry.feed_item_provenance provenance ON provenance.serve_id=item.serve_id AND provenance.position=item.position
       JOIN app.repos repo ON repo.repo_id = item.repo_id
       LEFT JOIN LATERAL (
         SELECT profile.profile_id,profile.claimed_by_user_id
@@ -467,6 +507,11 @@ export class PostgresFeedPersistence implements FeedPersistencePort, FeedReconci
       position: Number(row.position), repo_id: String(row.repo_id), score: Number(row.score ?? 0),
       source: String(row.source), model_version: row.model_version == null ? '' : String(row.model_version),
       summary_id: row.summary_id == null ? null : String(row.summary_id), repository: projection(row),
+      ...(row.exposure_id == null ? {} : {exposure_id:String(row.exposure_id)}),
+      ...(row.generation_id == null ? {} : {generation_id:String(row.generation_id)}),
+      ...(row.legacy_generation_hint == null ? {} : {legacy_generation_hint:String(row.legacy_generation_hint)}),
+      ...(row.capture_status !== 'captured' ? {} : {scoring_reference:{generation_id:String(row.generation_id),
+        repo_id:String(row.repo_id),record_digest:String(row.record_digest)}}),
     }));
     return {
       serve_id: String(serve.serve_id), feed_request_id: String(serve.feed_request_id), user_id: String(serve.user_id),
@@ -480,12 +525,43 @@ export class PostgresFeedPersistence implements FeedPersistencePort, FeedReconci
 
   async createServe(input: CreateServeInput): Promise<StoredServe> {
     if (input.items.length > 100) throw new Error('A feed serve cannot contain more than 100 items.');
+    for (const item of input.items) if (item.legacy_generation_hint!==undefined
+      && (item.scoring_reference || typeof item.legacy_generation_hint!=='string' || item.legacy_generation_hint.length!==36
+        || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(item.legacy_generation_hint))) {
+      throw new FeedProvenanceUnavailableError();
+    }
+    for (const item of input.items) if (item.scoring_reference) {
+      const reference=item.scoring_reference;
+      if (typeof reference!=='object' || Array.isArray(reference)
+        || Object.keys(reference).sort().join(',')!=='generation_id,record_digest,repo_id'
+        || reference.repo_id!==item.repo_id || reference.generation_id!==item.generation_id
+        || typeof reference.generation_id!=='string' || reference.generation_id.length!==36
+        || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(reference.generation_id)
+        || typeof reference.record_digest!=='string' || reference.record_digest.length!==64
+        || !/^[0-9a-f]{64}$/.test(reference.record_digest)) throw new FeedProvenanceUnavailableError();
+    }
     const created = await sqlClient.begin(async (tx) => {
       // Match activity/profile lock order: user, then feed state. Current
       // reactions and new serves serialize; session duplicate fencing is separate.
       await tx`SELECT user_id FROM app.users WHERE user_id=${input.user_id}::uuid FOR KEY SHARE`;
       await tx`INSERT INTO app.user_feed_state(user_id) VALUES(${input.user_id}::uuid) ON CONFLICT DO NOTHING`;
       await tx`SELECT user_id FROM app.user_feed_state WHERE user_id=${input.user_id}::uuid FOR UPDATE`;
+      const lane=await lockModelLane(tx,input.user_id);
+      if(lane){
+        const scope=input.intent_scope;
+        if(!scope||!lane.initialized||scope.userId!==input.user_id||scope.sessionId!==input.session_id||scope.policySha256!==lane.policySha256)throw new ModelOperationError('MODEL_SESSION_PENDING',409);
+        const session=await lockedSession(tx,lane,input.session_id);
+        const [frontier]=await tx`SELECT state.feed_version,state.model_operation_version,u.profile_version FROM app.user_feed_state state JOIN app.users u USING(user_id) WHERE state.user_id=${input.user_id}::uuid`;
+        if(session.status!=='active'||session.epoch!==scope.epoch||session.witnessSha256!==scope.witnessSha256
+          ||String(frontier.feed_version)!==scope.feedVersion||String(frontier.profile_version)!==scope.profileVersion
+          ||String(frontier.model_operation_version)!==scope.acceptedOperationVersion||scope.applied.applied_operation_version!==scope.acceptedOperationVersion)throw new ModelOperationError('MODEL_SESSION_PENDING',409);
+        const ids=[...new Set(input.items.map(item=>item.generation_id).filter((id):id is string=>Boolean(id)))];
+        if(input.items.some(item=>!item.generation_id))throw new ModelOperationError();
+        const generations=await tx`SELECT generation_id FROM telemetry.feed_model_generations WHERE generation_id=ANY(${ids}::uuid[])
+          AND user_id=${input.user_id}::uuid AND session_id=${input.session_id}::uuid AND queue_scope=${scope.queueScope}
+          AND valid_until_ms>floor(extract(epoch FROM clock_timestamp())*1000)::bigint FOR KEY SHARE`;
+        if(generations.length!==ids.length||BigInt(scope.applied.valid_until_ms)<=BigInt(Date.now()))throw new ModelOperationError('MODEL_SESSION_PENDING',409);
+      }else if(input.intent_scope)throw new ModelOperationError();
       // Serialize final delivery decisions within one viewer/session. A queued
       // page and durable recovery may both pass their earlier exclusion read;
       // only one may commit overlapping candidates. Retain the user-before-feed
@@ -494,10 +570,13 @@ export class PostgresFeedPersistence implements FeedPersistencePort, FeedReconci
         'feed-serve:' || ${input.user_id}::uuid::text || ':' || ${input.session_id}::uuid::text,0))`;
       const headers = await tx`
         INSERT INTO telemetry.feed_serves (
-          feed_request_id,user_id,session_id,feed_version,generation_id,source,model_version,next_cursor
+          feed_request_id,user_id,session_id,feed_version,generation_id,source,model_version,next_cursor,
+          intent_epoch,intent_epoch_started_ms,intent_epoch_witness_sha256,intent_policy_sha256
         ) SELECT
           ${input.feed_request_id}::uuid,${input.user_id}::uuid,${input.session_id}::uuid,
-          ${input.feed_version.toString()}::bigint,${input.generation_id}::uuid,${input.source},${input.model_version},${input.next_cursor}
+          ${input.feed_version.toString()}::bigint,${input.generation_id}::uuid,${input.source},${input.model_version},${input.next_cursor},
+          ${input.intent_scope?.epoch??null}::bigint,${input.intent_scope?.epochStartedMs??null}::bigint,
+          ${input.intent_scope?.witnessSha256??null},${input.intent_scope?.policySha256??null}
         WHERE ${input.source !== 'personalized'} OR NOT EXISTS (
           SELECT 1 FROM telemetry.feed_serves delivered
           JOIN telemetry.feed_serve_items seen ON seen.serve_id=delivered.serve_id
@@ -513,6 +592,13 @@ export class PostgresFeedPersistence implements FeedPersistencePort, FeedReconci
         query: async (text, parameters) => [...await tx.unsafe(text, [...parameters])],
       }, input.user_id, input.items.map(item => item.repo_id)));
       if (input.items.some(item => !eligible.has(item.repo_id))) throw new FeedPreferenceChangedError();
+      // The existing per-user feed-state lock serializes this check with every
+      // fresh serve, including other sessions. Same-request replay exits above.
+      const unexposed = new Set(await loadRecentExposureEligibleIds({
+        query: async (text, parameters) => [...await tx.unsafe(text, [...parameters])],
+      }, input.user_id, input.items.map(item => item.repo_id), this.recentExposureDays));
+      if (input.items.some(item => !unexposed.has(item.repo_id))) throw new FeedExposureChangedError();
+      let provenance: Array<Record<string, unknown>> = [];
       if (input.items.length) {
         const items = input.items.map(item => ({ position: item.position,repo_id: item.repo_id,score: item.score,
           source: item.source,model_version: item.model_version,summary_id: item.summary_id }));
@@ -523,8 +609,27 @@ export class PostgresFeedPersistence implements FeedPersistencePort, FeedReconci
             position integer,repo_id uuid,score double precision,source text,model_version text,summary_id uuid
           )
         `;
+        const attribution = input.items.map(item => ({position:item.position,repo_id:item.repo_id,
+          generation_id:item.generation_id ?? null,legacy_generation_hint:item.legacy_generation_hint ?? null,record_digest:item.scoring_reference?.record_digest ?? null,
+          capture_status:item.scoring_reference ? 'captured' : 'not_captured'}));
+        provenance = [...await tx`
+          INSERT INTO telemetry.feed_item_provenance(serve_id,position,user_id,repo_id,generation_id,legacy_generation_hint,record_digest,capture_status)
+          SELECT ${String(header.serve_id)}::uuid,position,${input.user_id}::uuid,repo_id,generation_id,legacy_generation_hint,record_digest,capture_status
+          FROM jsonb_to_recordset(${JSON.stringify(attribution)}::jsonb) AS item(
+            position smallint,repo_id uuid,generation_id uuid,legacy_generation_hint uuid,record_digest text,capture_status text)
+          RETURNING position,exposure_id
+        `];
       }
-      return header;
+      // Only a successfully committed, current scoped serve counts as backend
+      // presence. Any later failure rolls this stamp back with the serve.
+      if(lane)await tx`UPDATE telemetry.feed_intent_sessions
+        SET last_presence_ms=GREATEST(last_presence_ms,floor(extract(epoch FROM clock_timestamp())*1000)::bigint)
+        WHERE session_id=${input.session_id}::uuid AND user_id=${input.user_id}::uuid AND status='active'`;
+      return {serve_id:String(header.serve_id),created_at:header.created_at,provenance};
+    }).catch(error => {
+      if (error?.code === 'P0001' && ['FEED_PROVENANCE_INVALID','SCORING_CAPTURE_EXPIRED'].includes(error.message)) throw new FeedProvenanceUnavailableError();
+      if (error?.code === '58000' && error.message === 'FEED_PROVENANCE_UNAVAILABLE') throw new FeedProvenanceDependencyError();
+      throw error;
     });
     if (!created || input.items.some(item => item.summary_id !== item.repository.summary_id)) {
       const replay = await this.getServeByRequest(input.user_id, input.feed_request_id);
@@ -538,6 +643,10 @@ export class PostgresFeedPersistence implements FeedPersistencePort, FeedReconci
       items: [...input.items].sort((a,b) => a.position-b.position).map(item => ({
         position: item.position,repo_id: item.repo_id,score: item.score,source: item.source,
         model_version: item.model_version,summary_id: item.summary_id,repository: item.repository,
+        ...(item.generation_id ? {generation_id:item.generation_id} : {}),
+        ...(item.legacy_generation_hint ? {legacy_generation_hint:item.legacy_generation_hint} : {}),
+        ...(item.scoring_reference ? {scoring_reference:item.scoring_reference} : {}),
+        exposure_id:String(created.provenance.find(row => Number(row.position)===item.position)!.exposure_id),
       })),
     };
   }
@@ -640,6 +749,21 @@ export class PostgresFeedPersistence implements FeedPersistencePort, FeedReconci
       JOIN app.repos repo ON repo.repo_id=item.repo_id
       WHERE snapshot.complete AND snapshot.active AND repo.status='active'
         AND NOT (item.repo_id = ANY(${excludeRepoIds}::uuid[]))
+        AND NOT EXISTS (
+          SELECT 1 FROM app.reactions negative WHERE negative.user_id=${viewerUserId ?? null}::uuid
+            AND negative.repo_id=item.repo_id AND negative.reaction='dislike'
+        )
+        AND NOT EXISTS (
+          SELECT 1 FROM telemetry.feed_serves recent_serve
+          JOIN telemetry.feed_serve_items seen_item ON seen_item.serve_id=recent_serve.serve_id
+          WHERE recent_serve.user_id=${viewerUserId ?? null}::uuid AND seen_item.repo_id=item.repo_id
+            AND recent_serve.created_at>=now()-(${this.recentExposureDays * 86400}::integer * interval '1 second')
+        )
+        AND NOT EXISTS (
+          SELECT 1 FROM telemetry.interaction_events recent_event
+          WHERE recent_event.user_id=${viewerUserId ?? null}::uuid AND recent_event.repo_id=item.repo_id
+            AND recent_event.server_received_at>=now()-(${this.recentExposureDays * 86400}::integer * interval '1 second')
+        )
       ORDER BY snapshot.activated_at DESC, item.position ASC LIMIT ${limit}
     `;
     const ids = rows.map((row) => String(row.repo_id));

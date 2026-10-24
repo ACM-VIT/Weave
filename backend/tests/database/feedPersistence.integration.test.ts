@@ -3,9 +3,15 @@ import crypto from 'node:crypto';
 import test from 'node:test';
 import { sqlClient } from '../../db/index.js';
 import { PostgresFeedPersistence } from '../../adapters/postgresFeedPersistence.js';
-import { FeedServeOverlapError } from '../../ports/feedPersistencePort.js';
+import { FeedExposureChangedError, FeedServeOverlapError } from '../../ports/feedPersistencePort.js';
 import type { CreateServeInput, RepositoryProjection } from '../../contracts/feed.v2.js';
 import { assertDisposableDatabase } from './disposableDatabase.js';
+function ordinaryFeedVersion(value: string | number): number {
+  assert.equal(typeof value, 'number', 'This fixture implements only ordinary recommendation responses');
+  assert.ok(Number.isSafeInteger(value));
+  return value as number;
+}
+
 const enabled = process.env.RUN_DATABASE_INTEGRATION === '1';
 if (enabled) assertDisposableDatabase();
 const integration = enabled ? test : test.skip;
@@ -41,11 +47,15 @@ integration('new serves use one item insert for 1, 24 and 50 cards without follo
     console.log('SERVE_MEASURE '+JSON.stringify({count,statements:queries.length,ms:Math.round(performance.now()-start)}));
     assert.equal(queries.filter(query=>/INSERT INTO telemetry.feed_serve_items/i.test(query)).length,1);
     assert.equal(queries.filter(query=>/^\s*SELECT[\s\S]*FROM telemetry.feed_serves/i.test(query)).length,0);
-    // Four bounded statements serialize current preferences with activity:
-    // user lock, feed initialization, feed lock, and candidate eligibility read.
-    assert.equal(queries.filter(query=>/FROM app.user_feed_state[\s\S]*FOR UPDATE/i.test(query)).length,1);
+    assert.equal(queries.filter(query=>query.includes('recent AS MATERIALIZED')).length,1);
+    // Bounded preference/exposure reads and the session fence serialize delivery.
+
+    assert.equal(queries.filter(query=>/SELECT user_id FROM app.user_feed_state[\s\S]*FOR UPDATE/i.test(query)).length,1);
+    assert.equal(queries.filter(query=>/SELECT model_policy_sha256[\s\S]*FOR UPDATE/i.test(query)).length,1);
     assert.equal(queries.filter(query=>/negative\.reaction='dislike'/i.test(query)).length,1);
-    assert.ok(queries.length<=10,`new serve took ${queries.length} statements`);
+    // The existing model-lane lock and the new exposure read each add one
+    // bounded statement to the earlier ten-statement ordinary serve path.
+    assert.ok(queries.length<=12,`new serve took ${queries.length} statements`);
     assert.equal(created.items.length,count);
     assert.deepEqual(created.items.map(item=>item.repo_id),f.repos);
     assert.equal(created.created_at,new Date(created.created_at).toISOString());
@@ -98,15 +108,15 @@ integration('first-read initialization remains race safe and cannot reset an inc
   assert.equal(await persistence.getFeedVersion(f.user),9n);
 });
 
-integration('exclusions isolate accounts and sessions, count actual exposure globally and bound recent history',async()=>{
+integration('exclusions isolate accounts, include recent cross-session serves and bound history',async()=>{
   const f=await fixture();const other=await fixture();const persistence=new PostgresFeedPersistence();
   await persistence.createServe(f.input);
   await sqlClient`INSERT INTO telemetry.user_repo_engagement(user_id,repo_id,impressions,last_event_at)
     VALUES(${f.user}::uuid,${f.repos[0]}::uuid,1,now()),(${other.user}::uuid,${f.repos[1]}::uuid,1,now())`;
   const api=persistence as unknown as {listExcludedRepositoryIds(user:string,session:string|undefined,limit:number):Promise<string[]>};
-  assert.deepEqual(await api.listExcludedRepositoryIds(f.user,undefined,500),[f.repos[0]]);
+  assert.deepEqual(new Set(await api.listExcludedRepositoryIds(f.user,undefined,500)),new Set(f.repos));
   assert.deepEqual(new Set(await api.listExcludedRepositoryIds(f.user,f.session,500)),new Set(f.repos));
-  assert.deepEqual(await api.listExcludedRepositoryIds(f.user,other.session,500),[f.repos[0]]);
+  assert.deepEqual(new Set(await api.listExcludedRepositoryIds(f.user,other.session,500)),new Set(f.repos));
   assert.equal((await api.listExcludedRepositoryIds(f.user,f.session,2)).length,2);
 });
 
@@ -155,8 +165,8 @@ integration('concurrent session deliveries serialize final overlap checks includ
     JOIN telemetry.feed_serves serve ON serve.serve_id=item.serve_id
     WHERE serve.user_id=${f.user}::uuid AND serve.session_id=${f.session}::uuid AND item.repo_id=${f.repos[0]}::uuid`;
   assert.equal(Number(rows[0].count), 1);
-  const otherSession = await persistence.createServe({ ...f.input, feed_request_id: crypto.randomUUID(), session_id: crypto.randomUUID() });
-  assert.equal(otherSession.items.length, 1, 'another browsing session retains its own delivery history');
+  await assert.rejects(persistence.createServe({ ...f.input, feed_request_id: crypto.randomUUID(), session_id: crypto.randomUUID() }),
+    FeedExposureChangedError, 'recent delivery also excludes a fresh browsing session');
 });
 
 integration('candidate membership finds older session deliveries beyond generation history limit', async () => {
@@ -181,6 +191,7 @@ integration('durable recovery excludes the current session inside its candidate 
   await sqlClient`INSERT INTO app.repo_content(repo_id,content_hash,content_version)
     SELECT repo_id,'recovery-fixture',1 FROM unnest(${f.repos}::uuid[]) AS candidate(repo_id)`;
   await persistence.createServe(f.input);
+  await sqlClient`UPDATE telemetry.feed_serves SET created_at=now()-interval '8 days' WHERE user_id=${f.user}::uuid`;
   const session = crypto.randomUUID();
   await persistence.createServe({ ...f.input, session_id: session, feed_request_id: crypto.randomUUID(), items: [f.input.items[0]] });
   const recovered = await persistence.getRecentPersonalizedEntries(f.user, 1n, 100, [], session);
@@ -219,6 +230,7 @@ integration('real feed recovery followed by late ML publication serves only unse
     SELECT repo_id,'late-generation-fixture',1 FROM unnest(${f.repos}::uuid[]) AS candidate(repo_id)`;
   await persistence.recordMlProfileDelivered(f.user, 1n);
   await persistence.createServe({ ...f.input, items: [f.input.items[0]] });
+  await sqlClient`UPDATE telemetry.feed_serves SET created_at=now()-interval '8 days' WHERE user_id=${f.user}::uuid`;
   const redis = new Redis(process.env.REDIS_TEST_URL!);
   const queue = new RedisFeedQueue(redis, 30_000);
   let modelStarted!: () => void;
@@ -229,7 +241,7 @@ integration('real feed recovery followed by late ML publication serves only unse
     assert.deepEqual(input.exclude_repo_ids, []);
     modelStarted(); await model;
     return { schema_version: 2, generation_id: input.generation_id, user_id: input.user_id,
-      feed_version: Number(input.feed_version), model_version: 'late-test', embedding_version: 'test',
+      feed_version: ordinaryFeedVersion(input.feed_version), model_version: 'late-test', embedding_version: 'test',
       embedding_versions: ['test'], served_ranker: 'hybrid', heavy_ranker_selected: false, ranker_applied: false,
       fallback_code: null, fallback_reason: null, retrieval_mode: 'hybrid',
       context_status: { cold_start_applied: false, locale: 'not_provided' },
@@ -260,4 +272,32 @@ integration('real feed recovery followed by late ML publication serves only unse
       GROUP BY item.repo_id HAVING count(*)>1`;
     assert.equal(duplicates.length, 0);
   } finally { finishModel(); await service.stop(); await redis.flushdb(); await redis.quit(); }
+});
+
+integration('legacy recovery retains an unverified header hint without guessing each item generation',async()=>{
+  const f=await fixture(2),persistence=new PostgresFeedPersistence();
+  const generationA=crypto.randomUUID(),generationB=crypto.randomUUID();
+  // This is the old registered write shape: the header kept the first input
+  // generation, while a mixed page's individual generation IDs were not stored.
+  const originalEntries=f.input.items.map((item,index)=>({...item,generation_id:index===0?generationA:generationB}));
+  const [header]=await sqlClient`INSERT INTO telemetry.feed_serves(feed_request_id,user_id,session_id,feed_version,generation_id,source,model_version)
+    VALUES(${f.input.feed_request_id}::uuid,${f.user}::uuid,${f.session}::uuid,1,${originalEntries[0].generation_id}::uuid,'personalized','test') RETURNING serve_id`;
+  for(const item of originalEntries){
+    await sqlClient`INSERT INTO telemetry.feed_serve_items(serve_id,position,repo_id,score,source,model_version)
+      VALUES(${header.serve_id}::uuid,${item.position},${item.repo_id}::uuid,${item.score},${item.source},${item.model_version})`;
+    await sqlClient`INSERT INTO app.repo_content(repo_id,content_version,content_hash) VALUES(${item.repo_id}::uuid,1,'fixture-content')`;
+  }
+  // Recovery tests an old legacy delivery, outside the seven-day exclusion.
+  await sqlClient`UPDATE telemetry.feed_serves SET created_at=now()-interval '8 days' WHERE serve_id=${header.serve_id}::uuid`;
+  const legacy=await persistence.getRecentPersonalizedEntries(f.user,1n,2,[],crypto.randomUUID());
+  assert.deepEqual(legacy.map(item=>item.generation_id),[undefined,undefined],'the header cannot prove the second item generation');
+  assert.deepEqual(legacy.map(item=>item.legacy_generation_hint),[generationA,generationA],'preserve the actual old header as an explicitly unverified hint');
+  const original=await persistence.getServeByRequest(f.user,f.input.feed_request_id);
+  assert.equal(original?.generation_id,generationA);assert.equal(original?.items[1].generation_id,undefined);
+  const recovered=await persistence.createServe({...f.input,feed_request_id:crypto.randomUUID(),session_id:crypto.randomUUID(),generation_id:null,
+    items:legacy.map((item,position)=>({...item,position,repository:f.input.items[position].repository}))});
+  assert.deepEqual(recovered.items.map(item=>item.generation_id),[undefined,undefined]);
+  const replay=await persistence.getServeByRequest(f.user,recovered.feed_request_id);
+  assert.deepEqual(replay?.items.map(item=>item.legacy_generation_hint),[generationA,generationA]);
+  assert.equal(Number((await sqlClient`SELECT count(*) FROM telemetry.feed_item_provenance WHERE serve_id=${recovered.serve_id}::uuid AND capture_status='captured'`)[0].count),0);
 });

@@ -12,10 +12,12 @@ test('session delivery index is modeled, audited and scheduled after existing mi
   const audit = JSON.parse(readFileSync(new URL('../../../database/audits/expected-v2-schema.json', import.meta.url), 'utf8'));
   assert.ok(audit.indexes.includes(index.config.name));
   const journal = JSON.parse(readFileSync(new URL('../../../database/migrations/meta/_journal.json', import.meta.url), 'utf8'));
-  const entry = journal.entries.at(-1);
+  const entry = journal.entries.find((candidate: { tag: string }) => candidate.tag === '0041_feed_serves_session_lookup');
   assert.equal(entry.tag, '0041_feed_serves_session_lookup');
-  assert.equal(entry.idx, journal.entries.at(-2).idx + 1);
-  assert.ok(entry.when > journal.entries.at(-2).when);
+  assert.equal(entry.idx, 44);
+  const previous = journal.entries.find((candidate: { idx: number }) => candidate.idx === entry.idx - 1);
+  assert.ok(previous);
+  assert.ok(entry.when > previous.when);
   assert.match(readFileSync(new URL(`../../../database/migrations/${entry.tag}.sql`, import.meta.url), 'utf8'),
     /CREATE INDEX IF NOT EXISTS feed_serves_user_session_idx\s+ON telemetry\.feed_serves\s*\(user_id,\s*session_id\)/);
 });

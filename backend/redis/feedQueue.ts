@@ -42,6 +42,7 @@ export class ReservationOwnedError extends Error {
 }
 
 export interface FeedQueuePort {
+  withScope?(scopeSha256:string): FeedQueuePort;
   reserve(userId: string, version: bigint, requestId: string, limit: number, token: string): Promise<FeedReservation>;
   /** Retire only candidates with durable delivery witnesses while keeping ownership. */
   refill(userId: string, version: bigint, requestId: string, limit: number, token: string, discardRepoIds?: string[]): Promise<FeedReservation>;
@@ -54,7 +55,7 @@ export interface FeedQueuePort {
   depth(userId: string, version: bigint): Promise<number>;
   acquireGenerationLock(userId: string, version: bigint, token: string, ttlMs: number): Promise<boolean>;
   releaseGenerationLock(userId: string, version: bigint, token: string): Promise<void>;
-  scanReservations(): Promise<Array<{ userId: string; version: bigint; requestId: string; token: string; ttlMs: number }>>;
+  scanReservations(): Promise<Array<{ userId: string; version: bigint; requestId: string; token: string; ttlMs: number; queueScope?:string }>>;
   deleteStaleVersions(userId: string, keepVersion: bigint): Promise<number>;
   generationState?(userId: string, version: bigint, token: string): Promise<FeedGenerationState | null>;
   append?(userId: string, version: bigint, token: string, items: RecommendationEntry[], ttlSeconds: number, maxDepth: number, onlyIfUnpublished?: boolean): Promise<FeedAppendOutcome | null>;
@@ -65,35 +66,42 @@ export interface FeedQueuePort {
 // unbounded pending array. SCAN is best-effort under mutation; repeated complete
 // passes repair missing entries without a keyspace traversal in any one cycle.
 interface RepairCursor { cursor: string; offset: number }
-type ReservationCandidate = { userId: string; version: bigint; requestId: string; token: string; ttlMs: number };
+type ReservationCandidate = { userId: string; version: bigint; requestId: string; token: string; ttlMs: number; queueScope?:string };
 
 export class RedisFeedQueue implements FeedQueuePort {
   private readonly reservationCursor: RepairCursor = { cursor: '0', offset: 0 };
   private readonly legacyCursor: RepairCursor = { cursor: '0', offset: 0 };
   private reservationScan: Promise<ReservationCandidate[]> | undefined;
-  constructor(private readonly redis: Redis, private readonly reservationTtlMs = 60_000) {}
+  constructor(private readonly redis: Redis, private readonly reservationTtlMs = 60_000, private readonly scopeSha256?:string) {
+    if(scopeSha256!==undefined && !/^[a-f0-9]{64}$/.test(scopeSha256))throw new Error('Invalid feed model scope.');
+  }
+  private get prefix(){return this.scopeSha256?`feed:v3:${this.scopeSha256}`:'feed:v2';}
+  withScope(scopeSha256:string):RedisFeedQueue{return new RedisFeedQueue(this.redis,this.reservationTtlMs,scopeSha256);}
+  private queueForKey(key:string):RedisFeedQueue{
+    const scoped=/^feed:v3:([a-f0-9]{64}):/.exec(key);return scoped?this.withScope(scoped[1]):this.scopeSha256?new RedisFeedQueue(this.redis,this.reservationTtlMs):this;
+  }
 
   private queueKey(userId: string, version: bigint): string {
-    return `feed:v2:${userId}:${version}`;
+    return `${this.prefix}:${userId}:${version}`;
   }
 
   private reservationKeys(userId: string, version: bigint, requestId: string): [string, string] {
-    const base = `feed:v2:reservation:${userId}:${version}:${requestId}`;
+    const base = `${this.prefix}:reservation:${userId}:${version}:${requestId}`;
     return [`${base}:meta`, `${base}:items`];
   }
 
   private lockKey(userId: string, version: bigint): string {
-    return `feed:v2:generation-lock:${userId}:${version}`;
+    return `${this.prefix}:generation-lock:${userId}:${version}`;
   }
 
   // Shared tracking contract for feed refill/reconciliation. Members are meta
   // keys and scores are Redis-clock reservation lease deadlines in milliseconds.
   private reservationIndexKey(userId: string, version: bigint): string {
-    return `feed:v2:reservation-index:${userId}:${version}`;
+    return `${this.prefix}:reservation-index:${userId}:${version}`;
   }
 
   private versionIndexKey(userId: string): string {
-    return `feed:v2:version-index:${userId}`;
+    return `${this.prefix}:version-index:${userId}`;
   }
 
   async reserve(userId: string, version: bigint, requestId: string, limit: number, token: string): Promise<FeedReservation> {
@@ -150,7 +158,7 @@ export class RedisFeedQueue implements FeedQueuePort {
     const [meta, items] = this.reservationKeys(userId, version, requestId);
     return Number(await this.redis.eval(
       RELEASE_FEED_LUA, 5, this.queueKey(userId, version), meta, items,
-      this.reservationIndexKey(userId, version), this.versionIndexKey(userId), token, String(version),
+      this.reservationIndexKey(userId, version), this.versionIndexKey(userId), token, String(version), String(this.reservationTtlMs),
     )) === 1;
   }
 
@@ -171,7 +179,7 @@ export class RedisFeedQueue implements FeedQueuePort {
   }
 
   private publicationKey(userId: string, version: bigint): string {
-    return `feed:v2:published:${userId}:${version}`;
+    return `${this.prefix}:published:${userId}:${version}`;
   }
 
   async hasPublishedGeneration(userId: string, version: bigint): Promise<boolean> {
@@ -248,15 +256,15 @@ export class RedisFeedQueue implements FeedQueuePort {
     // 128 legacy keys. No per-reservation or per-user keyspace scan.
     // Keep the shared scan/cursor owner until both actual SCAN calls settle.
     const [scopeScan, legacyScan] = await Promise.allSettled([
-      this.scanBatch(this.reservationCursor, 'feed:v2:reservation-index:*', 16),
-      this.scanBatch(this.legacyCursor, 'feed:v2:*', 128),
+      this.scanBatch(this.reservationCursor, 'feed:v*:reservation-index:*', 16),
+      this.scanBatch(this.legacyCursor, 'feed:v*', 128),
     ]);
     if (scopeScan.status === 'rejected') throw scopeScan.reason;
     if (legacyScan.status === 'rejected') throw legacyScan.reason;
     const scopes = scopeScan.value;
     const legacy = legacyScan.value;
     const indexes = scopes.filter(key => {
-      const match = /^feed:v2:reservation-index:([^:]+):(0|[1-9]\d*)$/.exec(key);
+      const match = /^feed:v(?:2|3:[a-f0-9]{64}):reservation-index:([^:]+):(0|[1-9]\d*)$/.exec(key);
       return match !== null && isValidUuid(match[1]);
     });
     const candidates = new Set<string>();
@@ -272,7 +280,7 @@ export class RedisFeedQueue implements FeedQueuePort {
         const prefix = indexes[i].replace('reservation-index:', 'reservation:') + ':';
         for (const key of value as string[]) {
           // An index member never authorizes reads outside its user/version.
-          const match = /^feed:v2:reservation:([^:]+):(0|[1-9]\d*):([^:]+):meta$/.exec(key);
+          const match = /^feed:v(?:2|3:[a-f0-9]{64}):reservation:([^:]+):(0|[1-9]\d*):([^:]+):meta$/.exec(key);
           if (key.startsWith(prefix) && match && isValidUuid(match[1]) && isValidUuid(match[3])) candidates.add(key);
           else invalidMembers.push({ index: indexes[i], key });
         }
@@ -286,26 +294,26 @@ export class RedisFeedQueue implements FeedQueuePort {
       commands++;
     }
     for (const key of legacy) {
-      const versionIndex = /^feed:v2:version-index:([^:]+)$/.exec(key);
+      const versionIndex = /^feed:v(?:2|3:[a-f0-9]{64}):version-index:([^:]+)$/.exec(key);
       if (versionIndex && isValidUuid(versionIndex[1])) {
         pipeline.eval(EXPIRE_FEED_VERSION_INDEX_LUA, 1, key);
         commands++;
         continue;
       }
-      if (key.startsWith('feed:v2:reservation:')) candidates.add(key);
-      const match = /^feed:v2:([^:]+):(0|[1-9]\d*)$/.exec(key);
+      if (/^feed:v(?:2|3:[a-f0-9]{64}):reservation:/.test(key)) candidates.add(key);
+      const match = /^feed:v(?:2|3:[a-f0-9]{64}):([^:]+):(0|[1-9]\d*)$/.exec(key);
       if (!match || !isValidUuid(match[1])) continue;
-      pipeline.eval(TRACK_FEED_VERSION_LUA, 1, this.versionIndexKey(match[1]), match[2]);
+      pipeline.eval(TRACK_FEED_VERSION_LUA, 1, this.queueForKey(key).versionIndexKey(match[1]), match[2]);
       commands++;
     }
-    const metadata: Array<{ userId: string; version: bigint; requestId: string }> = [];
+    const metadata: Array<{ userId: string; version: bigint; requestId: string; queueScope?:string }> = [];
     for (const key of candidates) {
-      const match = /^feed:v2:reservation:([^:]+):(0|[1-9]\d*):([^:]+):meta$/.exec(key);
+      const match = /^feed:v(?:2|3:[a-f0-9]{64}):reservation:([^:]+):(0|[1-9]\d*):([^:]+):meta$/.exec(key);
       if (!match || !isValidUuid(match[1]) || !isValidUuid(match[3])) continue;
       const version = BigInt(match[2]);
       pipeline.eval(READ_FEED_RESERVATION_LUA, 3, key,
-        this.reservationIndexKey(match[1], version), this.versionIndexKey(match[1]), match[2]);
-      metadata.push({ userId: match[1], version, requestId: match[3] });
+        this.queueForKey(key).reservationIndexKey(match[1], version), this.queueForKey(key).versionIndexKey(match[1]), match[2]);
+      metadata.push({ userId: match[1], version, requestId: match[3], ...(this.queueForKey(key).scopeSha256?{queueScope:this.queueForKey(key).scopeSha256}:{}) });
     }
     if (commands + metadata.length === 0) return [];
     const results = await pipeline.exec();
@@ -326,6 +334,6 @@ export class RedisFeedQueue implements FeedQueuePort {
   async deleteStaleVersions(userId: string, keepVersion: bigint): Promise<number> {
     if (!isValidUuid(userId) || keepVersion < 0n) throw new Error('Invalid feed cleanup scope.');
     return Number(await this.redis.eval(DELETE_STALE_FEED_VERSIONS_LUA, 1,
-      this.versionIndexKey(userId), String(keepVersion), `feed:v2:${userId}:`));
+      this.versionIndexKey(userId), String(keepVersion), `${this.prefix}:${userId}:`));
   }
 }

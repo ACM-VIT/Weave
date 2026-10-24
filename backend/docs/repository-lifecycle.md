@@ -17,8 +17,8 @@ Set `ML_REPOSITORY_LIFECYCLE_OBSERVATIONS=verified-status-v1` only after owner
 approval and after the matching additive ML contract/CAS implementation is
 running. Until then the source and feature projections omit the new field.
 The ML serving gate `V2_REPOSITORY_LIFECYCLE_POLICY` remains a separate decision.
-The generated schema/client pins the linked ML commit; inherited drift from the
-prior snapshot was score descriptions only and is included in this regeneration.
+The generated schema/client pins the linked ML commit and preserves the current
+`dev` contract, adding only the lifecycle observation schema and optional fields.
 
 Candidate policy: verified archived/disabled excludes new selection after the
 completed ML status CAS; newer verified restoration revives; failed/partial/
@@ -47,8 +47,7 @@ persistence, and Node/Python HTTP routes with actual local Qdrant lifecycle CAS
 and selection. Encoder and distributed lease boundaries in the HTTP fixture are
 local deterministic stand-ins; production/distributed behavior is not claimed.
 
-The refreshed provider pin also includes upstream ML #170's negotiated scoring
-capture request variants and exact decimal feed revision input. Those are existing
-provider features, not lifecycle activation. The vendored schema/client preserves
-them verbatim. Three existing bounded feed-test response fixtures now emit their
-numeric response revision explicitly; the generated response contract is unchanged.
+The provider pin retains upstream negotiated scoring capture, model-context
+operations and exact decimal feed revision input. The ordinary-response fixtures
+retain `dev`'s numeric revision guards, while the cross-repository test covers both
+lifecycle delivery and strict capture/decimal pairing.

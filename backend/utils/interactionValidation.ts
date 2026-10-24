@@ -11,6 +11,9 @@ export function isInteractionEventV2(value: unknown): value is InteractionEventV
     || typeof event.session_id !== 'string' || !isValidUuid(event.session_id)
     || typeof event.repo_id !== 'string' || !isValidUuid(event.repo_id)) return false;
   if (event.serve_id !== null && (typeof event.serve_id !== 'string' || !isValidUuid(event.serve_id))) return false;
+  if (event.impression_event_id !== undefined && event.impression_event_id !== null
+    && (typeof event.impression_event_id!=='string'||!isValidUuid(event.impression_event_id)
+      || event.event_type==='impression'||event.serve_id===null||event.position===null)) return false;
   if (event.position !== null && (!Number.isInteger(event.position) || Number(event.position) < 0)) return false;
   if (event.event_type === 'dwell') {
     if (!Number.isInteger(event.dwell_ms) || Number(event.dwell_ms) < 3_000 || Number(event.dwell_ms) > 300_000) return false;

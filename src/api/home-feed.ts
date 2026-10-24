@@ -19,7 +19,7 @@ export function fetchHomeFeed(token: string, cursor: string | null,
         return result.data.data.items;
       },
     });
-    return { ...page, sessionId: options.sessionId ?? page.sessionId,
+    return { ...page, sessionId: page.sessionId ?? options.sessionId,
       ...(catalogueTraceparent ? { serverTraceparent: catalogueTraceparent } : {}) };
   }, initialPage);
 }

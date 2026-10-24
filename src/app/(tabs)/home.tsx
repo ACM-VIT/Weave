@@ -1,3 +1,4 @@
+import { feedSessions } from '@/api/feed-sessions';
 import { useState, useCallback, useEffect, useLayoutEffect, useMemo, useRef } from 'react';
 import {
   ActivityIndicator,
@@ -24,6 +25,8 @@ import {
   type InfiniteData,
 } from '@tanstack/react-query';
 import * as SecureStore from '../../utils/storage';
+import { feedViewportIds, retainHomeFeedHistory, retainedFeedScrollOffset, shareHomeFeedHistory } from '@/services/feedHistory';
+import type { FeedItem } from '@/utils/feed-items';
 import { markFeedFirstVisible } from '@/services/feedTiming';
 import { fetchHomeFeed } from '@/api/home-feed';
 import { profileRepositoryInvalidationFilters } from '@/api/profile-section-queries';
@@ -70,11 +73,18 @@ export default function HomeScreen() {
   const queryClient = useQueryClient();
   const feedQueryKey = useMemo(() => getFeedQueryKey(user?.user_id), [user?.user_id]);
   const listRef = useRef<FlatList<{ feedId: string; repository: RepositoryData }> | null>(null);
+  const committedViewerKey = useRef(feedQueryKey);
+  const visibleIds = useRef<string[]>([]);
+  const retentionPins = useRef<string[]>([]);
+  const scrollOffset = useRef(0);
+  const committedItems = useRef<FeedItem[]>([]);
   const pagination = useMemo(() => {
     const controller = new FeedPaginationController(async (cursor, signal, requestId, sessionId, initialPage) => {
       const token = await SecureStore.getItemAsync('access_token');
       if (!token) throw new Error('No token');
-      return fetchHomeFeed(token, cursor, { signal, requestId, sessionId, initialPage });
+      const canonicalSessionId=await feedSessions(token).prepare(sessionId);
+      if(cursor!==null&&canonicalSessionId!==sessionId)throw Object.assign(new Error('Browsing session changed.'),{status:400,code:'FEED_CURSOR_STALE'});
+      return fetchHomeFeed(token, cursor, { signal, requestId, sessionId:canonicalSessionId, initialPage });
     }, queryClient.getQueryData<InfiniteData<FeedPage>>(feedQueryKey)?.pages,
     () => queryClient.getQueryData<InfiniteData<FeedPage>>(feedQueryKey)?.pages ?? []);
     return { controller, reset: () => controller.reset() };
@@ -91,6 +101,8 @@ export default function HomeScreen() {
   });
   const pageWidth = viewport.width;
   const pageHeight = viewport.height;
+  const listKey = `${pageWidth}-${pageHeight}`;
+  const committedListKey = useRef(listKey);
 
   
   const flushActivityBatch = useCallback(async () => {
@@ -118,6 +130,7 @@ export default function HomeScreen() {
   } = useInfiniteQuery({
     queryKey: feedQueryKey,
     queryFn: ({ pageParam, signal }) => pagination.controller.load(pageParam, signal),
+    structuralSharing: (previous, next) => shareHomeFeedHistory(previous, next, retentionPins.current),
     retry: false,
     staleTime: Infinity,
     refetchOnMount: false,
@@ -135,6 +148,32 @@ export default function HomeScreen() {
   const feedItems = useMemo(() => {
     return feedProjection.mapPages(data?.pages);
   }, [data?.pages, feedProjection]);
+
+  useLayoutEffect(() => {
+    if (committedViewerKey.current !== feedQueryKey || committedListKey.current !== listKey) {
+      committedViewerKey.current = feedQueryKey;
+      committedListKey.current = listKey;
+      visibleIds.current = [];
+      retentionPins.current = [];
+      scrollOffset.current = 0;
+      committedItems.current = [];
+      listRef.current?.scrollToOffset({ offset: 0, animated: false });
+    }
+    const bounded = data ? retainHomeFeedHistory(data, retentionPins.current) : undefined;
+    if (bounded && bounded !== data) {
+      queryClient.setQueryData(feedQueryKey, bounded);
+      return;
+    }
+    pagination.controller.commitPages(data?.pages ?? []);
+    const offset = retainedFeedScrollOffset(committedItems.current, feedItems,
+      scrollOffset.current, pageHeight, retentionPins.current);
+    committedItems.current = feedItems;
+    if (offset !== undefined) {
+      scrollOffset.current = offset;
+      listRef.current?.scrollToOffset({ offset, animated: false });
+    }
+    retentionPins.current = feedViewportIds(feedItems, scrollOffset.current, pageHeight);
+  }, [data, feedItems, listKey, pageHeight, feedQueryKey, pagination, queryClient]);
 
   const handleQueueActivity = useCallback((repository: RepositoryData, event: ActivityInput, flushNow?: boolean) => {
     const currentLikeOverrides = queryClient.getQueryData<ProfileLikeOverrides>(
@@ -265,7 +304,8 @@ export default function HomeScreen() {
   useLayoutEffect(() => { visiblePages.current = data?.pages; }, [data?.pages]);
   const [viewableItems, setViewableItems] = useState<string[]>([]);
   const onViewableItemsChanged = useCallback(({ viewableItems }: any) => {
-    setViewableItems(viewableItems.map((v: any) => v.item.feedId));
+    visibleIds.current = viewableItems.filter((v: any) => v.isViewable !== false).map((v: any) => v.item.feedId);
+    setViewableItems(visibleIds.current);
     for (const page of visiblePages.current ?? []) {
       if (viewableItems.some((visible: any) => visible.isViewable !== false
         && page.items.some(item => item.repo_id === visible.item.repository.id))) {
@@ -287,11 +327,24 @@ export default function HomeScreen() {
     );
   }, [responsiveWidth]);
 
+  const [sessionError,setSessionError]=useState<string|null>(null);
+  const [resettingSession,setResettingSession]=useState(false);
+  const resettingSessionRef=useRef(false);
   const refreshFeed = async () => {
+    if(resettingSessionRef.current)return;
+    resettingSessionRef.current=true;setResettingSession(true);setSessionError(null);
+    try{
+    const token=await SecureStore.getItemAsync('access_token');
+    const preserveSession=token?await feedSessions(token).reset(pagination.controller.getSessionId()):false;
     await queryClient.cancelQueries({ queryKey: feedQueryKey, exact: true });
-    pagination.reset();
+    pagination.controller.reset({preserveSession});
+    visibleIds.current = [];
+    retentionPins.current = [];
+    scrollOffset.current = 0;
+    committedItems.current = [];
     listRef.current?.scrollToOffset({ offset: 0, animated: false });
     await queryClient.resetQueries({ queryKey: feedQueryKey, exact: true });
+    }catch{setSessionError('Could not refresh. Try again.');}finally{resettingSessionRef.current=false;setResettingSession(false);}
   };
   const loadMore = useCallback(() => {
     if (hasNextPage && !isFetching) void fetchNextPage({ cancelRefetch: false });
@@ -353,7 +406,7 @@ export default function HomeScreen() {
       <View style={[styles.feedShell, { width: pageWidth, height: pageHeight }]}>
         <FlatList
           ref={listRef}
-          key={`${pageWidth}-${pageHeight}`}
+          key={listKey}
           data={feedItems}
           keyExtractor={(item) => item.feedId}
           renderItem={({ item, index }) => (
@@ -365,7 +418,7 @@ export default function HomeScreen() {
               onQueueActivity={(event, flushNow) => handleQueueActivity(item.repository, event, flushNow)}
               onSavedChange={(saved, changed) => handleSavedChange(item.repository, saved, changed)}
               onOwnerPress={() => openOwnerProfile(item.repository)}
-              onRepositoryPress={() => router.push(repositoryHref(item.repository.id))}
+              onRepositoryPress={(navigationToken) => router.push(repositoryHref(item.repository.id,navigationToken))}
               isViewable={viewableItems.includes(item.feedId)}
             />
           )}
@@ -373,7 +426,7 @@ export default function HomeScreen() {
           contentContainerStyle={styles.feedListContent}
           showsVerticalScrollIndicator={false}
           onRefresh={refreshFeed}
-          refreshing={isRefetching && !isFetchingNextPage}
+          refreshing={resettingSession || (isRefetching && !isFetchingNextPage)}
           snapToInterval={pageHeight}
           snapToAlignment="start"
           decelerationRate="fast"
@@ -392,10 +445,15 @@ export default function HomeScreen() {
           initialNumToRender={4}
           maxToRenderPerBatch={4}
           removeClippedSubviews={false}
+          onScroll={event => {
+            scrollOffset.current = Math.max(0, event.nativeEvent.contentOffset.y);
+            retentionPins.current = feedViewportIds(committedItems.current, scrollOffset.current, pageHeight);
+          }}
+          scrollEventThrottle={16}
           onViewableItemsChanged={onViewableItemsChanged}
           viewabilityConfig={VIEWABILITY_CONFIG}
         />
-        <FeedHeader pageWidth={pageWidth} discovery={data?.pages[0]?.mode === 'discovery'} onRefresh={refreshFeed} refreshing={isFetching && !isFetchingNextPage} />
+        <FeedHeader pageWidth={pageWidth} discovery={data?.pages[0]?.mode === 'discovery'} onRefresh={refreshFeed} refreshing={resettingSession || (isFetching && !isFetchingNextPage)} statusMessage={sessionError} />
       </View>
     </View>
   );

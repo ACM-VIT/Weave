@@ -11,6 +11,12 @@ import { PersonaRepairService } from '../../services/personaRepairService.js';
 import { snapshotMetrics } from '../../observability/metrics.js';
 import { MlRecommendationError } from '../../services/mlService.js';
 
+function ordinaryFeedVersion(value: string | number): number {
+  assert.equal(typeof value, 'number', 'This fixture implements only ordinary recommendation responses');
+  assert.ok(Number.isSafeInteger(value));
+  return value as number;
+}
+
 const userId = '00000000-0000-4000-8000-000000000001';
 const socialRepoId = '00000000-0000-4000-8000-000000000002';
 const otherRepoId = '00000000-0000-4000-8000-000000000003';
@@ -88,7 +94,7 @@ class CapturingRecommendations implements RecommendationPort {
       schema_version: 2,
       generation_id: input.generation_id,
       user_id: input.user_id,
-      feed_version: Number(input.feed_version),
+      feed_version: ordinaryFeedVersion(input.feed_version),
       model_version: 'test-model',
       context_status: { cold_start_applied: false, locale: 'not_provided' },
       embedding_versions: [], served_ranker: 'heavy', heavy_ranker_selected: true,
@@ -100,6 +106,22 @@ class CapturingRecommendations implements RecommendationPort {
       ],
     };
   }
+}
+
+for (const remaining of [[otherRepoId], []]) {
+  test(`generation filters exact recent exposure before publication (${remaining.length} unseen)`, async () => {
+    const persistence = new GenerationPersistence();
+    Object.assign(persistence, { listExposureEligibleRepositoryIds: async () => remaining });
+    const queue = new GenerationQueue();
+    const result = await new FeedGenerationService(persistence, queue, new CapturingRecommendations()).generate(userId);
+    if (remaining.length) {
+      assert.deepEqual(result, { status: 'generated', feedVersion: 1n, count: 1 });
+      assert.deepEqual(queue.entries.map(item => item.repo_id), remaining);
+    } else {
+      assert.equal(result.status, 'capacity');
+      assert.equal(queue.published, false, 'filtering a nonempty provider batch must not publish false exhaustion');
+    }
+  });
 }
 
 test('feed generation sends followed-owner repositories as bounded ML context', async () => {
@@ -284,7 +306,7 @@ test('prewarm recovers publication-before-SQL crash without replacing an empty s
   const queue = new GenerationQueue();
   const recommendations = new CapturingRecommendations();
   recommendations.generate = async input => ({ schema_version: 2, generation_id: input.generation_id,
-    user_id: input.user_id, feed_version: Number(input.feed_version), model_version: 'test', embedding_version: 'test', items: [],
+    user_id: input.user_id, feed_version: ordinaryFeedVersion(input.feed_version), model_version: 'test', embedding_version: 'test', items: [],
     context_status: { cold_start_applied: false, locale: 'not_provided' },
     embedding_versions: [], served_ranker: 'heavy', heavy_ranker_selected: true,
     ranker_applied: true, fallback_code: null, fallback_reason: null, retrieval_mode: 'personalized' });
@@ -541,4 +563,14 @@ test('mixed inactive and disliked candidates retain invalid diagnostics and a fi
   assert.equal(invalidRecommendations()-before,1);
   assert.equal(records.length,1); assert.equal(records[0].status,'coalesced');
   assert.equal(records[0].error_code,'FEED_PREFERENCE_FILTERED');
+});
+
+test('a batch entirely excluded by cross-session hints remains retryable in default queue mode', async () => {
+  const persistence = new GenerationPersistence();
+  persistence.listExcludedRepositoryIds = async () => [socialRepoId, otherRepoId];
+  const queue = new GenerationQueue();
+  const result = await new FeedGenerationService(persistence, queue, new CapturingRecommendations()).generate(userId);
+  assert.deepEqual(result, { status: 'capacity', feedVersion: 1n });
+  assert.equal(queue.published, false);
+  assert.equal(queue.released, true);
 });

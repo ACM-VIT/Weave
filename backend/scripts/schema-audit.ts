@@ -35,7 +35,7 @@ try {
 
   const tableRows = await client`
     SELECT table_schema, table_name FROM information_schema.tables
-    WHERE table_schema IN ('app', 'telemetry') AND table_type = 'BASE TABLE'
+    WHERE table_schema = ANY(${manifest.schemas}::text[]) AND table_type = 'BASE TABLE'
   `;
   const tables = new Set(tableRows.map((row) => `${row.table_schema}.${row.table_name}`));
   for (const [schema, names] of Object.entries(manifest.tables)) {
@@ -45,8 +45,7 @@ try {
   const columnRows = await client`
     SELECT table_schema,table_name,column_name
     FROM information_schema.columns
-    WHERE (table_schema='app' AND table_name IN ('users','oauth_codes','repo_content','repo_card_summaries','user_feed_state','user_github_unlinks'))
-       OR (table_schema='telemetry' AND table_name IN ('ml_outbox','counter_reconciliation_progress','feed_prewarm_jobs'))
+    WHERE table_schema = ANY(${manifest.schemas}::text[])
   `;
   const columns = new Set(columnRows.map(
     (row) => `${row.table_schema}.${row.table_name}.${row.column_name}`,
@@ -135,16 +134,19 @@ try {
   }
 
   const indexRows = await client`
-    SELECT indexname FROM pg_indexes WHERE schemaname IN ('app', 'telemetry')
+    SELECT indexname FROM pg_indexes WHERE schemaname = ANY(${manifest.schemas}::text[])
   `;
   const indexes = new Set(indexRows.map((row) => String(row.indexname)));
   for (const name of manifest.indexes) if (!indexes.has(name)) missing.push(`index:${name}`);
 
   const functionRows = await client`
-    SELECT p.proname FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname = 'app'
+    SELECT n.nspname,p.proname FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname = ANY(${manifest.schemas}::text[])
   `;
-  const functions = new Set(functionRows.map((row) => String(row.proname)));
-  for (const name of manifest.functions) if (!functions.has(name)) missing.push(`function:app.${name}`);
+  const functions = new Set(functionRows.map((row) => `${row.nspname}.${row.proname}`));
+  for (const name of manifest.functions) {
+    const qualified = name.includes('.') ? name : `app.${name}`;
+    if (!functions.has(qualified)) missing.push(`function:${qualified}`);
+  }
 
   const wakeTriggers = await client`
     SELECT relation.relname AS table_name,trigger.tgname AS name,procedure.proname AS function_name
@@ -222,6 +224,45 @@ try {
   }
   if (runtimeGrantRows[0]?.can_schedule_prewarm !== true) {
     missing.push('required-grant:ghsocial_backend:telemetry.feed_prewarm_jobs:SELECT,INSERT,UPDATE');
+  }
+
+  const [retentionGrants] = await client`
+    SELECT has_sequence_privilege('ghsocial_backend',to_regclass('app.topics_topic_id_seq'),'USAGE') AS topics,
+      has_function_privilege('ghsocial_backend',to_regprocedure('telemetry.prune_runtime_history(integer,integer)'),'EXECUTE') AS retention,
+      has_table_privilege('ghsocial_backend',to_regclass('telemetry.ml_outbox'),'DELETE') AS journal_delete,
+      has_table_privilege('ghsocial_backend',to_regclass('telemetry.generation_attempts'),'DELETE') AS generation_delete,
+      EXISTS(SELECT 1 FROM pg_proc p, LATERAL aclexplode(COALESCE(p.proacl,acldefault('f',p.proowner))) acl
+        WHERE p.oid=to_regprocedure('telemetry.prune_runtime_history(integer,integer)')
+          AND acl.grantee=0 AND acl.privilege_type='EXECUTE') AS public_retention
+  `;
+  if (!retentionGrants.topics) missing.push('required-grant:ghsocial_backend:app.topics_topic_id_seq:USAGE');
+  if (!retentionGrants.retention) missing.push('required-grant:ghsocial_backend:telemetry.prune_runtime_history:EXECUTE');
+  if (retentionGrants.journal_delete || retentionGrants.generation_delete || retentionGrants.public_retention) {
+    missing.push('prohibited-grant:unrestricted-runtime-retention');
+  }
+
+  const retentionPaths = await client`
+    SELECT required.signature,p.proconfig
+    FROM (VALUES ('telemetry.prune_runtime_history(integer,integer)'),
+      ('telemetry.prune_model_transients(integer)'),
+      ('private_scoring.purge_scoring_private(integer)'),
+      ('private_scoring.persist_generation(text)'),
+      ('private_scoring.validate_feed_item_provenance()'),
+      ('private_scoring.record_generation_witness(uuid,uuid,text)'),
+      ('private_scoring.reconcile_publication_witnesses(uuid[],integer)'),
+      ('private_scoring.enforce_subject_capture_barrier()'),
+      ('private_scoring.create_export_snapshot(uuid,uuid,timestamptz,timestamptz,text)'),
+      ('private_scoring.seal_export_labels(uuid,uuid,text,text)'),
+      ('private_scoring.read_export_snapshot(uuid,uuid,text,integer,integer)'),
+      ('private_scoring.revoke_subject_capture(uuid,uuid,text)')) required(signature)
+    LEFT JOIN pg_proc p ON p.oid=to_regprocedure(required.signature)
+  `;
+  for (const row of retentionPaths) {
+    const searchPath = (row.proconfig as string[] | null)?.find(value => value.startsWith('search_path='));
+    const schemas = searchPath?.slice('search_path='.length).split(',').map(value => value.trim());
+    if (schemas?.length !== 2 || schemas[0] !== 'pg_catalog' || schemas[1] !== 'pg_temp') {
+      missing.push(`safe-search-path:${row.signature}`);
+    }
   }
 
   const migrationRows = await client`

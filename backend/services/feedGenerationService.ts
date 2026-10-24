@@ -1,3 +1,10 @@
+import type { FeedIntentScope } from '../contracts/feedIntent.js';
+import type { MlAppliedModelContext } from '../contracts/ml.v2.js';
+import { parseAppliedModelContext } from './modelOperationValidation.js';
+import type { MlRecommendationRequest } from '../contracts/ml.v2.js';
+import type { ScoringCaptureConfig } from '../config/scoringCapture.js';
+import type { ScoringPersistencePort } from '../ports/scoringPersistencePort.js';
+import { validateCapturedRecommendation } from './capturedRecommendation.js';
 import crypto from 'node:crypto';
 import { performance } from 'node:perf_hooks';
 import { FEED_REPAIR_ACK_MARGIN_MS, feedGenerationBudget } from '../config/ml.js';
@@ -37,6 +44,8 @@ export class FeedGenerationService {
     private readonly indexedRefill?: IndexedFeedRefillPolicy,
     private readonly socialCandidatesEnabled = false,
     private readonly budget = feedGenerationBudget(),
+    private readonly scoringCapture?: { config: Extract<ScoringCaptureConfig, {enabled:true}>; persistence: ScoringPersistencePort },
+    private readonly intent?:{scope:FeedIntentScope;isCurrent:()=>Promise<boolean>;persist:(generationId:string,applied:MlAppliedModelContext)=>Promise<void>},
   ) {
     if (!Number.isSafeInteger(budget.timeoutMs) || budget.timeoutMs < 1
       || !Number.isSafeInteger(budget.repairTimeoutMs) || budget.repairTimeoutMs < 1) {
@@ -64,6 +73,7 @@ export class FeedGenerationService {
       if (deadline - performance.now() <= minimumMs) throw new FeedGenerationDeadlineError();
     };
     const context = await this.persistence.getGenerationContext?.(userId);
+    if(context?.modelPolicySha256&&!this.intent)return {status:'stale',feedVersion:context.feedVersion};
     const feedVersion = context?.feedVersion ?? await this.persistence.getFeedVersion(userId);
     if (this.persistence.getGenerationContext && !context) return { status: 'stale', feedVersion };
     if (refill && (!this.indexedRefill || refill.expectedVersion !== feedVersion)) {
@@ -74,6 +84,7 @@ export class FeedGenerationService {
     let generationId = crypto.randomUUID();
     const started = Date.now();
     const current = async () => {
+      if(this.intent&&!await this.intent.isCurrent())return false;
       const latest = await this.persistence.getGenerationContext?.(userId);
       const unchanged = context
         ? latest?.feedVersion === feedVersion && latest.profileVersion === context.profileVersion && latest.delivered
@@ -167,20 +178,25 @@ export class FeedGenerationService {
         ? await this.persistence.listSocialRepositoryCandidates(userId, 100, [...excludedIds]) : undefined;
       if (leaseLost || !await current()) return { status: 'stale', feedVersion };
       requireBudget();
-      const request = {
+      const capture = this.scoringCapture?.config.userIds.has(userId) ? this.scoringCapture : undefined;
+      const requestBase = {
         schema_version: 2,
         generation_id: generationId,
         user_id: userId,
-        feed_version: Number(feedVersion),
         limit: generationLimit,
         exclude_repo_ids: excluded,
         social_repo_ids: socialRepoIds,
         ...(socialCandidates === undefined ? {} : { social_candidates: socialCandidates }),
         context: { cold_start: false },
+
       } as const;
+      const request: MlRecommendationRequest = capture
+        ? { ...requestBase, feed_version: feedVersion.toString(), scoring_capture: {schema_version:1,encoding:'float32-le-v1'},...(this.intent?{model_context:this.intent.scope.context}:{}) }
+        : this.intent?{ ...requestBase,feed_version:feedVersion.toString(),model_context:this.intent.scope.context }
+        : { ...requestBase,feed_version:Number(feedVersion) };
       let response: Awaited<ReturnType<RecommendationPort['generate']>>;
       try {
-        response = await this.recommendations.generate(request, { deadline });
+        response = await this.recommendations.generate(request, { deadline, ...(capture ? { scoringCaptureCapability: capture.config.capability } : {}) });
       } catch (error) {
         if (!this.personaRepair || !isMissingPersonaRecommendationError(error)) throw error;
         requireBudget(this.budget.repairTimeoutMs + FEED_REPAIR_ACK_MARGIN_MS);
@@ -195,15 +211,33 @@ export class FeedGenerationService {
         response = await this.recommendations.generate({
           ...request,
           generation_id: generationId,
-        }, { deadline });
+        }, { deadline, ...(capture ? { scoringCaptureCapability: capture.config.capability } : {}) });
       }
       requireBudget();
+      if(this.intent)await this.intent.persist(generationId,parseAppliedModelContext('model_context' in response?response.model_context:undefined));
       if (leaseLost || !await current()) {
         await this.persistence.recordGenerationAttempt?.({
           generation_id: generationId, user_id: userId, feed_version: feedVersion, mode,
           status: 'stale', latency_ms: Date.now() - started, result_count: response.items.length,
         });
         return { status: 'stale', feedVersion };
+      }
+      // Store the complete validated provider candidate set before filtering or
+      // publishing references. No private material is ever handed to Redis.
+      let capturedReferences: Awaited<ReturnType<ScoringPersistencePort['persist']>>['references'] = [];
+      if (capture) {
+        const validated = validateCapturedRecommendation(response, { ...request, generation_id: generationId });
+        if (validated) {
+          if (!('scoring_context' in response) || (context && response.scoring_context.profile_version !== context.profileVersion.toString())) {
+            return { status: 'stale', feedVersion };
+          }
+          capturedReferences = (await capture.persistence.persist(validated, capture.config.policy)).references;
+          requireBudget();
+          if (leaseLost || !await current()) {
+            await capture.persistence.recordWitness(userId,generationId,'stale');
+            return { status: 'stale', feedVersion };
+          }
+        }
       }
       const seen = new Set<string>();
       const items = response.items.filter(item => {
@@ -222,13 +256,17 @@ export class FeedGenerationService {
         incrementMetric('feed_v2_invalid_repository_recommendations_total');
       }
       if (items.length > 0 && canonicalItems.length === 0) throw new Error('ML returned no active canonical repositories.');
+      const exposureEligible = this.persistence.listExposureEligibleRepositoryIds
+        ? new Set(await this.persistence.listExposureEligibleRepositoryIds(userId, canonicalItems.map(item => item.repo_id)))
+        : activeRepoIds;
       const eligible = new Set(await this.persistence.listPreferenceEligibleRepositoryIds(userId, canonicalItems.map(item => item.repo_id)));
-      const usableItems = canonicalItems.filter(item => eligible.has(item.repo_id));
+      const usableItems = canonicalItems.filter(item => eligible.has(item.repo_id) && exposureEligible.has(item.repo_id));
       if (canonicalItems.length > 0 && usableItems.length === 0) {
         await this.persistence.recordGenerationAttempt?.({
           generation_id: generationId, user_id: userId, feed_version: feedVersion, mode,
           status: 'coalesced', latency_ms: Date.now() - started, result_count: 0,
-          error_code: 'FEED_PREFERENCE_FILTERED',
+          error_code: canonicalItems.some(item => eligible.has(item.repo_id))
+            ? 'FEED_RECENT_EXPOSURE_FILTERED' : 'FEED_PREFERENCE_FILTERED',
         });
         return { status: 'capacity', feedVersion };
       }
@@ -243,10 +281,15 @@ export class FeedGenerationService {
       }
       if (mode === 'prewarm' && await this.persistence.hasServedFeed?.(userId, feedVersion)) return { status: 'stale', feedVersion };
       const canonical = canonicalEntries(this.indexedRefill ? usableItems.slice(0, generationLimit) : usableItems,
-        response.model_version, summaries, response.generation_id);
+        response.model_version, summaries, response.generation_id).map(entry => {
+          if (!capture) return entry;
+          const reference = capturedReferences.find(reference => reference.repo_id === entry.repo_id);
+          if (!reference) throw new Error('SCORING_CAPTURE_REFERENCE_UNAVAILABLE');
+          return { ...entry, scoring_reference: reference };
+        });
       // A nonempty ML batch filtered entirely by existing exclusions is not
       // proof of exhaustion either. Never publish it as a terminal empty page.
-      if (this.indexedRefill && response.items.length > 0 && canonical.length === 0) {
+      if (response.items.length > 0 && canonical.length === 0) {
         await this.persistence.recordGenerationAttempt?.({
           generation_id: generationId, user_id: userId, feed_version: feedVersion, mode,
           status: 'coalesced', latency_ms: Date.now() - started, result_count: 0,
@@ -256,11 +299,13 @@ export class FeedGenerationService {
       }
       if (leaseLost || !await current()) return { status: 'stale', feedVersion };
       requireBudget();
+      const queueTtl=this.intent?Math.min(this.queueTtlSeconds,Math.floor((Number(this.intent.scope.applied.valid_until_ms)-Date.now())/1000)):this.queueTtlSeconds;
+      if(queueTtl<1)return {status:'stale',feedVersion};
       let published: boolean;
       let count = canonical.length;
       if (this.indexedRefill) {
         const appended = await this.queue.append!(userId, feedVersion, token, canonical,
-          this.queueTtlSeconds, this.indexedRefill.maxQueueDepth, mode === 'prewarm');
+          queueTtl, this.indexedRefill.maxQueueDepth, mode === 'prewarm');
         if (!appended || appended.status === 'capacity') {
           await this.persistence.recordGenerationAttempt?.({
             generation_id: generationId, user_id: userId, feed_version: feedVersion, mode,
@@ -276,15 +321,34 @@ export class FeedGenerationService {
         published = true;
       } else {
         published = await this.queue.publishGeneration(userId, feedVersion, token, canonical,
-          this.queueTtlSeconds, mode === 'prewarm');
+          queueTtl, mode === 'prewarm');
       }
       // Publication has begun: finish durable acknowledgement even if the
       // budget expires now. Redis retains an eight-day crash recovery witness.
-      if (published) await this.persistence.markGenerationPublished?.(userId, feedVersion);
-      await this.persistence.recordGenerationAttempt?.({
-        generation_id: generationId, user_id: userId, feed_version: feedVersion, mode,
-        status: published ? 'completed' : 'stale', latency_ms: Date.now() - started, result_count: count,
-      });
+      if (capture) {
+        // Each acknowledgement is independent once Redis has answered. In
+        // particular, private witness failure cannot suppress product completion
+        // or turn a known publication into a failed/zero attempt. The feed worker
+        // repairs missing private witnesses from durable completion/serve proof.
+        const acknowledgements = await Promise.allSettled([
+          this.persistence.recordGenerationAttempt?.({
+            generation_id: generationId, user_id: userId, feed_version: feedVersion, mode,
+            status: published ? 'completed' : 'stale', latency_ms: Date.now() - started, result_count: count,
+          }),
+          published ? this.persistence.markGenerationPublished?.(userId, feedVersion) : undefined,
+          capturedReferences.length
+            ? capture.persistence.recordWitness(userId,generationId,published ? 'published' : 'stale') : undefined,
+        ]);
+        for (const result of acknowledgements) if (result.status === 'rejected') {
+          incrementMetric('feed_v2_publication_acknowledgement_deferred_total');
+        }
+      } else {
+        if (published) await this.persistence.markGenerationPublished?.(userId, feedVersion);
+        await this.persistence.recordGenerationAttempt?.({
+          generation_id: generationId, user_id: userId, feed_version: feedVersion, mode,
+          status: published ? 'completed' : 'stale', latency_ms: Date.now() - started, result_count: count,
+        });
+      }
       return published ? { status: 'generated', feedVersion, count } : { status: 'stale', feedVersion };
     } catch (error) {
       await this.persistence.recordGenerationAttempt?.({

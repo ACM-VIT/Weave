@@ -8,6 +8,7 @@ export type FeedPage = {
   feedVersion: string;
   mode?: 'personalized' | 'discovery';
   sessionId?: string;
+  requestCursor?: string | null;
   serverTraceparent?: string;
   timing?: FeedTiming;
 };
@@ -46,6 +47,11 @@ export class FeedPaginationController {
     this.committedPages = pages;
   }
 
+  /** Release evicted query pages and their deduplication IDs after each commit. */
+  commitPages(pages: FeedPage[]) {
+    this.committedHistory(pages);
+  }
+
   markStale(version?: string) {
     if (version && (!isNewer(version, this.version) || !isNewer(version, this.minimumVersion))) return;
     if (version) this.minimumVersion = version;
@@ -53,9 +59,11 @@ export class FeedPaginationController {
     if (!version) this.unversionedRevision++;
   }
 
-  reset() {
+  getSessionId():string{return this.sessionId;}
+
+  reset(options:{preserveSession?:boolean}={}) {
     this.epoch++;
-    this.sessionId = createUuid();
+    if(!options.preserveSession)this.sessionId = createUuid();
     this.seen.clear();
     this.committedPages = [];
     this.version = this.minimumVersion = '0';
@@ -104,7 +112,8 @@ export class FeedPaginationController {
     const committed = this.getCommittedPages?.();
     const previous = committed && signal && cursor !== null ? this.staged.get(signal) : undefined;
     const staged = previous?.nextCursor === cursor ? previous : undefined;
-    const replacement = cursor === null || Boolean(staged?.replacement);
+    const replacement = cursor === null || Boolean(staged?.replacement)
+      || Boolean(committed?.length && committed[0].requestCursor === cursor);
     const committedSeen = committed && !replacement ? this.committedHistory(committed) : undefined;
     const seen = staged?.seen ?? (committed ? new Set<unknown>() : this.seen);
     const hasHistory = () => seen.size > 0 || Boolean(committedSeen?.size);
@@ -130,6 +139,7 @@ export class FeedPaginationController {
         // A continuation's internal cursor restart does not replace Home's first page.
         const page = await this.fetchPage(request.cursor, signal, request.id, this.sessionId, cursor === null);
         check();
+        if(page.sessionId)this.sessionId=page.sessionId;
         if (continuationMode && (page.mode ?? 'personalized') !== continuationMode) {
           throw Object.assign(new Error('Personalized recommendations are unavailable. Try again or refresh Home.'), {
             status: 503, code: 'PERSONALIZED_FEED_UNAVAILABLE',
@@ -158,7 +168,7 @@ export class FeedPaginationController {
         }
         this.pending = null;
         if (committed && signal) this.staged.set(signal, { seen, nextCursor: page.nextCursor, replacement, mode: page.mode ?? 'personalized' });
-        return { ...page, items };
+        return { ...page, items, requestCursor: cursor };
       } catch (error) {
         check();
         if (catalogueRequest || !isStaleCursor(error)) throw error;

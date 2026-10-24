@@ -69,6 +69,8 @@ type SavePopupProps = {
   repoId?: string;
   repoName?: string;
   serveId?: string | null;
+  sessionId?: string | null;
+  impressionEventId?: string | null;
   position?: number | null;
 };
 
@@ -124,6 +126,8 @@ export function SavePopup({
   repoId,
   repoName,
   serveId,
+  sessionId,
+  impressionEventId,
   position,
   mutations,
 }: SavePopupProps) {
@@ -679,6 +683,8 @@ export function SavePopup({
                         repo_id: repoId,
                         action: selectedIds.size > 0 ? 'save' : 'unsave',
                         serve_id: serveId ?? null,
+                        ...(sessionId?{session_id:sessionId}:{}),
+                        ...(impressionEventId?{impression_event_id:impressionEventId}:{}),
                         position: position ?? null,
                       }));
                       saveMutation.mutate({ listIds: [...selectedIds], event, generation: renderGeneration });

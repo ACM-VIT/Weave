@@ -43,10 +43,11 @@ export function mapFeedRepository(
 }
 
 export function getFeedItemIdentity(
-  repository: RepositoryDetail,
+  repository: Pick<RepositoryDetail, 'id' | 'serveId' | 'feedPosition'>,
   fallbackPosition: number,
 ): string {
-  const serveIdentity = repository.serveId ?? 'unserved';
+  if (!repository.serveId) return `unserved:${repository.id}`;
+  const serveIdentity = repository.serveId;
   const positionIdentity = repository.feedPosition ?? fallbackPosition;
   return `${serveIdentity}:${repository.id}:${positionIdentity}`;
 }

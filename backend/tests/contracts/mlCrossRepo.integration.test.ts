@@ -127,3 +127,14 @@ test('lifecycle refresh crosses real Node/Python routes and local Qdrant without
     feature_version: 14, features: { lifecycle: status(5, true) } })).accepted, true);
   assert.deepEqual(await selected(), []);
 });
+
+// Keep provider's strict capture/decimal pairing visible to the generated client.
+const captureBase={schema_version:2 as const,generation_id:'00000000-0000-4000-8000-000000000007',
+  user_id:'00000000-0000-4000-8000-000000000002',limit:10,exclude_repo_ids:[],context:{cold_start:false}};
+const validCaptured:MlRequest<typeof recommendationPath>={...captureBase,feed_version:'9223372036854775807',
+  scoring_capture:{schema_version:1,encoding:'float32-le-v1'}};
+// @ts-expect-error captured requests require an exact decimal-string feed version
+const invalidCaptureNumber:MlRequest<typeof recommendationPath>={...captureBase,feed_version:1,scoring_capture:{schema_version:1,encoding:'float32-le-v1'}};
+// @ts-expect-error decimal feed versions require negotiated capture
+const invalidCaptureAbsent:MlRequest<typeof recommendationPath>={...captureBase,feed_version:'1'};
+void validCaptured;void invalidCaptureNumber;void invalidCaptureAbsent;
