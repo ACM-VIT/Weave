@@ -178,13 +178,15 @@ export class PostgresFeedPersistence implements FeedPersistencePort, FeedReconci
     if (!boundedLimit) return [];
     const rows = await sqlClient`
       WITH exposures AS (
-        SELECT repo.repo_id,now() AS observed_at,-1 AS priority
+        -- Preserve the original serve/interaction history budget first. Exact
+        -- familiarity eligibility remains authoritative beyond these ML hints.
+        SELECT repo.repo_id,NULL::timestamptz AS observed_at,2 AS priority
         FROM app.users feed_viewer JOIN app.repos repo
           ON repo.owner_github_id=${sqlClient.unsafe(canonicalGithubIdSql('feed_viewer.github_id'))}
         WHERE feed_viewer.user_id=${userId}::uuid AND feed_viewer.github_identity_verified_at IS NOT NULL
           AND repo.status='active'
         UNION ALL
-        SELECT repo.repo_id,now() AS observed_at,-1 AS priority
+        SELECT repo.repo_id,NULL::timestamptz AS observed_at,2 AS priority
         FROM app.users feed_viewer JOIN app.user_github_imports imported
           ON imported.user_id=feed_viewer.user_id AND imported.github_id=feed_viewer.github_id
           AND imported.accepted_at IS NOT NULL AND imported.revoked_at IS NULL
