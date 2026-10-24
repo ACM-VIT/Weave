@@ -131,14 +131,79 @@ test('repeated contribution cursors and oversized bodies stop bounded acquisitio
   } finally { await f.stop(); }
 });
 
-test('one overall deadline aborts a stalled source and never starts further provider work', async () => {
-  const f = await fixture((_url, _body, _response) => { /* actual HTTP remains open until abort */ });
+test('one overall deadline aborts a stalled source while independent channels retain completed work', async () => {
+  const f = await fixture((url, _body, response) => {
+    if (url.pathname.endsWith('/starred')) response.end(JSON.stringify([repository(2)]));
+    else if (url.pathname === '/graphql') response.end(JSON.stringify(graph([contribution(3)])));
+    // Owned HTTP remains open until the shared deadline aborts it.
+  });
   try {
     const result = await new GitHubActivityImportClient({ token: 'fixture', fetch: f.transport, timeoutMs: 200 }).collect({ githubId: '7', handle: 'viewer' });
     assert.equal(result.status, 'partial');
-    assert.ok(Object.values(result.sources).every(source => source.error_code === 'deadline_exceeded'));
-    assert.equal(f.requests.length, 2, 'only profile and the first source reached HTTP');
+    assert.equal(result.sources.owned.error_code,'deadline_exceeded');
+    assert.deepEqual(result.repositories.map(row=>row.github_id),['2','3']);
+    assert.equal(result.sources.starred.status,'complete');assert.equal(result.sources.contributed.status,'complete');
+    assert.equal(f.requests.length,4,'only profile and one bounded request per source reached HTTP');
   } finally { await f.stop(); }
+});
+
+test('source concurrency is bounded, pagination stays sequential and metadata precedence survives response order',async t=>{
+  let active=0,maximum=0;
+  const inSource=new Map<string,number>();const completionOrder:string[]=[];
+  const f=await fixture((url,body,response)=>{
+    const source=url.pathname==='/graphql'?'contributed':url.pathname.endsWith('/repos')?'owned':'starred';
+    const page=source==='contributed'?(body.variables as {after:string|null}).after===null?1:2:Number(url.searchParams.get('page'));
+    active++;maximum=Math.max(maximum,active);
+    inSource.set(source,(inSource.get(source)??0)+1);assert.equal(inSource.get(source),1,'pages within a source must not overlap');
+    setTimeout(()=>{
+      active--;inSource.set(source,inSource.get(source)!-1);completionOrder.push(`${source}:${page}`);
+      const rows=page===1?[source==='contributed'?{...contribution(1),description:'contributed'}:repository(1,{description:source})]:[];
+      response.end(JSON.stringify(source==='contributed'?graph(rows,page===1,page===1?'next':null):rows));
+    },source==='owned'?60:source==='starred'?40:20);
+  });
+  try {
+    const started=performance.now();
+    const result=await new GitHubActivityImportClient({token:'fixture',fetch:f.transport,pageSize:1}).collect({githubId:'7',handle:'viewer'});
+    t.diagnostic(JSON.stringify({milliseconds:Math.round((performance.now()-started)*100)/100,maximumSourceRequests:maximum,completionOrder}));
+    assert.equal(maximum,3);
+    assert.equal(result.status,'complete');
+    assert.equal(result.repositories[0].description,'owned');
+    assert.deepEqual(result.repositories[0].sources,['owned','starred','contributed']);
+    assert.ok(Object.values(result.sources).every(source=>source.pages===2&&source.count===1));
+    assert.equal(f.requests.length,7,'profile plus two sequential pages per source');
+    assert.equal(completionOrder[0],'contributed:1');
+  } finally {await f.stop();}
+});
+
+for (const laterFailure of [false,true]) test(`ordered merge rejects a conflicting page and its buffered ${laterFailure?'rate limit':'continuation'}`,async()=>{
+  const f=await fixture((url,_body,response)=>{
+    if(url.pathname==='/graphql'){response.end(JSON.stringify(graph([contribution(1)])));return;}
+    const page=Number(url.searchParams.get('page'));
+    if(url.pathname.endsWith('/repos')){
+      setTimeout(()=>response.end(JSON.stringify([repository(1)])),30);return;
+    }
+    if(page===3&&laterFailure){response.writeHead(429,{'Retry-After':'120'});response.end('{}');return;}
+    const rows=page===1?[repository(2),repository(3)]:page===2?
+      [repository(4),repository(1,{owner:{id:'9',login:'viewer'}})]:[repository(5)];
+    response.end(JSON.stringify(rows));
+  });
+  try {
+    const result=await new GitHubActivityImportClient({token:'fixture',fetch:f.transport,pageSize:2}).collect({githubId:'7',handle:'viewer'});
+    assert.deepEqual(result.repositories.map(row=>row.github_id),['1','2','3']);
+    assert.deepEqual(result.repositories[0].sources,['owned','contributed']);
+    assert.deepEqual(result.sources.starred,{status:'unavailable',pages:1,count:2,error_code:'conflicting_repository_identity'});
+  } finally {await f.stop();}
+});
+
+test('cancelling active acquisition aborts all channels without starting later pages',async()=>{
+  const controller=new AbortController();let sourcesStarted=0;
+  const f=await fixture(()=>{if(++sourcesStarted===3)controller.abort();});
+  try {
+    const result=await new GitHubActivityImportClient({token:'fixture',fetch:f.transport,pageSize:1}).collect({githubId:'7',handle:'viewer'},controller.signal);
+    assert.equal(f.requests.length,4);
+    assert.deepEqual(result.repositories,[]);
+    assert.ok(Object.values(result.sources).every(source=>source.status==='unavailable'&&source.error_code==='cancelled'&&source.pages===0));
+  } finally {await f.stop();}
 });
 
 test('owned-source and conflicting immutable owner IDs cannot contaminate any accepted page', async () => {
