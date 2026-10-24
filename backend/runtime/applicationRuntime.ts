@@ -1,3 +1,6 @@
+import {getScoringExportConfig} from '../config/scoringExport.js';
+import {createPrivateScoringExport} from '../adapters/postgresScoringExport.js';
+import {createPrivateScoringRetention,getScoringRetentionConfig} from '../workers/scoringRetentionWorker.js';
 import { getScoringCaptureConfig } from '../config/scoringCapture.js';
 import { createPrivateScoringPersistence } from '../adapters/postgresScoringPersistence.js';
 import redisClient from '../config/redis.js';
@@ -126,8 +129,22 @@ export class ApplicationRuntime {
     userId => this.scoringCapture.enabled && this.scoringCapture.userIds.has(userId),
   );
   readonly supervisor = new WorkerSupervisor();
+  readonly privateScoringExport: ReturnType<typeof createPrivateScoringExport>;
+  readonly privateScoringRetention: ReturnType<typeof createPrivateScoringRetention>;
 
   constructor(readonly role: 'api' | 'outbox' | 'feed' | 'maintenance' | 'all' = 'api') {
+    const retention=(role==='maintenance'||role==='all')?getScoringRetentionConfig():{enabled:false as const};
+    // Validate the chosen cadence before allocating a pool. No deletion task or
+    // default operational schedule exists while retention is disabled.
+    if(retention.enabled&&!process.env.SCORING_RETENTION_INTERVAL_MS?.trim())throw new Error('SCORING_RETENTION_INTERVAL_REQUIRED');
+    const interval=retention.enabled?intervalFromEnvironment('SCORING_RETENTION_INTERVAL_MS',0,1000,86_400_000):0;
+    this.privateScoringExport=role==='api'?createPrivateScoringExport(getScoringExportConfig()):null;
+    this.privateScoringRetention=createPrivateScoringRetention(retention);
+    if(this.privateScoringExport)this.supervisor.onStop(()=>this.privateScoringExport!.close());
+    if(this.privateScoringRetention){
+      this.supervisor.onStop(()=>this.privateScoringRetention!.close());
+      this.supervisor.register('private-scoring-retention',interval,()=>this.privateScoringRetention!.worker.purgeOnce());
+    }
     if (this.scoringCapture.enabled && !this.flags.ML_V2_RECOMMENDATIONS) throw new Error('SCORING_CAPTURE_REQUIRES_ML_RECOMMENDATIONS');
     this.supervisor.onStop(() => this.feed.stop());
     if (this.privateScoring) this.supervisor.onStop(() => this.privateScoring!.close());

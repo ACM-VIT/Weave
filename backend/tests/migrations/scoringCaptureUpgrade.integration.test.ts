@@ -28,6 +28,8 @@ integration('fresh scoring migration and pre-scoring upgrade preserve baseline r
     const journal = JSON.parse(readFileSync(path.resolve(backend,'../database/migrations/meta/_journal.json'),'utf8'));
     const entry = journal.entries.find((row: { tag: string })=>row.tag==='0042_private_scoring_provenance');
     const serving = journal.entries.find((row: { tag: string })=>row.tag==='0043_feed_item_provenance');
+    const exporting = journal.entries.find((row: { tag: string })=>row.tag==='0044_private_scoring_exports');
+    assert.equal(exporting.idx,47);
     assert.equal(serving.idx,46);
     assert.equal(entry.idx,45);
     const previous = await admin`SELECT hash,created_at FROM drizzle.__drizzle_migrations WHERE created_at<${entry.when} ORDER BY created_at`;
@@ -41,6 +43,7 @@ integration('fresh scoring migration and pre-scoring upgrade preserve baseline r
       await tx.unsafe('DROP TABLE telemetry.feed_item_provenance');
       await tx.unsafe('DROP SCHEMA private_scoring CASCADE');
       assert.equal((await tx`DELETE FROM drizzle.__drizzle_migrations WHERE created_at=${serving.when} RETURNING hash`).length,1);
+      assert.equal((await tx`DELETE FROM drizzle.__drizzle_migrations WHERE created_at=${exporting.when} RETURNING hash`).length,1);
       const removed=await tx`DELETE FROM drizzle.__drizzle_migrations WHERE created_at=${entry.when} RETURNING hash`;
       assert.equal(removed.length,1);
     });
