@@ -78,6 +78,7 @@ function feed(ids: string[], reducedMotion = false, attribution?: { ownerId: str
     },
     'react-native-worklets': {scheduleOnRN: (fn: (...args: any[]) => void, ...args: any[]) => fn(...args)},
     'react-native-gesture-handler': {Gesture: {Pan: () => gesture}, GestureDetector: ({children}: any) => children},
+    './ReadmeImagePopup': {ReadmeImagePopup: 'ReadmeImagePopup'},
     './ReadmeVideoPopup': {ReadmeVideoPopup: 'ReadmeVideoPopup'},
     './ReadmeVideo': {ReadmeVideo: 'ReadmeVideo'},
     './SafeReadmeImage': {SafeReadmeImage: 'SafeReadmeImage', SafeReadmeImageRenderer: 'SafeReadmeImageRenderer'},
@@ -158,6 +159,10 @@ function feed(ids: string[], reducedMotion = false, attribution?: { ownerId: str
       const layers=root.root.findAllByType('View').map(node=>Object.assign({},...(Array.isArray(node.props.style)?node.props.style:[node.props.style])));
       return layers.find(style=>style.backgroundColor==='#123520')?.bottom;
     },
+    get imagePopup() {return root.root.findAllByType('ReadmeImagePopup')[0];},
+    get previewImages() {return root.root.findAllByType('SafeReadmeImage').map(node=>node.props.url);},
+    async openImage() {await act(async()=>{root.root.findAllByType('Pressable').find(node=>node.props.accessibilityLabel?.startsWith('Enlarge README image:'))!.props.onPress();});},
+    async closeImage() {await act(async()=>{this.imagePopup.props.onClose();});},
     get videoPopup() {return root.root.findAllByType('ReadmeVideoPopup')[0];},
     async openVideo() {await act(async () => {root.root.findAllByType('ReadmeVideo')[0].props.onPress();});},
     async closeVideo() {await act(async () => {this.videoPopup.props.onClose();});},
@@ -643,4 +648,24 @@ test('the swipe-save background excludes the last-card loading footer', async()=
   await app.mount();
   try {assert.equal(app.saveRevealBottom,56,'the green reveal must end above the loading footer');}
   finally {await app.unmount();}
+});
+
+
+test('summary image tap opens a separate viewer and returns to the retained digest',async()=>{
+  const app=feed(['repo'],true,{ownerId:'viewer',repository:{readmeFull:null}});
+  app.setReadme(async()=>({...repository('repo'),readmeFull:'![Architecture](https://cdn.example.com/diagram.png)'}));
+  await app.mount();
+  try{
+    await app.open(0,'onReadFullPress');
+    await waitForReadmeState(()=>app.previewImages.length===1);
+    assert.equal(app.imagePopup,undefined);
+    await app.openImage();
+    assert.equal(app.imagePopup.props.url,'https://cdn.example.com/diagram.png');
+    assert.equal(app.imagePopup.props.alt,'Architecture');
+    assert.equal(app.videoPopup,undefined);
+    await app.closeImage();
+    assert.equal(app.imagePopup,undefined);
+    assert.ok(app.renderedReadmeHtml.includes('Summary.'));
+    assert.equal(app.mountedOverlays,1);
+  }finally{await app.unmount();}
 });

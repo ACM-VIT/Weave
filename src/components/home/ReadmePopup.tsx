@@ -31,6 +31,7 @@ import {
 } from '@/utils/readme-images';
 import { extractReadmeVideos } from '@/utils/readme-videos';
 import { readmePopupBlocks } from '@/utils/readme-popup-content';
+import { ReadmeImagePopup } from './ReadmeImagePopup';
 import { ReadmeVideoPopup } from './ReadmeVideoPopup';
 import { ReadmeVideo } from './ReadmeVideo';
 import { SafeReadmeImage, SafeReadmeImageRenderer } from './SafeReadmeImage';
@@ -194,7 +195,7 @@ function VisibleReadmePopup({
   const opacity = useMemo(() => new Animated.Value(0), []);
   const contentProgress = useMemo(() => new Animated.Value(0), []);
   const closingRef = useRef(false);
-  const [videoUrl, setVideoUrl] = useState<string | null>(null);
+  const [media, setMedia] = useState<{kind:'video';url:string}|{kind:'image';url:string;alt:string}|null>(null);
   const content = useMemo(() => contentKind === 'summary'
     ? readmeText || README_SUMMARY_PENDING
     : prepareReadmeForDisplay(readmeText), [contentKind, readmeText]);
@@ -279,7 +280,7 @@ function VisibleReadmePopup({
   const closeAnimated = () => {
     if (closingRef.current) return;
     closingRef.current = true;
-    setVideoUrl(null);
+    setMedia(null);
     opacity.stopAnimation();
     contentProgress.stopAnimation();
 
@@ -338,8 +339,8 @@ function VisibleReadmePopup({
 
         <Animated.View
           accessibilityViewIsModal
-          accessibilityElementsHidden={Boolean(videoUrl)}
-          importantForAccessibility={videoUrl ? "no-hide-descendants" : "auto"}
+          accessibilityElementsHidden={Boolean(media)}
+          importantForAccessibility={media ? "no-hide-descendants" : "auto"}
           style={[
             styles.card,
             {
@@ -378,8 +379,13 @@ function VisibleReadmePopup({
                   {onRetry ? <Pressable accessibilityRole="button" accessibilityLabel="Retry loading README"
                     onPress={onRetry} style={styles.retryButton}><Text style={styles.headerText}>Retry</Text></Pressable> : null}
                 </View> : blocks.map((block, index) => block.kind === 'video'
-                  ? <ReadmeVideo key={block.url} url={block.url} onPress={() => setVideoUrl(block.url)} />
-                  : block.kind === 'image' ? <SafeReadmeImage key={block.url} alt={block.alt} url={block.url} maximumWidth={cardWidth - 44} />
+                  ? <ReadmeVideo key={block.url} url={block.url} onPress={() => setMedia({kind:'video',url:block.url})} />
+                  : block.kind === 'image' ? <Pressable key={block.url} accessibilityRole="button"
+                      accessibilityLabel={`Enlarge README image: ${block.alt}`}
+                      accessibilityHint="Opens a larger image viewer with zoom controls"
+                      onPress={() => setMedia({kind:'image',url:block.url,alt:block.alt})}>
+                      <SafeReadmeImage alt={block.alt} url={block.url} maximumWidth={cardWidth - 44} />
+                    </Pressable>
                   : <RenderHtml key={`section-${index}`}
                 contentWidth={cardWidth - 44}
                 defaultTextProps={{ selectable: true }}
@@ -420,7 +426,8 @@ function VisibleReadmePopup({
             </Animated.View>
           </ScrollView>
         </Animated.View>
-        {videoUrl && isVisible ? <ReadmeVideoPopup key={videoUrl} url={videoUrl} onClose={() => setVideoUrl(null)} /> : null}
+        {media?.kind === 'video' && isVisible ? <ReadmeVideoPopup key={media.url} url={media.url} onClose={() => setMedia(null)} /> : null}
+        {media?.kind === 'image' && isVisible ? <ReadmeImagePopup key={media.url} url={media.url} alt={media.alt} onClose={() => setMedia(null)} /> : null}
       </View>
     </Modal>
   );
