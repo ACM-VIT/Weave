@@ -74,7 +74,9 @@ test('completion preserves username errors and retries safely through an older s
  let status=409,completed=false;const requests:string[]=[];
  t.mock.method(globalThis,'fetch',async(url,options)=>{
   const path=new URL(String(url)).pathname;requests.push(`${options?.method??'GET'} ${path}`);
-  if(path.endsWith('/onboarding/complete'))return new Response(JSON.stringify({error:'Completion unavailable'}),{status});
+  if(path.endsWith('/onboarding/complete'))return status===404
+   ?new Response('<!DOCTYPE html><pre>Cannot PUT /api/v2/onboarding/complete</pre>',{status,headers:{'Content-Type':'text/html'}})
+   :new Response(JSON.stringify({error:'Completion unavailable'}),{status});
   if(path.endsWith('/onboarding')){completed=true;return envelope({completed:true});}
   assert.ok(path.endsWith('/users/me'));return envelope({...viewer,onboarding_completed:completed});
  });
@@ -111,6 +113,30 @@ test('an old-account completion cannot update or route a newly established accou
   });
   assert.equal(app.auth.user?.user_id,'bob');assert.equal(app.auth.user?.onboarding_completed,false);assert.ok(!app.redirects.includes('/(tabs)/home'));
  }finally{await app.unmount();}
+});
+
+test('confirmation during stale profile cleanup retains the token and removes its obsolete blocked marker',async t=>{
+ const app=startup({realNetwork:true,segments:['onboarding'],pathname:'/onboarding/step3'});
+ const confirmation=deferred<Response>(),started=deferred<void>(),marker=deferred<void>();let missing=false;
+ const viewer={user_id:'alice',username:'alice',onboarding_completed:false};
+ t.mock.method(globalThis,'fetch',async url=>{
+  if(String(url).endsWith('/onboarding/complete')){started.resolve();return confirmation.promise;}
+  return missing?new Response('{}',{status:404}):envelope(viewer);
+ });
+ await app.mount();await act(async()=>{app.session.resolve(fixtureToken('alice'));app.fonts.resolve();});
+ let reading:Promise<void>|undefined;
+ try{
+  let finishing!:Promise<void>;await act(async()=>{finishing=app.auth.finishOnboarding(finishData);await started.promise;});
+  app.holdMarkerWrites(marker.promise);missing=true;
+  await act(async()=>{reading=app.auth.checkOnboardingStatus();void reading.catch(()=>undefined);});
+  const deadline=Date.now()+5000;
+  while(!app.events.includes('marker:start')){assert.ok(Date.now()<deadline,'retirement must reach native marker storage');await act(async()=>{await new Promise(resolve=>setTimeout(resolve,5));});}
+  await act(async()=>{confirmation.resolve(envelope({viewer:{...viewer,onboarding_completed:true}}));await finishing;});
+  assert.equal(app.auth.user?.onboarding_completed,true);
+  await act(async()=>{app.holdMarkerWrites(undefined);marker.resolve();await reading;});
+  assert.equal(app.auth.user?.user_id,'alice');assert.equal(app.auth.user?.onboarding_completed,true);
+  assert.equal(app.storedToken,fixtureToken('alice'));assert.equal(await app.isRestoreBlocked(),false);
+ }finally{app.holdMarkerWrites(undefined);marker.resolve();await reading?.catch(()=>undefined);await app.unmount();}
 });
 
 for (const manualMode of [false, true]) {

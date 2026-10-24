@@ -126,9 +126,18 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       // A 404 means an older valid session predates its v2 product profile.
       // Clear it so the next login can run ensureIdentityProfile atomically.
       if (status === 404 || (status === 401 && clearUnauthorized)) {
-        const retired = await retireSessionIfCurrent(sessionGeneration, responseToken, assertCurrent);
-        if (retired) {
-          setUser(null);
+        const assertProfileReadCurrent = () => {
+          assertCurrent();
+          if (onboardingAtStart !== onboardingConfirmation.current) throw new SessionChangedError();
+        };
+        try {
+          const retired = await retireSessionIfCurrent(sessionGeneration, responseToken, assertProfileReadCurrent,
+            { restoreMarkerOnSupersession: true });
+          if (retired) setUser(null);
+        } catch (cleanupError) {
+          assertCurrent();
+          if (cleanupError instanceof SessionChangedError && onboardingAtStart !== onboardingConfirmation.current) return;
+          throw cleanupError;
         }
       }
       if (logErrors && !(error instanceof SessionChangedError)) {

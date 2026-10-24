@@ -156,6 +156,7 @@ export function startup({
       setStorageItem: async (key: string, value: string) => {
         if (key === 'access_token') storedToken = value;
         else {
+          events.push('marker:start');
           if (markerWritesFail) throw new Error('Synthetic marker storage failure');
           if (pendingMarkerWrite) await pendingMarkerWrite;
           restoreBlocked = value;
@@ -207,6 +208,7 @@ export function startup({
     failMarkerWrites(value: boolean) { markerWritesFail = value; },
     holdMarkerWrites(value: Promise<void> | undefined) { pendingMarkerWrite = value; },
     refresh() { return (mocks['../api/client'] as any).refreshSession(storedToken) as Promise<string>; },
+    isRestoreBlocked() { return realTransitions!.isSessionRestoreBlocked() as Promise<boolean>; },
     async establish(token: string, onRequest: () => void = () => undefined) {
       const session = await realTransitions!.establishSession(async () => {
         onRequest();
