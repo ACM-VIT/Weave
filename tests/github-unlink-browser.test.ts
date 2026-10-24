@@ -15,45 +15,56 @@ test('actual disconnect UI and client flow preserve owner, cancellation and pend
   await build({ stdin: { resolveDir: process.cwd(), loader: 'tsx', contents: `
     import React,{useState}from'react';import{createRoot}from'react-dom/client';
     import{GitHubUnlinkPanel}from'./src/components/onboarding/GitHubUnlinkPanel';
+    import OnboardingLayout from './src/app/onboarding/_layout';
     import{GithubUnlinkCallback}from'./src/components/onboarding/GithubUnlinkCallback';
     import{saveGithubUnlinkProof,takeGithubUnlinkProof}from'./src/services/githubUnlinkProof';
     import{authSessionLifecycle}from'./src/api/session-lifecycle';
     window.fixture={mode:new URLSearchParams(location.search).get('initial')||'none',owner:'A',saved:[],browserCalls:0,refreshes:0};
-    function Fixture(){const[owner,setOwner]=useState('A'),[view,setView]=useState('panel'),[,rerender]=useState(0);window.fixture.rerender=()=>rerender(x=>x+1);window.fixture.panel=()=>setView('panel');window.fixture.callback=async()=>{await saveGithubUnlinkProof(owner,'v'.repeat(64));setView('callback');};window.fixture.take=takeGithubUnlinkProof;window.fixture.switchAccount=()=>{authSessionLifecycle.retire(authSessionLifecycle.currentGeneration());window.fixture.owner='B';setOwner('B');};
-      if(view==='callback')return <GithubUnlinkCallback code='opaque-web-callback'/>;return <GitHubUnlinkPanel userId={owner} onSaved={async()=>{window.fixture.saved.push(owner);window.fixture.rerender();}}/>;}
+    function Fixture(){const[owner,setOwner]=useState('A'),[view,setView]=useState('panel'),[,rerender]=useState(0);window.fixture.rerender=()=>rerender(x=>x+1);window.fixture.onboarding=()=>{window.fixture.route='/onboarding/create-profile';setView('onboarding');};window.fixture.panel=()=>setView('panel');window.fixture.callback=async()=>{await saveGithubUnlinkProof(owner,'v'.repeat(64));setView('callback');};window.fixture.take=takeGithubUnlinkProof;window.fixture.switchAccount=()=>{authSessionLifecycle.retire(authSessionLifecycle.currentGeneration());window.fixture.owner='B';setOwner('B');};
+      if(view==='onboarding')return <OnboardingLayout/>;if(view==='callback')return <GithubUnlinkCallback code='opaque-web-callback'/>;return <GitHubUnlinkPanel userId={owner} onSaved={async()=>{window.fixture.saved.push(owner);if(window.fixture.redirectOnRefresh)window.fixture.onboarding();else window.fixture.rerender();}}/>;}
     createRoot(document.getElementById('panel-frame')).render(<React.StrictMode><Fixture/></React.StrictMode>);
   ` }, outfile: path.join(directory,'bundle.js'),bundle:true,platform:'browser',format:'iife',jsx:'automatic',
     alias:{'react-native':'react-native-web'},define:{'process.env.NODE_ENV':'"development"'},
     plugins:[{name:'explicit-platform-transport-boundaries',setup(builder){
       const stubs = {
+        'constants': "export const SKILL_CATEGORIES=[];",
+        'incumbent-art': "export default function(){return null;}",
+        'safe-area': "import {View} from 'react-native';export const useSafeAreaInsets=()=>({top:window.fixture.insetTop||0,bottom:0,left:0,right:0});export const SafeAreaView=View;",
         'auth': "const refresh=async()=>{window.fixture.refreshes++;window.fixture.rerender();};export const useAuth=()=>({user:{user_id:window.fixture.owner,onboarding_completed:true},isLoading:false,checkOnboardingStatus:refresh});",
-        'expo-router':"export const useRouter=()=>({replace:route=>{window.fixture.route=route;}});",
+        'expo-router':"import React from 'react';import Step1 from './src/app/onboarding/step1';import{useOnboarding}from './src/store/OnboardingContext';export const useRouter=()=>({replace:route=>{window.fixture.route=route;}});export const router={push:route=>{window.fixture.route=route;window.fixture.rerender();}};export function Stack(){const{data,updateData}=useOnboarding();window.fixture.setDraft=()=>updateData({bio:'Tarun draft'});return React.createElement('div',{id:'onboarding-route'},React.createElement('input',{'aria-label':'Manual profile name',defaultValue:'Tarun'}),React.createElement('p',{id:'draft-context'},data.bio),window.fixture.route,window.fixture.realStep1?React.createElement(Step1):null);}",
         'expo-linking': "export const createURL=()=>location.origin+'/callback';export const parse=url=>({queryParams:Object.fromEntries(new URL(url).searchParams)});",
         'expo-web-browser': "export async function openAuthSessionAsync(){window.fixture.browserCalls++;const mode=window.fixture.mode;if(mode==='late')await new Promise(r=>setTimeout(r,200));if(mode==='cancel')return{type:'cancel'};return{type:'success',url:location.origin+'/callback?'+(mode==='last_identity'?'unlink_error=last_identity':'unlink_code=opaque-code')};}",
         'expo-secure-store': "export async function getItemAsync(){throw Error('Native storage not exercised in web fixture')};export async function setItemAsync(){};export async function deleteItemAsync(){};",
-        'client': "export async function apiV2(path,options){const response=await fetch('/fixture/'+path.split('/').pop()+'?owner='+window.fixture.owner+'&mode='+window.fixture.mode,options);const result=await response.json();if(!response.ok)throw Error(result.error);return result;}",
+        'client': "export async function apiV2(path,options){const response=await fetch('/fixture/'+(path.endsWith('/github-import')?'import-status':path.split('/').pop())+'?owner='+window.fixture.owner+'&mode='+window.fixture.mode,options);const result=await response.json();if(!response.ok)throw Error(result.error);return result;}",
         'storage': "export async function getStorageItem(){return 'a.'+btoa(JSON.stringify({userId:window.fixture.owner}))+'.b';}",
         'pkce': "export async function createOAuthClientPkce(){return{verifier:'v'.repeat(64),challenge:'challenge'};}"
       };
       builder.onResolve({filter:/^(expo-linking|expo-web-browser|expo-secure-store|expo-router)$/},args=>({path:args.path,namespace:'fixture'}));
+      builder.onResolve({filter:/constants\/onboarding$/},()=>({path:'constants',namespace:'fixture'}));
+      builder.onResolve({filter:/onboarding\/(SkillCard|LogoPlaceholder)$/},()=>({path:'incumbent-art',namespace:'fixture'}));
       builder.onResolve({filter:/api\/client$|^\.\/client$/},()=>({path:'client',namespace:'fixture'}));
       builder.onResolve({filter:/utils\/storage$/},()=>({path:'storage',namespace:'fixture'}));
+      builder.onResolve({filter:/^react-native-safe-area-context$/},()=>({path:'safe-area',namespace:'fixture'}));
       builder.onResolve({filter:/store\/AuthContext$/},()=>({path:'auth',namespace:'fixture'}));
       builder.onResolve({filter:/oauthClientPkce$/},()=>({path:'pkce',namespace:'fixture'}));
-      builder.onLoad({filter:/.*/,namespace:'fixture'},args=>({contents:stubs[args.path]}));
+      builder.onLoad({filter:/.*/,namespace:'fixture'},args=>({contents:stubs[args.path],resolveDir:process.cwd()}));
     }}]
   });
   const requests: Array<{owner:string;action:string;mode:string}> = [];
+  let importLinked = true;
   const server = createServer(async(req,res)=>{
     const url=new URL(req.url!,'http://localhost');
     if(url.pathname.startsWith('/fixture/')){
       const action=url.pathname.split('/').pop()!,owner=url.searchParams.get('owner')!,mode=url.searchParams.get('mode')!;
-      requests.push({owner,action,mode});res.setHeader('Content-Type','application/json');
+      requests.push({owner,action,mode});
+      if(action==='import-status'){res.setHeader('Content-Type','application/json');res.end(JSON.stringify({linked:importLinked,active:false,provenance:{}}));return;}
+      if(action==='finish'&&mode==='done')importLinked=false;
+      res.setHeader('Content-Type','application/json');
       res.end(JSON.stringify(action==='start'?{url:'http://provider.invalid/reauth'}:{retryable:mode==='pending',status:action==='finish'?(mode==='pending'?'pending':mode==='refused'?'refused':'done'):mode==='initial-done'?'done':mode==='pending'?'pending':mode==='refused'?'refused':'none'}));return;
     }
     if(url.pathname==='/bundle.js'){res.setHeader('Content-Type','application/javascript');res.end(await readFile(path.join(directory,'bundle.js')));return;}
     if(url.pathname==='/font.ttf'){res.setHeader('Content-Type','font/ttf');res.end(await readFile('assets/fonts/NataSans-Regular.ttf'));return;}
-    res.setHeader('Content-Type','text/html');res.end('<!doctype html><meta name="viewport" content="width=device-width, initial-scale=1"><style>@font-face{font-family:"Nata Sans";src:url(/font.ttf)}:root{--font-display:"Nata Sans",sans-serif}body{margin:0;background:#000;color:#fff}#panel-frame{box-sizing:border-box;max-width:450px;margin:auto;padding:20px}</style><main id="panel-frame"></main><script src="/bundle.js"></script>');
+    res.setHeader('Content-Type','text/html');res.end('<!doctype html><meta name="viewport" content="width=device-width, initial-scale=1"><style>@font-face{font-family:"Nata Sans";src:url(/font.ttf)}:root{--font-display:"Nata Sans",sans-serif}body{margin:0;background:#000;color:#fff}#panel-frame{box-sizing:border-box;max-width:450px;margin:auto;padding:20px;height:100dvh;display:flex;flex-direction:column}</style><main id="panel-frame"></main><script src="/bundle.js"></script>');
   });
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
   const address = server.address(); assert.ok(address && typeof address === 'object');
@@ -90,24 +101,24 @@ test('actual disconnect UI and client flow preserve owner, cancellation and pend
   };
   const until = async (expression: string) => {
     for (let n = 0; n < 100; n++) { if (await evaluate(expression)) return; await new Promise(resolve => setTimeout(resolve, 25)); }
-    assert.fail(`Browser state did not settle: ${expression}\n${await evaluate('document.body.innerText')}`);
+    assert.fail(`Browser state did not settle: ${expression}\n${await evaluate('document.body?.innerText')}`);
   };
   const click = async (label: string) => { await until(`Boolean(document.querySelector('[aria-label="${label}"]'))`); await evaluate(`document.querySelector('[aria-label="${label}"]').click()`); };
   await send('Page.enable');
   await send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
   await send('Page.navigate', { url: `http://127.0.0.1:${address.port}` });
-  await until('document.body.innerText.includes("Disconnect GitHub login")');
+  await until('document.body?.innerText.includes("Disconnect GitHub login")');
   assert.equal(requests.filter(x=>x.action==='start').length,0);
   await click('Disconnect GitHub login');
   assert.equal(requests.filter(x=>x.action==='start').length,0,'confirmation alone never starts OAuth');
   await evaluate('window.fixture.mode="last_identity"');await click('Reauthenticate and disconnect GitHub');
-  await until('document.body.innerText.includes("only login identity")');
+  await until('document.body?.innerText.includes("only login identity")');
   assert.equal(requests.filter(x=>x.action==='finish').length,0);
   await evaluate('window.fixture.mode="cancel"');await click('Reauthenticate and disconnect GitHub');
   await until(`!document.querySelector('[aria-label="Verifying GitHub disconnect"]')`);
   assert.equal(await evaluate('sessionStorage.getItem("github_unlink_client_pkce_v1")'),null);
   await evaluate('window.fixture.mode="pending"');await click('Reauthenticate and disconnect GitHub');
-  await until('document.body.innerText.includes("pending verification")');
+  await until('document.body?.innerText.includes("pending verification")');
   assert.equal(requests.filter(x=>x.action==='finish').length,1);
   for(const[name,width,height]of[['mobile',390,844],['desktop',1280,900]]as const){
     await send('Emulation.setDeviceMetricsOverride',{width,height,deviceScaleFactor:1,mobile:name==='mobile'});
@@ -116,30 +127,97 @@ test('actual disconnect UI and client flow preserve owner, cancellation and pend
   }
   assert.equal(await evaluate(`Boolean(document.querySelector('[aria-label="Reauthenticate and retry disconnect"]'))`),true,'pending exact-target intent offers a fresh confirmation retry');
   await evaluate('window.fixture.mode="refused"');await click('Check disconnect status');
-  await until('document.body.innerText.includes("provider refused")');
+  await until('document.body?.innerText.includes("provider refused")');
   await click('Reauthenticate and disconnect GitHub');
   await until('window.fixture.saved.filter(x=>x==="A").length===3');
   await evaluate('window.fixture.mode="late"');await click('Reauthenticate and disconnect GitHub');
   await until('window.fixture.browserCalls===5');await evaluate('window.fixture.switchAccount()');
-  await until('document.body.innerText.includes("Disconnect GitHub login")');await new Promise(resolve=>setTimeout(resolve,250));
+  await until('document.body?.innerText.includes("Disconnect GitHub login")');await new Promise(resolve=>setTimeout(resolve,250));
   assert.equal(requests.filter(x=>x.action==='finish').length,2,'old account cannot finish after provider browser returns');
   assert.equal(await evaluate('sessionStorage.getItem("github_unlink_client_pkce_v1")'),null);
   await click('Disconnect GitHub login');await evaluate('window.fixture.mode="done"');await click('Reauthenticate and disconnect GitHub');
-  await until('document.body.innerText.includes("GitHub login disconnected.")');
+  await until('document.body?.innerText.includes("GitHub login disconnected.")');
   assert.deepEqual(await evaluate('window.fixture.saved'),['A','A','A','B'],'pending/refused outcomes refresh revoked import context too');
   assert.deepEqual(requests.filter(x=>x.action==='finish').map(x=>x.owner),['A','A','B']);
   await evaluate('window.fixture.callback()');
-  await until('document.body.innerText.includes("GitHub login disconnected.") && document.body.innerText.includes("Return to account")');
+  await until('document.body?.innerText.includes("GitHub login disconnected.") && document.body?.innerText.includes("Return to account")');
   assert.equal(requests.filter(x=>x.action==='finish').length,4,'StrictMode and profile refresh must not repeat one-shot completion');
   assert.equal(await evaluate('window.fixture.refreshes'),1);
   assert.equal(await evaluate('sessionStorage.getItem("github_unlink_client_pkce_v1")'),null);
-  await evaluate('window.fixture.panel()'); await until('document.body.innerText.includes("Disconnect GitHub login")');
+  await evaluate('window.fixture.panel()'); await until('document.body?.innerText.includes("Disconnect GitHub login")');
   await evaluate('window.fixture.mode="pending";window.fixture.callback()');
-  await until('document.body.innerText.includes("Return to account") && window.fixture.refreshes===2');
+  await until('document.body?.innerText.includes("Return to account") && window.fixture.refreshes===2');
   assert.equal(requests.filter(x=>x.action==='finish').length,5,'pending web callbacks refresh context without repeating their proof');
   await send('Page.navigate',{url:`http://127.0.0.1:${address.port}?initial=initial-done`});
-  await until('document.body.innerText.includes("GitHub login disconnected.") && window.fixture.saved.length===1');
+  await until('document.body?.innerText.includes("GitHub login disconnected.") && window.fixture.saved.length===1');
   assert.deepEqual(await evaluate('window.fixture.saved'),['A'],'initial status reconciliation refreshes the current parent exactly once');
   assert.equal(requests.filter(x=>x.action==='finish').length,5);
+  // A pending provider outcome clears sole imported context. The auth parent
+  // redirects to the actual onboarding layout, where recovery must remain.
+  await send('Page.navigate',{url:`http://127.0.0.1:${address.port}`});
+  await until('document.body?.innerText.includes("Disconnect GitHub login")');
+  await click('Disconnect GitHub login');
+  await evaluate('window.fixture.mode="pending";window.fixture.redirectOnRefresh=true;window.fixture.insetTop=59');
+  await click('Reauthenticate and disconnect GitHub');
+  await until('Boolean(document.getElementById("onboarding-route"))');
+  await until(`Boolean(document.querySelector('[aria-label="Check disconnect status"]'))`);
+  assert.equal(await evaluate(`Boolean(document.querySelector('[aria-label="Check disconnect status"]'))`),true,'pending disconnect recovery survives onboarding redirect');
+  const recoveryTextTop = await evaluate(`Array.from(document.querySelectorAll('div')).find(node=>node.textContent==='GitHub login').getBoundingClientRect().top`);
+  assert.ok(recoveryTextTop>=59,'recovery text respects the simulated native top cutout');
+  await click('Check disconnect status');
+  await until('document.body?.innerText.includes("pending verification")');
+  await until(`!document.querySelector('[aria-label="Verifying GitHub disconnect"]')`);
+  await evaluate('document.querySelector("input").focus()');
+  assert.equal(await evaluate('document.activeElement.getAttribute("aria-label")'),'Manual profile name');
+  const statusBeforeKeyboard = requests.filter(row=>row.action==='status').length;
+  await send('Input.dispatchKeyEvent',{type:'keyDown',key:'Tab',code:'Tab',modifiers:8});
+  await send('Input.dispatchKeyEvent',{type:'keyUp',key:'Tab',code:'Tab',modifiers:8});
+  assert.equal(await evaluate('document.activeElement.getAttribute("aria-label")'),'Check disconnect status');
+  const keyResponse = await send('Input.dispatchKeyEvent',{type:'keyDown',key:'Enter',code:'Enter',text:'\r',windowsVirtualKeyCode:13,nativeVirtualKeyCode:13});
+  assert.ok(!keyResponse.error,JSON.stringify(keyResponse));
+  await send('Input.dispatchKeyEvent',{type:'keyUp',key:'Enter',code:'Enter',windowsVirtualKeyCode:13,nativeVirtualKeyCode:13});
+  for(let attempt=0;requests.filter(row=>row.action==='status').length===statusBeforeKeyboard&&attempt<100;attempt++)await new Promise(resolve=>setTimeout(resolve,25));
+  assert.ok(requests.filter(row=>row.action==='status').length>statusBeforeKeyboard,'keyboard activation checks pending status');
+  // Manual step changes retain the same layout host and profile draft.
+  for(const route of ['/onboarding/step1','/onboarding/step2','/onboarding/step3']) {
+    await evaluate(`window.fixture.route=${JSON.stringify(route)};window.fixture.rerender()`);
+    await until(`document.getElementById('onboarding-route').innerText.includes(${JSON.stringify(route)})`);
+    assert.equal(await evaluate(`Boolean(document.querySelector('[aria-label="Check disconnect status"]'))`),true);
+    assert.equal(await evaluate('document.querySelector("input").value'),'Tarun');
+  }
+  for(const[name,width,height]of[['mobile',390,844],['desktop',1280,900]]as const){
+    await send('Emulation.setDeviceMetricsOverride',{width,height,deviceScaleFactor:1,mobile:name==='mobile'});
+    assert.equal(await evaluate('document.documentElement.scrollWidth<=innerWidth'),true);
+    if(process.env.GITHUB_UNLINK_BROWSER_ARTIFACTS){const screenshot=await send('Page.captureScreenshot',{format:'png',captureBeyondViewport:true});await writeFile(path.join(process.env.GITHUB_UNLINK_BROWSER_ARTIFACTS,name+'-onboarding.png'),Buffer.from(screenshot.result.data,'base64'));}
+  }
+  await click('Retry pending GitHub disconnect');
+  await evaluate('window.fixture.mode="done"'); await click('Reauthenticate and retry disconnect');
+  await until(`!document.querySelector('[aria-label="Check disconnect status"]')`);
+  assert.equal(await evaluate('document.querySelector("input").value'),'Tarun');
+  // Mount the actual Step1 while a disconnect is pending. Completion must
+  // refresh only its import controls, preserving the provider's manual draft.
+  importLinked=true;
+  await send('Page.navigate',{url:`http://127.0.0.1:${address.port}`});
+  await until('document.body?.innerText.includes("Disconnect GitHub login")');
+  await click('Disconnect GitHub login');
+  await evaluate('window.fixture.mode="pending";window.fixture.redirectOnRefresh=true');
+  await click('Reauthenticate and disconnect GitHub');
+  await until('Boolean(document.getElementById("onboarding-route"))');
+  await evaluate('window.fixture.realStep1=true;window.fixture.route="/onboarding/step1";window.fixture.rerender()');
+  await until(`Boolean(document.querySelector('[aria-label="Preview public activity"]'))`);
+  await evaluate('window.fixture.setDraft()'); await until('document.getElementById("draft-context").textContent==="Tarun draft"');
+  const importReads=requests.filter(row=>row.action==='import-status').length;
+  await click('Retry pending GitHub disconnect'); await evaluate('window.fixture.mode="done"');
+  await click('Reauthenticate and retry disconnect');
+  await until(`!document.querySelector('[aria-label="Check disconnect status"]')`);
+  await until('document.body?.innerText.includes("A verified GitHub login is needed")');
+  assert.equal(await evaluate(`Boolean(document.querySelector('[aria-label="Preview public activity"]'))`),false,'mounted Step1 must drop obsolete import controls');
+  assert.ok(requests.filter(row=>row.action==='import-status').length>importReads,'recovery refreshes actual import status');
+  assert.equal(await evaluate('document.getElementById("draft-context").textContent'),'Tarun draft','narrow refresh preserves manual draft');
+  for(const[name,width,height]of[['mobile',390,844],['desktop',1280,900]]as const){
+    await send('Emulation.setDeviceMetricsOverride',{width,height,deviceScaleFactor:1,mobile:name==='mobile'});
+    assert.equal(await evaluate('document.documentElement.scrollWidth<=innerWidth'),true);
+    if(process.env.GITHUB_UNLINK_BROWSER_ARTIFACTS){const screenshot=await send('Page.captureScreenshot',{format:'png',captureBeyondViewport:true});await writeFile(path.join(process.env.GITHUB_UNLINK_BROWSER_ARTIFACTS,name+'-after-unlink.png'),Buffer.from(screenshot.result.data,'base64'));}
+  }
   t.diagnostic('Actual RN Web component, owner-checked client orchestration and sessionStorage proof; explicit browser/crypto/HTTP transport doubles. Native device/provider configuration not exercised.');
 });

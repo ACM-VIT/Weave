@@ -7,7 +7,7 @@ function firstRouteParam(value: string | string[] | undefined): string {
 }
 
 export default function RepositoryDetailRoute() {
-  const { repoId } = useLocalSearchParams<{ repoId?: string | string[] }>();
+  const { repoId,feedNavigation } = useLocalSearchParams<{ repoId?: string | string[];feedNavigation?:string|string[] }>();
 
-  return <RepositoryDetailScreen repositoryId={firstRouteParam(repoId)} />;
+  return <RepositoryDetailScreen repositoryId={firstRouteParam(repoId)} navigationToken={firstRouteParam(feedNavigation)} />;
 }

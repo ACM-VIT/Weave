@@ -9,7 +9,7 @@ const TTL_SECONDS = 60;
 const DEADLINE_MS = 1000;
 const MAX_BYTES = 256 * 1024;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
-const OPERATIONS = new Set(['http', 'recommendations', 'search', 'feedback', 'onboard', 'repo_index', 'repo_refresh', 'health', 'other']);
+const OPERATIONS = new Set(['http', 'recommendations', 'search', 'feedback', 'onboard', 'repo_index', 'repo_refresh', 'health', 'model_operation', 'model_withdrawal', 'model_status', 'model_authority', 'other']);
 const STAGES = new Set(['http_completion', 'ml_transport', 'outbox_delivery', 'outbox_age', 'other']);
 const OUTCOMES = new Set(['success', 'rejected', 'failure', 'timeout', 'cancelled']);
 const BOUNDS = ['5', '10', '25', '50', '100', '250', '500', '1000', '1800', '2500', '4000', '5000', '10000', '30000', '60000', '120000', '240000', '+Inf'];
@@ -74,7 +74,7 @@ export function parseWorkerSnapshot(raw: string, now = Date.now()): Snapshot | n
       ...(Object.hasOwn(value, 'feedback_delivery') ? ['feedback_delivery'] : [])])
       || value.process_id !== raw.slice(0, 36) || typeof value.role !== 'string' || !['outbox', 'feed', 'maintenance', 'all'].includes(String(value.role))
       || !nonnegative(value.captured_at_ms) || value.captured_at_ms > now + 5000 || value.captured_at_ms < now - TTL_SECONDS * 1000
-      || !record(value.stage_duration_ms) || Object.keys(value.stage_duration_ms).length > 225
+      || !record(value.stage_duration_ms) || Object.keys(value.stage_duration_ms).length > OPERATIONS.size * STAGES.size * OUTCOMES.size
       || !Array.isArray(value.trace_spans) || value.trace_spans.length > 256) return null;
     if (Object.hasOwn(value, 'feedback_delivery')) {
       const feedback = value.feedback_delivery;

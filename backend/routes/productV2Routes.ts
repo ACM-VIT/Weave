@@ -1,3 +1,4 @@
+import { createFeedIntentSessionRouter } from './feedIntentSessionRoutes.js';
 import { Router } from 'express';
 import { requireAuth } from '../middlewares/authMiddleware.js';
 import * as product from '../controllers/productV2Controller.js';
@@ -8,6 +9,7 @@ import { githubUnlinkRoutes } from '../runtime/githubUnlink.js';
 const router = Router();
 router.get('/repositories/:repoId/share', product.getRepositoryShare);
 router.use(requireAuth);
+router.use('/feed-sessions',createFeedIntentSessionRouter());
 router.use('/onboarding/github-import', createGithubImportRouter());
 router.use('/onboarding/github-unlink', (req, res, next) => githubUnlinkRoutes().authenticated(req, res, next));
 router.post('/search', search);

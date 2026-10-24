@@ -1,4 +1,4 @@
-import { withOutboxTrace } from '../observability/tracing.js';
+import { enqueueProfileDelivery, lockModelLane, withdrawPendingProfiles } from './modelOperationService.js';
 import crypto from 'node:crypto';
 import type { Sql, TransactionSql } from 'postgres';
 import { sqlClient } from '../db/index.js';
@@ -50,8 +50,11 @@ export class GitHubImportConsentService {
     const [state] = await tx`SELECT * FROM app.user_github_imports WHERE user_id=${userId}::uuid FOR UPDATE`;
     return state;
   }
-  private async snapshot(userId: string, state: Record<string, unknown>): Promise<GitHubActivitySnapshot> {
+  private snapshot(userId: string, state: Record<string, unknown>): Promise<GitHubActivitySnapshot>;
+  private snapshot(userId: string, state: Record<string, unknown>, allowMissing: true): Promise<GitHubActivitySnapshot | null>;
+  private async snapshot(userId: string, state: Record<string, unknown>, allowMissing = false): Promise<GitHubActivitySnapshot | null> {
     const raw = await this.cache.get(key(userId, String(state.snapshot_id)));
+    if (raw === null && allowMissing) return null;
     if (!raw || Buffer.byteLength(raw, 'utf8') > 8_388_608 || hash(raw) !== state.snapshot_hash) {
       throw failure('The import preview expired. Preview public activity again.');
     }
@@ -147,8 +150,7 @@ export class GitHubImportConsentService {
     const job = buildMlOnboardingJob(userId, version, { username: profile.username, fullName: profile.full_name,
       bio: profile.bio, githubUsername: profile.github_handle, avatarUrl: profile.avatar_url,
       interests: preferences.interests, skills: preferences.skills, techStack: preferences.tech_stack });
-    if (hasMlEmbeddingContext(job.profile)) await tx`INSERT INTO telemetry.ml_outbox(job_type,aggregate_id,idempotency_key,payload)
-      VALUES('onboard',${userId}::uuid,${`onboard:${userId}:${version}`},${JSON.stringify(withOutboxTrace(job))}::jsonb) ON CONFLICT DO NOTHING`;
+    if (hasMlEmbeddingContext(job.profile)) await enqueueProfileDelivery(tx,job);
     return { profile_version: String(version), completed, profile_delivery: hasMlEmbeddingContext(job.profile) ? 'pending' : 'requires_manual_context' };
   }
 
@@ -157,7 +159,7 @@ export class GitHubImportConsentService {
     // waiting for its network I/O; recheck the durable hash/identity under lock.
     const [preview] = await this.db`SELECT * FROM app.user_github_imports WHERE user_id=${userId}::uuid AND snapshot_id=${snapshotId}::uuid`;
     if (!preview) throw failure('The import preview is not available for this account.');
-    const cached = preview.accepted_at ? null : await this.snapshot(userId, preview);
+    const cached = preview.accepted_at ? null : await this.snapshot(userId, preview, true);
     const result = await this.db.begin(async tx => {
       const profile = await this.owner(tx, userId);
       const identity = this.verified(profile);
@@ -214,6 +216,8 @@ export class GitHubImportConsentService {
         if (JSON.stringify(current[field]) === JSON.stringify(applied[field])) next[field] = baseline[field];
       }
       if (state.accepted_at && !state.revoked_at) {
+        const lane=await lockModelLane(tx,userId);
+        if(lane)await withdrawPendingProfiles(tx,lane,String(profile.profile_version));
         // Retire old preference deliveries in the same transaction that revokes
         // consent, before enqueuing any restored manual-context version. Clearing
         // the token also fences workers which claimed but have not admitted I/O.

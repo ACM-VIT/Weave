@@ -34,7 +34,7 @@ export interface GithubUnlinkRedis {
   eval(script: string, numberOfKeys: number, ...args: string[]): Promise<unknown>;
 }
 interface OwnedAttempt extends StoredOAuthAttempt { unlinkPurpose: typeof PURPOSE; ownerUserId: string; ownerGithubId: string }
-interface SessionProof { purpose: typeof PURPOSE; ownerUserId: string; ownerGithubId: string; challenge: string; issuedAt: number; accessToken: string }
+interface SessionProof { purpose: typeof PURPOSE; ownerUserId: string; ownerGithubId: string; providerIdentityId: string; challenge: string; issuedAt: number; accessToken: string }
 interface SealedProof { purpose: typeof PURPOSE; ownerUserId: string; challenge: string; issuedAt: number; nonce: string; tag: string; ciphertext: string }
 
 function attemptRedis(redis: GithubUnlinkRedis): GithubUnlinkRedis {
@@ -116,9 +116,9 @@ export class GithubUnlinkFlow {
       const owner = await this.options.persistence.owner(attempt.ownerUserId);
       if (owner.githubId !== attempt.ownerGithubId) throw fail('The verified GitHub account changed.');
       const accessToken = result.data.session.access_token;
-      this.identity(await this.options.provider.user(accessToken), owner, true);
+      const identity = this.identity(await this.options.provider.user(accessToken), owner, true);
       const proof: SessionProof = { purpose: PURPOSE, ownerUserId: owner.userId, ownerGithubId: owner.githubId,
-        challenge: attempt.clientCodeChallenge, issuedAt: this.now(), accessToken };
+        providerIdentityId: identity.identityId, challenge: attempt.clientCodeChallenge, issuedAt: this.now(), accessToken };
       if (Buffer.byteLength(JSON.stringify(proof)) > 32_768) throw fail('The provider session exceeds its supported bound.', 503);
       for (let collision = 0; collision < 3; collision++) {
         const completion = crypto.randomBytes(32).toString('base64url');
@@ -149,7 +149,7 @@ export class GithubUnlinkFlow {
       const decipher = crypto.createDecipheriv('aes-256-gcm', this.cipherKey, Buffer.from(sealed.nonce, 'base64url'));
       decipher.setAAD(Buffer.from(`${PURPOSE}:${completion}`)); decipher.setAuthTag(Buffer.from(sealed.tag, 'base64url'));
       proof = JSON.parse(Buffer.concat([decipher.update(Buffer.from(sealed.ciphertext, 'base64url')), decipher.final()]).toString('utf8')) as SessionProof;
-      if (proof.purpose !== PURPOSE || proof.ownerUserId !== userId || proof.challenge !== challenge || !this.recent(proof.issuedAt)) throw new Error('Invalid proof binding.');
+      if (proof.purpose !== PURPOSE || proof.ownerUserId !== userId || proof.challenge !== challenge || !isValidUuid(proof.providerIdentityId) || !this.recent(proof.issuedAt)) throw new Error('Invalid proof binding.');
     } catch { throw fail('Invalid or expired unlink confirmation.', 400); }
     const owner = await this.options.persistence.owner(userId);
     if (owner.githubId !== proof.ownerGithubId) throw fail('The verified GitHub account changed.');
@@ -157,6 +157,9 @@ export class GithubUnlinkFlow {
     try { freshUser = await this.options.provider.user(proof.accessToken); }
     catch { throw fail('The recent provider session could not be verified. Reauthenticate again.', 409, 'reauthentication_required'); }
     const identity = this.identity(freshUser, owner, true);
+    if (identity.identityId !== proof.providerIdentityId.toLowerCase()) {
+      throw fail('The GitHub credential changed. Reauthenticate before disconnecting it.', 409, 'reauthentication_required');
+    }
     const operationId = await this.options.persistence.prepare(owner, crypto.randomUUID(), identity.identityId);
     // Persist the fence before revocation, so concurrent previews cannot restore consent.
     try { await this.options.revokeImport(userId, operationId); }

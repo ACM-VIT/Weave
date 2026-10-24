@@ -23,7 +23,7 @@ export interface FeedReconciliationPersistencePort {
   listServedRequests(requests: FeedServeRequest[]): Promise<FeedServeRequest[]>;
 }
 
-export interface FeedGenerationContext { feedVersion: bigint; profileVersion: bigint; delivered: boolean }
+export interface FeedGenerationContext { feedVersion: bigint; profileVersion: bigint; delivered: boolean; modelPolicySha256?:string }
 
 /** A different request committed one of these session candidates first. */
 export class FeedServeOverlapError extends Error {
@@ -36,6 +36,14 @@ export class FeedPreferenceChangedError extends Error {
 
 export class FeedExposureChangedError extends Error {
   constructor() { super('A repository was recently delivered or impressed; retry with fresh candidates.'); }
+}
+
+export class FeedProvenanceDependencyError extends Error {
+  constructor() { super('FEED_PROVENANCE_DEPENDENCY_UNAVAILABLE'); }
+}
+
+export class FeedProvenanceUnavailableError extends Error {
+  constructor() { super('FEED_PROVENANCE_UNAVAILABLE'); }
 }
 
 export interface FeedPersistencePort {

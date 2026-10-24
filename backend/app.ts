@@ -16,6 +16,10 @@ import {
   scopedJsonBodyParser,
 } from './middlewares/scopedJsonBodyMiddleware.js';
 
+import {createScoringExportRouter} from './routes/scoringExportRoutes.js';
+import {requireAuth} from './middlewares/authMiddleware.js';
+import {getApplicationRuntime} from './runtime/applicationRuntime.js';
+
 const app = express();
 app.disable('x-powered-by');
 if (process.env.TRUST_PROXY === 'true') app.set('trust proxy', 1);
@@ -67,6 +71,7 @@ app.get('/readyz', readiness);
 app.use('/api/auth', authRateLimit, authRoutes);
 
 // GitSocial product and ML-facing routes use the V2 contract exclusively.
+app.use('/api/v2',createScoringExportRouter(()=>getApplicationRuntime().privateScoringExport?.port??null,requireAuth));
 app.use('/api/v2', feedV2Routes);
 app.use('/api/v2', activityV2Routes);
 app.use('/api/v2', productV2Routes);

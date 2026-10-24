@@ -127,6 +127,7 @@ function startup({
       },
     },
     '../api/auth': { logout: async () => undefined },
+    '../api/feed-sessions': { feedSessions: () => ({ endAll: async () => undefined }) },
     '../api/client': {
       apiV2: async () => profileRequest ?? viewer,
       refreshSession: async () => {

@@ -109,6 +109,8 @@ export async function runPersonaReindex(
             row.user_id,
             Number(row.profile_version),
           );
+          const [lane]=await tx`SELECT model_policy_sha256 FROM app.user_feed_state WHERE user_id=${row.user_id}::uuid`;
+          if(lane?.model_policy_sha256) throw new Error('Ordered model profiles require their canonical operation producer.');
           if (options.execute) {
             const inserted = await tx`
               INSERT INTO telemetry.ml_outbox (job_type,aggregate_id,idempotency_key,payload)

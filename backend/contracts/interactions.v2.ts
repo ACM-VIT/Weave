@@ -18,6 +18,7 @@ export type InteractionEventType = typeof INTERACTION_EVENT_TYPES[number];
 
 export interface InteractionEventV2 {
   event_id: string;
+  impression_event_id?: string | null;
   schema_version: typeof INTERACTION_SCHEMA_VERSION;
   session_id: string;
   serve_id: string | null;

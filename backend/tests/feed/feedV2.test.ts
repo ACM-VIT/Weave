@@ -19,6 +19,12 @@ import {
   PersonalizedFeedUnavailableError,
 } from '../../services/feedV2Service.js';
 
+function ordinaryFeedVersion(value: string | number): number {
+  assert.equal(typeof value, 'number', 'This fixture implements only ordinary recommendation responses');
+  assert.ok(Number.isSafeInteger(value));
+  return value as number;
+}
+
 const repo: RepositoryProjection = {
   repo_id: '00000000-0000-4000-8000-000000000001', full_name: 'owner/repo', description: null,
   owner_user_id: null, owner_profile_id: null, owner_profile_claimed_user_id: null,
@@ -135,6 +141,34 @@ test('v2 feed reserves, persists, commits, and replays the same serve', async ()
   assert.equal(first.feed_version, '3');
   assert.equal(queue.committed, 1);
   assert.equal(queue.released, 0);
+});
+
+test('v2 feed omits private persistence fields from creation and durable replay', async () => {
+  const persistence = new FakePersistence();
+  const originalCreate = persistence.createServe.bind(persistence);
+  persistence.createServe = async input => {
+    const stored = await originalCreate(input);
+    Object.assign(stored.items[0], {
+      scoring_reference: { generation_id: 'private', record_digest: 'private-digest' },
+      legacy_generation_hint: '00000000-0000-4000-8000-000000000090',
+      scoring_context: { user_vector_sha256: 'private-context' },
+      scored_input: { input_base64: 'PRIVATE_PACKET' },
+    });
+    return stored;
+  };
+  const request = {
+    feed_request_id: '00000000-0000-4000-8000-000000000010',
+    session_id: '00000000-0000-4000-8000-000000000020', limit: 10, cursor: null,
+  };
+  const service = new FeedV2Service(persistence, new FakeQueue());
+  for (const response of [await service.getFeed('00000000-0000-4000-8000-000000000030', request),
+    await service.getFeed('00000000-0000-4000-8000-000000000030', request)]) {
+    assert.deepEqual(Object.keys(response.items[0]).sort(),
+      ['model_version', 'position', 'repo_id', 'repository', 'score', 'source', 'summary_id']);
+    assert.doesNotMatch(JSON.stringify(response), /PRIVATE_PACKET|private-context|private-digest/);
+    assert.equal(response.items[0].repository.full_name, repo.full_name);
+  }
+  assert.ok(persistence.serve && 'scoring_reference' in persistence.serve.items[0]);
 });
 
 test('v2 feed replaces a stale queued summary id with the current persisted projection', async () => {
@@ -512,7 +546,7 @@ test('validated empty ML success ends continuation without opening the circuit',
       calls++;
       response.writeHead(200, { 'content-type': 'application/json' });
       response.end(JSON.stringify({ schema_version: 2, generation_id: input.generation_id,
-        user_id: input.user_id, feed_version: input.feed_version,
+        user_id: input.user_id, feed_version: ordinaryFeedVersion(input.feed_version),
         model_version: 'test-heavy', embedding_version: 'test-embedding', items: [],
         embedding_versions: [], served_ranker: 'heavy', heavy_ranker_selected: true, ranker_applied: true,
         fallback_code: null, fallback_reason: null, retrieval_mode: 'personalized',
@@ -735,7 +769,7 @@ for (const publishBeforeRecoveryCommit of [false, true]) {
       assert.deepEqual(input.exclude_repo_ids, [], 'the running generation predates recovery delivery');
       await modelGate;
       return { schema_version: 2, generation_id: input.generation_id, user_id: input.user_id,
-        feed_version: input.feed_version, model_version: 'new', embedding_version: 'test',
+        feed_version: ordinaryFeedVersion(input.feed_version), model_version: 'new', embedding_version: 'test',
         embedding_versions: ['test'], served_ranker: 'hybrid', heavy_ranker_selected: false, ranker_applied: false,
         fallback_code: null, fallback_reason: null, retrieval_mode: 'hybrid',
         context_status: { cold_start_applied: false, locale: 'not_provided' },
@@ -925,3 +959,16 @@ for (const failure of ['redis', 'generation'] as const) {
     assert.equal(persistence.serve, null);
   });
 }
+
+test('capture-required cohorts retire plain queued entries but preserve pre-existing immutable replay', async () => {
+  const persistence=new FakePersistence(), queue=new FakeQueue();
+  const user='00000000-0000-4000-8000-000000000030';
+  const request={feed_request_id:'00000000-0000-4000-8000-000000000010',
+    session_id:'00000000-0000-4000-8000-000000000020',limit:10,cursor:null};
+  const required=new FeedV2Service(persistence,queue,undefined,false,1500,25,undefined,5000,undefined,()=>true);
+  await assert.rejects(required.getFeed(user,request),FeedRequestInProgressError);
+  assert.equal(persistence.serve,null,'uncaptured candidates must never become a new captured-cohort serve');
+  assert.equal(queue.committed,1,'retire the plain reservation so retry can request a captured generation');
+  const original=await new FeedV2Service(persistence,new FakeQueue()).getFeed(user,request);
+  assert.deepEqual(await required.getFeed(user,request),original,'capture activation cannot rewrite historical same-request replay');
+});

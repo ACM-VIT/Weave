@@ -67,8 +67,8 @@ function GitHubImportPanelBody({ userId, identityDraft, onSaved, onManual, api =
     await onSaved();
     if (isCurrent()) update(userId, { refreshNeeded: false });
   });
-  const continueManual = (isCurrent: () => boolean) => {
-    if (isCurrent() && manualAfterCleanup.current) {
+  const continueManual = (isCurrent: () => boolean, cleanupAcknowledged = false) => {
+    if (isCurrent() && manualAfterCleanup.current && (cleanupAcknowledged || !current.cleanupNeeded)) {
       manualAfterCleanup.current = false;
       onManual?.();
     }
@@ -80,12 +80,12 @@ function GitHubImportPanelBody({ userId, identityDraft, onSaved, onManual, api =
       status: { linked: current.status?.linked ?? true, active: false, provenance: {} } });
     await onSaved();
     if (isCurrent()) update(userId, { refreshNeeded: false });
-    continueManual(isCurrent);
+    continueManual(isCurrent, true);
   });
   const decline = () => {
     const shouldClose = Boolean(current.preview || current.busy === 'Reading public activity' || current.cleanupNeeded);
     request.current?.abort(); sequence.current++;
-    update(userId, { preview: null, busy: null, declined: true, error: '', cleanupNeeded: shouldClose });
+    update(userId, { preview: null, busy: null, declined: true, error: '', refreshNeeded: false, cleanupNeeded: shouldClose });
     manualAfterCleanup.current = shouldClose;
     // Keep this owner-bound cleanup/retry host mounted until the revoke and
     // profile refresh settle. Leaving first would discard both failure states.
@@ -103,7 +103,7 @@ function GitHubImportPanelBody({ userId, identityDraft, onSaved, onManual, api =
     </View> : null}
     {current.error ? <Text accessibilityRole="alert" style={{ fontFamily: Fonts.sans, color: REFERENCE_THEME.text, fontSize: 14, lineHeight: 21 }}>{current.error}</Text> : null}
     {current.cleanupNeeded ? <ImportButton label="Retry closing preview" onPress={() => void closePreview()} disabled={Boolean(current.busy)} /> : null}
-    {current.refreshNeeded ? <ImportButton label="Retry account refresh" onPress={() => void run('Refreshing account', async (_signal, isCurrent) => {
+    {current.refreshNeeded && !current.cleanupNeeded ? <ImportButton label="Retry account refresh" onPress={() => void run('Refreshing account', async (_signal, isCurrent) => {
       await onSaved(); if (isCurrent()) update(userId, { refreshNeeded: false }); continueManual(isCurrent);
     })} disabled={Boolean(current.busy)} /> : null}
     {current.status?.active ? <>

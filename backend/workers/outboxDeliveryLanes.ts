@@ -23,6 +23,7 @@ export class OutboxDeliveryLanes {
   private readonly active = new Set<OutboxLane>();
   private readonly cooldowns = new Map<OutboxRow['job_type'], number>();
   private repositoryKind: 'repo_index' | 'repo_refresh' = 'repo_index';
+  private onboardingKind:'onboard'|'model_operation'='onboard';
   private readonly worker: OutboxWorker;
 
   constructor(
@@ -102,9 +103,8 @@ export class OutboxDeliveryLanes {
         options = { jobTypes: ['feedback'], attempts: lane === 'feedback' ? 'first' : 'retry' };
         if (lane === 'feedback') limit = this.batchSize;
       } else if (lane === 'onboard') {
-        const remaining = this.remaining('onboard');
-        if (remaining) return { processed: 0, nextRunInMs: remaining };
-        options = { jobTypes: ['onboard'] };
+        options={jobTypes:[this.onboardingKind]};
+        this.onboardingKind=this.onboardingKind==='onboard'?'model_operation':'onboard';
       } else {
         options = { jobTypes: [this.repositoryKind] };
         this.repositoryKind = this.repositoryKind === 'repo_index' ? 'repo_refresh' : 'repo_index';
@@ -115,7 +115,12 @@ export class OutboxDeliveryLanes {
         options = { jobTypes: [this.repositoryKind] };
         if (!this.remaining(this.repositoryKind)) rows = await this.outbox.claim(1, undefined, options);
       }
+      if(!rows.length&&lane==='onboard'){
+        options={jobTypes:[this.onboardingKind]};
+        if(!this.remaining(this.onboardingKind))rows=await this.outbox.claim(1,undefined,options);
+      }
       if (!rows.length) {
+        if(lane==='onboard')options={jobTypes:['onboard','model_operation']};
         if (lane === 'repository') options = { jobTypes: ['repo_index', 'repo_refresh'] };
         const hint = await this.outbox.nextRunInMs(options);
         const delays = [hint, ...options.jobTypes!.map(type => this.remaining(type))]

@@ -11,6 +11,12 @@ import { PersonaRepairService } from '../../services/personaRepairService.js';
 import { snapshotMetrics } from '../../observability/metrics.js';
 import { MlRecommendationError } from '../../services/mlService.js';
 
+function ordinaryFeedVersion(value: string | number): number {
+  assert.equal(typeof value, 'number', 'This fixture implements only ordinary recommendation responses');
+  assert.ok(Number.isSafeInteger(value));
+  return value as number;
+}
+
 const userId = '00000000-0000-4000-8000-000000000001';
 const socialRepoId = '00000000-0000-4000-8000-000000000002';
 const otherRepoId = '00000000-0000-4000-8000-000000000003';
@@ -88,7 +94,7 @@ class CapturingRecommendations implements RecommendationPort {
       schema_version: 2,
       generation_id: input.generation_id,
       user_id: input.user_id,
-      feed_version: input.feed_version,
+      feed_version: ordinaryFeedVersion(input.feed_version),
       model_version: 'test-model',
       context_status: { cold_start_applied: false, locale: 'not_provided' },
       embedding_versions: [], served_ranker: 'heavy', heavy_ranker_selected: true,
@@ -300,7 +306,7 @@ test('prewarm recovers publication-before-SQL crash without replacing an empty s
   const queue = new GenerationQueue();
   const recommendations = new CapturingRecommendations();
   recommendations.generate = async input => ({ schema_version: 2, generation_id: input.generation_id,
-    user_id: input.user_id, feed_version: input.feed_version, model_version: 'test', embedding_version: 'test', items: [],
+    user_id: input.user_id, feed_version: ordinaryFeedVersion(input.feed_version), model_version: 'test', embedding_version: 'test', items: [],
     context_status: { cold_start_applied: false, locale: 'not_provided' },
     embedding_versions: [], served_ranker: 'heavy', heavy_ranker_selected: true,
     ranker_applied: true, fallback_code: null, fallback_reason: null, retrieval_mode: 'personalized' });

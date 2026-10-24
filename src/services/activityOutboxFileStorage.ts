@@ -66,6 +66,9 @@ export function deserializeActivitySnapshot(contents: string): QueuedActivity[] 
       && (!Number.isInteger(event.position) || Number(event.position) < 0)) {
       throw validationError(index, 'position');
     }
+    if(event.impression_event_id!==undefined&&event.impression_event_id!==null
+      &&(typeof event.impression_event_id!=='string'||!UUID_PATTERN.test(event.impression_event_id)
+        ||event.action==='impression'||!event.serve_id||event.position==null))throw validationError(index,'impression_event_id');
     if (event.dwell_seconds !== undefined
       && (typeof event.dwell_seconds !== 'number' || !Number.isFinite(event.dwell_seconds))) {
       throw validationError(index, 'dwell_seconds');
@@ -73,6 +76,7 @@ export function deserializeActivitySnapshot(contents: string): QueuedActivity[] 
 
     return {
       event_id: event.event_id,
+      ...('impression_event_id' in event?{impression_event_id:event.impression_event_id as string|null}:{}),
       session_id: typeof event.session_id === 'string' ? event.session_id : getAppSessionId(),
       client_occurred_at: event.client_occurred_at,
       repo_id: event.repo_id,
