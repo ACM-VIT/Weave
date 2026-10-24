@@ -40,6 +40,48 @@ function scoped(index:number):FeedIntentScope {
  return {...scope,userId:user,sessionId,queueScope:(index+1).toString(16).padStart(64,'0'),
   context:{...scope.context,session_id:sessionId},applied:{...scope.applied,user_id:user,session_id:sessionId}};
 }
+test('expired scope drainage does not block an unrelated ready request or escape shutdown', async t => {
+ const expired=scoped(200),ready=scoped(201),byUser=new Map([expired,ready].map(value=>[value.userId,value]));
+ let release!:()=>void;const drain=new Promise<void>(resolve=>{release=resolve;});let drained=false,delivered=false,stopped=false;
+ const gateway=new IntentFeedGateway({getFeed:async()=>response,stop:async()=>{}},{getServeByRequest:async()=>null},{
+  snapshot:async userId=>({...snapshot,...byUser.get(userId)!}),restoreCursor:async()=>scope.applied,resolve:async userId=>byUser.get(userId)!,
+ },value=>({getFeed:async()=>response,stop:async()=>{if(value===expired){await drain;drained=true;}}}));
+ await gateway.getFeed(expired.userId,{...request,session_id:expired.sessionId});
+ expired.applied.valid_until_ms='0';
+ const started=performance.now();
+ const pending=gateway.getFeed(ready.userId,{...request,session_id:ready.sessionId}).then(value=>{delivered=true;return value;});
+ let stopping:Promise<void>|undefined;
+ try {
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(delivered,true,'a ready user must not await an unrelated expired scope stop');
+  assert.equal(drained,false);
+  t.diagnostic(JSON.stringify({readyMilliseconds:Math.round((performance.now()-started)*100)/100,retirementStillPending:!drained}));
+  stopping=gateway.stop().then(()=>{stopped=true;});
+  await new Promise(resolve=>setImmediate(resolve));assert.equal(stopped,false,'shutdown still owns the detached drain');
+ } finally {release();await pending;await (stopping??gateway.stop());}
+ assert.equal(drained,true);
+});
+
+test('retiring scopes retain capacity while admission waits are bounded and cancellable',async()=>{
+ const scopes=Array.from({length:129},(_,index)=>scoped(index+500)),byUser=new Map(scopes.map(value=>[value.userId,value]));
+ let release!:()=>void;const drain=new Promise<void>(resolve=>{release=resolve;});let created=0;
+ const gateway=new IntentFeedGateway({getFeed:async()=>response,stop:async()=>{}},{getServeByRequest:async()=>null},{
+  snapshot:async userId=>({...snapshot,...byUser.get(userId)!}),restoreCursor:async()=>scope.applied,resolve:async userId=>byUser.get(userId)!,
+ },()=>{created++;return {getFeed:async()=>response,stop:async()=>{await drain;}};},undefined,40);
+ try {
+  for(const value of scopes.slice(0,128))await gateway.getFeed(value.userId,{...request,session_id:value.sessionId});
+  for(const value of scopes.slice(0,128))value.applied.valid_until_ms='0';
+  const next=scopes[128],input={...request,session_id:next.sessionId};
+  await assert.rejects(gateway.getFeed(next.userId,input),/MODEL_FEED_CAPACITY/);
+  assert.equal(created,128,'pending retirements must not free slots prematurely');
+  const controller=new AbortController();const pending=gateway.getFeed(next.userId,input,controller.signal);
+  const cancelled=assert.rejects(pending,/cancelled capacity wait/);
+  await new Promise(resolve=>setImmediate(resolve));controller.abort(new Error('cancelled capacity wait'));await cancelled;
+  assert.equal(created,128);
+  release();await new Promise(resolve=>setImmediate(resolve));
+  await gateway.getFeed(next.userId,input);assert.equal(created,129);
+ } finally {release();await gateway.stop();}
+});
 test('129 sequential fresh scopes evict idle acceleration and restore the evicted durable cursor scope',async()=>{
  const scopes=Array.from({length:129},(_,index)=>scoped(index));let stopped=0,created=0,restores=0;
  const byUser=new Map(scopes.map(value=>[value.userId,value]));const secret='owned-gateway-cursor';const codec=new FeedCursorCodec(secret);

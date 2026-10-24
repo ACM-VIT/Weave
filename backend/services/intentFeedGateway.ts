@@ -18,7 +18,9 @@ export class IntentFeedGateway {
   constructor(private readonly legacy: FeedService,
     private readonly persistence: Pick<FeedPersistencePort, 'getServeByRequest'>,
     private readonly scopes: Pick<FeedIntentScopeService, 'snapshot' | 'resolve' | 'restoreCursor'>,
-    private readonly create: (scope: FeedIntentScope) => FeedService, cursorSecret?: string) {
+    private readonly create: (scope: FeedIntentScope) => FeedService, cursorSecret?: string,
+    private readonly capacityWaitMs = 1_500) {
+    if (!Number.isSafeInteger(capacityWaitMs) || capacityWaitMs < 1) throw new RangeError('Invalid feed capacity wait.');
     this.cursor = new FeedCursorCodec(cursorSecret);
   }
   getFeed(userId: string, request: FeedRequestV2, signal?: AbortSignal): Promise<FeedResponseV2> {
@@ -43,16 +45,36 @@ export class IntentFeedGateway {
     this.retiring.add(drain);
     return drain;
   }
-  private async makeRoom():Promise<void> {
+  private waitForRetirement(work:Promise<void>,remainingMs:number,signal?:AbortSignal):Promise<void> {
+    return new Promise((resolve,reject)=>{
+      let settled=false;
+      const finish=(failed:boolean,error?:unknown)=>{
+        if(settled)return;
+        settled=true;clearTimeout(timer);signal?.removeEventListener('abort',abort);
+        if(failed)reject(error);else resolve();
+      };
+      const abort=()=>finish(true,signal?.reason);
+      const timer=setTimeout(()=>finish(true,new ModelOperationError('MODEL_FEED_CAPACITY',503)),remainingMs);
+      signal?.addEventListener('abort',abort,{once:true});
+      work.then(()=>finish(false),error=>finish(true,error));
+      if(signal?.aborted)abort();
+    });
+  }
+  private async makeRoom(signal?:AbortSignal):Promise<void> {
+    const deadline=performance.now()+this.capacityWaitMs;
     while(this.slots.size+this.retiring.size>=128){
+      signal?.throwIfAborted();
+      const remaining=deadline-performance.now();
+      if(remaining<=0)throw new ModelOperationError('MODEL_FEED_CAPACITY',503);
       const idle=[...this.slots].find(([,slot])=>slot.active===0);
-      if(idle)await this.retire(...idle);
-      else if(this.retiring.size)await Promise.race(this.retiring);
-      else throw new ModelOperationError('MODEL_FEED_CAPACITY',503);
+      const work=idle?this.retire(...idle):this.retiring.size?Promise.race(this.retiring):null;
+      if(!work)throw new ModelOperationError('MODEL_FEED_CAPACITY',503);
+      await this.waitForRetirement(work,remaining,signal);
       if(this.stopping)throw new ModelOperationError();
     }
   }
   private async prepare(userId: string, request: FeedRequestV2, signal?: AbortSignal): Promise<FeedResponseV2> {
+    signal?.throwIfAborted();
     if (this.stopping) throw new ModelOperationError();
     // Historical authenticated replay precedes current epoch/expiry admission.
     if (await this.persistence.getServeByRequest(userId, request.feed_request_id)) return this.legacy.getFeed(userId, request, signal);
@@ -65,7 +87,9 @@ export class IntentFeedGateway {
     if (!snapshot) return this.legacy.getFeed(userId, request, signal);
     for (const [key, slot] of [...this.slots]) {
       if (slot.active === 0 && BigInt(slot.scope.applied.valid_until_ms) <= BigInt(Date.now())) {
-        await this.retire(key,slot);
+        // stop() can own a slow background refill. Retain its capacity reservation
+        // while allowing unrelated ready requests to use other available slots.
+        void this.retire(key,slot).catch(()=>console.warn('[IntentFeedGateway] Expired scope retirement failed.'));
       }
     }
     const base = this.scopeKey(snapshot);
@@ -77,6 +101,7 @@ export class IntentFeedGateway {
     const restored = signedScope ? await this.scopes.restoreCursor(snapshot, signedScope) : null;
     let slot = signedScope ? this.slots.get(signedScope) : this.currentSlot(base);
     const scope = await this.scopes.resolve(userId, request.session_id, restored?.as_of_ms ?? slot?.scope.context.as_of_ms);
+    signal?.throwIfAborted();
     if (!scope || this.stopping) throw new ModelOperationError();
     if (signedScope && scope.queueScope !== signedScope) throw new StaleFeedCursorError();
     // A concurrent cold reader may have installed the same logical scope meanwhile.
@@ -84,7 +109,8 @@ export class IntentFeedGateway {
     if (slot && (slot.scope.applied.head !== scope.applied.head || slot.scope.applied.state_sha256 !== scope.applied.state_sha256
       || BigInt(slot.scope.applied.valid_until_ms) <= BigInt(Date.now()))) throw new StaleFeedCursorError();
     while (!slot) {
-      await this.makeRoom();
+      await this.makeRoom(signal);
+      signal?.throwIfAborted();
       if(this.stopping)throw new ModelOperationError();
       // A peer may restore this same durable scope while an idle service drains.
       slot=this.slots.get(scope.queueScope);
