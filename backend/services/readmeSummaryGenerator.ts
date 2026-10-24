@@ -7,10 +7,12 @@ export interface ReadmeSummaryGenerator {
 }
 
 export class ReadmeSummaryError extends Error {
-  constructor(readonly code: string, readonly retryable: boolean, readonly retryAfterSeconds?: number) { super(code); }
+  constructor(readonly code: string, readonly retryable: boolean, readonly retryAfterSeconds?: number,
+    readonly observedWordCount?: number) { super(code); }
 }
 
 export const README_SUMMARY_SYSTEM_PROMPT = `You are an expert technical writer. Convert the source README into a clean, well-structured, highly readable digest for developers evaluating a GitHub repository.
+Write all output fields in English, including when the source README is in another language. Preserve project names and technical identifiers rather than translating them.
 Preserve important technical details about the project purpose, main components and capabilities. Do NOT add or introduce new facts, library features, or hallucinate information not present in the source text. Remove unnecessary boilerplate and redundancies. Return ONLY the requested JSON, with no introductory or concluding comments, greetings, or conversational remarks.
 Target 140–190 words across ALL fields combined, never more than 220. Keep the overview to 45–65 words, normally choose 3 capabilities of 10–18 words each, 1–2 use cases of 10–16 words each, and 0–2 brief considerations. This is longer than a one-line description and much shorter than the README.
 Return only the JSON schema: overview (one useful paragraph), capabilities (2–5 concrete features), use_cases (1–3 practical applications), considerations (0–2 important constraints explicitly stated by the source).
@@ -77,7 +79,7 @@ export function validateReadmeSummary(value: unknown, source?: ReadmeSummarySour
   const typed = content as unknown as ReadmeSummaryContent;
   const text = [typed.overview,...typed.capabilities,...typed.use_cases,...typed.considerations].join(' ');
   const words = text.match(/\S+/g)?.length ?? 0;
-  if (words < 90 || words > 260) throw new ReadmeSummaryError('invalid_summary_length', true);
+  if (words < 90 || words > 260) throw new ReadmeSummaryError('invalid_summary_length', true, undefined, words);
   if (source && typed.overview.replace(/\W/g,'').toLowerCase() === (source.description ?? '').replace(/\W/g,'').toLowerCase()) {
     throw new ReadmeSummaryError('summary_duplicates_description', true);
   }
@@ -200,6 +202,7 @@ export class ConfiguredReadmeSummaryGenerator implements ReadmeSummaryGenerator 
     const readme = prepareReadmeSummarySource(source);
     if (readme.length < 200) throw new ReadmeSummaryError('readme_insufficient_content', false);
     let repair: string | undefined;
+    let lastErrorCode: string | undefined;
     for (let attempt = 0; attempt < 2; attempt++) {
       let response: Response;
       try {
@@ -249,10 +252,14 @@ export class ConfiguredReadmeSummaryGenerator implements ReadmeSummaryGenerator 
         }
         return validateReadmeSummary(JSON.parse(raw ?? ''), source);
       } catch (error) {
-        repair = error instanceof ReadmeSummaryError ? error.code : 'invalid_json';
+        lastErrorCode = error instanceof ReadmeSummaryError ? error.code : 'invalid_json';
+        repair = error instanceof ReadmeSummaryError && error.code === 'invalid_summary_length'
+          && error.observedWordCount !== undefined
+          ? `${error.code}: Received ${error.observedWordCount} whitespace-separated words across all fields. Write all output fields in English and target 140–190 words total; the accepted range is 90–260 words. Do not pad or invent facts.`
+          : lastErrorCode;
       }
     }
-    throw new ReadmeSummaryError(repair ?? 'summary_validation_failed', true);
+    throw new ReadmeSummaryError(lastErrorCode ?? 'summary_validation_failed', true);
   }
 }
 
