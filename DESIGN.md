@@ -45,3 +45,21 @@ The existing feed card, colours and type remain unchanged. README summary height
 ## Home service recovery
 
 When the recommendation API explicitly reports personalized feed unavailability, Home uses the existing canonical repository catalogue and keeps the same card layout. The fixed header adds a quiet, readable “Recently updated / Not personalized” source label. Catalogue pages never masquerade as recommendation serves. Real counts, viewer state, summaries and internal navigation continue to use the shared repository model.
+
+## Feed repository labels
+
+`RecommendationReason` owns the single badge slot below README summary and above
+the owner. Labels use Nata Sans Medium, 11/16pt, 11pt horizontal and 6pt vertical
+padding, an 8pt corner radius and natural height of at least 30pt. The existing
+repository details gap supplies separation from the owner; 3pt/2pt badge margins
+add breathing room. Text wraps and scales with system fonts, without fixed height
+or a one-line truncation cap. The summary keeps its existing flexible measured
+viewport as the metadata row grows.
+
+`REFERENCE_THEME.repositoryLabel` owns semantic tones: amber for a verified
+GitHub trending rank, green for recent Weave likes, muted green-gray for GitHub
+popularity. `repository-label-presentation.ts` is the typed central icon/copy/tone
+registry. The wire union and validation live in `models/repository-label.ts`.
+The API label is independent of recommendation source and feed position. Missing,
+malformed, unknown and expired labels use the existing source explanation. Labels
+are static metadata, with one accessible spoken phrase and no chevron or tap action.

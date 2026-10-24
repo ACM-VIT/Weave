@@ -1,4 +1,7 @@
 import { createHash } from 'node:crypto';
+import type { RepositoryLabelLoader } from '../contracts/repositoryLabel.js';
+import { REPOSITORY_LABEL_POLICY, withRepositoryLabels } from '../services/repositoryLabelService.js';
+import { repositoryLabels } from '../adapters/postgresRepositoryLabels.js';
 import { performance } from 'node:perf_hooks';
 import { readmeSummaryProjection } from '../services/readmeSummaryService.js';
 import type { Response } from 'express';
@@ -134,6 +137,7 @@ export function createTrendingHandler(
   service: TrendingSnapshotService,
   loadViewer: TrendingViewerLoader = loadTrendingViewerState,
   now: () => number = () => performance.now(),
+  labelLoader?: RepositoryLabelLoader,
 ) {
   let viewerHydrations = 0;
   return async (req: AuthRequest, res: Response): Promise<void> => {
@@ -198,6 +202,14 @@ export function createTrendingHandler(
         };
       });
       budget.check();
+      // Public labels enrich request-owned cards, outside the public snapshot
+      // cache. The loader has its own short budget and physical admission cap.
+      if (labelLoader && budget.remainingMs() > REPOSITORY_LABEL_POLICY.requestBudgetMs + 50) {
+        payload.data.items = await withRepositoryLabels(
+          payload.data.items.map(item => ({ ...item, repo_id: String(item.repo_id) })), labelLoader,
+        );
+        budget.check();
+      }
       const body = JSON.stringify(payload);
       budget.check();
       const etag = `"${createHash('sha256').update(body).digest('hex')}"`;
@@ -229,4 +241,5 @@ export function createTrendingHandler(
   };
 }
 
-export const listTrending = createTrendingHandler(new TrendingSnapshotService(trendingSnapshotSource));
+export const listTrending = createTrendingHandler(new TrendingSnapshotService(trendingSnapshotSource), loadTrendingViewerState,
+  () => performance.now(), repositoryLabels.load);

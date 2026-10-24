@@ -1,3 +1,4 @@
+import type { RepositoryLabel } from './repository-label';
 import type { RecommendationSource } from './recommendation';
 import type { ReadmeDigest } from './readme-digest';
 export type RepositoryReaction = 'like' | 'dislike' | null;
@@ -67,6 +68,7 @@ export type RepositoryDetail = {
   ownerProfileClaimedUserId: string | null;
   viewerFollowsOwner: boolean | null;
   recommendationSource?: RecommendationSource;
+  label?: RepositoryLabel | null;
   serveId: string | null;
   feedPosition: number | null;
   feedSessionId?: string | null;

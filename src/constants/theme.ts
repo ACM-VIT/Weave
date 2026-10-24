@@ -88,6 +88,12 @@ export const REFERENCE_THEME = {
   separator: 'rgba(255,255,255,0.07)',
   border: 'rgba(255,255,255,0.12)',
   inactive: '#7C7C82',
+  // Shared feed label tones: copy + icon also identify each meaning.
+  repositoryLabel: {
+    trending: { color: '#E9C28B', backgroundColor: '#201B13', borderColor: '#51422D' },
+    recentLikes: { color: '#A3E6B1', backgroundColor: '#112019', borderColor: '#2F4B36' },
+    popular: { color: '#C3CEC5', backgroundColor: '#171C18', borderColor: '#343D36' },
+  },
   star: '#FFD60A',
   danger: '#FF453A',
   heart: '#FF375F',

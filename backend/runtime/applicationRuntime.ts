@@ -1,3 +1,4 @@
+import { repositoryLabels } from '../adapters/postgresRepositoryLabels.js';
 import type { FeedIntentScope } from '../contracts/feedIntent.js';
 import { ModelLaneAuthorityService } from '../services/modelLaneAuthorityService.js';
 import { FeedIntentScopeService } from '../services/feedIntentScopeService.js';
@@ -133,6 +134,8 @@ export class ApplicationRuntime {
       ),
     } : undefined,
     userId => this.scoringCapture.enabled && this.scoringCapture.userIds.has(userId),
+    undefined,
+    repositoryLabels.load,
   );
   readonly feed=this.flags.ML_V2_RECOMMENDATIONS&&this.modelScopes?new IntentFeedGateway(this.legacyFeed,this.persistence,this.modelScopes,scope=>this.createIntentFeed(scope),process.env.JWT_SECRET):this.legacyFeed;
   private createIntentFeed(scope:FeedIntentScope):FeedV2Service{
@@ -160,7 +163,7 @@ export class ApplicationRuntime {
       false,1500,25,process.env.JWT_SECRET,mlTimeoutMs('FEED_FOREGROUND_WAIT_MS',5000),this.indexedFeedRefill?{
         lowWatermark:this.indexedFeedRefill.lowWatermark,generate:(owner,version,session)=>generation.generate(owner,this.indexedFeedRefill!.maxQueueDepth,[],'live',session,undefined,
           {expectedVersion:version,lowWatermark:this.indexedFeedRefill!.lowWatermark})}:undefined,
-      owner=>this.scoringCapture.enabled&&this.scoringCapture.userIds.has(owner),scope);
+      owner=>this.scoringCapture.enabled&&this.scoringCapture.userIds.has(owner),scope,repositoryLabels.load);
   }
   readonly supervisor = new WorkerSupervisor();
   readonly privateScoringExport: ReturnType<typeof createPrivateScoringExport>;

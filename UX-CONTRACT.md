@@ -25,3 +25,15 @@ The summary card uses the space between Tech Stack and repository details. Its m
 ## Home recovery when personalized recommendations are unavailable
 
 An explicit first-page `503 PERSONALIZED_FEED_UNAVAILABLE` allows Home to browse the authenticated canonical `/repositories` catalogue. The header must say “Recently updated / Not personalized”. Authentication, offline, generic API failures and errors on later personalized pages must not silently switch data sources. Browsing cursors stay in catalogue mode; deliberate refresh starts with recommendations again. Catalogue items have no recommendation serve ID/position, so their real interactions remain product events. Reactions and saves preserve the current card and must not block catalogue pagination. Cached content survives later-page/refetch errors. Backend personalized-feed failure semantics and production ranking gates remain unchanged.
+
+## Feed label slot
+
+`RecommendationReason` owns the feed metadata row. Backend `repository.label`
+selection and thresholds belong to `backend/services/repositoryLabelService.ts`;
+frontend validation belongs to `src/models/repository-label.ts`. The UI uses its
+own typed copy/icon registry and never derives a rank from feed position or a
+candidate source. Missing, malformed, unsupported or expired labels retain the
+normal source explanation. Cached badges expire while mounted. Badge text wraps
+at narrow widths and scales with system fonts; one accessible phrase conveys the
+meaning without relying on color. `tests/repository-labels.test.ts` covers wire
+validation, mapping, fallback, renderer semantics and expiration.
