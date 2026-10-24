@@ -244,7 +244,7 @@ export function RepositoryFeedItem({
   }, [onSavedChange, repository.id, serverSaved]);
 
   const saveSwipeGesture = React.useMemo(() => Gesture.Pan()
-    .enabled(Platform.OS !== 'web' && !overlaysOpen && !isSaveRevealOpen)
+    .enabled(!overlaysOpen && !isSaveRevealOpen)
     .activeOffsetX(SAVE_SWIPE_ACTIVATION_DISTANCE)
     .failOffsetX(-SAVE_SWIPE_LEFT_FAIL_DISTANCE)
     .failOffsetY([
@@ -326,7 +326,7 @@ export function RepositoryFeedItem({
 
       <GestureDetector
         gesture={saveSwipeGesture}
-        touchAction={Platform.OS === 'web' ? 'auto' : undefined}
+        touchAction={Platform.OS === 'web' ? 'pan-y' : undefined}
       >
         <Animated.View
           accessibilityElementsHidden={isSaveRevealOpen}

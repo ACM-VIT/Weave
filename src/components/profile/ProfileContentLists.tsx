@@ -77,7 +77,7 @@ export function ProfileContentLists(props: Props) {
         onPress={() => openList({ boardName: 'Pinned', collectionType: 'pinned' })} />;
     } else if (row.kind === 'state') {
       const query = props[row.section];
-      const label = row.section === 'pinned' ? 'pinned repositories' : row.section === 'boards' ? 'legacy Lists' : 'Lists';
+      const label = row.section === 'pinned' ? 'pinned repositories' : 'Lists';
       content = <View style={{ minHeight: 70, alignItems: 'center', justifyContent: 'center', gap: 10, paddingVertical: 12 }}>
         {query.isPending ? <>
           <ActivityIndicator color="#63E08A" accessibilityLabel={`Loading ${label}`} />

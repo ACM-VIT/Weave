@@ -26,7 +26,7 @@ function repository(id: string): RepositoryData {
 
 // Keep the real row, all four overlays, React state and QueryClient observers.
 // Replace only native rendering/animation and external I/O boundaries.
-function feed(ids: string[], reducedMotion = false, attribution?: { ownerId: string; repository: Partial<RepositoryData>; boundary?: React.ReactNode }) {
+function feed(ids: string[], reducedMotion = false, attribution?: { ownerId: string; repository: Partial<RepositoryData>; boundary?: React.ReactNode; platform?: string; viewable?: boolean }) {
   const client = new QueryClient({ defaultOptions: {
     queries: { retry: false, gcTime: Infinity }, mutations: { retry: false },
   } });
@@ -38,6 +38,7 @@ function feed(ids: string[], reducedMotion = false, attribution?: { ownerId: str
   let saveRepository: () => Promise<any> = async () => { throw new Error('Unexpected save'); };
   let createCollection: () => Promise<any> = async () => { throw new Error('Unexpected create'); };
   let saveCollections: any[] = [];
+  let loadLists = async () => saveCollections;
   let openExternal: () => Promise<void> = async () => undefined;
   let shareHeight=800;
   let loadReadme: () => Promise<any> = async () => ({ ...repository('canonical'), readmeFull: '# Canonical fetched README' });
@@ -53,7 +54,7 @@ function feed(ids: string[], reducedMotion = false, attribution?: { ownerId: str
   }
   const native = {
     AppState: { currentState: 'active', addEventListener: () => ({ remove() {} }) },
-    Platform: { OS: 'ios', select: (value: any) => value.ios ?? value.default },
+    Platform: { OS: attribution?.platform ?? 'ios', select: (value: any) => value.ios ?? value.default },
     StyleSheet: { create: (value: unknown) => value, absoluteFill: {}, hairlineWidth: 1 },
     Animated: { Value, View: 'AnimatedView', timing: animation, parallel: animation, sequence: animation, delay: animation },
     Easing: { bezier: () => 0, in: () => 0, out: () => 0, cubic: 0, quad: 0 },
@@ -64,7 +65,14 @@ function feed(ids: string[], reducedMotion = false, attribution?: { ownerId: str
   };
   const auth = { useAuth: () => ({ user: { user_id: attribution?.ownerId ?? 'viewer', username: 'viewer' }, checkOnboardingStatus: async () => undefined }) };
   const storage = { getItemAsync: async () => 'token', getStorageItem: async () => 'token' };
-  const gesture = new Proxy({}, {get: () => () => gesture});
+  function pan() {
+    const config: Record<string, any> = {};
+    const gesture = new Proxy({ config }, {get: (target, key) => key === 'config' ? target.config : (...args: any[]) => {
+      config[String(key)] = args.length === 1 ? args[0] : args;
+      return gesture;
+    }});
+    return gesture;
+  }
   const mocks: Record<string, any> = {
     'react-native': native,
     '@/api/session-lifecycle': { authSessionLifecycle },
@@ -77,7 +85,7 @@ function feed(ids: string[], reducedMotion = false, attribution?: { ownerId: str
       useAnimatedStyle: (style: () => unknown) => style(), withSpring: (value: unknown) => value,
     },
     'react-native-worklets': {scheduleOnRN: (fn: (...args: any[]) => void, ...args: any[]) => fn(...args)},
-    'react-native-gesture-handler': {Gesture: {Pan: () => gesture}, GestureDetector: ({children}: any) => children},
+    'react-native-gesture-handler': {Gesture: {Pan: pan}, GestureDetector: 'GestureDetector'},
     './ReadmeImagePopup': {ReadmeImagePopup: 'ReadmeImagePopup'},
     './ReadmeVideoPopup': {ReadmeVideoPopup: 'ReadmeVideoPopup'},
     './ReadmeVideo': {ReadmeVideo: 'ReadmeVideo'},
@@ -98,7 +106,7 @@ function feed(ids: string[], reducedMotion = false, attribution?: { ownerId: str
     '@/hooks/use-modal-scroll-lock': { useModalScrollLock: () => undefined },
     '@/api/lists': {
       ...createRequire(resolve('src/api/lists.ts'))('../models/list'),
-      getRepositoryLists: async (id: string) => { requests.push(`save:${id}`); return saveCollections; },
+      getRepositoryLists: async (id: string) => { requests.push(`save:${id}`); return loadLists(); },
       createRepositoryList: () => createCollection(),
       syncRepositoryLists: () => saveRepository(),
     },
@@ -146,11 +154,27 @@ function feed(ids: string[], reducedMotion = false, attribution?: { ownerId: str
     loadSource('src/components/home/ReadmePopup.tsx').ReadmePopup,
   ];
   const renderRows = () => React.createElement(QueryClientProvider, { client },
-    ids.map(id => React.createElement(Row, { key: id, repository: { ...repository(id), ...attribution?.repository }, boundary: attribution?.boundary, pageWidth: 400, pageHeight: 800,
+    ids.map(id => React.createElement(Row, { key: id, isViewable: attribution?.viewable ?? false, repository: { ...repository(id), ...attribution?.repository }, boundary: attribution?.boundary, pageWidth: 400, pageHeight: 800,
       onQueueActivity: (event: unknown) => events.push(event) })),
   );
   return {
     requests, events, client,
+    get swipe() {return root.root.findByType('GestureDetector').props;},
+    get saveRevealed() {return root.root.findAllByType('Pressable').some(node => node.props.accessibilityLabel === 'Close Save actions');},
+    async swipeRight(x = 100, y = 0) {
+      const config = this.swipe.gesture.config;
+      assert.equal(config.enabled, true, 'right-swipe must be available on web');
+      await act(async () => {
+        config.onStart();
+        config.onUpdate({translationX: x, translationY: y});
+        config.onEnd({translationX: x, translationY: y});
+        config.onFinalize({}, true);
+      });
+    },
+    async pressRevealSave() {await act(async () => {
+      root.root.findAllByType('Pressable').find(node => node.props.accessibilityHint === 'Opens the Save dialog to choose a list')!.props.onPress();
+      await new Promise(resolve => setTimeout(resolve, 0));
+    });},
     setExternalOpen(value: () => Promise<void>) {openExternal=value;},
     setHeight(value:number) {shareHeight=value;},
     setReadme(value: () => Promise<any>) {loadReadme=value;},
@@ -183,6 +207,7 @@ function feed(ids: string[], reducedMotion = false, attribution?: { ownerId: str
       });
     },
     setPost(value: () => Promise<any>) { postComment = value; },
+    setListLoader(value: () => Promise<any[]>) {loadLists = value;},
     setSave(value: () => Promise<any>) {
       saveRepository = value;
       saveCollections = [{ id: 'list', source: 'collection', name: 'List', repositoryCount: 0, selected: true }];
@@ -689,4 +714,54 @@ test('summary image tap opens a separate viewer and returns to the retained dige
     assert.ok(app.renderedReadmeHtml.includes('Summary.'));
     assert.equal(app.mountedOverlays,1);
   }finally{await app.unmount();}
+});
+
+
+test('web right-swipe reveals Save and opens the complete list picker without saving immediately', async () => {
+  const app = feed(['repo'], true, {ownerId: 'viewer', repository: {}, platform: 'web', viewable: true});
+  await app.mount();
+  try {
+    await app.swipeRight();
+    assert.equal(app.swipe.touchAction, 'pan-y', 'browser vertical scrolling stays enabled');
+    assert.equal(app.saveRevealed, true);
+    assert.equal(app.mountedOverlays, 0);
+    assert.deepEqual(app.requests, []);
+    await app.pressRevealSave();
+    assert.equal(app.saveRevealed, false);
+    assert.equal(app.mountedOverlays, 1);
+    assert.deepEqual(app.requests, ['save:repo']);
+    assert.equal(app.swipe.gesture.config.enabled, false, 'an open picker blocks underlying gestures');
+    assert.equal(app.events.filter(event => event.action === 'save').length, 0);
+  } finally {await app.unmount();}
+});
+
+test('web left and diagonal drags leave Save closed', async () => {
+  const app = feed(['repo'], true, {ownerId: 'viewer', repository: {}, platform: 'web', viewable: true});
+  await app.mount();
+  try {
+    await app.swipeRight(-100, 0);
+    assert.equal(app.saveRevealed, false);
+    await app.swipeRight(76, 80);
+    assert.equal(app.saveRevealed, false);
+    assert.deepEqual(app.requests, []);
+  } finally {await app.unmount();}
+});
+
+
+test('a failed complete membership load can retry in the save sheet without allowing a partial save', async () => {
+  const app = feed(['repo'], true);
+  app.setListLoader(async () => {throw new Error('Network request failed');});
+  await app.mount();
+  try {
+    await app.open(0, 'onSavePress');
+    await act(async () => {await new Promise(resolve => setTimeout(resolve, 650));});
+    assert.equal(app.client.getQueryState(['repository-lists', 'viewer', 'repo'])?.status, 'error');
+    assert.equal(app.button('Save repository to selected Lists').props.disabled, true);
+    assert.ok(app.button('Retry loading Lists'), 'a failed list load needs an in-place retry');
+    app.setListLoader(async () => [{id:'list', source:'collection', name:'Recovered list', selected:true, repositoryCount:1}]);
+    await app.press('Retry loading Lists');
+    await waitForReadmeState(() => app.messages.includes('Recovered list'));
+    assert.equal(app.button('Save repository to selected Lists').props.disabled, false);
+    assert.deepEqual(app.requests, ['save:repo', 'save:repo', 'save:repo']);
+  } finally {await app.unmount();}
 });

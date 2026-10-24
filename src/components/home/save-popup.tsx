@@ -533,12 +533,27 @@ export function SavePopup({
               ) : null}
             </View>
 
+            {listsQuery.isError ? (
+              <View style={{ alignItems: 'center', gap: 12, paddingVertical: 16 }}>
+                <Text accessibilityLiveRegion="polite" style={{ color: palette.danger, textAlign: 'center' }}>
+                  Could not load all your Lists. Retry before saving.
+                </Text>
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel="Retry loading Lists"
+                  accessibilityState={{ disabled: listsQuery.isFetching }}
+                  disabled={listsQuery.isFetching}
+                  onPress={() => void listsQuery.refetch()}
+                  style={{ minHeight: 44, paddingHorizontal: 20, justifyContent: 'center', borderRadius: 12, backgroundColor: palette.elevated }}
+                >
+                  <Text style={{ color: palette.text }}>Retry</Text>
+                </Pressable>
+              </View>
+            ) : null}
             <View style={styles.collectionList}>
               {listsQuery.isLoading && lists.length === 0 ? (
                 <ListLayoutPreview loading />
-              ) : listsQuery.isError && lists.length === 0 ? (
-                <ListLayoutPreview />
-              ) : filteredLists.length ? (
+              ) : listsQuery.isError && lists.length === 0 ? null : filteredLists.length ? (
                 <>
                   <View style={styles.collectionGrid}>
                     {filteredLists.map((list) => {
