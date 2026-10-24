@@ -1,102 +1,29 @@
 import React, { memo } from 'react';
 import { Pressable, Text, View } from 'react-native';
-import Svg, { Path } from 'react-native-svg';
 import type { RepositoryDetail } from '@/models/repository';
 import { formatCompactCount } from '@/utils/format-count';
 import { README_SUMMARY_PENDING } from '@/utils/readme';
 
-interface TrendingRepoCardProps {
-  repo: RepositoryDetail;
-  rank?: number;
-  onPress?: () => void;
-}
-
-function BookIcon(): React.JSX.Element {
-  return (
-    <Svg width={16} height={16} viewBox="0 0 24 24" fill="none">
-      <Path
-        d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20V2H6.5A2.5 2.5 0 0 0 4 4.5v15Z"
-        stroke="rgba(235,235,245,0.75)"
-        strokeWidth={1.8}
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-      <Path
-        d="M4 19.5A2.5 2.5 0 0 0 6.5 22H20v-5"
-        stroke="rgba(235,235,245,0.75)"
-        strokeWidth={1.8}
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </Svg>
-  );
-}
-
-function StarIcon(): React.JSX.Element {
-  return (
-    <Svg width={11} height={11} viewBox="0 0 24 24" fill="#FFD60A">
-      <Path d="m12 2 3.1 6.3 6.9 1-5 4.9 1.2 6.8L12 17.8 5.8 21l1.2-6.8-5-4.9 6.9-1L12 2Z" />
-    </Svg>
-  );
-}
-
-function TrendingRepoCard({ repo, rank, onPress }: TrendingRepoCardProps): React.JSX.Element {
+function TrendingRepoCard({ repo, rank, onPress }: { repo: RepositoryDetail; rank?: number; onPress?: () => void }): React.JSX.Element {
   const position = repo.trend?.rank ?? rank;
-  return (
-    <Pressable
-      accessibilityRole="button"
-      accessibilityLabel={`${position ? `Rank ${position}, ` : ''}${repo.fullName}`}
-      onPress={onPress}
-      style={{
-        minHeight: 52,
-        paddingVertical: 8,
-        paddingHorizontal: 14,
-        borderRadius: 14,
-        backgroundColor: '#1C1C1E',
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: 12,
-      }}
-    >
-      <BookIcon />
-      <View style={{ flex: 1, minWidth: 0 }}>
-        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 7 }}>
-          <Text
-            numberOfLines={1}
-            style={{
-              color: '#FFFFFF',
-              fontSize: 14,
-              fontWeight: '600',
-              letterSpacing: 0,
-              flexShrink: 1,
-            }}
-          >
-            {repo.name}
-          </Text>
-          {position !== undefined && position <= 3 ? (
-            <Text style={{ color: 'rgb(255, 214, 10)', fontSize: 10.5, fontWeight: '700', flexShrink: 0 }}>
-              No. {position}
-            </Text>
-          ) : null}
-        </View>
-        <Text
-          numberOfLines={2}
-          style={{
-            color: 'rgba(235, 235, 245, 0.55)',
-            fontSize: 11.5,
-            lineHeight: 16.1,
-            marginTop: 2,
-          }}
-        >
-          {repo.readmeSummary || repo.description || README_SUMMARY_PENDING}
-        </Text>
-      </View>
-      <View style={{ width: 48, flexDirection: 'row', alignItems: 'center', gap: 4, flexShrink: 0 }}>
-        <StarIcon />
-        <Text style={{ color: 'rgba(235, 235, 245, 0.45)', fontSize: 12 }}>{formatCompactCount(repo.stats.stars)}</Text>
-      </View>
-    </Pressable>
-  );
+  const podium = position !== undefined && position <= 3;
+  const accent = position === 1 ? '#FFD60A' : position === 2 ? '#D6DBE5' : '#DFA477';
+  const velocity = repo.trend?.features.trend_velocity;
+  return <Pressable accessibilityRole="button" accessibilityLabel={`${position ? `Rank ${position}, ` : ''}${repo.fullName}`} onPress={onPress}
+    style={({ pressed }) => ({ padding: podium ? 18 : 14, borderRadius: 16, backgroundColor: '#1C1C1E',
+      borderWidth: podium ? 1 : 0, borderColor: podium ? accent : 'transparent', opacity: pressed ? 0.75 : 1,
+      flexDirection: 'row', alignItems: 'flex-start', gap: 12 })}>
+    {position ? <Text style={{ width: podium ? 38 : 28, color: podium ? accent : '#A0A0AA', fontSize: podium ? 32 : 18, fontWeight: '800', fontVariant: ['tabular-nums'] }}>{position}</Text> : null}
+    <View style={{ flex: 1, gap: 5 }}>
+      {podium ? <Text style={{ color: accent, fontSize: 11, fontWeight: '700', letterSpacing: 1 }}>TOP {position} · TRENDING</Text> : null}
+      <Text numberOfLines={1} style={{ color: '#FFFFFF', fontSize: podium ? 18 : 15, fontWeight: '700' }}>{repo.fullName}</Text>
+      <Text numberOfLines={podium ? 2 : 1} style={{ color: '#B8B8C0', fontSize: 13, lineHeight: 19 }}>{repo.readmeSummary || repo.description || README_SUMMARY_PENDING}</Text>
+      <Text numberOfLines={2} style={{ color: '#B8B8C0', fontSize: 12, lineHeight: 18 }}>
+        {repo.primaryLanguage ? `${repo.primaryLanguage}  ·  ` : ''}★ {formatCompactCount(repo.stats.stars)}  ·  {formatCompactCount(repo.stats.forks)} forks
+        {typeof velocity === 'number' && Number.isFinite(velocity) ? `  ·  ${velocity.toFixed(1)} momentum` : ''}
+        {repo.trend?.score != null ? `  ·  Score ${repo.trend.score.toFixed(2)}` : ''}
+      </Text>
+    </View>
+  </Pressable>;
 }
-
 export default memo(TrendingRepoCard);
