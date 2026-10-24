@@ -95,11 +95,14 @@ test('completion preserves username errors and retries safely through an older s
  }finally{await app.unmount();}
 });
 
-test('an old-account completion cannot update or route a newly established account',async t=>{
- let owner='alice';const late=deferred<Response>(),started=deferred<void>();
+test('an old-account completion cannot update or block a newly established account',async t=>{
+ let owner='alice',completions=0;const late=deferred<Response>(),started=deferred<void>();
  const app=startup({realNetwork:true,segments:['onboarding'],pathname:'/onboarding/step3'});
  t.mock.method(globalThis,'fetch',async url=>{
-  if(String(url).endsWith('/onboarding/complete')){started.resolve();return late.promise;}
+  if(String(url).endsWith('/onboarding/complete')){
+   if(completions++===0){started.resolve();return late.promise;}
+   return envelope({viewer:{user_id:owner,username:owner,onboarding_completed:true}});
+  }
   return envelope({user_id:owner,username:owner,onboarding_completed:false});
  });
  await app.mount();await act(async()=>{app.session.resolve(fixtureToken('alice'));app.fonts.resolve();});
@@ -108,14 +111,20 @@ test('an old-account completion cannot update or route a newly established accou
   await act(async()=>{
    app.lifecycle.retire(app.lifecycle.currentGeneration());owner='bob';app.setStoredToken(fixtureToken('bob'));
    await app.auth.setSession({accessToken:fixtureToken('bob'),sessionGeneration:app.lifecycle.currentGeneration()});
+  });
+  assert.equal(app.auth.user?.user_id,'bob');assert.equal(app.auth.user?.onboarding_completed,false);assert.ok(!app.redirects.includes('/(tabs)/home'));
+  await act(async()=>{await app.auth.finishOnboarding({...finishData,username:'bob'});});
+  assert.equal(app.auth.user?.onboarding_completed,true,'new-generation Finish cannot wait on the old account flight');
+  await act(async()=>{
    late.resolve(envelope({viewer:{user_id:'alice',username:'alice',onboarding_completed:true}}));
    await assert.rejects(finishing,/session changed/);
   });
-  assert.equal(app.auth.user?.user_id,'bob');assert.equal(app.auth.user?.onboarding_completed,false);assert.ok(!app.redirects.includes('/(tabs)/home'));
- }finally{await app.unmount();}
+  assert.equal(app.auth.user?.user_id,'bob');assert.equal(app.auth.user?.onboarding_completed,true);
+ }finally{late.resolve(envelope({viewer:{user_id:'alice',username:'alice',onboarding_completed:true}}));await app.unmount();}
 });
 
-test('confirmation during stale profile cleanup retains the token and removes its obsolete blocked marker',async t=>{
+test('Finish serializes stale profile cleanup and retains another tab logout marker',async t=>{
+ for(const externalLogout of [false,true]){
  const app=startup({realNetwork:true,segments:['onboarding'],pathname:'/onboarding/step3'});
  const confirmation=deferred<Response>(),started=deferred<void>(),marker=deferred<void>();let missing=false;
  const viewer={user_id:'alice',username:'alice',onboarding_completed:false};
@@ -129,14 +138,37 @@ test('confirmation during stale profile cleanup retains the token and removes it
   let finishing!:Promise<void>;await act(async()=>{finishing=app.auth.finishOnboarding(finishData);await started.promise;});
   app.holdMarkerWrites(marker.promise);missing=true;
   await act(async()=>{reading=app.auth.checkOnboardingStatus();void reading.catch(()=>undefined);});
-  const deadline=Date.now()+5000;
-  while(!app.events.includes('marker:start')){assert.ok(Date.now()<deadline,'retirement must reach native marker storage');await act(async()=>{await new Promise(resolve=>setTimeout(resolve,5));});}
+  await act(async()=>{await new Promise<void>(resolve=>setImmediate(resolve));});
+  assert.ok(!app.events.includes('marker:start'),'stale retirement must wait behind the in-flight Finish');
+  if(externalLogout)app.setExternalRestoreBlocked('1');
   await act(async()=>{confirmation.resolve(envelope({viewer:{...viewer,onboarding_completed:true}}));await finishing;});
   assert.equal(app.auth.user?.onboarding_completed,true);
   await act(async()=>{app.holdMarkerWrites(undefined);marker.resolve();await reading;});
   assert.equal(app.auth.user?.user_id,'alice');assert.equal(app.auth.user?.onboarding_completed,true);
-  assert.equal(app.storedToken,fixtureToken('alice'));assert.equal(await app.isRestoreBlocked(),false);
- }finally{app.holdMarkerWrites(undefined);marker.resolve();await reading?.catch(()=>undefined);await app.unmount();}
+  assert.equal(app.storedToken,fixtureToken('alice'));assert.equal(await app.isRestoreBlocked(),externalLogout);
+ }finally{app.holdMarkerWrites(undefined);marker.resolve();await reading?.catch(()=>undefined);await app.unmount();t.mock.restoreAll();}
+ }
+});
+
+test('profile retirement already writing its marker prevents a later Finish from sending',async t=>{
+ const app=startup({realNetwork:true,segments:['onboarding'],pathname:'/onboarding/step3'});
+ const marker=deferred<void>();let missing=false,completions=0;
+ t.mock.method(globalThis,'fetch',async url=>{
+  if(String(url).endsWith('/onboarding/complete')){completions++;return envelope({viewer:{user_id:'alice',username:'alice',onboarding_completed:true}});}
+  return missing?new Response('{}',{status:404}):envelope({user_id:'alice',username:'alice',onboarding_completed:false});
+ });
+ await app.mount();await act(async()=>{app.session.resolve(fixtureToken('alice'));app.fonts.resolve();});
+ let reading:Promise<void>|undefined,finishing:Promise<void>|undefined;
+ try{
+  app.holdMarkerWrites(marker.promise);missing=true;
+  await act(async()=>{reading=app.auth.checkOnboardingStatus();void reading.catch(()=>undefined);});
+  const deadline=Date.now()+5000;
+  while(!app.events.includes('marker:start')){assert.ok(Date.now()<deadline);await act(async()=>{await new Promise(resolve=>setTimeout(resolve,5));});}
+  await act(async()=>{finishing=app.auth.finishOnboarding(finishData);void finishing.catch(()=>undefined);await new Promise<void>(resolve=>setImmediate(resolve));});
+  assert.equal(completions,0);
+  await act(async()=>{app.holdMarkerWrites(undefined);marker.resolve();await assert.rejects(reading!,/404/);await assert.rejects(finishing!,/session changed/);});
+  assert.equal(completions,0);assert.equal(app.auth.user,null);assert.equal(app.storedToken,null);assert.equal(await app.isRestoreBlocked(),true);
+ }finally{app.holdMarkerWrites(undefined);marker.resolve();await reading?.catch(()=>undefined);await finishing?.catch(()=>undefined);await app.unmount();}
 });
 
 for (const manualMode of [false, true]) {

@@ -78,7 +78,6 @@ export function retireSessionIfCurrent(
   generation: number,
   expectedToken?: string,
   assertAttemptCurrent: () => void = () => undefined,
-  { restoreMarkerOnSupersession = false }: { restoreMarkerOnSupersession?: boolean } = {},
 ): Promise<boolean> {
   return queueStorageMutation(async () => {
     assertAttemptCurrent();
@@ -91,22 +90,8 @@ export function retireSessionIfCurrent(
     // Persist the fail-closed marker before retiring the in-memory generation.
     // If storage is unavailable, keep the existing session instead of claiming
     // a durable logout that could be undone on restart.
-    const previousMarker = restoreMarkerOnSupersession
-      ? await getStorageItemStrict(SESSION_RESTORE_BLOCKED_KEY) : null;
-    assertAttemptCurrent();
-    if (!authSessionLifecycle.isCurrent(generation)) return false;
     await setStorageItem(SESSION_RESTORE_BLOCKED_KEY, '1');
-    try { assertAttemptCurrent(); }
-    catch (error) {
-      // Storage mutations are serialized. Undo only this obsolete read's marker
-      // while the same generation still owns the token; a newer auth transition
-      // retains its fail-closed marker and performs its own queued persistence.
-      if (restoreMarkerOnSupersession && authSessionLifecycle.isCurrent(generation)) {
-        if (previousMarker === null) await removeStorageItem(SESSION_RESTORE_BLOCKED_KEY);
-        else await setStorageItem(SESSION_RESTORE_BLOCKED_KEY, previousMarker);
-      }
-      throw error;
-    }
+    assertAttemptCurrent();
     if (!authSessionLifecycle.isCurrent(generation)) return false;
     if (!authSessionLifecycle.retire(generation)) return false;
     await removeStorageItem('access_token').catch(() => undefined);
