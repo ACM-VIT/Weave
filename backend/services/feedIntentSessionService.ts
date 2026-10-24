@@ -43,7 +43,27 @@ export class FeedIntentSessionService {
       if(input.kind==='begin'){
         if(existing)throw new ModelOperationError('MODEL_SESSION_UNAVAILABLE',409);
         const [count]=await tx`SELECT count(*)::int AS live FROM telemetry.feed_intent_sessions WHERE user_id=${userId}::uuid AND status='active'`;
-        if(Number(count.live)>=lane.limits.max_sessions)throw new ModelOperationError('MODEL_SESSION_CAPACITY',429);
+        if(Number(count.live)>=lane.limits.max_sessions){
+          // The parent/feed lock also fences successful serve commits. Recheck
+          // presence only after locking each session; never renew provider idle.
+          const expired=await tx`SELECT * FROM telemetry.feed_intent_sessions
+            WHERE user_id=${userId}::uuid AND status='active' AND policy_sha256=${lane.policySha256}
+              AND last_presence_ms<=floor(extract(epoch FROM clock_timestamp())*1000)::bigint-${lane.limits.idle_expiry_ms}::bigint
+            ORDER BY session_id FOR UPDATE`;
+          for(const old of expired){
+            const sessionId=String(old.session_id),epoch=String(old.intent_epoch),started=String(old.epoch_started_ms);
+            let witness='';
+            const retired=await appendModelOperation(tx,lane,`idle-end:${sessionId}:${epoch}`,
+              {kind:'end',session_id:sessionId,expected_epoch:epoch,reason:'idle_expiry'},allocated=>{
+                witness=modelDigest(canonicalJson({user_id:userId,session_id:sessionId,epoch,epoch_started_ms:started,
+                  policy_sha256:lane.policySha256,control_id:allocated.operationId,model_operation_version:allocated.next,kind:'end'}));
+                return {kind:'end',operation:{session_id:sessionId,epoch,epoch_started_ms:started,retired:true,witness_sha256:witness}};
+              });
+            await tx`UPDATE telemetry.feed_intent_sessions SET status='retired',retirement_witness_sha256=${witness},
+              last_control_operation_version=${retired.operation.version}::bigint WHERE session_id=${sessionId}::uuid`;
+          }
+          if(Number(count.live)-expired.length>=lane.limits.max_sessions)throw new ModelOperationError('MODEL_SESSION_CAPACITY',429);
+        }
       } else if(!existing || existing.user_id!==userId || existing.status!=='active' || String(existing.intent_epoch)!==input.expected_epoch
         || existing.policy_sha256!==lane.policySha256)throw new ModelOperationError('MODEL_SESSION_STALE',409);
       const epoch=input.kind==='begin'?'1':input.kind==='reset'?(BigInt(input.expected_epoch)+1n).toString():input.expected_epoch;
@@ -58,10 +78,10 @@ export class FeedIntentSessionService {
         return {kind:'end',operation:{session_id:input.session_id,epoch,epoch_started_ms:started,retired:true,witness_sha256:witness}};
       });
       if(input.kind==='begin')await tx`INSERT INTO telemetry.feed_intent_sessions(session_id,user_id,intent_epoch,epoch_started_ms,
-        policy_sha256,status,begin_operation_version,last_control_operation_version,epoch_witness_sha256)
-        VALUES(${input.session_id}::uuid,${userId}::uuid,1,${started}::bigint,${lane.policySha256},'active',${result.operation.version}::bigint,${result.operation.version}::bigint,${witness})`;
+        policy_sha256,status,begin_operation_version,last_control_operation_version,epoch_witness_sha256,last_presence_ms)
+        VALUES(${input.session_id}::uuid,${userId}::uuid,1,${started}::bigint,${lane.policySha256},'active',${result.operation.version}::bigint,${result.operation.version}::bigint,${witness},${result.operation.acceptedAtMs}::bigint)`;
       else if(input.kind==='reset')await tx`UPDATE telemetry.feed_intent_sessions SET intent_epoch=${epoch}::bigint,
-        epoch_started_ms=${started}::bigint,epoch_witness_sha256=${witness},last_control_operation_version=${result.operation.version}::bigint WHERE session_id=${input.session_id}::uuid`;
+        epoch_started_ms=${started}::bigint,last_presence_ms=${result.operation.acceptedAtMs}::bigint,epoch_witness_sha256=${witness},last_control_operation_version=${result.operation.version}::bigint WHERE session_id=${input.session_id}::uuid`;
       else await tx`UPDATE telemetry.feed_intent_sessions SET status='retired',retirement_witness_sha256=${witness},
         last_control_operation_version=${result.operation.version}::bigint WHERE session_id=${input.session_id}::uuid`;
       await tx`UPDATE app.user_feed_state SET feed_version=feed_version+1 WHERE user_id=${userId}::uuid`;

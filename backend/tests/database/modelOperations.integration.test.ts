@@ -1,3 +1,5 @@
+import {PostgresFeedPersistence} from '../../adapters/postgresFeedPersistence.js';
+import type {FeedIntentScope} from '../../contracts/feedIntent.js';
 import {OutboxService} from '../../services/outboxService.js';
 import {RetentionWorker} from '../../workers/retentionWorker.js';
 import {OutboxWorker} from '../../workers/outboxWorker.js';
@@ -248,4 +250,46 @@ integration('bounded context cleanup skips leased rows and preserves live bodies
  finally{unlock();await held;}
  await worker.pruneModelCopies();const rows=await sqlClient`SELECT generation_id,applied_context FROM telemetry.feed_model_generations WHERE user_id=${owner}::uuid`;
  assert.equal(rows.length,4);assert.equal(rows.filter(r=>r.applied_context===null).length,3);assert.deepEqual(rows.find(r=>r.generation_id===ids[3])!.applied_context,{});
+});
+
+integration('capacity reclaims idle sessions with ordered End before Begin while preserving retries and active tabs',async()=>{
+ const owner=await fixture(),other=await fixture(),first=crypto.randomUUID(),second=crypto.randomUUID();
+ const begin={kind:'begin' as const,request_id:crypto.randomUUID(),session_id:first};const initial=await controls.control(owner,begin);
+ await controls.control(owner,{kind:'begin',request_id:crypto.randomUUID(),session_id:second});
+ await sqlClient`UPDATE telemetry.feed_intent_sessions SET last_presence_ms=floor(extract(epoch FROM clock_timestamp())*1000)::bigint-60000 WHERE session_id=${first}::uuid`;
+ const [stamp]=await sqlClient`SELECT last_presence_ms FROM telemetry.feed_intent_sessions WHERE session_id=${first}::uuid`;
+ await assert.rejects(controls.control(other,{kind:'reset',request_id:crypto.randomUUID(),session_id:first,expected_epoch:'1'}),/STALE/);
+ assert.equal(String((await sqlClient`SELECT last_presence_ms FROM telemetry.feed_intent_sessions WHERE session_id=${first}::uuid`)[0].last_presence_ms),String(stamp.last_presence_ms));
+ const fresh=crypto.randomUUID(),created=await controls.control(owner,{kind:'begin',request_id:crypto.randomUUID(),session_id:fresh});
+ assert.equal(created.operation.version,'4');
+ const rows=await sqlClient`SELECT operation_json FROM telemetry.ml_outbox WHERE aggregate_id=${owner}::uuid ORDER BY model_operation_version`;
+ const operations=rows.map(r=>JSON.parse(r.operation_json));assert.deepEqual(operations.map(o=>o.kind),['begin','begin','end','begin']);
+ assert.equal(operations[2].operation.session_id,first);assert.equal(operations[2].operation.epoch_started_ms,initial.session.epochStartedMs);assert.equal(operations[2].operation.retired,true);
+ const replay=await controls.control(owner,begin);assert.deepEqual(replay.operation,initial.operation);assert.equal(replay.session.status,'retired');
+ await assert.rejects(controls.control(owner,{kind:'begin',request_id:crypto.randomUUID(),session_id:first}),/UNAVAILABLE/);
+ await assert.rejects(controls.control(owner,{kind:'begin',request_id:crypto.randomUUID(),session_id:crypto.randomUUID()}),/CAPACITY/);
+ // A different client Reset refreshes backend presence and cannot be reclaimed
+ // using an older observation of the same session epoch.
+ await sqlClient`UPDATE telemetry.feed_intent_sessions SET last_presence_ms=1 WHERE session_id=${second}::uuid`;
+ const reset=await controls.control(owner,{kind:'reset',request_id:crypto.randomUUID(),session_id:second,expected_epoch:'1'});
+ assert.equal(reset.session.epoch,'2');
+ await assert.rejects(controls.control(owner,{kind:'begin',request_id:crypto.randomUUID(),session_id:crypto.randomUUID()}),/CAPACITY/);
+ const live=await sqlClient`SELECT status,intent_epoch FROM telemetry.feed_intent_sessions WHERE session_id=${second}::uuid`;
+ assert.equal(live[0].status,'active');assert.equal(String(live[0].intent_epoch),'2');
+});
+
+integration('only a committed current scoped serve renews backend presence and retains historical replay',async()=>{
+ const owner=await fixture(),session=crypto.randomUUID(),persistence=new PostgresFeedPersistence();
+ const begin=await controls.control(owner,{kind:'begin',request_id:crypto.randomUUID(),session_id:session});
+ const [state]=await sqlClient`SELECT feed_version FROM app.user_feed_state WHERE user_id=${owner}::uuid`;
+ const now=String(Date.now()),scope:FeedIntentScope={userId:owner,sessionId:session,feedVersion:String(state.feed_version),profileVersion:'1',acceptedOperationVersion:'1',epoch:'1',epochStartedMs:begin.session.epochStartedMs,witnessSha256:begin.session.witnessSha256,policySha256:policy,queueScope:policy,
+ context:{schema_version:1,session_id:session,epoch:'1',policy_sha256:policy,minimum_applied_operation_version:'1',required_profile_version:'1',as_of_ms:now},
+ applied:{schema_version:1,user_id:owner,session_id:session,epoch:'1',policy_sha256:policy,profile_version:'1',applied_operation_version:'1',applied_feedback_version:'0',as_of_ms:now,valid_until_ms:String(Date.now()+60000),head:policy,state_sha256:policy,effective_vector_sha256:policy,session_witness_sha256:begin.session.witnessSha256,explicit_negative_repo_ids:[]}};
+ const input={user_id:owner,session_id:session,feed_request_id:crypto.randomUUID(),feed_version:BigInt(state.feed_version),generation_id:null,source:'personalized' as const,model_version:null,next_cursor:null,items:[],intent_scope:scope};
+ await sqlClient`UPDATE telemetry.feed_intent_sessions SET last_presence_ms=1 WHERE session_id=${session}::uuid`;
+ await assert.rejects(persistence.createServe({...input,intent_scope:{...scope,epoch:'2'}}),/MODEL_SESSION_PENDING/);
+ assert.equal(String((await sqlClient`SELECT last_presence_ms FROM telemetry.feed_intent_sessions WHERE session_id=${session}::uuid`)[0].last_presence_ms),'1');
+ const served=await persistence.createServe(input);assert.ok(BigInt(String((await sqlClient`SELECT last_presence_ms FROM telemetry.feed_intent_sessions WHERE session_id=${session}::uuid`)[0].last_presence_ms))>=BigInt(now));
+ await controls.control(owner,{kind:'end',request_id:crypto.randomUUID(),session_id:session,expected_epoch:'1'});
+ const replay=await persistence.getServeByRequest(owner,input.feed_request_id);assert.equal(replay!.serve_id,served.serve_id);assert.equal(replay!.intent_scope,undefined);
 });

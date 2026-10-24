@@ -590,6 +590,11 @@ export class PostgresFeedPersistence implements FeedPersistencePort, FeedReconci
           RETURNING position,exposure_id
         `];
       }
+      // Only a successfully committed, current scoped serve counts as backend
+      // presence. Any later failure rolls this stamp back with the serve.
+      if(lane)await tx`UPDATE telemetry.feed_intent_sessions
+        SET last_presence_ms=GREATEST(last_presence_ms,floor(extract(epoch FROM clock_timestamp())*1000)::bigint)
+        WHERE session_id=${input.session_id}::uuid AND user_id=${input.user_id}::uuid AND status='active'`;
       return {serve_id:String(header.serve_id),created_at:header.created_at,provenance};
     }).catch(error => {
       if (error?.code === 'P0001' && ['FEED_PROVENANCE_INVALID','SCORING_CAPTURE_EXPIRED'].includes(error.message)) throw new FeedProvenanceUnavailableError();
