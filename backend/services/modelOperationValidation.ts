@@ -29,7 +29,7 @@ export function parseWithdrawalAcknowledgement(value:unknown):MlProfileWithdrawa
 export function parseModelOperationStatus(value:unknown):MlModelOperationStatusResponse{
  const row=modelRecord(value);schema(row);
  exactKeys(row,['schema_version','user_id','operation_id','model_operation_version','source_envelope_sha256','status','basis_status','applied_profile_version','applied_operation_version','applied_feedback_version','current_head','operation_head','withdrawal_sha256'],['schema_version','user_id','operation_id','model_operation_version','source_envelope_sha256','status','basis_status']);
- if(!['pending','applied','withdrawn_profile','rejected_capacity'].includes(string(row.status)) || !['missing','awaiting_profile','ready'].includes(string(row.basis_status)))throw new ModelOperationError();
+ if(!['pending','applied','withdrawn_profile','rejected_capacity','rejected_session_dependency'].includes(string(row.status)) || !['missing','awaiting_profile','ready'].includes(string(row.basis_status)))throw new ModelOperationError();
  return {schema_version:1,user_id:string(row.user_id,uuid),operation_id:string(row.operation_id,uuid),model_operation_version:decimal(row.model_operation_version,true),
   source_envelope_sha256:string(row.source_envelope_sha256,sha),status:row.status as MlModelOperationStatusResponse['status'],basis_status:row.basis_status as MlModelOperationStatusResponse['basis_status'],
   ...(row.applied_profile_version==null?{}:{applied_profile_version:decimal(row.applied_profile_version,true)}),

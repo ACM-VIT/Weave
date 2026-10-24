@@ -524,7 +524,7 @@ export interface components {
              * Status
              * @enum {string}
              */
-            status: "pending" | "applied" | "withdrawn_profile" | "rejected_capacity";
+            status: "pending" | "applied" | "withdrawn_profile" | "rejected_capacity" | "rejected_session_dependency";
             /**
              * User Id
              * Format: uuid

@@ -866,7 +866,8 @@
               "pending",
               "applied",
               "withdrawn_profile",
-              "rejected_capacity"
+              "rejected_capacity",
+              "rejected_session_dependency"
             ],
             "title": "Status",
             "type": "string"
