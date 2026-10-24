@@ -11,7 +11,7 @@ import { appendModelOperation,lockModelLane,enqueueModelProfile,sequencePendingM
 import { FeedIntentSessionService } from '../../services/feedIntentSessionService.js';
 import { canonicalJson,modelDigest } from '../../contracts/modelOperations.js';
 import { buildMlOnboardingJob } from '../../services/mlOnboardingService.js';
-import { processInteractionBatchV2 } from '../../services/activityV2Service.js';
+import { processInteractionBatchV2,processInteractionBatchV2InTransaction } from '../../services/activityV2Service.js';
 import { assertDisposableDatabase } from './disposableDatabase.js';
 const enabled=process.env.RUN_MODEL_OPERATION_INTEGRATION==='1';
 if(enabled)assertDisposableDatabase();
@@ -292,4 +292,29 @@ integration('only a committed current scoped serve renews backend presence and r
  const served=await persistence.createServe(input);assert.ok(BigInt(String((await sqlClient`SELECT last_presence_ms FROM telemetry.feed_intent_sessions WHERE session_id=${session}::uuid`)[0].last_presence_ms))>=BigInt(now));
  await controls.control(owner,{kind:'end',request_id:crypto.randomUUID(),session_id:session,expected_epoch:'1'});
  const replay=await persistence.getServeByRequest(owner,input.feed_request_id);assert.equal(replay!.serve_id,served.serve_id);assert.equal(replay!.intent_scope,undefined);
+});
+
+integration('new current attributed activity protects an interaction-only tab; duplicates, old epochs and rollback do not renew',async()=>{
+ const owner=await fixture(),other=await fixture(),session=crypto.randomUUID(),idle=crypto.randomUUID(),repo=crypto.randomUUID(),serve=crypto.randomUUID();
+ const begin=await controls.control(owner,{kind:'begin',request_id:crypto.randomUUID(),session_id:session});await controls.control(owner,{kind:'begin',request_id:crypto.randomUUID(),session_id:idle});
+ await sqlClient`INSERT INTO app.repos(repo_id,github_id,full_name,owner,name,url,status) VALUES(${repo}::uuid,${Date.now()}::bigint,${'fixture/'+repo},'fixture',${repo},${'https://github.com/fixture/'+repo},'active')`;
+ try{
+  await sqlClient`INSERT INTO telemetry.feed_serves(serve_id,feed_request_id,user_id,session_id,feed_version,source,intent_epoch,intent_epoch_started_ms,intent_epoch_witness_sha256,intent_policy_sha256)
+   VALUES(${serve}::uuid,${crypto.randomUUID()}::uuid,${owner}::uuid,${session}::uuid,2,'personalized',1,${begin.session.epochStartedMs}::bigint,${begin.session.witnessSha256},${policy})`;
+  await sqlClient`INSERT INTO telemetry.feed_serve_items(serve_id,position,repo_id,source) VALUES(${serve}::uuid,0,${repo}::uuid,'personalized')`;
+  const event={event_id:crypto.randomUUID(),schema_version:2 as const,session_id:session,serve_id:serve,repo_id:repo,position:0,event_type:'readme_open' as const,dwell_ms:null,client_occurred_at:new Date().toISOString(),context:{}};
+  const stamp=async()=>String((await sqlClient`SELECT last_presence_ms FROM telemetry.feed_intent_sessions WHERE session_id=${session}::uuid`)[0].last_presence_ms);
+  await sqlClient`UPDATE telemetry.feed_intent_sessions SET last_presence_ms=1 WHERE user_id=${owner}::uuid`;
+  await assert.rejects(processInteractionBatchV2(other,[event]),/does not match/);assert.equal(await stamp(),'1');
+  await assert.rejects(sqlClient.begin(async tx=>{await processInteractionBatchV2InTransaction(tx,owner,[event]);throw new Error('rollback fixture');}),/rollback fixture/);assert.equal(await stamp(),'1');
+  await processInteractionBatchV2(owner,[event]);assert.ok(BigInt(await stamp())>1n);
+  await controls.control(owner,{kind:'begin',request_id:crypto.randomUUID(),session_id:crypto.randomUUID()});
+  assert.equal((await sqlClient`SELECT status FROM telemetry.feed_intent_sessions WHERE session_id=${session}::uuid`)[0].status,'active');
+  assert.equal((await sqlClient`SELECT status FROM telemetry.feed_intent_sessions WHERE session_id=${idle}::uuid`)[0].status,'retired');
+  await sqlClient`UPDATE telemetry.feed_intent_sessions SET last_presence_ms=1 WHERE session_id=${session}::uuid`;
+  assert.equal((await processInteractionBatchV2(owner,[event])).results[0].status,'duplicate');assert.equal(await stamp(),'1');
+  await controls.control(owner,{kind:'reset',request_id:crypto.randomUUID(),session_id:session,expected_epoch:'1'});
+  await sqlClient`UPDATE telemetry.feed_intent_sessions SET last_presence_ms=1 WHERE session_id=${session}::uuid`;
+  await processInteractionBatchV2(owner,[{...event,event_id:crypto.randomUUID()}]);assert.equal(await stamp(),'1');
+ }finally{await sqlClient`DELETE FROM telemetry.interaction_events WHERE user_id=${owner}::uuid`;await sqlClient`DELETE FROM telemetry.feed_serves WHERE serve_id=${serve}::uuid`;await sqlClient`DELETE FROM app.repos WHERE repo_id=${repo}::uuid`;}
 });

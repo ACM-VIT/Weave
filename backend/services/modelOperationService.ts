@@ -82,14 +82,26 @@ export async function enqueueModelProfile(tx:TransactionSql,lane:LockedModelLane
 export async function canonicalFeedbackAttribution(tx:TransactionSql,lane:LockedModelLane,serveId:string|null):Promise<CanonicalAttribution|undefined>{
   if(!serveId)return undefined;
   const [row]=await tx`SELECT serve.session_id,serve.intent_epoch,serve.intent_epoch_started_ms,serve.intent_epoch_witness_sha256,
-    serve.intent_policy_sha256,current.status,current.intent_epoch AS current_epoch,current.policy_sha256
+    serve.intent_policy_sha256,current.status,current.intent_epoch AS current_epoch,current.policy_sha256,
+    current.epoch_started_ms AS current_started_ms,current.epoch_witness_sha256 AS current_witness
     FROM telemetry.feed_serves serve LEFT JOIN telemetry.feed_intent_sessions current ON current.session_id=serve.session_id AND current.user_id=serve.user_id
     WHERE serve.serve_id=${serveId}::uuid AND serve.user_id=${lane.userId}::uuid`;
   if(!row?.intent_epoch)return undefined;
   if(row.intent_policy_sha256!==lane.policySha256 || !row.status)throw new ModelOperationError();
   return {user_id:lane.userId,session_id:String(row.session_id),epoch:String(row.intent_epoch),epoch_started_ms:String(row.intent_epoch_started_ms),
-    active_at_acceptance:row.status==='active' && String(row.current_epoch)===String(row.intent_epoch) && row.policy_sha256===lane.policySha256,
+    active_at_acceptance:row.status==='active' && String(row.current_epoch)===String(row.intent_epoch) && row.policy_sha256===lane.policySha256
+      && String(row.current_started_ms)===String(row.intent_epoch_started_ms) && row.current_witness===row.intent_epoch_witness_sha256,
     witness_sha256:String(row.intent_epoch_witness_sha256)};
+}
+/** Newly accepted product activity only; caller holds parent/feed locks. */
+export async function touchCurrentIntentPresence(tx:TransactionSql,lane:LockedModelLane,serveId:string):Promise<void>{
+  const attribution=await canonicalFeedbackAttribution(tx,lane,serveId);
+  if(!attribution?.active_at_acceptance)return;
+  await tx`UPDATE telemetry.feed_intent_sessions
+    SET last_presence_ms=GREATEST(last_presence_ms,floor(extract(epoch FROM clock_timestamp())*1000)::bigint)
+    WHERE session_id=${attribution.session_id}::uuid AND user_id=${lane.userId}::uuid AND status='active'
+      AND policy_sha256=${lane.policySha256} AND intent_epoch=${attribution.epoch}::bigint
+      AND epoch_started_ms=${attribution.epoch_started_ms}::bigint AND epoch_witness_sha256=${attribution.witness_sha256}`;
 }
 export async function enqueueModelFeedback(tx:TransactionSql,lane:LockedModelLane,eventId:string,feedbackVersion:string,
   originalFeedbackJson:string,serveId:string|null):Promise<void>{

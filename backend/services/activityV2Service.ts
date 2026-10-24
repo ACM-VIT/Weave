@@ -1,4 +1,4 @@
-import { lockModelLane, enqueueModelFeedback } from './modelOperationService.js';
+import { lockModelLane, enqueueModelFeedback, touchCurrentIntentPresence } from './modelOperationService.js';
 import { withOutboxTrace } from '../observability/tracing.js';
 import {
   FEED_INVALIDATING_EVENTS,
@@ -206,6 +206,10 @@ export async function processInteractionBatchV2InTransaction(
       SELECT 'feedback',${userId}::uuid,'feedback:' || event_id::text,payload
       FROM jsonb_to_recordset(${JSON.stringify(feedback.map(row => ({ ...row, payload: withOutboxTrace(row.payload) })))}::jsonb) AS input(event_id uuid,payload jsonb)
       ON CONFLICT (idempotency_key) DO NOTHING`;
+  }
+  if(modelLane){
+    const currentServes=[...new Set(inputs.filter(event=>accepted.has(event.event_id)&&event.serve_id!==null).map(event=>event.serve_id!))];
+    for(const serveId of currentServes)await touchCurrentIntentPresence(tx,modelLane,serveId);
   }
   if (invalidateFeed) feedVersion++;
   await tx`UPDATE app.user_feed_state SET feed_version=${feedVersion.toString()}::bigint,
