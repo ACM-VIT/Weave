@@ -289,6 +289,7 @@ export function RepositoryFeedItem({
     updateSaveRevealState,
   ]);
 
+  const boundaryHeight = boundary ? 56 : 0;
   const saveRevealAnimatedStyle = useAnimatedStyle(() => ({
     transform: [{ translateX: saveRevealTranslateX.get() }],
   }));
@@ -301,7 +302,7 @@ export function RepositoryFeedItem({
         accessibilityElementsHidden={!isSaveRevealOpen}
         importantForAccessibility={isSaveRevealOpen ? 'yes' : 'no-hide-descendants'}
         pointerEvents={isSaveRevealOpen ? 'auto' : 'none'}
-        style={[styles.saveReveal, { width: SAVE_REVEAL_WIDTH }]}
+        style={[styles.saveReveal, { width: SAVE_REVEAL_WIDTH, bottom: boundaryHeight }]}
       >
         <Pressable
           accessibilityHint="Opens the Save dialog to choose a list"
@@ -355,7 +356,7 @@ export function RepositoryFeedItem({
               }}
               onSavePress={openSavePopup}
               onSharePress={() => setIsShareVisible(true)}
-              pageHeight={Math.max(1, pageHeight - (boundary ? 56 : 0))}
+              pageHeight={Math.max(1, pageHeight - boundaryHeight)}
               pageWidth={pageWidth}
               repository={repository}
             />

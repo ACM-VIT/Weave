@@ -26,7 +26,7 @@ function repository(id: string): RepositoryData {
 
 // Keep the real row, all four overlays, React state and QueryClient observers.
 // Replace only native rendering/animation and external I/O boundaries.
-function feed(ids: string[], reducedMotion = false, attribution?: { ownerId: string; repository: Partial<RepositoryData> }) {
+function feed(ids: string[], reducedMotion = false, attribution?: { ownerId: string; repository: Partial<RepositoryData>; boundary?: React.ReactNode }) {
   const client = new QueryClient({ defaultOptions: {
     queries: { retry: false, gcTime: Infinity }, mutations: { retry: false },
   } });
@@ -145,7 +145,7 @@ function feed(ids: string[], reducedMotion = false, attribution?: { ownerId: str
     loadSource('src/components/home/ReadmePopup.tsx').ReadmePopup,
   ];
   const renderRows = () => React.createElement(QueryClientProvider, { client },
-    ids.map(id => React.createElement(Row, { key: id, repository: { ...repository(id), ...attribution?.repository }, pageWidth: 400, pageHeight: 800,
+    ids.map(id => React.createElement(Row, { key: id, repository: { ...repository(id), ...attribution?.repository }, boundary: attribution?.boundary, pageWidth: 400, pageHeight: 800,
       onQueueActivity: (event: unknown) => events.push(event) })),
   );
   return {
@@ -154,6 +154,10 @@ function feed(ids: string[], reducedMotion = false, attribution?: { ownerId: str
     setHeight(value:number) {shareHeight=value;},
     setReadme(value: () => Promise<any>) {loadReadme=value;},
     get readmePopupProps() {return root.root.findAllByType(overlayTypes[3])[0]?.props;},
+    get saveRevealBottom() {
+      const layers=root.root.findAllByType('View').map(node=>Object.assign({},...(Array.isArray(node.props.style)?node.props.style:[node.props.style])));
+      return layers.find(style=>style.backgroundColor==='#123520')?.bottom;
+    },
     get videoPopup() {return root.root.findAllByType('ReadmeVideoPopup')[0];},
     async openVideo() {await act(async () => {root.root.findAllByType('ReadmeVideo')[0].props.onPress();});},
     async closeVideo() {await act(async () => {this.videoPopup.props.onClose();});},
@@ -631,4 +635,12 @@ test('Read more keeps the summary and lazily hydrates original README videos', a
     await app.requestClose();
     assert.deepEqual(app.videoUrls, [], 'closing removes the previews');
   } finally { await app.unmount(); }
+});
+
+
+test('the swipe-save background excludes the last-card loading footer', async()=>{
+  const app=feed(['repo'],true,{ownerId:'viewer',repository:{},boundary:React.createElement('View',{style:{height:56}})});
+  await app.mount();
+  try {assert.equal(app.saveRevealBottom,56,'the green reveal must end above the loading footer');}
+  finally {await app.unmount();}
 });
