@@ -1,3 +1,4 @@
+import type { ScoringInputReference } from './scoringCapture.js';
 import type { ReadmeSummaryArtifact } from './readmeSummary.v2.js';
 export const FEED_SCHEMA_VERSION = 2 as const;
 
@@ -10,6 +11,10 @@ export interface RecommendationEntry {
   model_version: string;
   summary_id: string | null;
   generation_id?: string;
+  /** Legacy page-header association only; never proof of this item’s generation. */
+  legacy_generation_hint?: string;
+  /** Private reference only; never part of the public card DTO. */
+  scoring_reference?: ScoringInputReference;
 }
 
 export interface RepositoryProjection {
@@ -49,6 +54,7 @@ export interface RepositoryProjection {
 }
 
 export interface StoredServeItem extends RecommendationEntry {
+  exposure_id?: string;
   position: number;
   repository: RepositoryProjection;
 }
@@ -86,12 +92,16 @@ export interface FeedRequestV2 {
   cursor: string | null;
 }
 
+/** Explicit public fields; internal queue/persistence provenance is never serialized. */
+export type PublicFeedItem = Pick<StoredServeItem,
+  'repo_id' | 'score' | 'source' | 'model_version' | 'summary_id' | 'generation_id' | 'position' | 'repository' | 'exposure_id'>;
+
 export interface FeedResponseV2 {
   serve_id: string;
   session_id: string;
   feed_version: string;
   source: FeedSource;
   model_version: string | null;
-  items: StoredServeItem[];
+  items: PublicFeedItem[];
   next_cursor: string | null;
 }

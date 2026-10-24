@@ -532,6 +532,27 @@ export const feedServeItems = telemetrySchema.table('feed_serve_items', {
   uniqueIndex('feed_serve_items_repo_uidx').on(table.serveId, table.repoId),
 ]);
 
+export const feedItemProvenance = telemetrySchema.table('feed_item_provenance', {
+  serveId: uuid('serve_id').notNull(),
+  position: smallint('position').notNull(),
+  exposureId: uuid('exposure_id').notNull().defaultRandom(),
+  userId: uuid('user_id').notNull().references(() => appUsers.userId, { onDelete: 'cascade' }),
+  repoId: uuid('repo_id').notNull().references(() => appRepos.repoId),
+  generationId: uuid('generation_id'),
+  legacyGenerationHint: uuid('legacy_generation_hint'),
+  recordDigest: text('record_digest'),
+  captureStatus: text('capture_status').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().default(sql`clock_timestamp()`),
+}, table => [
+  primaryKey({ columns: [table.serveId,table.position] }),
+  uniqueIndex('feed_item_provenance_exposure_key').on(table.exposureId),
+  index('feed_item_provenance_owner_created_idx').on(table.userId,table.createdAt,table.exposureId),
+  foreignKey({name:'feed_item_provenance_parent_fkey',columns:[table.serveId,table.position],
+    foreignColumns:[feedServeItems.serveId,feedServeItems.position]}).onDelete('cascade'),
+  check('feed_item_provenance_legacy_check',sql`${table.captureStatus}<>'captured' OR ${table.legacyGenerationHint} IS NULL`),
+  check('feed_item_provenance_capture_check', sql`(${table.captureStatus}='captured' AND ${table.generationId} IS NOT NULL AND ${table.recordDigest} IS NOT NULL AND ${table.recordDigest} ~ '^[a-f0-9]{64}$') OR (${table.captureStatus}='not_captured' AND ${table.recordDigest} IS NULL)`),
+]);
+
 export const interactionEvents = telemetrySchema.table('interaction_events', {
   eventId: uuid('event_id').primaryKey(),
   schemaVersion: smallint('schema_version').notNull(),

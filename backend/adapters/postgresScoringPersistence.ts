@@ -40,6 +40,32 @@ export class PostgresScoringPersistence implements ScoringPersistencePort {
     return permission;
   }
 
+  async recordWitness(userId: string, generationId: string, event: 'published' | 'stale'): Promise<boolean> {
+    try {
+      await this.verifyPermission();
+      const [row] = await this.writer`SELECT private_scoring.record_generation_witness(${userId}::uuid,${generationId}::uuid,${event}::text) AS accepted`;
+      return row?.accepted === true;
+    } catch (error) {
+      if (error instanceof ScoringPersistenceError) throw error;
+      throw new ScoringPersistenceError('unavailable');
+    }
+  }
+
+  async reconcilePublicationWitnesses(userIds: readonly string[], limit: number): Promise<number> {
+    if (userIds.length < 1 || userIds.length > 100 || !Number.isInteger(limit) || limit < 1 || limit > 100
+      || userIds.some(id => !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(id))) {
+      throw new ScoringPersistenceError('invalid');
+    }
+    try {
+      await this.verifyPermission();
+      const [row] = await this.writer`SELECT private_scoring.reconcile_publication_witnesses(${[...userIds]}::uuid[],${limit}::integer) AS repaired`;
+      if (!Number.isInteger(row?.repaired) || row.repaired < 0 || row.repaired > limit) throw new ScoringPersistenceError('unavailable');
+      return row.repaired;
+    } catch {
+      throw new ScoringPersistenceError('unavailable');
+    }
+  }
+
   async persist(generation: ValidatedScoringGeneration, policy: CaptureRetentionPolicy): Promise<ScoringPersistenceResult> {
     // Materialize a bounded, validated immutable value before opening SQL work.
     const payload = generation.serializeForPersistence(policy);

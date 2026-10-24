@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import { rejectDuplicateJsonKeys, validateCapturedRecommendation } from './capturedRecommendation.js';
 import { startSpan, mlOperation, httpOutcome } from '../observability/tracing.js';
 import type { StageOutcome } from '../observability/metrics.js';
 import { performance } from 'node:perf_hooks';
@@ -239,7 +240,7 @@ export function validateRepositoryCardSummary(
 }
 
 /** Bound decoded transport bytes before UTF-8 decoding or JSON parsing. */
-async function readBoundedResponse(response: Response, maximum: number): Promise<{ text: string; oversized: boolean }> {
+async function readBoundedResponse(response: Response, maximum: number, fatal = false): Promise<{ text: string; oversized: boolean }> {
   if (!response.body) return { text: '', oversized: false };
   const reader = response.body.getReader();
   let buffer = Buffer.alloc(0);
@@ -250,7 +251,7 @@ async function readBoundedResponse(response: Response, maximum: number): Promise
       const { done, value } = await reader.read();
       if (done) {
         complete = true;
-        return { text: new TextDecoder().decode(buffer.subarray(0, size)), oversized: false };
+        return { text: new TextDecoder('utf-8', { fatal }).decode(buffer.subarray(0, size)), oversized: false };
       }
       const retained = Math.min(value.byteLength, maximum - size);
       const required = size + retained;
@@ -310,6 +311,7 @@ export class MlV2Client implements RecommendationPort, OutboxTransportPort {
     idempotencyKey: string,
     timeoutMs = this.config.timeoutMs,
     responseFormat: 'required-json' | 'optional-json' = 'required-json',
+    scoringCaptureCapability?: string,
   ): Promise<{ status: number; body: unknown; retryAfterMs?: number }> {
     const span = startSpan(mlOperation(path), 'ml_transport');
     let outcome: StageOutcome = 'failure';
@@ -322,6 +324,7 @@ export class MlV2Client implements RecommendationPort, OutboxTransportPort {
         headers: {
           'content-type': 'application/json',
           'x-internal-secret': this.config.internalSecret,
+          ...(scoringCaptureCapability ? { 'x-scoring-capture-capability': scoringCaptureCapability } : {}),
           'x-request-id': crypto.randomUUID(),
           traceparent: span.traceparent,
           'idempotency-key': idempotencyKey,
@@ -334,7 +337,16 @@ export class MlV2Client implements RecommendationPort, OutboxTransportPort {
         body: JSON.stringify(payload),
         signal: controller.signal,
       });
-      const { text, oversized } = await readBoundedResponse(response, this.config.maxResponseBytes);
+      let text: string, oversized: boolean;
+      try {
+        ({ text, oversized } = await readBoundedResponse(response,
+          scoringCaptureCapability ? Math.min(this.config.maxResponseBytes, 1_000_000) : this.config.maxResponseBytes,
+          Boolean(scoringCaptureCapability)));
+      } catch (error) {
+        if (controller.signal.aborted) throw error;
+        if (scoringCaptureCapability) throw new MlRecommendationError('ML captured response decoding failed.', response.status, 'contract');
+        throw error;
+      }
       if (oversized && response.ok) {
         if (responseFormat === 'required-json') {
           if (path === '/api/v2/recommendations/generate') {
@@ -346,7 +358,7 @@ export class MlV2Client implements RecommendationPort, OutboxTransportPort {
       }
       let body: unknown = oversized ? text.slice(0, 4_000) : null;
       if (text && !oversized) {
-        try { body = JSON.parse(text); }
+        try { body = JSON.parse(text); if (scoringCaptureCapability) rejectDuplicateJsonKeys(text); }
         catch {
           if (responseFormat === 'required-json' && response.ok) {
             if (path === '/api/v2/recommendations/generate') throw new MlRecommendationError('ML returned invalid JSON.', response.status, 'contract');
@@ -365,7 +377,8 @@ export class MlV2Client implements RecommendationPort, OutboxTransportPort {
       outcome = httpOutcome(response.status);
       return { status: response.status, body, retryAfterMs };
     } catch (error) {
-      if (controller.signal.aborted) throw new MlTransportTimeoutError('ML transport deadline exceeded.', { cause: error });
+      if (controller.signal.aborted) throw new MlTransportTimeoutError('ML transport deadline exceeded.', scoringCaptureCapability ? undefined : { cause: error });
+      if (scoringCaptureCapability && !(error instanceof MlRecommendationError)) throw new Error('ML captured transport failed.');
       throw error;
     } finally {
       clearTimeout(timer);
@@ -373,7 +386,15 @@ export class MlV2Client implements RecommendationPort, OutboxTransportPort {
     }
   }
 
-  async generate(input: MlRecommendationRequest, work?: { deadline: number }): Promise<MlRecommendationResponse> {
+  async generate(input: MlRecommendationRequest, work?: { deadline: number; scoringCaptureCapability?: string }): Promise<MlRecommendationResponse> {
+    if (input.scoring_capture && (input.scoring_capture.schema_version !== 1
+      || input.scoring_capture.encoding !== 'float32-le-v1'
+      || !/^[1-9][0-9]{0,18}$/.test(String(input.feed_version)) || typeof input.feed_version !== 'string'
+      || BigInt(input.feed_version) > 9223372036854775807n
+      || !work?.scoringCaptureCapability || work.scoringCaptureCapability.length !== 64
+      || !/^[0-9a-f]{64}$/.test(work.scoringCaptureCapability))) {
+      throw new MlRecommendationError('ML captured request configuration is invalid.', 0, 'contract');
+    }
     const remaining = work ? Math.floor(work.deadline - performance.now()) : Infinity;
     if (remaining <= 0 || (work && !Number.isFinite(work.deadline))) {
       throw new MlTransportTimeoutError('ML generation budget exhausted before transport.');
@@ -398,9 +419,10 @@ export class MlV2Client implements RecommendationPort, OutboxTransportPort {
         input,
         input.generation_id,
         Math.min(this.config.generationTimeoutMs ?? this.config.timeoutMs, remaining),
+        'required-json', input.scoring_capture ? work?.scoringCaptureCapability : undefined,
       );
       if (status < 200 || status >= 300) {
-        const detail = responseDetail(body);
+        const detail = input.scoring_capture ? undefined : responseDetail(body);
         throw new MlRecommendationError(
           detail
             ? `ML recommendation request failed with status ${status}: ${detail}`
@@ -449,6 +471,8 @@ export class MlV2Client implements RecommendationPort, OutboxTransportPort {
         }
         ids.add(item.repo_id);
       }
+      try { validateCapturedRecommendation(value, input); }
+      catch { throw new MlRecommendationError('ML captured recommendation contract is invalid.', 200, 'contract'); }
       // A call admitted before a newer opening must not reset that circuit.
       if (epoch === this.circuitEpoch) {
         this.consecutiveGenerateFailures = 0;

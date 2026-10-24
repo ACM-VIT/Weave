@@ -5,5 +5,5 @@ import type {
 
 export interface RecommendationPort {
   /** Local monotonic expiry shared across queueing, repair, and retries. */
-  generate(input: MlRecommendationRequest, work?: { deadline: number }): Promise<MlRecommendationResponse>;
+  generate(input: MlRecommendationRequest, work?: { deadline: number; scoringCaptureCapability?: string }): Promise<MlRecommendationResponse>;
 }

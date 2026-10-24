@@ -1,3 +1,4 @@
+import { FeedProvenanceUnavailableError, FeedProvenanceDependencyError } from '../ports/feedPersistencePort.js';
 import { loadSocialNeighborhoodRows } from '../services/socialNeighborhoodProjection.js';
 import { projectSocialCandidates, type SocialCandidateProjection } from '../services/socialCandidateProjection.js';
 import { readmeSummaryProjection } from '../services/readmeSummaryService.js';
@@ -219,13 +220,16 @@ export class PostgresFeedPersistence implements FeedPersistencePort, FeedReconci
   ) {
     const rows = await sqlClient`
       WITH candidates AS (
-        SELECT item.repo_id,item.score,item.source,item.model_version,current_summary.summary_id,serve.generation_id,
+        SELECT item.repo_id,item.score,item.source,item.model_version,current_summary.summary_id,provenance.generation_id,
+               provenance.record_digest,provenance.capture_status,
+               COALESCE(provenance.legacy_generation_hint,CASE WHEN provenance.serve_id IS NULL THEN serve.generation_id END) AS legacy_generation_hint,
                serve.created_at,item.position,
                row_number() OVER (
                  PARTITION BY item.repo_id ORDER BY serve.created_at DESC,item.position ASC
                ) AS repo_rank
         FROM telemetry.feed_serves serve
         JOIN telemetry.feed_serve_items item USING(serve_id)
+        LEFT JOIN telemetry.feed_item_provenance provenance ON provenance.serve_id=item.serve_id AND provenance.position=item.position
         JOIN app.repos repo ON repo.repo_id=item.repo_id AND repo.status='active'
         JOIN app.repo_content content ON content.repo_id=repo.repo_id
         LEFT JOIN LATERAL (
@@ -251,7 +255,7 @@ export class PostgresFeedPersistence implements FeedPersistencePort, FeedReconci
               AND negative.reaction='dislike'
           )
       )
-      SELECT repo_id,score,source,model_version,summary_id,generation_id
+      SELECT repo_id,score,source,model_version,summary_id,generation_id,record_digest,capture_status,legacy_generation_hint
       FROM candidates WHERE repo_rank=1
       ORDER BY created_at DESC,position ASC
       LIMIT ${Math.max(1, Math.min(100, limit))}
@@ -263,6 +267,9 @@ export class PostgresFeedPersistence implements FeedPersistencePort, FeedReconci
       model_version: String(row.model_version),
       summary_id: row.summary_id == null ? null : String(row.summary_id),
       ...(row.generation_id == null ? {} : { generation_id: String(row.generation_id) }),
+      ...(row.legacy_generation_hint == null ? {} : {legacy_generation_hint:String(row.legacy_generation_hint)}),
+      ...(row.capture_status !== 'captured' ? {} : { scoring_reference: {generation_id:String(row.generation_id),
+        repo_id:String(row.repo_id),record_digest:String(row.record_digest)} }),
     }));
   }
 
@@ -380,6 +387,8 @@ export class PostgresFeedPersistence implements FeedPersistencePort, FeedReconci
     const serve = serves[0];
     const rows = await sqlClient`
       SELECT item.serve_id,item.position,item.repo_id,item.score,item.source,item.model_version,
+             provenance.exposure_id,provenance.generation_id,provenance.record_digest,provenance.capture_status,
+             COALESCE(provenance.legacy_generation_hint,CASE WHEN provenance.serve_id IS NULL THEN ${serve.generation_id ?? null}::uuid END) AS legacy_generation_hint,
              COALESCE(exact_summary.summary_id,current_summary.summary_id) AS summary_id,
              ${sqlClient.unsafe(readmeSummaryProjection('repo','content'))},
              repo.full_name, repo.updated_at, content.description, content.primary_language,
@@ -406,6 +415,7 @@ export class PostgresFeedPersistence implements FeedPersistencePort, FeedReconci
              END AS viewer_follows_owner,
              repo.status
       FROM telemetry.feed_serve_items item
+      LEFT JOIN telemetry.feed_item_provenance provenance ON provenance.serve_id=item.serve_id AND provenance.position=item.position
       JOIN app.repos repo ON repo.repo_id = item.repo_id
       LEFT JOIN LATERAL (
         SELECT profile.profile_id,profile.claimed_by_user_id
@@ -467,6 +477,11 @@ export class PostgresFeedPersistence implements FeedPersistencePort, FeedReconci
       position: Number(row.position), repo_id: String(row.repo_id), score: Number(row.score ?? 0),
       source: String(row.source), model_version: row.model_version == null ? '' : String(row.model_version),
       summary_id: row.summary_id == null ? null : String(row.summary_id), repository: projection(row),
+      ...(row.exposure_id == null ? {} : {exposure_id:String(row.exposure_id)}),
+      ...(row.generation_id == null ? {} : {generation_id:String(row.generation_id)}),
+      ...(row.legacy_generation_hint == null ? {} : {legacy_generation_hint:String(row.legacy_generation_hint)}),
+      ...(row.capture_status !== 'captured' ? {} : {scoring_reference:{generation_id:String(row.generation_id),
+        repo_id:String(row.repo_id),record_digest:String(row.record_digest)}}),
     }));
     return {
       serve_id: String(serve.serve_id), feed_request_id: String(serve.feed_request_id), user_id: String(serve.user_id),
@@ -480,6 +495,21 @@ export class PostgresFeedPersistence implements FeedPersistencePort, FeedReconci
 
   async createServe(input: CreateServeInput): Promise<StoredServe> {
     if (input.items.length > 100) throw new Error('A feed serve cannot contain more than 100 items.');
+    for (const item of input.items) if (item.legacy_generation_hint!==undefined
+      && (item.scoring_reference || typeof item.legacy_generation_hint!=='string' || item.legacy_generation_hint.length!==36
+        || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(item.legacy_generation_hint))) {
+      throw new FeedProvenanceUnavailableError();
+    }
+    for (const item of input.items) if (item.scoring_reference) {
+      const reference=item.scoring_reference;
+      if (typeof reference!=='object' || Array.isArray(reference)
+        || Object.keys(reference).sort().join(',')!=='generation_id,record_digest,repo_id'
+        || reference.repo_id!==item.repo_id || reference.generation_id!==item.generation_id
+        || typeof reference.generation_id!=='string' || reference.generation_id.length!==36
+        || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(reference.generation_id)
+        || typeof reference.record_digest!=='string' || reference.record_digest.length!==64
+        || !/^[0-9a-f]{64}$/.test(reference.record_digest)) throw new FeedProvenanceUnavailableError();
+    }
     const created = await sqlClient.begin(async (tx) => {
       // Match activity/profile lock order: user, then feed state. Current
       // reactions and new serves serialize; session duplicate fencing is separate.
@@ -513,6 +543,7 @@ export class PostgresFeedPersistence implements FeedPersistencePort, FeedReconci
         query: async (text, parameters) => [...await tx.unsafe(text, [...parameters])],
       }, input.user_id, input.items.map(item => item.repo_id)));
       if (input.items.some(item => !eligible.has(item.repo_id))) throw new FeedPreferenceChangedError();
+      let provenance: Array<Record<string, unknown>> = [];
       if (input.items.length) {
         const items = input.items.map(item => ({ position: item.position,repo_id: item.repo_id,score: item.score,
           source: item.source,model_version: item.model_version,summary_id: item.summary_id }));
@@ -523,8 +554,22 @@ export class PostgresFeedPersistence implements FeedPersistencePort, FeedReconci
             position integer,repo_id uuid,score double precision,source text,model_version text,summary_id uuid
           )
         `;
+        const attribution = input.items.map(item => ({position:item.position,repo_id:item.repo_id,
+          generation_id:item.generation_id ?? null,legacy_generation_hint:item.legacy_generation_hint ?? null,record_digest:item.scoring_reference?.record_digest ?? null,
+          capture_status:item.scoring_reference ? 'captured' : 'not_captured'}));
+        provenance = [...await tx`
+          INSERT INTO telemetry.feed_item_provenance(serve_id,position,user_id,repo_id,generation_id,legacy_generation_hint,record_digest,capture_status)
+          SELECT ${String(header.serve_id)}::uuid,position,${input.user_id}::uuid,repo_id,generation_id,legacy_generation_hint,record_digest,capture_status
+          FROM jsonb_to_recordset(${JSON.stringify(attribution)}::jsonb) AS item(
+            position smallint,repo_id uuid,generation_id uuid,legacy_generation_hint uuid,record_digest text,capture_status text)
+          RETURNING position,exposure_id
+        `];
       }
-      return header;
+      return {serve_id:String(header.serve_id),created_at:header.created_at,provenance};
+    }).catch(error => {
+      if (error?.code === 'P0001' && ['FEED_PROVENANCE_INVALID','SCORING_CAPTURE_EXPIRED'].includes(error.message)) throw new FeedProvenanceUnavailableError();
+      if (error?.code === '58000' && error.message === 'FEED_PROVENANCE_UNAVAILABLE') throw new FeedProvenanceDependencyError();
+      throw error;
     });
     if (!created || input.items.some(item => item.summary_id !== item.repository.summary_id)) {
       const replay = await this.getServeByRequest(input.user_id, input.feed_request_id);
@@ -538,6 +583,10 @@ export class PostgresFeedPersistence implements FeedPersistencePort, FeedReconci
       items: [...input.items].sort((a,b) => a.position-b.position).map(item => ({
         position: item.position,repo_id: item.repo_id,score: item.score,source: item.source,
         model_version: item.model_version,summary_id: item.summary_id,repository: item.repository,
+        ...(item.generation_id ? {generation_id:item.generation_id} : {}),
+        ...(item.legacy_generation_hint ? {legacy_generation_hint:item.legacy_generation_hint} : {}),
+        ...(item.scoring_reference ? {scoring_reference:item.scoring_reference} : {}),
+        exposure_id:String(created.provenance.find(row => Number(row.position)===item.position)!.exposure_id),
       })),
     };
   }

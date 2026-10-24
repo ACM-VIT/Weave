@@ -25,7 +25,14 @@ jobs:
         options: >-
           --health-cmd pg_isready --health-interval 5s
           --health-timeout 5s --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports: ['6379:6379']
+        options: >-
+          --health-cmd "redis-cli ping" --health-interval 5s
+          --health-timeout 5s --health-retries 10
     env:
+      REDIS_TEST_URL: redis://127.0.0.1:6379/15
       DATABASE_URL: postgresql://postgres@127.0.0.1:5432/weave_scroll
       NODE_ENV: test
     defaults:
@@ -54,3 +61,12 @@ jobs:
         run: npx --no-install tsx --test tests/database/scoringPersistence.integration.test.ts
         env:
           RUN_DATABASE_INTEGRATION: '1'
+      - name: Exercise captured publication, durable recovery and process death
+        run: >-
+          npx --no-install tsx --test --test-concurrency=1
+          tests/database/capturedGeneration.integration.test.ts
+          tests/database/feedItemProvenance.integration.test.ts
+          tests/database/capturedCrash.integration.test.ts
+        env:
+          RUN_DATABASE_INTEGRATION: '1'
+          RUN_REDIS_INTEGRATION: '1'

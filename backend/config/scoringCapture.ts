@@ -25,7 +25,7 @@ export function getScoringCaptureConfig(environment: Readonly<Record<string, str
   if (users.length < 1 || users.length > 100 || users.some(user =>
     !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(user))) return invalid();
   const capability = environment.SCORING_CAPTURE_CAPABILITY ?? '';
-  if (capability.length < 32 || capability.length > 512 || capability !== capability.trim()) return invalid();
+  if (capability.length !== 64 || !/^[0-9a-f]{64}$/.test(capability)) return invalid();
   const writerDatabaseUrl = environment.SCORING_CAPTURE_DATABASE_URL ?? '';
   try {
     const url = new URL(writerDatabaseUrl);

@@ -65,3 +65,31 @@ test('enabled generation validates its foreground wait and starts with valid bud
     runtime.start();
   } finally { await runtime.supervisor.stop(); }
 });
+
+test('publication repair is scheduled only by an enabled capture feed worker',async()=>{
+  const previous={...process.env};
+  try {
+    configure(true,false,'90000');
+    Object.assign(process.env,{
+      FEED_RESERVATIONS:'true',SCORING_CAPTURE_ENABLED:'true',
+      SCORING_CAPTURE_POLICY_ID:'fixture',SCORING_CAPTURE_POLICY_VERSION:'1',SCORING_CAPTURE_RETENTION_DAYS:'30',
+      SCORING_CAPTURE_USER_IDS:'00000000-0000-0000-0000-000000000001',
+      SCORING_CAPTURE_CAPABILITY:'a'.repeat(64),
+      SCORING_CAPTURE_DATABASE_URL:'postgresql://capture@127.0.0.1:1/runtime_test',
+    });
+    for(const role of ['api','outbox','maintenance','feed','all'] as const){
+      const runtime=new ApplicationRuntime(role);
+      try { assert.equal('scoring-publication-reconciliation' in runtime.supervisor.snapshot(),role==='feed'||role==='all'); }
+      finally { await runtime.supervisor.stop(); }
+    }
+    process.env.SCORING_CAPTURE_ENABLED='false';
+    const disabled=new ApplicationRuntime('feed');
+    try {
+      assert.equal(disabled.privateScoring,null);
+      assert.equal('scoring-publication-reconciliation' in disabled.supervisor.snapshot(),false);
+    } finally { await disabled.supervisor.stop(); }
+  } finally {
+    for(const key of Object.keys(process.env))if(!(key in previous))delete process.env[key];
+    Object.assign(process.env,previous);
+  }
+});

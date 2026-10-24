@@ -85,12 +85,13 @@ test('capture remains off without explicit policy, cohort, capability and separa
   assert.throws(() => getScoringCaptureConfig({ SCORING_CAPTURE_ENABLED: 'true' }), /CONFIGURATION_INVALID/);
   const environment = { SCORING_CAPTURE_ENABLED: 'true', SCORING_CAPTURE_RETENTION_DAYS: '30',
     SCORING_CAPTURE_POLICY_ID: policy.policyId, SCORING_CAPTURE_POLICY_VERSION: policy.policyVersion,
-    SCORING_CAPTURE_USER_IDS: selector.userId, SCORING_CAPTURE_CAPABILITY: 'fixture-capability-'.repeat(3),
+    SCORING_CAPTURE_USER_IDS: selector.userId, SCORING_CAPTURE_CAPABILITY: 'a'.repeat(64),
     SCORING_CAPTURE_DATABASE_URL: 'postgresql://fixture_writer@127.0.0.1:55447/weave_scroll' };
   const configured = getScoringCaptureConfig(environment); assert.equal(configured.enabled, true);
   if (configured.enabled) assert.equal(configured.policy.retentionDays, 30);
   for (const changes of [{ SCORING_CAPTURE_RETENTION_DAYS: '' }, { SCORING_CAPTURE_RETENTION_DAYS: '366' },
     { SCORING_CAPTURE_USER_IDS: '' }, { SCORING_CAPTURE_CAPABILITY: '' },
+    ...['g'.repeat(64),'A'.repeat(64),'a'.repeat(63),'a'.repeat(65),'a'.repeat(64)+'\n'].map(SCORING_CAPTURE_CAPABILITY=>({SCORING_CAPTURE_CAPABILITY})),
     { DATABASE_URL: environment.SCORING_CAPTURE_DATABASE_URL }]) {
     assert.throws(() => getScoringCaptureConfig({ ...environment, ...changes }), /CONFIGURATION_INVALID/);
   }
