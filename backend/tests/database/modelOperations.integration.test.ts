@@ -9,6 +9,8 @@ import test from 'node:test';
 import { sqlClient } from '../../db/index.js';
 import { appendModelOperation,lockModelLane,enqueueModelProfile,sequencePendingModelFeedback,withdrawPendingProfiles } from '../../services/modelOperationService.js';
 import { FeedIntentSessionService } from '../../services/feedIntentSessionService.js';
+import { ModelLaneAuthorityService, type ModelAuthorityTransport } from '../../services/modelLaneAuthorityService.js';
+import { FeedIntentScopeService } from '../../services/feedIntentScopeService.js';
 import { canonicalJson,modelDigest } from '../../contracts/modelOperations.js';
 import { buildMlOnboardingJob } from '../../services/mlOnboardingService.js';
 import { processInteractionBatchV2,processInteractionBatchV2InTransaction } from '../../services/activityV2Service.js';
@@ -35,6 +37,133 @@ async function append(owner:string,key:string,fail=false){
    if(fail)throw new Error('rollback');return result;
  });
 }
+// Only the authenticated ML boundary is simulated. SQL, source allocation,
+// initialization, sessions and serving-authority validation are the real services.
+async function profileAuthorityFixture(){
+ const owner=await fixture(false),session=crypto.randomUUID();
+ await sqlClient`UPDATE app.users SET bio='Rust' WHERE user_id=${owner}::uuid`;
+ let observed={profile:'1',frontier:'1',feedback:'0',epoch:'1',witness:policy,policy};
+ let missing=false,statusCalls=0,authorityCalls=0,statusDelay=0,authorityDelay=0;
+ let onStatus:(()=>Promise<void>)|undefined;
+ const delay=(ms:number)=>ms?new Promise<void>(resolve=>setTimeout(resolve,ms)):Promise.resolve();
+ const transport:ModelAuthorityTransport={
+  modelOperationStatus:async input=>{
+   statusCalls++;await delay(statusDelay);const hook=onStatus;onStatus=undefined;await hook?.();
+   if(missing||BigInt(input.model_operation_version)>BigInt(observed.frontier))return {...input,status:'pending',basis_status:'missing'};
+   return {...input,status:'applied',basis_status:'ready',applied_profile_version:observed.profile,
+    applied_operation_version:observed.frontier,applied_feedback_version:observed.feedback,operation_head:'b'.repeat(64),current_head:'c'.repeat(64)};
+  },
+  modelAuthority:async input=>{
+   authorityCalls++;await delay(authorityDelay);if(missing)throw new Error('Provider replica has no model');
+   // Versions/witness come from an explicitly observed provider state, not the request.
+   return {schema_version:1,model_context:{schema_version:1,user_id:owner,session_id:session,epoch:observed.epoch,
+    policy_sha256:observed.policy,profile_version:observed.profile,applied_operation_version:observed.frontier,
+    applied_feedback_version:observed.feedback,session_witness_sha256:observed.witness,as_of_ms:input.model_context.as_of_ms,
+    valid_until_ms:(BigInt(input.model_context.as_of_ms)+5000n).toString(),state_sha256:policy,head:'c'.repeat(64),
+    effective_vector_sha256:policy,explicit_negative_repo_ids:[]}};
+  }
+ };
+ const authority=new ModelLaneAuthorityService(transport),scopes=new FeedIntentScopeService(authority);
+ await authority.ensureProfileReady(owner); // Proves genesis and initializes the real lane.
+ await controls.control(owner,{kind:'begin',request_id:crypto.randomUUID(),session_id:session});
+ async function observe(){
+  const snapshot=await scopes.snapshot(owner,session);assert.ok(snapshot);
+  observed={profile:snapshot.profileVersion,frontier:snapshot.acceptedOperationVersion,feedback:snapshot.feedbackVersion,
+   epoch:snapshot.epoch,witness:snapshot.witnessSha256,policy:snapshot.policySha256};
+ }
+ await observe();
+ return {owner,session,authority,scopes,observe,counts:()=>({statusCalls,authorityCalls}),
+  setMissing:(value:boolean)=>{missing=value;},setDelays:(status:number,current:number)=>{statusDelay=status;authorityDelay=current;},
+  beforeStatus:(hook:()=>Promise<void>)=>{onStatus=hook;}};
+}
+integration('unchanged feed pages reuse exact profile proof but always ask for current serving authority',async()=>{
+ const f=await profileAuthorityFixture();f.setDelays(10,5);
+ const before=f.counts(),previous=sqlClient.options.debug;let statements=0,lockStatements=0;
+ sqlClient.options.debug=(_connection,query)=>{statements++;if(/FOR (UPDATE|KEY SHARE)/.test(query))lockStatements++;};
+ const start=performance.now();
+ try{for(let i=0;i<20;i++)assert.ok(await f.scopes.resolve(f.owner,f.session));}
+ finally{sqlClient.options.debug=previous;}
+ const elapsedMs=performance.now()-start,after=f.counts();
+ console.log(JSON.stringify({unchangedPages:20,statements,lockStatements,statusCalls:after.statusCalls-before.statusCalls,
+  authorityCalls:after.authorityCalls-before.authorityCalls,elapsedMs,statusDelayMs:10,authorityDelayMs:5}));
+ assert.equal(after.authorityCalls-before.authorityCalls,20);assert.equal(after.statusCalls-before.statusCalls,0);
+ assert.equal(statements,60);assert.equal(lockStatements,0);
+ // A valid persisted proof is not a substitute for provider readiness at session admission.
+ await f.authority.ensureProfileReady(f.owner);assert.equal(f.counts().statusCalls,after.statusCalls+1);
+ f.setMissing(true);
+ await assert.rejects(f.scopes.resolve(f.owner,f.session),/Provider replica/);
+ await assert.rejects(f.authority.ensureProfileReady(f.owner),/MODEL_PROFILE_PENDING/);
+});
+integration('legacy, malformed and identity-mismatched attestations refresh once without skipping initialization',async()=>{
+ const f=await profileAuthorityFixture(),options={reuseAppliedProof:true};
+ const [row]=await sqlClient`SELECT outbox_id,response_payload FROM telemetry.ml_outbox WHERE idempotency_key=${`model:${f.owner}:profile:1`}`;
+ const valid=row.response_payload as Record<string,unknown>;
+ const mutations:unknown[]=[null,[],{...valid,profile_attestation_version:undefined},{...valid,model_profile_applied:false},
+  {...valid,user_id:crypto.randomUUID()},{...valid,policy_sha256:'d'.repeat(64)},{...valid,applied_profile_version:'2'},
+  {...valid,operation_id:crypto.randomUUID()},{...valid,model_operation_version:'99'},
+  {...valid,source_envelope_sha256:'d'.repeat(64)},{...valid,status:'pending'},{...valid,basis_status:'missing'},
+  {...valid,operation_head:'bad'},{...valid,observed_head:['c'.repeat(64)]}];
+ for(const value of mutations){
+  await sqlClient`UPDATE telemetry.ml_outbox SET response_payload=${JSON.stringify(value)}::jsonb WHERE outbox_id=${row.outbox_id}::uuid`;
+  const before=f.counts().statusCalls;
+  assert.equal(await f.authority.ensureProfileReady(f.owner,options),1n);
+  assert.equal(f.counts().statusCalls,before+1,'invalid identity must refresh');
+  await f.authority.ensureProfileReady(f.owner,options);assert.equal(f.counts().statusCalls,before+1,'repaired proof must be reusable');
+ }
+ await sqlClient`UPDATE telemetry.ml_outbox SET response_payload=response_payload||'{"unrelated_delivery_metadata":true}'::jsonb WHERE outbox_id=${row.outbox_id}::uuid`;
+ await f.authority.ensureProfileReady(f.owner);
+ assert.equal((await sqlClient`SELECT response_payload FROM telemetry.ml_outbox WHERE outbox_id=${row.outbox_id}::uuid`)[0].response_payload.unrelated_delivery_metadata,true);
+ await sqlClient`UPDATE app.user_feed_state SET model_initialized=false WHERE user_id=${f.owner}::uuid`;
+ const calls=f.counts().statusCalls;await f.authority.ensureProfileReady(f.owner,options);
+ assert.equal(f.counts().statusCalls,calls+1);
+ assert.equal((await sqlClient`SELECT model_initialized FROM app.user_feed_state WHERE user_id=${f.owner}::uuid`)[0].model_initialized,true);
+ await sqlClient`UPDATE app.user_feed_state SET model_policy_sha256=${'d'.repeat(64)} WHERE user_id=${f.owner}::uuid`;
+ await assert.rejects(f.authority.ensureProfileReady(f.owner,options),/MODEL_PROFILE_PENDING/);
+ await sqlClient`UPDATE app.user_feed_state SET model_policy_sha256=${policy} WHERE user_id=${f.owner}::uuid`;
+ await sqlClient`UPDATE app.users SET status='suspended' WHERE user_id=${f.owner}::uuid`;
+ await assert.rejects(f.authority.ensureProfileReady(f.owner,options),/MODEL_OPERATION_UNAVAILABLE/);
+});
+integration('profile, feedback and epoch changes, withdrawals and proof-flight races remain fenced',async()=>{
+ const f=await profileAuthorityFixture(),options={reuseAppliedProof:true},repo=crypto.randomUUID();
+ await sqlClient`INSERT INTO app.user_stats(user_id) VALUES(${f.owner}::uuid)`;
+ await sqlClient`INSERT INTO app.repos(repo_id,github_id,full_name,owner,name,url,status)
+  VALUES(${repo}::uuid,${Date.now()}::bigint,${'fixture/'+repo},'fixture',${repo},${'https://github.com/fixture/'+repo},'active')`;
+ try{
+  const calls=f.counts().statusCalls;
+  await processInteractionBatchV2(f.owner,[{event_id:crypto.randomUUID(),schema_version:2,session_id:f.session,serve_id:null,
+   repo_id:repo,position:null,event_type:'like',dwell_ms:null,client_occurred_at:new Date().toISOString(),context:{}}]);
+  await assert.rejects(f.scopes.resolve(f.owner,f.session),/MODEL_SESSION_PENDING/);
+  assert.equal(f.counts().statusCalls,calls,'feedback does not invalidate historical profile proof');
+  await f.observe();assert.ok(await f.scopes.resolve(f.owner,f.session));
+  await controls.control(f.owner,{kind:'reset',request_id:crypto.randomUUID(),session_id:f.session,expected_epoch:'1'});
+  await assert.rejects(f.scopes.resolve(f.owner,f.session),/MODEL_SESSION_PENDING/);
+  assert.equal(f.counts().statusCalls,calls);await f.observe();assert.ok(await f.scopes.resolve(f.owner,f.session));
+  await sqlClient`UPDATE app.users SET profile_version=profile_version+1,bio='Rust and Go' WHERE user_id=${f.owner}::uuid`;
+  await assert.rejects(f.scopes.resolve(f.owner,f.session),/MODEL_PROFILE_PENDING/);
+  await f.observe();assert.ok(await f.scopes.resolve(f.owner,f.session));
+  const refreshed=f.counts().statusCalls;assert.ok(await f.scopes.resolve(f.owner,f.session));assert.equal(f.counts().statusCalls,refreshed);
+  // A source-policy change during the remote proof cannot be persisted as trusted.
+  f.beforeStatus(async()=>{await sqlClient`UPDATE app.user_feed_state SET model_policy_sha256=${'d'.repeat(64)} WHERE user_id=${f.owner}::uuid`;});
+  await assert.rejects(f.authority.ensureProfileReady(f.owner),/MODEL_PROFILE_PENDING/);
+  await sqlClient`UPDATE app.user_feed_state SET model_policy_sha256=${policy} WHERE user_id=${f.owner}::uuid`;
+  // Profile mutation during the proof read must fail its second transaction's fence.
+  f.beforeStatus(async()=>{await sqlClient`UPDATE app.users SET profile_version=profile_version+1,bio='Rust and SQL' WHERE user_id=${f.owner}::uuid`;});
+  await assert.rejects(f.authority.ensureProfileReady(f.owner),/MODEL_PROFILE_PENDING/);
+  // Allocate the new source, let the provider catch up, then revoke it while its proof is in flight.
+  await assert.rejects(f.authority.ensureProfileReady(f.owner,options),/MODEL_PROFILE_PENDING/);await f.observe();
+  f.beforeStatus(async()=>{await sqlClient.begin(async tx=>{
+   await tx`SELECT user_id FROM app.users WHERE user_id=${f.owner}::uuid FOR UPDATE`;
+   const lane=await lockModelLane(tx,f.owner);assert.ok(lane);await withdrawPendingProfiles(tx,lane,'3');
+  });});
+  await assert.rejects(f.authority.ensureProfileReady(f.owner,options),/MODEL_PROFILE_PENDING/);
+  const withdrawnCalls=f.counts().statusCalls;
+  await assert.rejects(f.authority.ensureProfileReady(f.owner,options),/MODEL_PROFILE_PENDING/);
+  assert.equal(f.counts().statusCalls,withdrawnCalls,'withdrawn source cannot reach remote readiness');
+ }finally{
+  await sqlClient`DELETE FROM telemetry.interaction_events WHERE user_id=${f.owner}::uuid`;
+  await sqlClient`DELETE FROM app.repos WHERE repo_id=${repo}::uuid`;
+ }
+});
 test.after(async()=>{
  if(!enabled)return;
  await sqlClient`DELETE FROM telemetry.ml_outbox WHERE aggregate_id=ANY(${owners}::uuid[])`;
