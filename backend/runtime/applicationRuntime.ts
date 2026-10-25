@@ -1,3 +1,4 @@
+import { measureFeedPersistence } from '../observability/feedPersistence.js';
 import type { FeedIntentScope } from '../contracts/feedIntent.js';
 import { ModelLaneAuthorityService } from '../services/modelLaneAuthorityService.js';
 import { FeedIntentScopeService } from '../services/feedIntentScopeService.js';
@@ -83,7 +84,7 @@ function socialCandidatesConfiguration(): boolean {
 export class ApplicationRuntime {
   readonly flags = getV2FeatureFlags();
   readonly featureErrors = validateFeatureDependencies(this.flags);
-  readonly persistence = new PostgresFeedPersistence();
+  readonly persistence = measureFeedPersistence(new PostgresFeedPersistence());
   readonly queue = new RedisFeedQueue(
     redisClient,
     intervalFromEnvironment('FEED_RESERVATION_TTL_MS', 60_000, 30_000, 900_000),
@@ -137,7 +138,7 @@ export class ApplicationRuntime {
   readonly feed=this.flags.ML_V2_RECOMMENDATIONS&&this.modelScopes?new IntentFeedGateway(this.legacyFeed,this.persistence,this.modelScopes,scope=>this.createIntentFeed(scope),process.env.JWT_SECRET):this.legacyFeed;
   private createIntentFeed(scope:FeedIntentScope):FeedV2Service{
     if(!this.ml||!this.modelScopes)throw new Error('Model feed dependencies are unavailable.');
-    const persistence=new PostgresFeedPersistence();
+    const persistence=measureFeedPersistence(new PostgresFeedPersistence());
     const context=persistence.getGenerationContext.bind(persistence);
     persistence.getGenerationContext=async userId=>{
       const current=await context(userId);
