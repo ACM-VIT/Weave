@@ -57,6 +57,7 @@ export function startup({
   let refreshRequest: Promise<string> | undefined;
   let markerWritesFail = false;
   let pendingMarkerWrite: Promise<void> | undefined;
+  let setExternalRestoreBlocked: (value: string | null) => void = () => { throw new Error('real storage required'); };
   let callbackScreen: React.ComponentType | undefined;
   let auth!: {
     user: Viewer | null;
@@ -68,6 +69,7 @@ export function startup({
     adjustLikesGivenCount: (eventId: string, delta: -1 | 1) => void;
     settleLikesGivenCountAdjustments: (eventIds: readonly string[]) => void;
     checkOnboardingStatus: () => Promise<void>;
+    finishOnboarding: (data: import('../../src/api/onboarding').OnboardingData) => Promise<void>;
   };
   session.promise.then(token => { storedToken = token; });
   const router = { replace: (path: string) => { redirects.push(path); } };
@@ -147,6 +149,7 @@ export function startup({
   let realTransitions: Record<string, any> | undefined;
   if (realNetwork) {
     let restoreBlocked: string | null = null;
+    setExternalRestoreBlocked = value => { restoreBlocked = value; };
     const storage = {
       getStorageItem: (key: string) => key === 'access_token'
         ? storedToken === undefined ? session.promise : Promise.resolve(storedToken)
@@ -155,6 +158,7 @@ export function startup({
       setStorageItem: async (key: string, value: string) => {
         if (key === 'access_token') storedToken = value;
         else {
+          events.push('marker:start');
           if (markerWritesFail) throw new Error('Synthetic marker storage failure');
           if (pendingMarkerWrite) await pendingMarkerWrite;
           restoreBlocked = value;
@@ -178,6 +182,9 @@ export function startup({
     mocks['@/api/auth'] = mocks['../api/auth'];
   }
 
+  mocks['../api/onboarding'] = loadSource('src/api/onboarding.ts', {
+    './client': mocks['../api/client'], './session-lifecycle': mocks['../api/session-lifecycle'],
+  });
   const authModule = loadSource('src/store/AuthContext.tsx', mocks);
   function AuthProbe() { auth = authModule.useAuth(); return null; }
   mocks['../store/AuthContext'] = {
@@ -203,6 +210,8 @@ export function startup({
     failMarkerWrites(value: boolean) { markerWritesFail = value; },
     holdMarkerWrites(value: Promise<void> | undefined) { pendingMarkerWrite = value; },
     refresh() { return (mocks['../api/client'] as any).refreshSession(storedToken) as Promise<string>; },
+    isRestoreBlocked() { return realTransitions!.isSessionRestoreBlocked() as Promise<boolean>; },
+    setExternalRestoreBlocked(value: string | null) { setExternalRestoreBlocked(value); },
     async establish(token: string, onRequest: () => void = () => undefined) {
       const session = await realTransitions!.establishSession(async () => {
         onRequest();

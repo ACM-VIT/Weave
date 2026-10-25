@@ -20,6 +20,7 @@ import {
 import { restoreStartupSession, StartupSessionTimeoutError, withStartupSessionDeadline } from './restore-session';
 import { useQueryClient } from '@tanstack/react-query';
 import { clearAccountQueryCache } from '../services/accountQueryCache';
+import { setupOnboarding, type OnboardingData } from '../api/onboarding';
 
 interface User {
   user_id: string;
@@ -39,6 +40,7 @@ interface AuthContextType {
   setSession: (session: AuthenticatedSession<any>) => Promise<void>;
   signOut: () => Promise<void>;
   checkOnboardingStatus: () => Promise<void>;
+  finishOnboarding: (data: OnboardingData) => Promise<void>;
   updateUserProfile: (profile: EditableUserProfile) => void;
   adjustLikesGivenCount: (eventId: string, delta: -1 | 1) => void;
   settleLikesGivenCountAdjustments: (eventIds: readonly string[]) => void;
@@ -64,6 +66,19 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const likesGivenRevision = useRef(0);
   const profileReadSequence = useRef(0);
   const appliedCountReadSequence = useRef(0);
+  const onboardingConfirmation = useRef(0);
+  const profileTransitionTail = useRef({ generation: authSessionLifecycle.currentGeneration(), tail: Promise.resolve() });
+  const serializeProfileTransition = useCallback((generation: number, operation: () => Promise<void>) => {
+    if (profileTransitionTail.current.generation !== generation) {
+      profileTransitionTail.current = { generation, tail: Promise.resolve() };
+    }
+    const running = profileTransitionTail.current.tail.catch(() => undefined).then(() => {
+      authSessionLifecycle.assertCurrent(generation);
+      return operation();
+    });
+    profileTransitionTail.current.tail = running;
+    return running;
+  }, []);
 
   const fetchUserProfile = useCallback(async (
     token: string,
@@ -77,6 +92,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   ) => {
     const readSequence = ++profileReadSequence.current;
     const likesRevisionAtStart = likesGivenRevision.current;
+    const onboardingAtStart = onboardingConfirmation.current;
     const assertCurrent = () => {
       authSessionLifecycle.assertCurrent(sessionGeneration);
       if (signal?.aborted) throw new SessionChangedError();
@@ -90,6 +106,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         ? profile.onboarding_completed
         : (await apiV2<{ completed: boolean }>('/onboarding/status', { signal }, token, requestPolicy)).completed;
       assertCurrent();
+      if (onboardingAtStart !== onboardingConfirmation.current) return;
       const serverLikesGivenCount = Number(profile.likes_given_count);
       // Failed or still-pending requests cannot supersede a successful count.
       if (pendingLikesGivenEvents.current.size === 0
@@ -113,6 +130,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       }));
     } catch (error) {
       assertCurrent();
+      if (onboardingAtStart !== onboardingConfirmation.current) return;
       const status = httpStatus(error);
       const responseToken = typeof (error as { accessToken?: unknown })?.accessToken === 'string'
         ? (error as { accessToken: string }).accessToken
@@ -120,17 +138,20 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       // A 404 means an older valid session predates its v2 product profile.
       // Clear it so the next login can run ensureIdentityProfile atomically.
       if (status === 404 || (status === 401 && clearUnauthorized)) {
-        const retired = await retireSessionIfCurrent(sessionGeneration, responseToken, assertCurrent);
-        if (retired) {
-          setUser(null);
-        }
+        await serializeProfileTransition(sessionGeneration, async () => {
+          assertCurrent();
+          if (onboardingAtStart !== onboardingConfirmation.current) return;
+          const retired = await retireSessionIfCurrent(sessionGeneration, responseToken, assertCurrent);
+          if (retired) setUser(null);
+        });
+        if (onboardingAtStart !== onboardingConfirmation.current) return;
       }
       if (logErrors && !(error instanceof SessionChangedError)) {
         console.error('Failed to fetch user profile', error);
       }
       throw error;
     }
-  }, []);
+  }, [serializeProfileTransition]);
 
   const loadSession = useCallback(async () => {
     const sessionGeneration = authSessionLifecycle.currentGeneration();
@@ -206,6 +227,36 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       await fetchUserProfile(token, { sessionGeneration });
     }
   }, [fetchUserProfile]);
+
+  const finishOnboarding = useCallback((data: OnboardingData) => {
+    const generation = authSessionLifecycle.currentGeneration();
+    const owner = user?.user_id;
+    // A stale profile failure cannot retire credentials during confirmation.
+    // If retirement already owns the lane, it finishes first; a changed
+    // generation then prevents this completion from sending a request.
+    return serializeProfileTransition(generation, async () => {
+      const likesAtStart = likesGivenRevision.current;
+      const token = await getStorageItem('access_token');
+      authSessionLifecycle.assertCurrent(generation);
+      if (!token || !owner) throw new SessionChangedError();
+      const viewer = await setupOnboarding(token, data);
+      authSessionLifecycle.assertCurrent(generation);
+      if (!viewer || viewer.user_id !== owner || typeof viewer.username !== 'string' || viewer.onboarding_completed !== true) {
+        throw new Error('Onboarding completion was not confirmed. Please try again.');
+      }
+      // Reads already in flight must not undo the confirmed completion or retire
+      // this account on a stale failure. Future profile reads remain authoritative.
+      onboardingConfirmation.current += 1;
+      const sequence = ++profileReadSequence.current;
+      const preserveLikes = pendingLikesGivenEvents.current.size > 0 || likesAtStart !== likesGivenRevision.current;
+      if (!preserveLikes) appliedCountReadSequence.current = Math.max(appliedCountReadSequence.current, sequence);
+      const likes = Number(viewer.likes_given_count);
+      setUser(current => current?.user_id === owner && authSessionLifecycle.isCurrent(generation) ? {
+        ...viewer, user_id: owner, username: viewer.username as string, onboarding_completed: true,
+        likes_given_count: preserveLikes ? current.likes_given_count : Math.max(0, Number.isFinite(likes) ? likes : 0),
+      } : current);
+    });
+  }, [user?.user_id, serializeProfileTransition]);
 
   const updateUserProfile = useCallback((profile: EditableUserProfile) => {
     setUser((current) => mergeSavedUserProfile(current, profile));
@@ -332,6 +383,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setSession,
       signOut,
       checkOnboardingStatus,
+      finishOnboarding,
       updateUserProfile,
       adjustLikesGivenCount,
       settleLikesGivenCountAdjustments,

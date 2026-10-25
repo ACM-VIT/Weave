@@ -26,6 +26,7 @@ router.put('/profiles/:profileId/follow', product.setSocialProfileFollow);
 router.delete('/profiles/:profileId/follow', product.removeSocialProfileFollow);
 router.get('/onboarding/status', product.onboardingStatus);
 router.put('/onboarding', product.completeOnboarding);
+router.put('/onboarding/complete', product.completeOnboardingWithProfile);
 router.get('/repositories', product.listRepositories);
 router.get('/repositories/trending', product.listTrending);
 router.get('/repositories/saved', product.listSaved);
