@@ -3,7 +3,7 @@ import crypto from 'node:crypto';
 import test from 'node:test';
 import { sqlClient } from '../../db/index.js';
 import { PostgresFeedPersistence } from '../../adapters/postgresFeedPersistence.js';
-import { FeedExposureChangedError, FeedServeOverlapError } from '../../ports/feedPersistencePort.js';
+import { FeedExposureChangedError, FeedPreferenceChangedError, FeedServeOverlapError } from '../../ports/feedPersistencePort.js';
 import type { CreateServeInput, RepositoryProjection } from '../../contracts/feed.v2.js';
 import { assertDisposableDatabase } from './disposableDatabase.js';
 function ordinaryFeedVersion(value: string | number): number {
@@ -40,7 +40,9 @@ async function fixture(count = 3) {
 integration('new serves use one item insert for 1, 24 and 50 cards without follow-up hydration',async()=>{
   const persistence = new PostgresFeedPersistence();
   for (const count of [1,24,50]) {
-    const f = await fixture(count); const queries:string[]=[]; const previous=sqlClient.options.debug;
+    const f = await fixture(count);
+    await persistence.getFeedVersion(f.user); // Normal requests initialize state before reserving cards.
+    const queries:string[]=[]; const previous=sqlClient.options.debug;
     sqlClient.options.debug=(_connection,query)=>{queries.push(query);};
     const start=performance.now(); let created;
     try {created=await persistence.createServe(f.input);} finally {sqlClient.options.debug=previous;}
@@ -50,12 +52,11 @@ integration('new serves use one item insert for 1, 24 and 50 cards without follo
     assert.equal(queries.filter(query=>query.includes('recent AS MATERIALIZED')).length,1);
     // Bounded preference/exposure reads and the session fence serialize delivery.
 
-    assert.equal(queries.filter(query=>/SELECT user_id FROM app.user_feed_state[\s\S]*FOR UPDATE/i.test(query)).length,1);
-    assert.equal(queries.filter(query=>/SELECT model_policy_sha256[\s\S]*FOR UPDATE/i.test(query)).length,1);
+    assert.equal(queries.filter(query=>/SELECT user_id,model_policy_sha256[\s\S]*FROM app.user_feed_state[\s\S]*FOR UPDATE/i.test(query)).length,1);
+    assert.equal(queries.filter(query=>/SELECT model_policy_sha256[\s\S]*FOR UPDATE/i.test(query)).length,0, 'Reuse the already locked feed row');
     assert.equal(queries.filter(query=>/negative\.reaction='dislike'/i.test(query)).length,1);
-    // The existing model-lane lock and the new exposure read each add one
-    // bounded statement to the earlier ten-statement ordinary serve path.
-    assert.ok(queries.length<=12,`new serve took ${queries.length} statements`);
+    // One locked state row, one eligibility snapshot and one atomic item/provenance insert.
+    assert.ok(queries.length<=8,`new serve took ${queries.length} statements`);
     assert.equal(created.items.length,count);
     assert.deepEqual(created.items.map(item=>item.repo_id),f.repos);
     assert.equal(created.created_at,new Date(created.created_at).toISOString());
@@ -300,4 +301,43 @@ integration('legacy recovery retains an unverified header hint without guessing 
   const replay=await persistence.getServeByRequest(f.user,recovered.feed_request_id);
   assert.deepEqual(replay?.items.map(item=>item.legacy_generation_hint),[generationA,generationA]);
   assert.equal(Number((await sqlClient`SELECT count(*) FROM telemetry.feed_item_provenance WHERE serve_id=${recovered.serve_id}::uuid AND capture_status='captured'`)[0].count),0);
+});
+
+integration('batched canonical eligibility matches separate preference and exposure reads for each viewer', async () => {
+  const f = await fixture();
+  const persistence = new PostgresFeedPersistence();
+  try {
+    await sqlClient`INSERT INTO app.reactions(user_id,repo_id,reaction) VALUES(${f.user}::uuid,${f.repos[0]!}::uuid,'dislike')`;
+    const subset: string[] = [f.repos[1]!];
+    await persistence.createServe({...f.input, items:f.input.items.filter(item=>subset.includes(item.repo_id))});
+    const queries:string[]=[]; const previous=sqlClient.options.debug;
+    let result;
+    sqlClient.options.debug=(_connection,query)=>queries.push(query);
+    try { result=await persistence.listCandidateEligibility(f.user,f.repos); }
+    finally { sqlClient.options.debug=previous; }
+    assert.equal(queries.length,1,'Identity, preferences and recent exposures use one round trip');
+    assert.deepEqual(result.identities.map(row=>row.repo_id).sort(), [...f.repos].sort());
+    assert.deepEqual(result.preferenceIds, await persistence.listPreferenceEligibleRepositoryIds(f.user,f.repos));
+    assert.deepEqual(result.exposureIds, await persistence.listExposureEligibleRepositoryIds(f.user,f.repos));
+    assert.ok(!result.preferenceIds.includes(f.repos[0]!));
+    assert.ok(!result.exposureIds.includes(f.repos[1]!));
+    const serving=await persistence.listCandidateEligibility(f.user,f.repos,f.session);
+    assert.deepEqual(serving.servedIds,[f.repos[1]!]);
+    assert.deepEqual(serving.repositories?.map(repo=>repo.repo_id).sort(),[...f.repos].sort());
+    const {FeedIntentScopeService}=await import('../../services/feedIntentScopeService.js');
+    const scopes=new FeedIntentScopeService({} as never);
+    const admission=await scopes.admit(f.user,f.session,f.input.feed_request_id);
+    assert.equal(admission.hasReplay,true);
+    assert.equal(admission.feedVersion,1n);
+    assert.equal(admission.snapshot,null);
+    await sqlClient`UPDATE app.user_feed_state SET feed_version=2 WHERE user_id=${f.user}::uuid`;
+    await assert.rejects(persistence.createServe({...f.input,feed_request_id:crypto.randomUUID(),
+      items:f.input.items.filter(item=>item.repo_id===f.repos[2])}),FeedPreferenceChangedError);
+    assert.equal((await persistence.createServe({...f.input,items:f.input.items.filter(item=>subset.includes(item.repo_id))})).items.length,1,
+      'A historical same-request replay survives a newer feed version');
+  } finally {
+    await sqlClient`DELETE FROM app.users WHERE user_id=${f.user}::uuid`;
+    await sqlClient`DELETE FROM auth.users WHERE id=${f.user}::uuid`;
+    await sqlClient`DELETE FROM app.repos WHERE repo_id=ANY(${f.repos}::uuid[])`;
+  }
 });

@@ -1083,3 +1083,17 @@ test('competing admissions share one timeout budget across lost capacity races',
 });
 
 });
+
+test('gateway replay observation avoids a second lookup but cannot bypass durable serving', async () => {
+  const persistence=new FakePersistence(); const queue=new FakeQueue();
+  let lookups=0;
+  const original=persistence.getServeByRequest.bind(persistence);
+  persistence.getServeByRequest=async (...args)=>{lookups++;return original(...args);};
+  const service=new FeedV2Service(persistence,queue);
+  const request={feed_request_id:'00000000-0000-4000-8000-000000000010',session_id:'00000000-0000-4000-8000-000000000020',limit:10,cursor:null};
+  const first=await service.getFeed('viewer',request,undefined,{userId:'viewer',requestId:request.feed_request_id,replay:null});
+  assert.equal(lookups,0);
+  assert.equal(persistence.serve?.serve_id,first.serve_id);
+  await service.getFeed('viewer',request,undefined,{userId:'other',requestId:request.feed_request_id,replay:null});
+  assert.equal(lookups,1,'An observation for a different viewer is never reusable');
+});

@@ -3,8 +3,8 @@ import { FeedExposureChangedError, FeedPreferenceChangedError } from '../ports/f
 import crypto from 'node:crypto';
 import { performance } from 'node:perf_hooks';
 
-import type { FeedRequestV2, FeedResponseV2, FeedSource, RecommendationEntry, RepositoryProjection } from '../contracts/feed.v2.js';
-import type { FeedPersistencePort } from '../ports/feedPersistencePort.js';
+import type { FeedRequestV2, FeedResponseV2, FeedSource, RecommendationEntry, RepositoryProjection, StoredServe } from '../contracts/feed.v2.js';
+import type { CandidateEligibility, FeedPersistencePort } from '../ports/feedPersistencePort.js';
 import { FeedServeOverlapError, FeedProvenanceUnavailableError } from '../ports/feedPersistencePort.js';
 import type { FeedQueuePort, FeedReservation } from '../redis/feedQueue.js';
 import { ReservationOwnedError } from '../redis/feedQueue.js';
@@ -75,6 +75,14 @@ function responseFromServe(serve: Awaited<ReturnType<FeedPersistencePort['create
   };
 }
 
+/** Request-local observation from the gateway, never accepted from HTTP input. */
+export interface FeedReplayObservation {
+  userId: string;
+  requestId: string;
+  replay: StoredServe | null;
+  feedVersion?: bigint;
+}
+
 export class FeedV2Service {
   constructor(
     private readonly persistence: FeedPersistencePort,
@@ -136,14 +144,18 @@ export class FeedV2Service {
   }
 
   private async unservedReservation(userId: string, version: bigint, request: FeedRequestV2, token: string,
-    initial: FeedReservation): Promise<FeedReservation> {
-    let reservation = initial;
+    initial: FeedReservation): Promise<FeedReservation & {eligibility?: CandidateEligibility}> {
+    let reservation: FeedReservation & {eligibility?: CandidateEligibility} = initial;
     // A late generation can contain IDs delivered by foreground recovery.
     // Validate at consumption, against exact candidate membership, so neither
     // publication races nor a 500-item generation-history window reintroduce them.
     for (let batch = 0; batch < 4; batch++) {
-      const items = await this.excludeSessionDeliveries(userId, request.session_id, reservation.items);
-      if (!reservation.items.length || items.length) return { ...reservation, items };
+      const eligibility = reservation.items.length
+        ? await this.persistence.listCandidateEligibility?.(userId,reservation.items.map(item=>item.repo_id),request.session_id) : undefined;
+      const delivered = new Set(eligibility?.servedIds ?? []);
+      const items = eligibility ? reservation.items.filter(item=>!delivered.has(item.repo_id))
+        : await this.excludeSessionDeliveries(userId, request.session_id, reservation.items);
+      if (!reservation.items.length || items.length) return { ...reservation, items, eligibility };
       incrementMetric('feed_v2_session_duplicate_batches_total');
       // Every reserved item already has a durable delivery witness. Retire and
       // refill atomically without opening a same-request ownership gap.
@@ -270,7 +282,7 @@ export class FeedV2Service {
     return response;
   }
 
-  async getFeed(userId: string, request: FeedRequestV2, signal?: AbortSignal): Promise<FeedResponseV2> {
+  async getFeed(userId: string, request: FeedRequestV2, signal?: AbortSignal, observed?: FeedReplayObservation): Promise<FeedResponseV2> {
     signal?.throwIfAborted();
     if (this.stopping || this.foreground.size
       + this.serveWaits.unobservedProbeCount + this.generationWaits.unobservedProbeCount
@@ -278,7 +290,7 @@ export class FeedV2Service {
       throw new FeedRequestInProgressError();
     }
     // Register admission before starting any work; there is no pending queue.
-    const operation = Promise.resolve().then(() => this.prepareFeed(userId, request, signal));
+    const operation = Promise.resolve().then(() => this.prepareFeed(userId, request, signal, observed));
     this.foreground.add(operation);
     const finish = () => this.foreground.delete(operation);
     void operation.then(finish, finish);
@@ -297,15 +309,17 @@ export class FeedV2Service {
     });
   }
 
-  private async prepareFeed(userId: string, request: FeedRequestV2, signal?: AbortSignal): Promise<FeedResponseV2> {
+  private async prepareFeed(userId: string, request: FeedRequestV2, signal?: AbortSignal, observed?: FeedReplayObservation): Promise<FeedResponseV2> {
     signal?.throwIfAborted();
-    const replay = await this.persistence.getServeByRequest(userId, request.feed_request_id);
+    const replay = observed?.userId === userId && observed.requestId === request.feed_request_id
+      ? observed.replay : await this.persistence.getServeByRequest(userId, request.feed_request_id);
     if (replay) {
       incrementMetric('feed_v2_duplicate_requests_total');
       return responseFromServe(replay);
     }
 
-    const version = await this.persistence.getFeedVersion(userId);
+    const version = observed?.userId === userId && observed.requestId === request.feed_request_id && observed.feedVersion !== undefined
+      ? observed.feedVersion : await this.persistence.getFeedVersion(userId);
     const pageOffset = request.cursor === null ? 0 : this.cursorCodec.decode(request.cursor, {
       user_id: userId,
       session_id: request.session_id,
@@ -321,7 +335,7 @@ export class FeedV2Service {
     };
     let queueAvailable = true;
     let generationCompleted = false;
-    let reservation;
+    let reservation: FeedReservation & {eligibility?: CandidateEligibility};
     try {
       reservation = await this.queue.reserve(
         userId, version, request.feed_request_id, request.limit, token,
@@ -392,6 +406,7 @@ export class FeedV2Service {
     let entries = reservation.items;
     // Only this request's fresh, same-viewer fallback projections are reusable.
     const byId = new Map<string, RepositoryProjection>();
+    const freshlyHydrated = new Set<string>();
     incrementMetric(entries.length > 0 ? 'feed_v2_cache_hits_total' : 'feed_v2_cache_misses_total');
     let source: FeedSource = 'personalized';
     if (!generationCompleted && entries.length === 0 && request.cursor === null
@@ -426,8 +441,13 @@ export class FeedV2Service {
     // Includes queued, durable recovery and fallback entries. Never apply this
     // to the immutable same-request replay returned above.
     try {
-      const eligible = new Set(await this.persistence.listPreferenceEligibleRepositoryIds(userId, entries.map(entry => entry.repo_id)));
-      const unexposed = this.persistence.listExposureEligibleRepositoryIds
+      const eligibility = (entries === reservation.items ? reservation.eligibility : undefined)
+        ?? await this.persistence.listCandidateEligibility?.(userId, entries.map(entry => entry.repo_id));
+      for (const repository of eligibility?.repositories ?? []) {
+        byId.set(repository.repo_id,repository);freshlyHydrated.add(repository.repo_id);
+      }
+      const eligible = new Set(eligibility?.preferenceIds ?? await this.persistence.listPreferenceEligibleRepositoryIds(userId, entries.map(entry => entry.repo_id)));
+      const unexposed = eligibility ? new Set(eligibility.exposureIds) : this.persistence.listExposureEligibleRepositoryIds
         ? new Set(await this.persistence.listExposureEligibleRepositoryIds(userId, entries.map(entry => entry.repo_id)))
         : eligible;
       const seen = new Set<string>();
@@ -448,7 +468,7 @@ export class FeedV2Service {
 
     const missingRepoIds = [...new Set(entries.filter((entry) => {
       const repository = byId.get(entry.repo_id);
-      return !repository || repository.summary_id !== entry.summary_id;
+      return !repository || (!freshlyHydrated.has(entry.repo_id) && repository.summary_id !== entry.summary_id);
     }).map((entry) => entry.repo_id))];
     if (missingRepoIds.length > 0) {
       // A refresh that omits an ID must not retain its invalidated projection.

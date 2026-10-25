@@ -1,4 +1,4 @@
-import type { NegativePreferenceReader } from './negativePreferenceEligibility.js';
+import { NEGATIVE_PREFERENCE_ELIGIBILITY_SQL, type NegativePreferenceReader } from './negativePreferenceEligibility.js';
 
 /** Exact candidate check; bounded ML exclusion hints are not a delivery fence. */
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -37,4 +37,48 @@ export async function loadRecentExposureEligibleIds(
     allowed.add(row.repo_id);
   }
   return requested.filter(id => allowed.has(id));
+}
+
+/** One snapshot for canonical identity, preferences and exposure eligibility. */
+export async function loadCandidateEligibility(
+  reader: NegativePreferenceReader, userId: string, repoIds: readonly string[], days: number, sessionId?: string,
+) {
+  if (!uuid.test(userId) || repoIds.length > 150 || repoIds.some(id => !uuid.test(id))) {
+    throw new Error('Candidate eligibility requires canonical UUIDs and at most 150 repositories.');
+  }
+  if (!Number.isInteger(days) || days < 1 || days > 365) throw new Error('Invalid recent exposure window.');
+  if (sessionId !== undefined && !uuid.test(sessionId)) throw new Error('Session eligibility requires a canonical UUID.');
+  const requested = [...new Set(repoIds)].sort();
+  if (!requested.length) return { identities: [], preferenceIds: [], exposureIds: [], servedIds: [] };
+  const rows = await reader.query(`
+    WITH preference AS (${NEGATIVE_PREFERENCE_ELIGIBILITY_SQL}),
+    exposure AS (${RECENT_EXPOSURE_ELIGIBILITY_SQL})
+    SELECT repo.repo_id,summary.summary_id,
+      EXISTS(SELECT 1 FROM preference WHERE preference.repo_id=repo.repo_id) AS preference_eligible,
+      EXISTS(SELECT 1 FROM exposure WHERE exposure.repo_id=repo.repo_id) AS exposure_eligible,
+      EXISTS(SELECT 1 FROM telemetry.feed_serves served JOIN telemetry.feed_serve_items item USING(serve_id)
+        WHERE served.user_id=$2::uuid AND served.session_id=NULLIF($4,'')::uuid AND item.repo_id=repo.repo_id) AS session_served
+    FROM app.repos repo LEFT JOIN app.repo_content content USING(repo_id)
+    LEFT JOIN LATERAL (
+      SELECT card.summary_id FROM app.repo_card_summaries card
+      WHERE card.repo_id=repo.repo_id AND card.active AND card.content_version=content.content_version
+        AND card.source IN ('generated','description_fallback')
+      ORDER BY card.created_at DESC LIMIT 1
+    ) summary ON true
+    WHERE repo.repo_id=ANY($1::uuid[]) AND repo.status='active' ORDER BY repo.repo_id`,
+    [requested, userId, String(days * 86400), sessionId ?? '']);
+  const seen = new Set<string>();
+  for (const row of rows) {
+    if (typeof row.repo_id !== 'string' || !requested.includes(row.repo_id) || seen.has(row.repo_id)
+      || typeof row.preference_eligible !== 'boolean' || typeof row.exposure_eligible !== 'boolean') {
+      throw new Error('Candidate eligibility returned an invalid result.');
+    }
+    seen.add(row.repo_id);
+  }
+  return {
+    servedIds: rows.filter(row => row.session_served === true).map(row => String(row.repo_id)),
+    identities: rows.map(row => ({ repo_id: String(row.repo_id), summary_id: row.summary_id == null ? null : String(row.summary_id) })),
+    preferenceIds: rows.filter(row => row.preference_eligible).map(row => String(row.repo_id)),
+    exposureIds: rows.filter(row => row.exposure_eligible).map(row => String(row.repo_id)),
+  };
 }
