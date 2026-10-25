@@ -111,3 +111,39 @@ describe("share feedback", () => {
     assert.equal(shareResultConfirmsCompletion('web', 'sharedAction', 'sharedAction'), false);
   });
 });
+
+
+test('repository previews show immediately without marking incomplete details fresh or leaking attribution/accounts', async () => {
+  const {QueryClient,QueryObserver}=await import('@tanstack/react-query');
+  const {rememberRepositoryPreview,repositoryPreview}=await import('../src/services/repositoryPreview');
+  const {mapRepositoryDetail}=await import('../src/utils/repository-mapper');
+  const {repositoryDetailQueryKey}=await import('../src/models/repository');
+  const client=new QueryClient();
+  const card=mapRepositoryDetail({repo_id:'repo',full_name:'owner/repo',name:'repo',owner:'owner',status:'active',url:'https://github.com/owner/repo',serve_id:'serve',position:2});
+  assert.ok(card);
+  rememberRepositoryPreview(client,'alice',card);
+  assert.equal(repositoryPreview(client,'bob','repo'),undefined);
+  assert.equal(repositoryPreview(client,'alice','repo')?.serveId,null);
+  assert.equal(repositoryPreview(client,'alice','repo')?.feedPosition,null);
+  let resolve!: (value:typeof card)=>void;
+  const pending=new Promise<typeof card>(done=>{resolve=done;});
+  const key=repositoryDetailQueryKey('repo','alice');
+  const observer=new QueryObserver(client,{queryKey:key,queryFn:()=>pending,
+    placeholderData:()=>repositoryPreview(client,'alice','repo'),retry:false});
+  const unsubscribe=observer.subscribe(()=>{});
+  try {
+    assert.equal(observer.getCurrentResult().isPlaceholderData,true);
+    assert.equal(observer.getCurrentResult().data?.name,'repo');
+    assert.equal(client.getQueryData(key),undefined,'Partial card is not persisted as a complete detail response');
+    resolve({...card,description:'fresh detail',viewerSaved:true});
+    await pending; await new Promise(done=>setTimeout(done,0));
+    assert.equal(observer.getCurrentResult().isPlaceholderData,false);
+    assert.equal(observer.getCurrentResult().data?.description,'fresh detail');
+    rememberRepositoryPreview(client,'alice',card);
+    assert.equal(observer.getCurrentResult().data?.viewerSaved,true,'Old card cannot overwrite authoritative detail');
+    for(let i=0;i<110;i++) rememberRepositoryPreview(client,'alice',{...card,id:String(i)});
+    assert.equal(client.getQueryCache().findAll({queryKey:['repository-preview','alice']}).length,100);
+    client.clear();
+    assert.equal(repositoryPreview(client,'alice','109'),undefined);
+  } finally {unsubscribe();client.clear();}
+});

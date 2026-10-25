@@ -1,3 +1,4 @@
+import { repositoryPreview } from '@/services/repositoryPreview';
 import { useRepositoryReadmeSummary } from '@/hooks/use-repository-readme-summary';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {authSessionLifecycle} from '@/api/session-lifecycle';
@@ -121,7 +122,7 @@ export function RepositoryDetailScreen({ repositoryId,navigationToken }: { repos
   const [readmeVisible, setReadmeVisible] = useState(false);
   const [summaryVisible, setSummaryVisible] = useState(false);
 
-  const repositoryQuery = useQuery({
+  const repositoryQuery = useQuery<RepositoryDetail>({
     queryKey: repositoryDetailQueryKey(repositoryId, viewerUserId),
     enabled: Boolean(repositoryId && viewerUserId),
     queryFn: async ({ signal }) => {
@@ -130,9 +131,14 @@ export function RepositoryDetailScreen({ repositoryId,navigationToken }: { repos
       return fetchRepositoryDetail(repositoryId, token, signal);
     },
     staleTime: 60_000,
+    retry: (failures, error) => ![401,403,404,410].includes((error as {status?:number}).status ?? 0) && failures < 1,
+    placeholderData: () => repositoryPreview(queryClient, viewerUserId, repositoryId),
   });
 
-  const repository = repositoryQuery.data;
+  const terminalDetailError = repositoryQuery.isError && [401,403,404,410].includes((repositoryQuery.error as {status?:number})?.status ?? 0);
+  const preview = terminalDetailError ? undefined : repositoryPreview(queryClient, viewerUserId, repositoryId);
+  const repository = terminalDetailError ? undefined : repositoryQuery.data ?? preview;
+  const partialDetail = repositoryQuery.isPlaceholderData || Boolean(!repositoryQuery.data && preview);
   const summaryQuery = useRepositoryReadmeSummary(repository);
   const contentWidth = Math.min(Math.max(width - 32, 0), 720);
   const preparedSummary = prepareReadmePreview({
@@ -190,7 +196,7 @@ export function RepositoryDetailScreen({ repositoryId,navigationToken }: { repos
     );
   }
 
-  if (isAuthLoading || repositoryQuery.isLoading) {
+  if (isAuthLoading || (repositoryQuery.isLoading && !repository)) {
     return (
       <View style={[styles.stateScreen, { paddingTop: insets.top }]}>
         <ActivityIndicator color={REFERENCE_THEME.accent} size="large" />
@@ -347,17 +353,19 @@ export function RepositoryDetailScreen({ repositoryId,navigationToken }: { repos
             </Text>
           </View>
           <Text style={styles.sectionBody}>
-            {repository.readmeFull
+            {partialDetail
+              ? repositoryQuery.isError ? 'The complete README could not be loaded.' : 'Loading the complete README…'
+              : repository.readmeFull
               ? 'Open the complete repository document without leaving Weave.'
               : 'No README is available for this repository.'}
           </Text>
           <Pressable
             accessibilityRole="button"
-            disabled={!repository.readmeFull}
+            disabled={!repository.readmeFull && !partialDetail}
             onPress={() => setReadmeVisible(true)}
             style={({ pressed }) => [
               styles.readmeButton,
-              !repository.readmeFull && styles.disabled,
+              !repository.readmeFull && !partialDetail && styles.disabled,
               pressed && styles.pressed,
             ]}
           >
@@ -405,6 +413,9 @@ export function RepositoryDetailScreen({ repositoryId,navigationToken }: { repos
       {readmeVisible ? <ReadmePopup
         isVisible onClose={() => setReadmeVisible(false)}
         readmeText={repository.readmeFull} readmeSource={readmeSource} title={repository.name}
+        loading={partialDetail && repositoryQuery.isFetching}
+        errorMessage={partialDetail && repositoryQuery.isError ? 'Could not load the complete README.' : undefined}
+        onRetry={() => void repositoryQuery.refetch()}
       /> : null}
     </View>
   );

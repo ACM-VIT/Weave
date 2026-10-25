@@ -1,3 +1,4 @@
+import { rememberRepositoryPreview } from '@/services/repositoryPreview';
 import { feedSessions } from '@/api/feed-sessions';
 import { useState, useCallback, useEffect, useLayoutEffect, useMemo, useRef } from 'react';
 import {
@@ -418,7 +419,10 @@ export default function HomeScreen() {
               onQueueActivity={(event, flushNow) => handleQueueActivity(item.repository, event, flushNow)}
               onSavedChange={(saved, changed) => handleSavedChange(item.repository, saved, changed)}
               onOwnerPress={() => openOwnerProfile(item.repository)}
-              onRepositoryPress={(navigationToken) => router.push(repositoryHref(item.repository.id,navigationToken))}
+              onRepositoryPress={(navigationToken) => {
+                rememberRepositoryPreview(queryClient, user?.user_id, item.repository);
+                router.push(repositoryHref(item.repository.id,navigationToken));
+              }}
               isViewable={viewableItems.includes(item.feedId)}
             />
           )}
