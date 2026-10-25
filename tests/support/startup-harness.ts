@@ -54,6 +54,8 @@ export function startup({
   let splashHides = 0;
   let storedToken: string | null | undefined;
   let profileRequest: Promise<Viewer> | undefined;
+  let feedRequest: Promise<any> | undefined;
+  let feedClient: any;
   let refreshRequest: Promise<string> | undefined;
   let markerWritesFail = false;
   let pendingMarkerWrite: Promise<void> | undefined;
@@ -178,6 +180,19 @@ export function startup({
     mocks['@/api/auth'] = mocks['../api/auth'];
   }
 
+  const homeFeedModule = loadSource('src/services/homeFeedQuery.ts', {
+    '../utils/storage': mocks['../utils/storage'],
+    '../api/session-lifecycle': mocks['../api/session-lifecycle'],
+    '../api/feed-sessions': {feedSessions: () => ({prepare: async (session: string) => session})},
+    '../api/home-feed': {fetchHomeFeed: async () => {
+      events.push('feed:prefetch');
+      return feedRequest ?? {items:[],nextCursor:null,feedVersion:'1'};
+    }},
+  });
+  mocks['@/services/homeFeedQuery'] = {...homeFeedModule, homeFeedQueryOptions: (client: unknown, owner: string) => {
+    feedClient = client;
+    return homeFeedModule.homeFeedQueryOptions(client, owner);
+  }};
   const authModule = loadSource('src/store/AuthContext.tsx', mocks);
   function AuthProbe() { auth = authModule.useAuth(); return null; }
   mocks['../store/AuthContext'] = {
@@ -199,6 +214,9 @@ export function startup({
   let root: ReturnType<typeof create>;
   return {
     fonts, session, events, redirects, lifecycle,
+    setFeedRequest(request: Promise<any>) { feedRequest = request; },
+    get feedClient() { return feedClient; },
+    homeFeedOptions(owner: string) { return homeFeedModule.homeFeedQueryOptions(feedClient, owner); },
     get auth() { return auth; },
     failMarkerWrites(value: boolean) { markerWritesFail = value; },
     holdMarkerWrites(value: Promise<void> | undefined) { pendingMarkerWrite = value; },

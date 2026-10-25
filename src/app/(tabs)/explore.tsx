@@ -8,7 +8,7 @@ import { randomUUID } from 'expo-crypto';
 import { useNetInfo } from '@react-native-community/netinfo';
 import { useInfiniteQuery, useQueryClient } from '@tanstack/react-query';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { fetchExploreRepos, mergeExplorePages } from '@/api/explore';
+import { exploreBrowseQueryOptions, mergeExplorePages } from '@/api/explore';
 import { fetchSearch } from '@/api/search';
 import { MIN_SEARCH_LENGTH, searchQueryOptions, isSearchExpired, SearchSessions, SearchRequestTiming } from '@/api/search-query';
 import SearchBar from '@/components/explore/SearchBar';
@@ -72,12 +72,8 @@ export default function ExploreScreen() {
     send: (cursor, signal) => fetchSearch(query, group, searchId, cursor, signal),
   }));
   const browse = useInfiniteQuery({
-    queryKey: ['exploreRepos', user?.user_id, activeTab, period],
+    ...exploreBrowseQueryOptions(user?.user_id, activeTab, period),
     enabled: !searching && !offline && Boolean(user?.user_id),
-    queryFn: ({ pageParam, signal }) => fetchExploreRepos(activeTab,'',pageParam,signal,period),
-    initialPageParam: 0,
-    getNextPageParam: page => page.nextOffset,
-    staleTime: 60_000,
   });
   const items = useMemo<SearchItem[]>(() => searching
     ? [...new Map((search.data?.pages ?? []).flatMap(page => page.items).map(item => [`${item.type}:${item.id}`,item])).values()]

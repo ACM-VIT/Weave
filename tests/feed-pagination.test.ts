@@ -403,3 +403,13 @@ test('an explicit multi-page refresh may replace catalogue pages with personaliz
   assert.equal((await controller.load(null,signal)).mode,'personalized');
   assert.equal((await controller.load('next',signal)).mode,'personalized');
 });
+
+
+test('page prefetch starts with six remaining cards and stops for background, offline, failure or outstanding work', async () => {
+  const {shouldPrefetchFeedPage}=await import('../src/services/feedPagination');
+  const ready={remaining:6,hasNextPage:true,fetching:false,failed:false,active:true,online:true};
+  assert.equal(shouldPrefetchFeedPage(ready),true);
+  for(const changed of [{remaining:7},{remaining:-1},{hasNextPage:false},{fetching:true},{failed:true},{active:false},{online:false}]) {
+    assert.equal(shouldPrefetchFeedPage({...ready,...changed}),false);
+  }
+});

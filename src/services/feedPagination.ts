@@ -181,3 +181,11 @@ export class FeedPaginationController {
     }
   }
 }
+
+/** Prefetch a single page while six unseen cards still provide reading time. */
+export function shouldPrefetchFeedPage(input: {
+  remaining: number; hasNextPage: boolean; fetching: boolean; failed: boolean; active: boolean; online: boolean;
+}) {
+  return input.remaining >= 0 && input.remaining <= 6 && input.hasNextPage
+    && !input.fetching && !input.failed && input.active && input.online;
+}
