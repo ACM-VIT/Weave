@@ -62,6 +62,8 @@ const WEB_FEED_LIST_STYLE =
     : null;
 const VIEWABILITY_CONFIG = { itemVisiblePercentThreshold: 50 } as const;
 const ACTIVITY_FLUSH_INTERVAL_MS = 8_000;
+const REACTION_ACTIONS = new Set(['like', 'unlike', 'dislike', 'undislike']);
+type PendingActivityFailure = { ownerId: string; generation: number; eventIds: string[]; retrying: boolean };
 
 export default function HomeScreen() {
   const {
@@ -71,6 +73,7 @@ export default function HomeScreen() {
     settleLikesGivenCountAdjustments,
   } = useAuth();
   const queryClient = useQueryClient();
+  const viewerGeneration = authSessionLifecycle.currentGeneration();
   const feedQueryKey = useMemo(() => getFeedQueryKey(user?.user_id), [user?.user_id]);
   const listRef = useRef<FlatList<{ feedId: string; repository: RepositoryData }> | null>(null);
   const committedViewerKey = useRef(feedQueryKey);
@@ -103,16 +106,39 @@ export default function HomeScreen() {
   const pageHeight = viewport.height;
   const listKey = `${pageWidth}-${pageHeight}`;
   const committedListKey = useRef(listKey);
+  const [activityFailure, setActivityFailure] = useState<PendingActivityFailure | null>(null);
+  const visibleActivityFailure = activityFailure && activityFailure.ownerId === user?.user_id
+    && activityFailure.generation === viewerGeneration ? activityFailure : null;
 
   
   const flushActivityBatch = useCallback(async () => {
     if (!activityOutbox) return { delivered: 0, invalidatedFeed: false, deferred: false };
-    const generation = authSessionLifecycle.currentGeneration();
+    const generation = viewerGeneration;
+    authSessionLifecycle.assertCurrent(generation);
     const token = await SecureStore.getItemAsync('access_token');
     authSessionLifecycle.assertCurrent(generation);
     if (!token) return { delivered: 0, invalidatedFeed: false, deferred: true };
     return activityOutbox.flush(token, generation);
-  }, [activityOutbox]);
+  }, [activityOutbox, viewerGeneration]);
+
+  const retryPendingActivity = useCallback(async () => {
+    if (!visibleActivityFailure || visibleActivityFailure.retrying
+      || !authSessionLifecycle.isCurrent(visibleActivityFailure.generation)) return;
+    const { ownerId, generation } = visibleActivityFailure;
+    setActivityFailure(current => current?.ownerId === ownerId && current.generation === generation
+      ? { ...current, retrying: true } : current);
+    try {
+      // Flush retries the retained event, including failed local persistence.
+      // Never enqueue again: its UUID, timestamp and attribution are immutable.
+      await flushActivityBatch();
+    } catch { /* Keep pending feedback until an actual acknowledgement arrives. */ }
+    finally {
+      if (authSessionLifecycle.isCurrent(generation)) {
+        setActivityFailure(current => current?.ownerId === ownerId && current.generation === generation
+          ? { ...current, retrying: false } : current);
+      }
+    }
+  }, [flushActivityBatch, visibleActivityFailure]);
 
 
   const {
@@ -176,6 +202,7 @@ export default function HomeScreen() {
   }, [data, feedItems, listKey, pageHeight, feedQueryKey, pagination, queryClient]);
 
   const handleQueueActivity = useCallback((repository: RepositoryData, event: ActivityInput, flushNow?: boolean) => {
+    if (!authSessionLifecycle.isCurrent(viewerGeneration)) return;
     const currentLikeOverrides = queryClient.getQueryData<ProfileLikeOverrides>(
       profileLikeOverridesQueryKey(user?.user_id),
     );
@@ -193,7 +220,7 @@ export default function HomeScreen() {
     );
     if (!activityOutbox) return;
 
-    const generation = authSessionLifecycle.currentGeneration();
+    const generation = viewerGeneration;
     void activityOutbox.enqueue(event, (queuedActivity) => {
       queryClient.setQueryData<ProfileLikeOverrides>(
         profileLikeOverridesQueryKey(user?.user_id),
@@ -205,8 +232,8 @@ export default function HomeScreen() {
       if (flushNow || await activityOutbox.pendingCount() >= 10) {
         await flushActivityBatch();
       }
-    }).catch(() => undefined);
-  }, [activityOutbox, adjustLikesGivenCount, feedQueryKey, flushActivityBatch, queryClient, user?.user_id]);
+    }).catch(() => undefined); // The owner-bound outbox publishes retained recovery state.
+  }, [activityOutbox, adjustLikesGivenCount, feedQueryKey, flushActivityBatch, queryClient, user?.user_id, viewerGeneration]);
 
   const handleSavedChange = useCallback((
     repository: RepositoryData,
@@ -252,14 +279,23 @@ export default function HomeScreen() {
   }, [user]);
 
   useEffect(() => {
-    if (!activityOutbox) return;
-    const generation = authSessionLifecycle.currentGeneration();
+    if (!activityOutbox || !user?.user_id) return;
+    const generation = viewerGeneration;
+    const unsubscribePending = activityOutbox.subscribePending(events => {
+      if (!authSessionLifecycle.isCurrent(generation)) return;
+      const eventIds = events.filter(event => REACTION_ACTIONS.has(event.action)).map(event => event.event_id);
+      setActivityFailure(current => eventIds.length ? {
+        ownerId: user.user_id, generation, eventIds,
+        retrying: current?.ownerId === user.user_id && current.generation === generation && current.retrying,
+      } : null);
+    });
     const unsubscribe = activityOutbox.subscribe(({
       acknowledgedActivities = [],
       invalidatedFeed,
       feedVersion,
     }) => {
-      if (!invalidatedFeed || !authSessionLifecycle.isCurrent(generation)) return;
+      if (!authSessionLifecycle.isCurrent(generation)) return;
+      if (!invalidatedFeed) return;
       settleLikesGivenCountAdjustments(acknowledgedActivities.map((activity) => activity.event_id));
       const overrides = queryClient.getQueryData<ProfileLikeOverrides>(
         profileLikeOverridesQueryKey(user?.user_id),
@@ -289,6 +325,7 @@ export default function HomeScreen() {
     return () => {
       stopLifecycle();
       unsubscribe();
+      unsubscribePending();
     };
   }, [
     activityOutbox,
@@ -298,6 +335,7 @@ export default function HomeScreen() {
     queryClient,
     settleLikesGivenCountAdjustments,
     user?.user_id,
+    viewerGeneration,
   ]);
 
   const visiblePages = useRef(data?.pages);
@@ -454,6 +492,14 @@ export default function HomeScreen() {
           viewabilityConfig={VIEWABILITY_CONFIG}
         />
         <FeedHeader pageWidth={pageWidth} discovery={data?.pages[0]?.mode === 'discovery'} onRefresh={refreshFeed} refreshing={resettingSession || (isFetching && !isFetchingNextPage)} statusMessage={sessionError} />
+        {visibleActivityFailure && <View style={styles.activityFailure} accessibilityLiveRegion="polite">
+          <Text style={styles.activityFailureText}>Your reaction is pending. It could not be saved or sent.</Text>
+          <Pressable accessibilityRole="button" accessibilityLabel="Retry pending activity"
+            accessibilityState={{ disabled: visibleActivityFailure.retrying, busy: visibleActivityFailure.retrying }}
+            disabled={visibleActivityFailure.retrying} onPress={retryPendingActivity} style={styles.activityRetry}>
+            <Text style={styles.retryText}>{visibleActivityFailure.retrying ? 'Retrying…' : 'Retry'}</Text>
+          </Pressable>
+        </View>}
       </View>
     </View>
   );
@@ -482,6 +528,13 @@ function patchConfirmedProfileRepositories(
 }
 
 const styles = StyleSheet.create({
+  activityFailure: {
+    position: 'absolute', top: 100, left: 12, right: 12, zIndex: 8,
+    padding: 12, borderRadius: 12, borderWidth: 1, borderColor: REFERENCE_THEME.accent,
+    backgroundColor: REFERENCE_THEME.background,
+  },
+  activityFailureText: { color: REFERENCE_THEME.text, fontFamily: 'NataSans-Regular', fontSize: 14, lineHeight: 20 },
+  activityRetry: { minHeight: 44, justifyContent: 'center', alignSelf: 'flex-start', paddingHorizontal: 12 },
   outer: {
     flex: 1,
     alignItems: 'center',

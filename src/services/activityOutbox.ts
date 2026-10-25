@@ -38,6 +38,7 @@ export type ActivityOutboxDependencies = ActivityPersistence & {
 };
 
 type ActivityListener = (result: ActivityFlushResult) => void | Promise<void>;
+type PendingActivityListener = (events: readonly QueuedActivity[]) => void;
 
 export class DurableActivityOutbox {
   private events: QueuedActivity[] = [];
@@ -50,6 +51,11 @@ export class DurableActivityOutbox {
   private readonly prepared = new Map<string, QueuedActivity>();
   private flushPromise: Promise<ActivityFlushResult> | null = null;
   private readonly listeners = new Set<ActivityListener>();
+  private readonly pendingListeners = new Set<PendingActivityListener>();
+  private readonly pendingFeedback = new Map<string, QueuedActivity>();
+  // Local acknowledgement cleanup can fail after the server confirmed an ID.
+  // Keep it replayable on disk, without presenting it as an unconfirmed action.
+  private readonly confirmedIds = new Set<string>();
   private retryDelayMs = 1_000;
   private retryNotBefore = 0;
   private feedResetGeneration = 0;
@@ -66,6 +72,7 @@ export class DurableActivityOutbox {
     const restoration = this.dependencies.load().then(stored => {
       this.events = [...new Map(stored.map(event => [event.event_id, event])).values()];
       this.queuedIds = new Set(this.events.map(event => event.event_id));
+      this.markPending(this.events);
     });
     this.ready = restoration;
     // A failed read/import blocks this operation, not every later attempt after storage recovers.
@@ -87,6 +94,37 @@ export class DurableActivityOutbox {
       });
     }
     return () => this.listeners.delete(listener);
+  }
+
+  /** Owner-bound recovery state replays on Home remount; only acknowledgement clears IDs. */
+  subscribePending(listener: PendingActivityListener): () => void {
+    this.pendingListeners.add(listener);
+    this.deliverPending(listener);
+    return () => this.pendingListeners.delete(listener);
+  }
+
+  private deliverPending(listener: PendingActivityListener): void {
+    try { listener([...this.pendingFeedback.values()]); }
+    catch { /* UI observers must not alter queue durability or delivery. */ }
+  }
+
+  private markPending(events: readonly QueuedActivity[]): void {
+    let changed = false;
+    for (const event of events) {
+      if (!this.confirmedIds.has(event.event_id) && !this.pendingFeedback.has(event.event_id)) {
+        this.pendingFeedback.set(event.event_id, event); changed = true;
+      }
+    }
+    if (changed) for (const listener of this.pendingListeners) this.deliverPending(listener);
+  }
+
+  private confirmPending(ids: ReadonlySet<string>): void {
+    let changed = false;
+    for (const eventId of ids) {
+      this.confirmedIds.add(eventId);
+      changed = this.pendingFeedback.delete(eventId) || changed;
+    }
+    if (changed) for (const listener of this.pendingListeners) this.deliverPending(listener);
   }
 
   private async deliverFeedReset(
@@ -148,12 +186,17 @@ export class DurableActivityOutbox {
       this.prepared.set(event.event_id, event);
     }
     onPrepared?.(event);
-    await this.mutate(async () => {
-      await this.restore();
-      this.retainPrepared();
-      // Keep failed appends in memory and retry before any later delivery.
-      await this.ensureDurable();
-    });
+    try {
+      await this.mutate(async () => {
+        await this.restore();
+        this.retainPrepared();
+        // Keep failed appends in memory and retry before any later delivery.
+        await this.ensureDurable();
+      });
+    } catch (error) {
+      this.markPending([event]);
+      throw error;
+    }
     return event;
   }
 
@@ -172,6 +215,9 @@ export class DurableActivityOutbox {
     if (this.flushPromise) return this.flushPromise;
     const operation = this.flushInternal(token, generation);
     this.flushPromise = operation;
+    void operation.catch(error => {
+      if (!(error instanceof SessionChangedError)) this.markPending([...this.events, ...this.prepared.values()]);
+    });
     void operation.finally(() => {
       if (this.flushPromise === operation) this.flushPromise = null;
     }).catch(() => undefined);
@@ -199,6 +245,7 @@ export class DurableActivityOutbox {
 
     const now = this.dependencies.now ?? Date.now;
     if (now() < this.retryNotBefore) {
+      this.markPending(this.events);
       return { delivered: 0, invalidatedFeed: false, deferred: true };
     }
 
@@ -223,6 +270,7 @@ export class DurableActivityOutbox {
         if (confirmed.acknowledgedIds.size === 0) {
           throw new Error('The activity service did not acknowledge any queued events.');
         }
+        this.confirmPending(confirmed.acknowledgedIds);
         // Server-confirmed feed changes must notify/retain their reset even if local cleanup fails.
         delivered += confirmed.acknowledgedIds.size;
         invalidatedFeed ||= confirmed.invalidatesFeed;
@@ -244,6 +292,7 @@ export class DurableActivityOutbox {
           for (const eventId of acknowledgement.acknowledgedIds) {
             this.queuedIds.delete(eventId);
             this.undurable.delete(eventId);
+            this.confirmedIds.delete(eventId);
           }
           return acknowledgement;
         });

@@ -12,19 +12,21 @@ import StepHeader from "@/components/onboarding/StepHeader";
 import { INTEREST_CATEGORIES } from "@/constants/onboarding";
 
 export default function Step3() {
-  const { data: onboardingData } = useOnboarding();
+  const { data: onboardingData, updateData } = useOnboarding();
   const selectedCategoryIds = onboardingData.skills ?? [];
-  const [selectedInterests, setSelectedInterests] = useState<string[]>(onboardingData.interests ?? []);
-  const { finishOnboarding } = useAuth();
+  const selectedInterests = onboardingData.interests ?? [];
+  const { completeOnboarding: saveOnboarding, reconcileOnboarding, onboardingSave } = useAuth();
+  const needsConfirmation = onboardingSave.status === 'unknown' || onboardingSave.status === 'checking';
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState("");
 
   const toggleInterest = (keyword: string) => {
-    setSelectedInterests((prev) =>
-      prev.includes(keyword)
-        ? prev.filter((k) => k !== keyword)
-        : [...prev, keyword]
-    );
+    updateData((previous) => {
+      const interests = previous.interests ?? [];
+      return { interests: interests.includes(keyword)
+        ? interests.filter((value) => value !== keyword)
+        : [...interests, keyword] };
+    });
   };
 
   const completeOnboarding = async () => {
@@ -32,7 +34,7 @@ export default function Step3() {
       setIsSubmitting(true);
       setErrorMsg("");
       try {
-        await finishOnboarding({
+        await saveOnboarding({
           ...onboardingData,
           username: onboardingData.username || "",
           full_name: onboardingData.full_name || "",
@@ -48,6 +50,12 @@ export default function Step3() {
         setIsSubmitting(false);
       }
     }
+  };
+
+  const checkSaveStatus = async () => {
+    setErrorMsg('');
+    try { await reconcileOnboarding(); }
+    catch (error) { setErrorMsg(error instanceof Error ? error.message : 'Could not check save status. Try again.'); }
   };
 
   return (
@@ -138,17 +146,22 @@ export default function Step3() {
         </Text>
       )}
 
-      {errorMsg ? (
-        <Text style={{ color: "#FF453A", fontSize: 14, marginTop: 4, textAlign: "center" }}>
-          {errorMsg}
+      {onboardingSave.message || errorMsg ? (
+        <Text accessibilityLiveRegion="polite" style={{ color: "#FF453A", fontSize: 14, marginTop: 4, textAlign: "center" }}>
+          {onboardingSave.message || errorMsg}
         </Text>
       ) : null}
+
+      {needsConfirmation ? <View style={{ marginTop: 12 }}>
+        <PrimaryButton title={onboardingSave.status === 'checking' ? 'Checking save...' : 'Check save status'}
+          onPress={checkSaveStatus} disabled={onboardingSave.status === 'checking' || isSubmitting} />
+      </View> : null}
 
       <View style={{ marginTop: selectedInterests.length < 5 ? 8 : 20 }}>
         <PrimaryButton
           title={isSubmitting ? "Saving..." : "Finish"}
           onPress={completeOnboarding}
-          disabled={selectedInterests.length < 5 || isSubmitting}
+          disabled={selectedInterests.length < 5 || isSubmitting || onboardingSave.status !== 'idle'}
         />
       </View>
 

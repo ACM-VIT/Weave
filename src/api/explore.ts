@@ -25,7 +25,8 @@ export async function fetchExploreRepos(
   const data = await apiV2<{ items: RepositoryApiPayload[]; period?: string; available_periods?: string[]; captured_at?: string }>(path, { signal }, token);
   const items = tab === 'Trending' ? data.items.map(item => mapTrendingRepository(item, data.period ?? 'daily', data.captured_at ?? null)).filter((item): item is NonNullable<typeof item> => item !== null) : mapRepositoryList(data.items);
 
-  const nextOffset = getNextExploreOffset(tab, offset, items.length);
+  // Offsets count server rows, including entries rejected by normalization.
+  const nextOffset = getNextExploreOffset(tab, offset, data.items.length);
 
   return { items, nextOffset, availablePeriods: data.available_periods, period: data.period };
 }

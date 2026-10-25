@@ -12,8 +12,9 @@
     overscroll-behavior-x: none;
     background-color: #050605;
   }
-  input, textarea {
-    outline: none !important;
+  input:focus-visible, textarea:focus-visible {
+    outline: 2px solid #63E08A !important;
+    outline-offset: 3px;
   }
 }
 

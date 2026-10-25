@@ -1,5 +1,5 @@
 import React from "react";
-import { Text, TouchableOpacity, View } from "react-native";
+import { Text, Pressable, View, Platform } from "react-native";
 
 type TechChipProps = {
   title: string;
@@ -14,9 +14,24 @@ export default function TechChip({
   selected = false,
   onPress,
 }: TechChipProps) {
+  // RN Web's checkbox responder handles Enter, but not Space (unlike buttons).
+  // Keep the native press path and add only the missing web key behavior.
+  const keyboardProps = Platform.OS === 'web' ? {
+    onKeyDown: (event: React.KeyboardEvent) => {
+      if (event.key === ' ') {
+        event.preventDefault();
+        if (!event.repeat) onPress?.();
+      }
+    },
+  } : {};
+
   return (
-    <TouchableOpacity
-      activeOpacity={0.8}
+    <Pressable
+      accessibilityRole="checkbox"
+      accessibilityLabel={title}
+      accessibilityState={{ checked: selected }}
+      aria-checked={selected}
+      {...keyboardProps}
       onPress={onPress}
       className={`rounded-xl px-3 py-2 mr-2 mb-2 flex-row items-center ${
         selected
@@ -38,6 +53,6 @@ export default function TechChip({
       >
         {selected ? "×" : "+"}
       </Text>
-    </TouchableOpacity>
+    </Pressable>
   );
 }

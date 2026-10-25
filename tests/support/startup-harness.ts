@@ -59,6 +59,7 @@ export function startup({
   let pendingMarkerWrite: Promise<void> | undefined;
   let setExternalRestoreBlocked: (value: string | null) => void = () => { throw new Error('real storage required'); };
   let callbackScreen: React.ComponentType | undefined;
+  let tokenReadOverride: (() => Promise<string | null>) | undefined;
   let auth!: {
     user: Viewer | null;
     isLoading: boolean;
@@ -70,6 +71,9 @@ export function startup({
     settleLikesGivenCountAdjustments: (eventIds: readonly string[]) => void;
     checkOnboardingStatus: () => Promise<void>;
     finishOnboarding: (data: import('../../src/api/onboarding').OnboardingData) => Promise<void>;
+    completeOnboarding: (data: { username: string; full_name: string; date_of_birth: string; interests: string[] }) => Promise<void>;
+    onboardingSave: { status: string; message: string | null };
+    reconcileOnboarding: () => Promise<void>;
   };
   session.promise.then(token => { storedToken = token; });
   const router = { replace: (path: string) => { redirects.push(path); } };
@@ -152,7 +156,7 @@ export function startup({
     setExternalRestoreBlocked = value => { restoreBlocked = value; };
     const storage = {
       getStorageItem: (key: string) => key === 'access_token'
-        ? storedToken === undefined ? session.promise : Promise.resolve(storedToken)
+        ? tokenReadOverride ? tokenReadOverride() : storedToken === undefined ? session.promise : Promise.resolve(storedToken)
         : Promise.resolve(restoreBlocked),
       getStorageItemStrict: async (key: string) => key === 'access_token' ? storedToken ?? null : restoreBlocked,
       setStorageItem: async (key: string, value: string) => {
@@ -221,6 +225,7 @@ export function startup({
     },
     get storedToken() { return storedToken; },
     setStoredToken(token: string) { storedToken = token; },
+    setTokenReadOverride(next: (() => Promise<string | null>) | undefined) { tokenReadOverride = next; },
     setProfileRequest(request: Promise<Viewer>) { profileRequest = request; },
     setRefreshRequest(request: Promise<string>) { refreshRequest = request; },
     navigate(next: string[]) { segments.splice(0, segments.length, ...next); root.update(React.createElement(Layout)); },

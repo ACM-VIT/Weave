@@ -4,8 +4,8 @@ import {authSessionLifecycle} from '@/api/session-lifecycle';
 import {takeFeedNavigation,type FeedNavigationAttribution} from '@/services/feedImpressionAttribution';
 import {
   ActivityIndicator,
-  Alert,
   Linking,
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -43,6 +43,7 @@ import { useAuth } from '@/store/AuthContext';
 import { formatCompactCount } from '@/utils/format-count';
 import { prepareReadmePreview, prepareReadmeSummaryDocument } from '@/utils/readme';
 import { getStorageItem } from '@/utils/storage';
+import { openRepositoryOnGitHub } from '@/services/repositoryGithubOpen';
 
 type ActionProps = {
   accessibilityLabel: string;
@@ -120,6 +121,7 @@ export function RepositoryDetailScreen({ repositoryId,navigationToken }: { repos
   const [shareVisible, setShareVisible] = useState(false);
   const [readmeVisible, setReadmeVisible] = useState(false);
   const [summaryVisible, setSummaryVisible] = useState(false);
+  const [githubOpenFailedFor, setGithubOpenFailedFor] = useState<string | null>(null);
 
   const repositoryQuery = useQuery({
     queryKey: repositoryDetailQueryKey(repositoryId, viewerUserId),
@@ -171,12 +173,14 @@ export function RepositoryDetailScreen({ repositoryId,navigationToken }: { repos
 
   const openGithub = useCallback(async () => {
     if (!repository) return;
-    try {
-      await Linking.openURL(repository.githubUrl);
-      await queueActivity('github_open').catch(() => undefined);
-    } catch {
-      Alert.alert('Unable to open GitHub', 'Please try again in a moment.');
-    }
+    setGithubOpenFailedFor(null);
+    const opened = await openRepositoryOnGitHub(repository.id, repository.githubUrl, {
+      open: (url) => Linking.openURL(url),
+      platform: Platform.OS,
+      browser: Platform.OS === 'web' && typeof window !== 'undefined' ? window : undefined,
+      onOpened: () => queueActivity('github_open'),
+    });
+    if (!opened) setGithubOpenFailedFor(repository.id);
   }, [queueActivity, repository]);
 
   if (!repositoryId) {
@@ -375,6 +379,9 @@ export function RepositoryDetailScreen({ repositoryId,navigationToken }: { repos
           <ExternalLink color={REFERENCE_THEME.text} size={18} />
           <Text style={styles.githubButtonLabel}>Open on GitHub</Text>
         </Pressable>
+        {githubOpenFailedFor === repository.id ? (
+          <Text accessibilityRole="alert" style={styles.sectionBody}>Unable to open GitHub. Please try again.</Text>
+        ) : null}
       </ScrollView>
 
       <SavePopup

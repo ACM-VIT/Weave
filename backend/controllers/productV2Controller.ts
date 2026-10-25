@@ -131,18 +131,16 @@ export async function getUser(req: AuthRequest, res: Response): Promise<void> {
 
 export async function updateMe(req: AuthRequest, res: Response): Promise<void> {
   const id = userId(req, res); if (!id) return;
-  const allowed = ['username', 'full_name', 'date_of_birth', 'bio', 'avatar_url'];
+  const allowed = ['username', 'full_name', 'date_of_birth', 'bio'];
   if (!req.body || Object.keys(req.body).some((key) => !allowed.includes(key))) return sendError(res, 400, 'Unsupported profile field.');
   const usernameValue = req.body.username === undefined ? undefined : normalizeUsername(req.body.username) ?? undefined;
   const fullName = req.body.full_name === undefined ? undefined : text(req.body.full_name, 100);
   const dateOfBirth = req.body.date_of_birth === undefined ? undefined : req.body.date_of_birth;
   const bio = req.body.bio === undefined ? undefined : text(req.body.bio, 2_000);
-  const avatarUrl = req.body.avatar_url === undefined ? undefined : text(req.body.avatar_url, 2_048);
   if ((req.body.username !== undefined && usernameValue === undefined)
     || (req.body.full_name !== undefined && fullName === undefined)
     || (req.body.date_of_birth !== undefined && !isValidDateOfBirth(dateOfBirth))
-    || (req.body.bio !== undefined && bio === undefined)
-    || (req.body.avatar_url !== undefined && avatarUrl === undefined)) {
+    || (req.body.bio !== undefined && bio === undefined)) {
     return sendError(res, 400, 'Invalid profile value.');
   }
   try {
@@ -153,8 +151,7 @@ export async function updateMe(req: AuthRequest, res: Response): Promise<void> {
           (username::text IS DISTINCT FROM COALESCE(${usernameValue ?? null},username::text)
             OR full_name IS DISTINCT FROM CASE WHEN ${req.body.full_name !== undefined} THEN ${fullName ?? null} ELSE full_name END
             OR date_of_birth IS DISTINCT FROM CASE WHEN ${req.body.date_of_birth !== undefined} THEN ${dateOfBirth ?? null}::date ELSE date_of_birth END
-            OR bio IS DISTINCT FROM CASE WHEN ${req.body.bio !== undefined} THEN ${bio ?? null} ELSE bio END
-            OR avatar_url IS DISTINCT FROM CASE WHEN ${req.body.avatar_url !== undefined} THEN ${avatarUrl ?? null} ELSE avatar_url END) AS profile_changed
+            OR bio IS DISTINCT FROM CASE WHEN ${req.body.bio !== undefined} THEN ${bio ?? null} ELSE bio END) AS profile_changed
         FROM app.users WHERE user_id=${id}::uuid FOR UPDATE`;
       if (!profiles[0]) throw Object.assign(new Error('User profile not found.'), { statusCode: 404 });
       const { profile_changed, ...profile } = profiles[0];
@@ -166,7 +163,6 @@ export async function updateMe(req: AuthRequest, res: Response): Promise<void> {
           full_name=CASE WHEN ${req.body.full_name !== undefined} THEN ${fullName ?? null} ELSE full_name END,
           date_of_birth=CASE WHEN ${req.body.date_of_birth !== undefined} THEN ${dateOfBirth ?? null}::date ELSE date_of_birth END,
           bio=CASE WHEN ${req.body.bio !== undefined} THEN ${bio ?? null} ELSE bio END,
-          avatar_url=CASE WHEN ${req.body.avatar_url !== undefined} THEN ${avatarUrl ?? null} ELSE avatar_url END,
           profile_version=profile_version+1,updated_at=now()
         WHERE user_id=${id}::uuid
         RETURNING user_id,username,full_name,date_of_birth,bio,github_handle,avatar_url,interests,skills,tech_stack,
@@ -218,13 +214,13 @@ export async function completeOnboardingWithProfile(req: AuthRequest, res: Respo
 
 async function completeOnboardingRequest(req: AuthRequest, res: Response, atomic: boolean): Promise<void> {
   const id = userId(req, res); if (!id) return;
+  if (Object.hasOwn(req.body ?? {}, 'avatar_url')) return sendError(res, 400, 'Use the profile photo upload endpoint.');
   const profile = atomic ? req.body?.profile : undefined;
   const username = atomic ? normalizeUsername(profile?.username) : null;
   const fullName = atomic ? text(profile?.full_name, 100, true) : null;
-  const avatarUrl = atomic ? text(profile?.avatar_url ?? null, 2_048) : null;
   if (atomic && (!profile || typeof profile !== 'object' || Array.isArray(profile)
-    || Object.keys(profile).some(key => !['username','full_name','date_of_birth','avatar_url'].includes(key))
-    || !username || !fullName || !isValidDateOfBirth(profile.date_of_birth) || avatarUrl === undefined)) {
+    || Object.keys(profile).some(key => !['username','full_name','date_of_birth'].includes(key))
+    || !username || !fullName || !isValidDateOfBirth(profile.date_of_birth))) {
     return sendError(res, 400, 'Invalid onboarding profile.');
   }
   const bio = req.body?.bio === undefined ? null : text(req.body.bio, 2_000);
@@ -269,7 +265,6 @@ async function completeOnboardingRequest(req: AuthRequest, res: Response, atomic
         username=CASE WHEN ${atomic} THEN ${username} ELSE username END,
         full_name=CASE WHEN ${atomic} THEN ${fullName ?? null} ELSE full_name END,
         date_of_birth=CASE WHEN ${atomic} THEN ${atomic ? profile.date_of_birth : null}::date ELSE date_of_birth END,
-        avatar_url=CASE WHEN ${atomic} THEN ${avatarUrl ?? null} ELSE avatar_url END,
         bio=CASE WHEN ${atomic} THEN ${bio} ELSE COALESCE(${bio},bio) END,
         interests=${JSON.stringify(interests)}::jsonb,skills=${JSON.stringify(skills)}::jsonb,
         tech_stack=${JSON.stringify(techStack)}::jsonb,onboarding_taxonomy=${JSON.stringify(taxonomy ?? {})}::jsonb,onboarding_completed=true,

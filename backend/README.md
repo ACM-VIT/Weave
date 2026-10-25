@@ -39,7 +39,7 @@ Public API errors use:
 
 Feed, interaction, ingestion, and operations v2 endpoints return their versioned contract directly. Authentication uses `Authorization: Bearer <accessToken>`. The access token lasts 15 minutes. Refresh tokens are rotated in a secure HTTP-only cookie scoped to `/api/auth`. Internal routes require `x-internal-secret`; during rotation they accept `INTERNAL_API_SECRET_PREVIOUS` as well.
 
-All timestamps are ISO 8601 UTC. All IDs described as UUIDs must be valid UUID strings. Request bodies are limited to 256 KB, except canonical internal ingestion, whose JSON parser is applied only after internal-secret authentication and is limited to 8 MiB. List endpoints accept `limit=1..100` and `offset=0..10000` unless stated otherwise.
+All timestamps are ISO 8601 UTC. All IDs described as UUIDs must be valid UUID strings. JSON request bodies are limited to 256 KB, except canonical internal ingestion, whose JSON parser is applied only after internal-secret authentication and is limited to 8 MiB. List endpoints accept `limit=1..100` and `offset=0..10000` unless stated otherwise.
 
 ## Frontend API
 
@@ -63,7 +63,8 @@ Signup/profile creation and ML onboarding enqueue are one backend transaction. O
 | Method and path | Body/query | Result |
 |---|---|---|
 | `GET /api/v2/users/me` | none | Private profile, stats, topic slugs, feed and feedback versions |
-| `PATCH /api/v2/users/me` | Any subset of `{username,full_name,bio,avatar_url}` | Updated profile; unknown fields are rejected. GitHub identity fields are provider-managed and immutable through this endpoint. |
+| `PATCH /api/v2/users/me` | Any subset of `{username,full_name,date_of_birth,bio}` | Updated profile; unknown fields are rejected. GitHub identity fields and avatar URLs are server-managed; submit photos only through the upload endpoint. |
+| `PUT /api/v2/users/me/avatar` | Raw `application/octet-stream` image bytes, at most 5 MiB; `If-Match: "<profile_version>"` | Owner-scoped sanitized public WebP URL and profile version; JPEG, PNG, still WebP input only |
 | `GET /api/v2/users/:userId` | none | Public active profile and stats |
 | `PUT /api/v2/users/:userId/follow` | none | Idempotently follows; `204` |
 | `DELETE /api/v2/users/:userId/follow` | none | Idempotently unfollows; `204` |
@@ -72,6 +73,7 @@ Signup/profile creation and ML onboarding enqueue are one backend transaction. O
 | `GET /api/v2/users/:userId/likes-given` | `limit`, `offset` | Repositories liked by the user |
 | `GET /api/v2/onboarding/status` | none | `{completed,profile_version}` |
 | `PUT /api/v2/onboarding` | `{bio?,topics:[slug,...]}` | Replaces interests, increments profile version, enqueues ML onboarding |
+| `PUT /api/v2/onboarding/complete` | `{profile:{username,full_name,date_of_birth},bio?,interests?,skills?,tech_stack?,taxonomy_selections?}` (or `topics` instead of category arrays) | Atomically completes profile/preferences and returns the authoritative `viewer`; avatar URLs are rejected and existing photos are preserved |
 
 Topic slugs are lowercase letters/numbers/hyphens, 1-50 characters. Onboarding accepts 1-50 unique topics.
 
@@ -862,3 +864,59 @@ ORDER BY source,event_type;
 This is an observation ratio, not a unique-user conversion rate; repeated actions
 may exceed one per impression. Missing impressions yield NULL. Product-detail
 actions without feed attribution are outside this query.
+
+## Profile photo storage (operator prerequisite; no automatic provisioning)
+
+Google OAuth uses the matching provider identity's `picture`/`avatar_url` as an
+initial default only. Existing avatars, including custom uploads, are preserved
+on later OAuth/password login. Missing or failed photos retain initials. Generic
+profile PATCH and onboarding reject supplied `avatar_url` values, including null.
+
+`PUT /api/v2/users/me/avatar` requires the application Bearer token and raw
+`application/octet-stream` bytes (no multipart, filename, query owner or URL).
+The client must quote its authoritative current `profile_version` in `If-Match`.
+Missing preconditions return 428, malformed/wildcard/weak/multiple values return
+400, and stale versions return 409. The version is checked before expensive
+work and again under the user row lock immediately before updating. Thus a
+late old/unknown upload cannot overwrite a newer confirmed photo. A 409 requires
+an explicit owner/generation-verified profile read before another attempt; no
+automatic mutation retry is performed. Unresolved sent operations remain gated
+across editor close/unmount/remount for the same authentication generation.
+An early read of an old photo is not proof of rollback; CAS fences any later
+old-server write against a newer confirmation.
+
+Only fully decoded JPEG, PNG and still WebP are accepted; HEIC/HEIF, SVG, GIF,
+APNG, animated WebP, AVIF, TIFF, BMP, PDF and other formats are rejected. Limits:
+5 MiB input, 16,777,216 pixels, 8192 pixels per side. Output is an auto-oriented,
+center-cropped WebP up to 512 × 512, with no enlargement or retained metadata,
+and at most 1 MiB. Original bytes are never stored. Authentication and admission
+precede binary parsing; unrelated JSON limits remain unchanged. Redis admission
+fails closed, limits each owner to 5 attempts/minute, and each API process admits
+at most two active uploads without a queue.
+
+Before an authorized rollout, an operator must create/verify a dedicated
+**public-read** bucket in the existing Supabase project and set
+`PROFILE_AVATAR_BUCKET` (for example, `avatars`). Anyone with a photo's image
+link can view it. Restrict bucket objects to `image/webp` and an appropriate
+1 MiB output limit; deny direct anonymous/authenticated inserts, updates and
+deletes. Only the existing server service-role configuration performs writes;
+it bypasses RLS, so backend owner/path checks are mandatory. No frontend
+Supabase key, new credential, broad Storage policy or startup bucket creation
+is needed. An unset/unavailable bucket returns upload 503 without preventing
+application startup. Verify synthetic upload/read/remove, headers, quota/egress
+and cache behavior separately; source tests do not establish live readiness.
+
+Objects use generated `<authenticated-owner-uuid>/<random-uuid>.webp` keys and
+`upsert: false`; input filenames/paths are ignored. Upload finishes before the
+profile transaction; the previous managed object is deleted only after a
+confirmed commit. A known pre-COMMIT failure cleans up the new object. An
+ambiguous COMMIT failure intentionally retains it to avoid deleting an image
+that may already be authoritative. Cleanup failures may leave orphaned objects;
+operators must review retention/cleanup against authoritative database URLs,
+never blindly delete by age or arbitrary external/foreign URLs. Abort/lost
+responses are not proof of rollback; clients check saved state before retrying.
+Body reading has a 20-second absolute budget (not merely an idle timeout).
+Redis admission and SQL waits retain their process slots until actual settlement;
+there is no claim of an end-to-end completion deadline during dependency stalls.
+Image processing has a five-second timeout; dedicated Storage HTTP operations
+have 15-second deadlines without changing authentication transports.

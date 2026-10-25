@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { resolve } from "node:path";
-import test from "node:test";
 import React, { act } from "react";
 import { create } from "react-test-renderer";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -23,9 +22,7 @@ export function repository(id: string): RepositoryData {
   } as RepositoryData;
 }
 
-export // Keep the real row, all four overlays, React state and QueryClient observers.
-// Replace only native rendering/animation and external I/O boundaries.
-function feed(ids: string[], reducedMotion = false, attribution?: { ownerId: string; repository: Partial<RepositoryData>; boundary?: React.ReactNode; platform?: string; viewable?: boolean }) {
+export function feed(ids: string[], reducedMotion = false, attribution?: { ownerId: string; repository: Partial<RepositoryData>; boundary?: React.ReactNode; platform?: string; viewable?: boolean; actualScreen?: boolean }) {
   const client = new QueryClient({ defaultOptions: {
     queries: { retry: false, gcTime: Infinity }, mutations: { retry: false },
   } });
@@ -40,6 +37,7 @@ function feed(ids: string[], reducedMotion = false, attribution?: { ownerId: str
   let loadLists = async () => saveCollections;
   let openExternal: () => Promise<void> = async () => undefined;
   let shareHeight=800;
+  let viewable = attribution?.viewable ?? false;
   let loadReadme: () => Promise<any> = async () => ({ ...repository('canonical'), readmeFull: '# Canonical fetched README' });
   let root: ReturnType<typeof create>;
   const animation = () => ({
@@ -89,7 +87,10 @@ function feed(ids: string[], reducedMotion = false, attribution?: { ownerId: str
     './ReadmeVideoPopup': {ReadmeVideoPopup: 'ReadmeVideoPopup'},
     './ReadmeVideo': {ReadmeVideo: 'ReadmeVideo'},
     './SafeReadmeImage': {SafeReadmeImage: 'SafeReadmeImage', SafeReadmeImageRenderer: 'SafeReadmeImageRenderer'},
-    './DescriptionCard': {SaveSwipeGestureContext: React.createContext(null)},
+    './DescriptionCard': {__esModule: true, default: () => null, SaveSwipeGestureContext: React.createContext(null)},
+    './ReadmeCard': {__esModule: true, default: () => null},
+    './RecommendationReason': {RecommendationReason: () => null},
+    '../follow-button': {FollowButton: () => null},
     '@/components/keyboard/keyboard-layout': {KeyboardSurface: 'KeyboardSurface'},
     'expo-blur': { BlurView: 'BlurView' },
     'expo-haptics': { selectionAsync: async () => undefined, notificationAsync: async () => undefined, NotificationFeedbackType: { Success: 'success' } },
@@ -123,6 +124,7 @@ function feed(ids: string[], reducedMotion = false, attribution?: { ownerId: str
     },
     './RepositoryScreen': { RepositoryScreen: (props: any) => React.createElement('RepositoryScreen', props) },
   };
+  if (attribution?.actualScreen) delete mocks['./RepositoryScreen'];
   const loaded = new Map<string, any>();
   function loadSource(path: string): any {
     const filename = resolve(path);
@@ -136,7 +138,7 @@ function feed(ids: string[], reducedMotion = false, attribution?: { ownerId: str
     const boundary = (specifier: string) => {
       if (specifier in mocks) return mocks[specifier];
       if (specifier.startsWith('@/')) return loadSource(`src/${specifier.slice(2)}.ts`);
-      if (/^\.\/(CommentSheet|ReadmePopup|FeedReadmePopup|save-popup|share-repository-sheet)$/.test(specifier)) {
+      if (/^\.\/(CommentSheet|ReadmePopup|FeedReadmePopup|save-popup|share-repository-sheet|RepositoryScreen)$/.test(specifier)) {
         return loadSource(`src/components/home/${specifier.slice(2)}.tsx`);
       }
       return nativeRequire(specifier);
@@ -153,7 +155,7 @@ function feed(ids: string[], reducedMotion = false, attribution?: { ownerId: str
     loadSource('src/components/home/ReadmePopup.tsx').ReadmePopup,
   ];
   const renderRows = () => React.createElement(QueryClientProvider, { client },
-    ids.map(id => React.createElement(Row, { key: id, isViewable: attribution?.viewable ?? false, repository: { ...repository(id), ...attribution?.repository }, boundary: attribution?.boundary, pageWidth: 400, pageHeight: 800,
+    ids.map(id => React.createElement(Row, { key: id, isViewable: viewable, repository: { ...repository(id), ...attribution?.repository }, boundary: attribution?.boundary, pageWidth: 400, pageHeight: 800,
       onQueueActivity: (event: unknown) => events.push(event) })),
   );
   return {
@@ -171,6 +173,12 @@ function feed(ids: string[], reducedMotion = false, attribution?: { ownerId: str
       });
     },
     setExternalOpen(value: () => Promise<void>) {openExternal=value;},
+    get failureModalVisible() {return root.root.findAllByType('Modal').some(node => node.props.visible);},
+    async setViewable(value: boolean) {viewable=value; await act(async () => root.update(renderRows()));},
+    async pressScreen(label: string) {await act(async () => {
+      root.root.findAllByType('Pressable').find(node => node.props.accessibilityLabel === label)!.props.onPress();
+      await new Promise(resolve => setImmediate(resolve));
+    });},
     setHeight(value:number) {shareHeight=value;},
     setReadme(value: () => Promise<any>) {loadReadme=value;},
     get readmePopupProps() {return root.root.findAllByType(overlayTypes[3])[0]?.props;},

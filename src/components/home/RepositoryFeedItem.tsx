@@ -97,8 +97,7 @@ export function RepositoryFeedItem({
   const visibleStartTime = useRef<number | null>(null);
   const impressionTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const impressionSentRef = useRef(false);
-  const overlaysOpen = isSaveVisible || isShareVisible || isReadmeVisible || isOriginalReadmeVisible || isCommentsVisible;
-  const measurementActive = isViewable && isAppActive && !overlaysOpen;
+  const [githubErrorAttribution, setGithubErrorAttribution] = useState<object | null>(null);
   const {user}=useAuth();
   const queryClient=useQueryClient();
   const generation=authSessionLifecycle.currentGeneration();
@@ -107,6 +106,14 @@ export function RepositoryFeedItem({
   const attribution=React.useMemo(()=>({
     row:feedAttribution(ownerId,{id:repoId,serveId,feedPosition,feedSessionId} as RepositoryData),generation,
   }),[ownerId,repoId,serveId,feedPosition,feedSessionId,generation]);
+  // An old child cleanup must not unblock a replacement row/account's modal.
+  const handleGithubOpenErrorVisibility = React.useCallback((visible: boolean) => {
+    if (visible && !authSessionLifecycle.isCurrent(attribution.generation)) return;
+    setGithubErrorAttribution(current => visible ? attribution : current === attribution ? null : current);
+  }, [attribution]);
+  const overlaysOpen = isSaveVisible || isShareVisible || isReadmeVisible || isOriginalReadmeVisible || isCommentsVisible
+    || githubErrorAttribution === attribution;
+  const measurementActive = isViewable && isAppActive && !overlaysOpen;
   const attributionState=useRef(new WeakMap<object,{original:OriginalFeedImpression|null;deliver:typeof onQueueActivity}>());
   // A row keeps its clock across optimistic callbacks; an old cleanup retains
   // its own owner/row lease and callback rather than reading a replacement row.
@@ -246,6 +253,7 @@ export function RepositoryFeedItem({
             <RepositoryScreen
               commentCount={commentCount}
               isActive={isViewable}
+              onGithubOpenErrorVisibilityChange={handleGithubOpenErrorVisibility}
               isSaved={isSaved}
               onCommentPress={() => setIsCommentsVisible(true)}
               onOwnerPress={onOwnerPress}

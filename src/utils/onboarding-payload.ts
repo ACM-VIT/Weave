@@ -2,14 +2,14 @@ import { ONBOARDING_SKILLS, ONBOARDING_INTERESTS, ONBOARDING_TAXONOMY_VERSION } 
 import { resolveOnboardingTaxonomy } from './onboardingTaxonomy';
 
 export type OnboardingSelections = {
-  bio?: string;
+  bio?: string | null;
   interests?: string[];
   skills?: string[];
   tech_stack?: string[];
 };
 
 export type NormalizedOnboardingPayload = {
-  bio: string | null;
+  bio?: string | null;
   topics: string[];
   interests: string[];
   skills: string[];
@@ -49,12 +49,15 @@ export function buildOnboardingPayload(data: OnboardingSelections): NormalizedOn
   const skills = normalize(selections.skills);
   const techStack = normalize(data.tech_stack);
   const allTopics = [...new Set([...interests, ...skills, ...techStack])];
+  if (allTopics.length > 100) {
+    throw new Error('The combined onboarding profile may contain at most 100 unique slugs.');
+  }
   if (allTopics.length === 0) {
     throw new Error('Choose at least one interest, skill, or technology.');
   }
 
   return {
-    bio: bio || null,
+    ...(data.bio === undefined ? {} : { bio: bio || null }),
     // The deployed backend still reads this legacy field. The new backend uses
     // the structured fields below, so sending both keeps the contract safe
     // during the rollout without losing category information.

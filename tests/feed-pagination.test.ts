@@ -1,3 +1,4 @@
+import { FeedIntentLifecycle, type FeedSessionResult } from '../src/services/feedIntentLifecycle';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { InfiniteQueryObserver, QueryClient, type InfiniteData } from '@tanstack/react-query';
@@ -403,3 +404,46 @@ test('an explicit multi-page refresh may replace catalogue pages with personaliz
   assert.equal((await controller.load(null,signal)).mode,'personalized');
   assert.equal((await controller.load('next',signal)).mode,'personalized');
 });
+
+
+{
+const owner='00000000-0000-4000-8000-000000000035',session='00000000-0000-4000-8000-000000000036';
+
+test('preparation reuses only this call inspection and writes only changed durable intent', async t => {
+ let stored:string|null=null, inspections=0, writes=0, epoch='1', active=false;
+ const deps={read:async()=>stored,write:async(value:string)=>{writes++;stored=value;},assertCurrent:()=>{},
+  inspect:async(id:string):Promise<FeedSessionResult|null>=>{inspections++;return active?{mode:'ordered',session:{session_id:id,epoch,status:'active'}}:null;},
+  send:async(control:FeedSessionControl):Promise<FeedSessionResult>=>{
+   assert.ok(stored?.includes(control.request_id),'a control is durable before I/O');active=true;
+   if(control.kind==='reset')epoch=(BigInt(control.expected_epoch)+1n).toString();
+   return {mode:'ordered',session:{session_id:control.session_id,epoch,status:'active'}};
+  }};
+ const client=new FeedIntentLifecycle(owner,deps);
+ await client.prepare(session);
+ t.diagnostic(`new ordered session: ${inspections} inspections, ${writes} writes (fixture boundaries, not production timing)`);
+ assert.deepEqual([inspections,writes],[1,2],'one authoritative lookup, then durable Begin and acknowledgement');
+ const original=stored;inspections=0;writes=0;
+ await client.prepare(session);
+ assert.deepEqual([inspections,writes],[1,0],'each next page still inspects, without rewriting unchanged state');
+ assert.equal(stored,original);
+ inspections=0;writes=0;
+ await new FeedIntentLifecycle(owner,deps).prepare(session);
+ assert.deepEqual([inspections,writes],[1,0],'restart validates the stored canonical session once');
+ epoch='2';inspections=0;writes=0;
+ await client.prepare(session);
+ assert.deepEqual([inspections,writes],[1,1],'another client epoch is inspected and persisted, never cached away');
+ assert.equal(JSON.parse(stored!).entries[0].epoch,'2');
+});
+
+test('failed acknowledgement persistence retries changed state without reissuing accepted Begin', async()=>{
+ let stored:string|null=null, failAck=true, active=false, sends=0;
+ const client=new FeedIntentLifecycle(owner,{read:async()=>stored,assertCurrent:()=>{},
+  write:async value=>{if(active&&failAck)throw new Error('quota');stored=value;},
+  inspect:async():Promise<FeedSessionResult|null>=>active?{mode:'ordered',session:{session_id:session,epoch:'1',status:'active'}}:null,
+  send:async():Promise<FeedSessionResult>=>{sends++;active=true;return {mode:'ordered',session:{session_id:session,epoch:'1',status:'active'}};}});
+ await assert.rejects(client.prepare(session),/quota/);
+ assert.equal(JSON.parse(stored!).entries[0].pending.length,1);
+ failAck=false;await client.prepare(session);
+ assert.equal(sends,1);assert.equal(JSON.parse(stored!).entries[0].pending.length,0);
+});
+}
