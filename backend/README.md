@@ -920,3 +920,33 @@ Redis admission and SQL waits retain their process slots until actual settlement
 there is no claim of an end-to-end completion deadline during dependency stalls.
 Image processing has a five-second timeout; dedicated Storage HTTP operations
 have 15-second deadlines without changing authentication transports.
+
+### Conditional onboarding recovery
+
+Private viewer responses advertise `onboarding_conditional_save: true`. A client
+may then include the authoritative canonical decimal `profile.expected_version`
+in `PUT /api/v2/onboarding/complete`. The existing user-row lock compares that
+version before any profile, topic, feed or delivery write. A mismatch returns
+`412`, distinct from a username collision (`409`). Versions are validated and
+compared without converting them to JavaScript numbers; no schema migration is
+required. Calls without the optional field retain the existing completion
+semantics, including explicit repeat calls.
+
+The strict nested profile contract is the safety boundary: older handlers reject
+an unknown `expected_version` before SQL. The advertised capability is only a
+compatibility hint, not proof that a mutation completed. Deploy the new backend
+before relying on conditional recovery; mixed/older instances may safely reject
+it. A settled client transport and an incomplete profile read do **not** prove
+that the original server operation stopped.
+
+For an unresolved conditional save, the client retains the originally submitted
+payload and version. After a same-owner/current-session authoritative read, the
+explicit **Retry saved preferences** action replays only that frozen conditional
+request. A delayed original and its replay cannot both advance the same version.
+A replay never falls back to unprotected legacy writes, and its rejection or
+pre-send timeout does not erase the original uncertainty. An authoritative newer
+profile version fences the old request and permits a fresh explicit submission;
+confirmed completion discards late snapshots, including older name/bio fields.
+Initial requests may still use the older `404` fallback, but those unprotected
+flights, and servers without the capability, are never eligible for conditional
+replay. A pending client flight remains gated even if a read is still incomplete.

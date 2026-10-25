@@ -26,7 +26,7 @@ export interface OnboardingCompletionResponse {
   [key: string]: unknown;
 }
 
-export async function setupOnboarding(token: string, data: OnboardingData, policy: { beforeSend?: () => void } = {}) {
+export async function setupOnboarding(token: string, data: OnboardingData, policy: { beforeSend?: () => void; expectedVersion?: string; onLegacyFallback?: () => void; allowLegacyFallback?: boolean } = {}) {
   const generation = authSessionLifecycle.currentGeneration();
   let preferences: ReturnType<typeof buildOnboardingPayload>;
   try { preferences = buildOnboardingPayload(data); }
@@ -34,7 +34,8 @@ export async function setupOnboarding(token: string, data: OnboardingData, polic
     if (error instanceof Error) Object.assign(error, { status: 400 });
     throw error;
   }
-  const profile = { username: data.username, full_name: data.full_name, date_of_birth: data.date_of_birth };
+  const profile = { username: data.username, full_name: data.full_name, date_of_birth: data.date_of_birth,
+    ...(policy.expectedVersion !== undefined ? { expected_version: policy.expectedVersion } : {}) };
   try {
     try {
       const result = await apiV2<{ completed?: boolean; viewer: Record<string, unknown> }>('/onboarding/complete', {
@@ -45,10 +46,12 @@ export async function setupOnboarding(token: string, data: OnboardingData, polic
     } catch (error) {
       authSessionLifecycle.assertCurrent(generation);
       // Only a missing additive route permits the older-server write path.
-      if ((error as { status?: number }).status !== 404) throw error;
+      if ((error as { status?: number }).status !== 404 || policy.allowLegacyFallback === false) throw error;
     }
+    policy.onLegacyFallback?.();
+    const legacyProfile = { username: data.username, full_name: data.full_name, date_of_birth: data.date_of_birth };
     await apiV2('/users/me', {
-      method: 'PATCH', body: JSON.stringify({ ...profile, ...(data.bio !== undefined ? { bio: data.bio } : {}) }),
+      method: 'PATCH', body: JSON.stringify({ ...legacyProfile, ...(data.bio !== undefined ? { bio: data.bio } : {}) }),
     }, token, policy);
     authSessionLifecycle.assertCurrent(generation);
     await apiV2('/onboarding', { method: 'PUT', body: JSON.stringify(preferences) }, token, policy);

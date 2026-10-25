@@ -15,8 +15,8 @@ export default function Step3() {
   const { data: onboardingData, updateData } = useOnboarding();
   const selectedCategoryIds = onboardingData.skills ?? [];
   const selectedInterests = onboardingData.interests ?? [];
-  const { completeOnboarding: saveOnboarding, reconcileOnboarding, onboardingSave } = useAuth();
-  const needsConfirmation = onboardingSave.status === 'unknown' || onboardingSave.status === 'checking';
+  const { completeOnboarding: saveOnboarding, reconcileOnboarding, retryOnboarding, onboardingSave } = useAuth();
+  const needsConfirmation = onboardingSave.status === 'unknown' || onboardingSave.status === 'checking' || onboardingSave.status === 'retryable';
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState("");
 
@@ -56,6 +56,12 @@ export default function Step3() {
     setErrorMsg('');
     try { await reconcileOnboarding(); }
     catch (error) { setErrorMsg(error instanceof Error ? error.message : 'Could not check save status. Try again.'); }
+  };
+
+  const retrySavedPreferences = async () => {
+    setErrorMsg('');
+    try { await retryOnboarding(); }
+    catch (error) { setErrorMsg(error instanceof Error ? error.message : 'Could not retry your saved preferences. Check save status.'); }
   };
 
   return (
@@ -155,6 +161,13 @@ export default function Step3() {
       {needsConfirmation ? <View style={{ marginTop: 12 }}>
         <PrimaryButton title={onboardingSave.status === 'checking' ? 'Checking save...' : 'Check save status'}
           onPress={checkSaveStatus} disabled={onboardingSave.status === 'checking' || isSubmitting} />
+      </View> : null}
+
+      {onboardingSave.status === 'retryable' ? <View style={{ marginTop: 12 }}>
+        <Text style={{ color: 'rgba(235,235,245,0.6)', fontSize: 14, marginBottom: 8, textAlign: 'center' }}>
+          Retries the preferences you originally submitted, not later changes.
+        </Text>
+        <PrimaryButton title="Retry saved preferences" onPress={retrySavedPreferences} disabled={isSubmitting} />
       </View> : null}
 
       <View style={{ marginTop: selectedInterests.length < 5 ? 8 : 20 }}>

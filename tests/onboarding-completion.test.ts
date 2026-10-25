@@ -16,12 +16,13 @@ async function completionFixture() {
   let storedToken: Promise<string | null> = Promise.resolve('original-token');
   let response: Promise<any> = Promise.resolve({ completed: true, ...savedProfile });
   let profileResponse: Promise<any> | undefined;
+  let responseHandler: ((path: string, options: RequestInit) => Promise<any>) | undefined;
   let profile = { ...savedProfile, username: 'before', onboarding_completed: false, likes_given_count: 7 };
   const api = { apiV2: async (path: string, options: RequestInit = {}, token: string, policy: { beforeSend?: () => void } = {}) => {
     policy.beforeSend?.();
     requests.push({ path, method: options.method ?? 'GET', body: options.body ? JSON.parse(String(options.body)) : undefined, token });
     if (path === '/users/me' && !options.method) return profileResponse ?? profile;
-    const saved = await response;
+    const saved = responseHandler ? await responseHandler(path, options) : await response;
     return path === '/onboarding/complete' ? { completed: saved.completed, viewer: saved } : saved;
   }, setSessionExpiredHandler() {}, refreshSession: async () => 'original-token' };
   const onboarding = loadSource('src/api/onboarding.ts', { './client': api, './session-lifecycle': { authSessionLifecycle: lifecycle } });
@@ -45,6 +46,7 @@ async function completionFixture() {
   return { requests, lifecycle, onboarding, act: React.act,
     get auth() { return current; },
     setResponse(next: Promise<any>) { response = next; },
+    setResponseHandler(next: typeof responseHandler) { responseHandler = next; },
     setToken(next: Promise<string | null>) { storedToken = next; },
     setProfile(next: Partial<typeof profile>) { profile = { ...profile, ...next }; },
     setProfileResponse(next: Promise<any> | undefined) { profileResponse = next; },
@@ -60,7 +62,7 @@ async function completionFixture() {
 }
 const draft = { username: 'chosen', full_name: 'Chosen Name', date_of_birth: '2000-01-01', interests: ['react'], bio: 'draft bio' };
 const savedProfile = { user_id: 'original-viewer', username: 'persisted', full_name: 'Persisted Name', date_of_birth: '2000-01-01',
-  bio: 'persisted bio', avatar_url: null, onboarding_completed: true, profile_version: '2' };
+  bio: 'persisted bio', avatar_url: null, onboarding_completed: true, profile_version: '2', onboarding_conditional_save: true };
 
 test('onboarding validates before any write and atomically submits profile with preferences', async () => {
   const app = await completionFixture();
@@ -409,4 +411,148 @@ test('a confirmed reconciliation fences older profile successes and failures', a
       await f.act(async () => completion.resolve({ completed: true, ...savedProfile }));
     } finally { t.mock.timers.reset(); await f.close(); }
   }
+});
+
+test('settled unsaved CAS flight can explicitly retry only its original frozen payload', async () => {
+  const f = await completionFixture();
+  try {
+    const original = { ...draft, interests: [...draft.interests] };
+    f.setResponse(Promise.reject(new TypeError('offline before response')));
+    await f.act(async () => { await assert.rejects(f.auth.completeOnboarding(original), { name: 'OnboardingOutcomeUnknownError' }); });
+    original.username = 'later-draft'; original.interests.push('rust');
+    f.setResponse(Promise.resolve({ completed: true, ...savedProfile }));
+    await f.act(async () => f.auth.reconcileOnboarding());
+    assert.equal(f.auth.onboardingSave.status, 'retryable');
+    await assert.rejects(f.auth.completeOnboarding(original), { name: 'OnboardingOutcomeUnknownError' });
+    await f.act(async () => f.auth.retryOnboarding());
+    const writes = f.requests.filter(request => request.method === 'PUT');
+    assert.equal(writes.length, 2);
+    assert.deepEqual(writes[1].body, writes[0].body, 'safe replay freezes the initial profile and selections');
+    assert.equal(writes[0].body.profile.expected_version, '2');
+    assert.equal(f.auth.user.onboarding_completed, true);
+  } finally { await f.close(); }
+});
+
+test('late completion cannot undo profile fields edited after authoritative reconciliation', async t => {
+  const f = await completionFixture(); t.mock.timers.enable({ apis: ['setTimeout'] });
+  try {
+    const response = pending<any>(); f.setResponse(response.promise);
+    await f.act(async () => { void f.auth.completeOnboarding(draft).catch(() => undefined); });
+    await f.act(async () => t.mock.timers.tick(15_000));
+    f.setProfile({ ...savedProfile, onboarding_completed: true });
+    await f.act(async () => f.auth.reconcileOnboarding());
+    await f.act(async () => f.auth.updateUserProfile({ username: 'later-name', full_name: 'Later Name', bio: 'later bio' }));
+    await f.act(async () => response.resolve({ completed: true, ...savedProfile }));
+    assert.equal(f.auth.user.username, 'later-name');
+    assert.equal(f.auth.user.full_name, 'Later Name');
+    assert.equal(f.auth.user.bio, 'later bio');
+  } finally { t.mock.timers.reset(); await f.close(); }
+});
+
+
+test('a pending protected save never offers a retry before its client flight settles', async t => {
+  const f = await completionFixture(); t.mock.timers.enable({ apis: ['setTimeout'] });
+  try {
+    const response = pending<any>(); f.setResponse(response.promise);
+    await f.act(async () => { void f.auth.completeOnboarding(draft).catch(() => undefined); });
+    await f.act(async () => t.mock.timers.tick(15_000));
+    await f.act(async () => f.auth.reconcileOnboarding());
+    assert.equal(f.auth.onboardingSave.status, 'unknown');
+    await assert.rejects(f.auth.retryOnboarding(), { name: 'OnboardingOutcomeUnknownError' });
+    assert.equal(f.requests.filter(request => request.method === 'PUT').length, 1);
+    await f.act(async () => response.resolve({ completed: true, ...savedProfile }));
+  } finally { t.mock.timers.reset(); await f.close(); }
+});
+
+test('same-turn retry clicks send once and a 412 never silently upgrades the frozen version', async () => {
+  const f = await completionFixture();
+  try {
+    f.setResponse(Promise.reject(new TypeError('lost response')));
+    await f.act(async () => { await assert.rejects(f.auth.completeOnboarding(draft), { name: 'OnboardingOutcomeUnknownError' }); });
+    await f.act(async () => f.auth.reconcileOnboarding());
+    const conflict = pending<any>(); f.setResponse(conflict.promise);
+    let retry!: Promise<unknown>;
+    await f.act(async () => {
+      retry = f.auth.retryOnboarding().catch((error: Error) => error);
+      await assert.rejects(f.auth.retryOnboarding(), { name: 'OnboardingOutcomeUnknownError' });
+    });
+    assert.equal(f.requests.filter(request => request.method === 'PUT').length, 2);
+    await f.act(async () => conflict.reject(Object.assign(new Error('profile changed'), { status: 412 })));
+    assert.equal((await retry as Error).name, 'OnboardingOutcomeUnknownError');
+    assert.equal(f.requests.filter(request => request.method === 'PUT').at(-1)!.body.profile.expected_version, '2');
+    f.setProfile({ profile_version: '3', onboarding_completed: false });
+    await f.act(async () => f.auth.reconcileOnboarding());
+    assert.equal(f.auth.onboardingSave.status, 'idle', 'a newer authoritative version makes every old CAS request unable to commit');
+    assert.equal(f.requests.filter(request => request.method === 'PUT').length, 2, 'a changed version cannot trigger an automatic replacement write');
+    f.setResponse(Promise.resolve({ completed: true, ...savedProfile, profile_version: '4' }));
+    await f.act(async () => f.auth.completeOnboarding({ ...draft, bio: 'explicit new choice' }));
+    assert.equal(f.requests.filter(request => request.method === 'PUT').at(-1)!.body.profile.expected_version, '3');
+  } finally { await f.close(); }
+});
+
+test('legacy fallback and unadvertised servers never gain conditional replay permission', async () => {
+  for (const fallback of [false, true]) {
+    const f = await completionFixture();
+    try {
+      if (!fallback) {
+        f.setProfile({ onboarding_conditional_save: false });
+        await f.act(async () => f.auth.checkOnboardingStatus());
+      }
+      f.setResponseHandler(async (path) => {
+        if (fallback && path === '/onboarding/complete') throw Object.assign(new Error('missing route'), { status: 404 });
+        if (path === '/users/me') return {};
+        throw new TypeError('unprotected response lost');
+      });
+      await f.act(async () => { await assert.rejects(f.auth.completeOnboarding(draft), { name: 'OnboardingOutcomeUnknownError' }); });
+      const atomic = f.requests.find(request => request.path === '/onboarding/complete')!;
+      assert.equal(Object.hasOwn(atomic.body.profile, 'expected_version'), fallback);
+      if (fallback) assert.equal(Object.hasOwn(f.requests.find(request => request.method === 'PATCH')!.body, 'expected_version'), false);
+      await f.act(async () => f.auth.reconcileOnboarding());
+      assert.equal(f.auth.onboardingSave.status, 'unknown');
+      await assert.rejects(f.auth.retryOnboarding(), { name: 'OnboardingOutcomeUnknownError' });
+    } finally { await f.close(); }
+  }
+});
+
+test('a rejected CAS replay cannot fall back or clear the original uncertain authority', async () => {
+  for (const status of [400, 404]) {
+    const f = await completionFixture();
+    try {
+      f.setResponse(Promise.reject(new TypeError('original response lost')));
+      await f.act(async () => { await assert.rejects(f.auth.completeOnboarding(draft), { name: 'OnboardingOutcomeUnknownError' }); });
+      await f.act(async () => f.auth.reconcileOnboarding());
+      f.setResponseHandler(async () => { throw Object.assign(new Error('older server rejected replay'), { status }); });
+      await f.act(async () => { await assert.rejects(f.auth.retryOnboarding()); });
+      assert.equal(f.requests.filter(request => request.method === 'PATCH' || request.path === '/onboarding').length, 0,
+        'a replay must never downgrade its original CAS contract to legacy mutations');
+      assert.equal(f.auth.onboardingSave.status, 'unknown');
+      await assert.rejects(f.auth.completeOnboarding({ ...draft, bio: 'new draft' }), { name: 'OnboardingOutcomeUnknownError' });
+      await f.act(async () => f.auth.reconcileOnboarding());
+      assert.equal(f.auth.onboardingSave.status, 'retryable');
+      assert.equal(f.requests.filter(request => request.method === 'PUT').length, 2);
+    } finally { await f.close(); }
+  }
+});
+
+test('an unsent replay timeout retains the old CAS gate without holding the next retry behind storage', async t => {
+  const f = await completionFixture();
+  try {
+    f.setResponse(Promise.reject(new TypeError('original response lost')));
+    await f.act(async () => { await assert.rejects(f.auth.completeOnboarding(draft), { name: 'OnboardingOutcomeUnknownError' }); });
+    await f.act(async () => f.auth.reconcileOnboarding());
+    const lateToken = pending<string | null>(); f.setToken(lateToken.promise);
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    await f.act(async () => { void f.auth.retryOnboarding().catch(() => undefined); });
+    await f.act(async () => t.mock.timers.tick(15_000));
+    assert.equal(f.auth.onboardingSave.status, 'unknown');
+    await assert.rejects(f.auth.completeOnboarding(draft), { name: 'OnboardingOutcomeUnknownError' });
+    f.setToken(Promise.resolve('original-token'));
+    await f.act(async () => f.auth.reconcileOnboarding());
+    assert.equal(f.auth.onboardingSave.status, 'retryable');
+    f.setResponse(Promise.resolve({ completed: true, ...savedProfile }));
+    await f.act(async () => f.auth.retryOnboarding());
+    assert.equal(f.requests.filter(request => request.method === 'PUT').length, 2);
+    await f.act(async () => lateToken.resolve('original-token'));
+    assert.equal(f.requests.filter(request => request.method === 'PUT').length, 2, 'expired replay cannot send when old storage resumes');
+  } finally { t.mock.timers.reset(); await f.close(); }
 });

@@ -202,6 +202,9 @@ export function ShareRepositorySheet({
   }, [haptic, onShared, showToast, weaveUrl]);
 
   const shareWeaveLink = useCallback(async () => {
+    if (toastTimer.current) clearTimeout(toastTimer.current);
+    toastTimer.current = null;
+    setToast('');
     if (!shareContent) throw new Error('Weave link is unavailable.');
     await haptic();
     let result;

@@ -1,5 +1,6 @@
 import React, { createContext, useCallback, useContext, useState } from 'react';
 import { OnboardingData } from '../api/onboarding';
+import { ONBOARDING_INTERESTS } from '../../backend/contracts/onboardingTaxonomy';
 
 interface OnboardingContextType {
   data: Partial<OnboardingData>;
@@ -16,7 +17,19 @@ export function OnboardingProvider({ children }: { children: React.ReactNode }) 
   const [data, setData] = useState<Partial<OnboardingData>>({});
 
   const updateData = useCallback<OnboardingContextType['updateData']>((updates) => {
-    setData((prev) => ({ ...prev, ...(typeof updates === 'function' ? updates(prev) : updates) }));
+    setData((prev) => {
+      const patch = typeof updates === 'function' ? updates(prev) : updates;
+      const next = { ...prev, ...patch };
+      if (Object.hasOwn(patch, 'skills') && next.interests) {
+        const visibleInterests = new Set<string>(ONBOARDING_INTERESTS
+          .filter(category => next.skills?.includes(category.id))
+          .flatMap(category => category.interests.map(interest => interest.id)));
+        // Step 1 can change while Step 3 is unmounted. Do not count or submit
+        // selections that the replacement categories no longer let users see.
+        next.interests = next.interests.filter(interest => visibleInterests.has(interest));
+      }
+      return next;
+    });
   }, []);
 
   return (

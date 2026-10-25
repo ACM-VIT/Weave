@@ -274,6 +274,32 @@ integration('registered onboarding batches topic writes and skips unchanged prof
       assert.equal(deliveredProfile.full_name,'Atomic User');assert.deepEqual(deliveredProfile.skills,[slug]);
       assert.equal(deliveredProfile.avatar_url,'https://fixture.invalid/saved-avatar.webp');
     }
+    // Both requests wait behind the same real row lock, then compete using
+    // the original CAS version. Delayed original work and explicit replay can
+    // produce only one profile/feed transition and one durable delivery.
+    const beforeConditional = (await snapshot()).data;
+    const deliveriesBeforeConditional = (await sqlClient`SELECT 1 FROM telemetry.ml_outbox WHERE aggregate_id=${atomicId}::uuid`).length;
+    let releaseConditional!: () => void;
+    let lockedConditional!: () => void;
+    const rowLocked = new Promise<void>(resolve => { lockedConditional = resolve; });
+    const releaseRow = new Promise<void>(resolve => { releaseConditional = resolve; });
+    const holdingRow = sqlClient.begin(async tx => {
+      await tx`SELECT user_id FROM app.users WHERE user_id=${atomicId}::uuid FOR UPDATE`;
+      lockedConditional(); await releaseRow;
+    });
+    await rowLocked;
+    const conditionalBody = { ...completion, profile: { ...identity, expected_version: String(beforeConditional.profile_version) } };
+    const competing = Promise.all([call('/onboarding/complete','PUT',conditionalBody), call('/onboarding/complete','PUT',conditionalBody)]);
+    await new Promise(resolve => setTimeout(resolve, 50));
+    releaseConditional(); await holdingRow;
+    const conditionalResponses = await competing;
+    assert.deepEqual(conditionalResponses.map(response => response.status).sort(), [200, 412]);
+    const afterConditional = (await snapshot()).data;
+    assert.equal(BigInt(String(afterConditional.profile_version)), BigInt(String(beforeConditional.profile_version)) + 1n);
+    assert.equal(BigInt(String(afterConditional.feed_version)), BigInt(String(beforeConditional.feed_version)) + 1n);
+    assert.equal((await sqlClient`SELECT 1 FROM telemetry.ml_outbox WHERE aggregate_id=${atomicId}::uuid`).length, deliveriesBeforeConditional + 1);
+    assert.equal((await call('/onboarding/complete','PUT',conditionalBody)).status, 412);
+    assert.deepEqual((await snapshot()).data, afterConditional, 'late old CAS replay cannot change any saved profile fields');
     const beforePreferences=(await snapshot()).data;
     const preferences=await call('/onboarding','PUT',{interests:[slug,slug],skills:[slug],tech_stack:[slug]});
     assert.equal(preferences.status,200);

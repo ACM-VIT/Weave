@@ -42,11 +42,12 @@ export class OnboardingOutcomeUnknownError extends Error {
   constructor() { super(UNKNOWN_ONBOARDING_MESSAGE); this.name = 'OnboardingOutcomeUnknownError'; }
 }
 
-type OnboardingSaveState = { status: 'idle' | 'saving' | 'unknown' | 'checking'; message: string | null };
+type OnboardingSaveState = { status: 'idle' | 'saving' | 'unknown' | 'checking' | 'retryable'; message: string | null };
 type OnboardingFlight = {
   generation: number; owner: string; stage: 'preparing' | 'writing' | 'refreshing';
   cancelled: boolean; deadlineExpired: boolean; settled: boolean; reconciled: boolean; promise: Promise<void>;
   profileController?: AbortController;
+  data: OnboardingData; expectedVersion?: string; casProtected: boolean; retryable: boolean;
 };
 
 interface AuthContextType {
@@ -60,6 +61,7 @@ interface AuthContextType {
   completeOnboarding: (data: OnboardingData) => Promise<void>;
   finishOnboarding: (data: OnboardingData) => Promise<void>;
   reconcileOnboarding: () => Promise<void>;
+  retryOnboarding: () => Promise<void>;
   onboardingSave: OnboardingSaveState;
   updateUserProfile: (profile: EditableUserProfile) => void;
   applySavedAvatar: (owner:string,generation:number,saved:{avatar_url:string;profile_version:string}) => void;
@@ -76,6 +78,11 @@ type UserProfileRequestPolicy = {
   sessionGeneration?: number;
   signal?: AbortSignal;
 };
+
+function onboardingProfileVersion(value: unknown): string | undefined {
+  const version = typeof value === 'string' ? value : typeof value === 'number' && Number.isSafeInteger(value) ? String(value) : '';
+  return /^(0|[1-9][0-9]{0,18})$/.test(version) && BigInt(version) <= 9223372036854775807n ? version : undefined;
+}
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
@@ -177,7 +184,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           : Math.max(0, Number.isFinite(serverLikesGivenCount) ? serverLikesGivenCount : 0),
       });
       });
-      return { ...profile, user_id: String(profile.user_id), onboarding_completed: resolveOnboardingCompleted(profile, completionStatus) };
+      return { ...profile, user_id: String(profile.user_id), onboarding_completed: resolveOnboardingCompleted(profile, completionStatus) } as Record<string, unknown> & { user_id: string; onboarding_completed: boolean };
     } catch (error) {
       assertCurrent();
       if (onboardingAtStart !== onboardingConfirmation.current) return;
@@ -282,16 +289,21 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   }, [fetchUserProfile]);
 
-  const completeOnboarding = useCallback(async (data: OnboardingData) => {
+  const completeOnboarding = useCallback(async (data: OnboardingData, replay?: OnboardingFlight) => {
     // The profile's render-bound lease also fences retained pre-logout forms.
     const sessionGeneration = userGeneration;
     const owner = user?.user_id;
     if (sessionGeneration === null) throw new SessionChangedError();
     authSessionLifecycle.assertCurrent(sessionGeneration);
     if (!owner) throw new Error('No authenticated profile found. Please sign in again.');
-    if (onboardingFlight.current) throw new OnboardingOutcomeUnknownError();
-
+    if (replay) {
+      if (replay !== onboardingFlight.current || !replay.retryable || !replay.settled || !replay.casProtected
+        || replay.owner !== owner || replay.generation !== sessionGeneration) throw new OnboardingOutcomeUnknownError();
+    } else if (onboardingFlight.current) throw new OnboardingOutcomeUnknownError();
+    const snapshot = replay?.data ?? { ...data, interests: data.interests?.slice(), skills: data.skills?.slice(), tech_stack: data.tech_stack?.slice() };
+    const expectedVersion = replay ? replay.expectedVersion : (user?.onboarding_conditional_save === true ? onboardingProfileVersion(user.profile_version) : undefined);
     const flight: OnboardingFlight = { generation: sessionGeneration, owner, stage: 'preparing',
+      data: snapshot, expectedVersion, casProtected: expectedVersion !== undefined, retryable: false,
       cancelled: false, deadlineExpired: false, settled: false, reconciled: false, promise: Promise.resolve() };
     onboardingFlight.current = flight;
     setOnboardingSave({ status: 'saving', message: null });
@@ -309,7 +321,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         const result = await serializeProfileTransition(sessionGeneration, () => Promise.race([(async () => {
           const likesAtStart = likesGivenRevision.current;
           if (flight.cancelled) throw new Error('Session lookup timed out. Try again.');
-          const saved = await setupOnboarding(token, data, { beforeSend: () => {
+          const saved = await setupOnboarding(token, flight.data, { expectedVersion: flight.expectedVersion,
+            allowLegacyFallback: !replay, onLegacyFallback: () => { flight.casProtected = false; }, beforeSend: () => {
             authSessionLifecycle.assertCurrent(sessionGeneration);
             if (flight.cancelled || flight.deadlineExpired) {
               throw Object.assign(new Error('Session lookup timed out before sending. Try Finish again.'), { code: 'ONBOARDING_PRE_SEND_TIMEOUT' });
@@ -320,7 +333,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           if (saved.user_id !== undefined && saved.user_id !== owner) throw new SessionChangedError();
           const confirmed = saved.completed === true && saved.onboarding_completed === true
             && saved.user_id === owner && typeof saved.username === 'string';
-          if (confirmed) {
+          if (confirmed && !flight.reconciled) {
             // Retire older profile reads and failures while still holding the
             // same transition lane as the atomic completion request.
             onboardingConfirmation.current += 1;
@@ -329,7 +342,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             if (!preserveLikes) appliedCountReadSequence.current = Math.max(appliedCountReadSequence.current, sequence);
             const likes = Number(saved.likes_given_count);
             profileGeneration.current = sessionGeneration;
-            setUser(current => authSessionLifecycle.isCurrent(sessionGeneration) && current?.user_id === owner
+            setUser(current => !flight.reconciled && authSessionLifecycle.isCurrent(sessionGeneration) && current?.user_id === owner
               ? preserveNewerAvatar(current, { ...current, ...saved, user_id: owner, username: saved.username!, onboarding_completed: true,
                 likes_given_count: preserveLikes || saved.likes_given_count === undefined ? current.likes_given_count
                   : Math.max(0, Number.isFinite(likes) ? likes : 0) })
@@ -337,7 +350,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           }
           return { token, confirmed };
         })(), preparationCancelled]));
-        if (!result.confirmed) {
+        if (!result.confirmed && !flight.reconciled) {
           // An incomplete response still requires a durable read. Leave the
           // transition lane first so an invalid-profile read cannot deadlock
           // trying to retire its own session through that lane.
@@ -356,7 +369,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           const beforeSendExpired = (error as { code?: string })?.code === 'ONBOARDING_PRE_SEND_TIMEOUT';
           const definitelyRejected = beforeSendExpired || flight.stage === 'preparing'
             || (flight.stage === 'writing' && [400, 401, 403, 404, 409, 413, 422].includes(status ?? 0));
-          if (definitelyRejected || flight.reconciled) {
+          if ((!replay && definitelyRejected) || flight.reconciled) {
             onboardingFlight.current = null;
             setOnboardingSave({ status: 'idle', message: beforeSendExpired && error instanceof Error ? error.message : null });
             if (flight.reconciled) return;
@@ -383,9 +396,19 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             // only this unsent lane; beforeSend permanently fences its late
             // continuation. Once writing starts, no timeout releases the lane.
             cancelPreparation(new Error('Session lookup timed out. Try again.'));
-            onboardingFlight.current = null;
-            setOnboardingSave({ status: 'idle', message: null });
-            reject(new Error('Session lookup timed out. Try again.'));
+            if (replay) {
+              // This retry never sent, but its predecessor may still commit.
+              // Restore that settled CAS authority without holding a lane on
+              // this cancelled storage continuation.
+              replay.retryable = false;
+              onboardingFlight.current = replay;
+              setOnboardingSave({ status: 'unknown', message: UNKNOWN_ONBOARDING_MESSAGE });
+              reject(new OnboardingOutcomeUnknownError());
+            } else {
+              onboardingFlight.current = null;
+              setOnboardingSave({ status: 'idle', message: null });
+              reject(new Error('Session lookup timed out. Try again.'));
+            }
           } else {
             // Do not abort/repeat a mutation that may already have committed.
             setOnboardingSave({ status: 'unknown', message: UNKNOWN_ONBOARDING_MESSAGE });
@@ -394,7 +417,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         }, ONBOARDING_SAVE_TIMEOUT_MS);
       })]);
     } finally { clearTimeout(timer); }
-  }, [fetchUserProfile, serializeProfileTransition, user?.user_id, userGeneration]);
+  }, [fetchUserProfile, serializeProfileTransition, user, userGeneration]);
 
   const reconcileOnboarding = useCallback(async () => {
     const sessionGeneration = userGeneration;
@@ -421,6 +444,20 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         flight.profileController?.abort();
         if (flight.settled) onboardingFlight.current = null;
         setOnboardingSave({ status: 'idle', message: null });
+      } else if (profile?.user_id === flight.owner && profile.onboarding_completed === false
+        && flight.settled && flight.casProtected && flight.expectedVersion !== undefined) {
+        const currentVersion = onboardingProfileVersion(profile.profile_version);
+        if (currentVersion === flight.expectedVersion) {
+          flight.retryable = true;
+          setOnboardingSave({ status: 'retryable', message: 'The save is not confirmed. Retry the originally submitted preferences safely, or check again.' });
+        } else if (currentVersion !== undefined && BigInt(currentVersion) > BigInt(flight.expectedVersion)) {
+          // The authoritative version has moved beyond the original CAS token;
+          // even a still-running old server request can no longer commit it.
+          onboardingFlight.current = null;
+          setOnboardingSave({ status: 'idle', message: 'Your profile changed. Review your selections and choose Finish to save again.' });
+        } else {
+          setOnboardingSave({ status: 'unknown', message: UNKNOWN_ONBOARDING_MESSAGE });
+        }
       } else {
         setOnboardingSave({ status: 'unknown', message: 'Your save is not confirmed yet and may still finish. Check save status again before trying to submit.' });
       }
@@ -439,6 +476,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     });
     return check.promise;
   }, [fetchUserProfile, user?.user_id, userGeneration]);
+
+  const retryOnboarding = useCallback(async () => {
+    const flight = onboardingFlight.current;
+    if (!flight) throw new OnboardingOutcomeUnknownError();
+    await completeOnboarding(flight.data, flight);
+  }, [completeOnboarding]);
 
   const applySavedAvatar = useCallback((owner:string,generation:number,saved:{avatar_url:string;profile_version:string}) => {
     setUser(current => mergeSavedAvatar(current,owner,authSessionLifecycle.isCurrent(generation),saved));
@@ -578,6 +621,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       completeOnboarding,
       finishOnboarding: completeOnboarding,
       reconcileOnboarding,
+      retryOnboarding,
       onboardingSave,
       updateUserProfile,
       applySavedAvatar,

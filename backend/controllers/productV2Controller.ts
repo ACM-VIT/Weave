@@ -98,6 +98,7 @@ async function readViewer(sql: Sql | TransactionSql, id: string) {
     WHERE u.user_id=${id}::uuid AND u.status<>'deleted'`;
   return rows[0] ? {
     ...rows[0],
+    onboarding_conditional_save: true,
     onboarding_completed: hasCompletedOnboarding(rows[0].onboarding_completed),
   } : null;
 }
@@ -219,9 +220,15 @@ async function completeOnboardingRequest(req: AuthRequest, res: Response, atomic
   const username = atomic ? normalizeUsername(profile?.username) : null;
   const fullName = atomic ? text(profile?.full_name, 100, true) : null;
   if (atomic && (!profile || typeof profile !== 'object' || Array.isArray(profile)
-    || Object.keys(profile).some(key => !['username','full_name','date_of_birth'].includes(key))
+    || Object.keys(profile).some(key => !['username','full_name','date_of_birth','expected_version'].includes(key))
     || !username || !fullName || !isValidDateOfBirth(profile.date_of_birth))) {
     return sendError(res, 400, 'Invalid onboarding profile.');
+  }
+  const conditional = atomic && Object.hasOwn(profile, 'expected_version');
+  const expectedVersion = conditional ? profile.expected_version : undefined;
+  if (conditional && (typeof expectedVersion !== 'string' || !/^(0|[1-9][0-9]{0,18})$/.test(expectedVersion)
+    || BigInt(expectedVersion) > 9223372036854775807n)) {
+    return sendError(res, 400, 'Invalid onboarding profile version.');
   }
   const bio = req.body?.bio === undefined ? null : text(req.body.bio, 2_000);
   const structured = ['interests', 'skills', 'tech_stack'].some((key) => Object.hasOwn(req.body ?? {}, key));
@@ -249,12 +256,18 @@ async function completeOnboardingRequest(req: AuthRequest, res: Response, atomic
   try {
     const result = await sqlClient.begin(async (tx) => {
       const profiles = await tx`
-        SELECT username,full_name,date_of_birth,bio,interests,skills,tech_stack,onboarding_completed
+        SELECT username,full_name,date_of_birth,bio,interests,skills,tech_stack,onboarding_completed,profile_version
         FROM app.users
         WHERE user_id=${id}::uuid
         FOR UPDATE
       `;
       if (!profiles[0]) throw Object.assign(new Error('User profile not found.'), { statusCode: 404 });
+      // The strict nested field is part of the protocol: older handlers reject
+      // it before SQL. A row-locked comparison fences delayed requests/replays
+      // before any profile, preference, feed or durable-delivery mutation.
+      if (conditional && String(profiles[0].profile_version) !== expectedVersion) {
+        throw Object.assign(new Error('Your profile changed. Check save status before trying again.'), { statusCode: 412 });
+      }
       if (!atomic && (!profiles[0].username || !profiles[0].full_name || !profiles[0].date_of_birth)) {
         throw Object.assign(
           new Error('Complete your full name, username, and date of birth before finishing onboarding.'),

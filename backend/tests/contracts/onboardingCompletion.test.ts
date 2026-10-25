@@ -29,11 +29,11 @@ test('missing completion state fails closed', () => {
 // rollback/uniqueness are exercised separately in the opt-in PostgreSQL suite.
 const completeProfile = { username: 'chosen', full_name: 'Chosen Name', date_of_birth: '2000-01-01' };
 
-async function completionRequest(body: unknown, atomic = true) {
+async function completionRequest(body: unknown, atomic = true, storedVersion = '2') {
   const { completeOnboarding, completeOnboardingWithProfile } = await import('../../controllers/productV2Controller.js');
   const queries: Array<{ sql: string; values: unknown[] }> = [];
   const profile = { user_id: '00000000-0000-4000-8000-000000000001', username: 'persisted', full_name: 'Persisted Name',
-    date_of_birth: '2000-01-01', bio: 'server bio', avatar_url: 'https://fixture.invalid/avatar.png', github_handle: 'fixture', profile_version: '2', onboarding_completed: true };
+    date_of_birth: '2000-01-01', bio: 'server bio', avatar_url: 'https://fixture.invalid/avatar.png', github_handle: 'fixture', profile_version: storedVersion, onboarding_completed: true };
   let topicId = 0;
   const tx = async (strings: TemplateStringsArray, ...values: unknown[]) => {
     const sql = strings.join('?').replace(/\s+/g, ' ').trim(); queries.push({ sql, values });
@@ -117,4 +117,65 @@ test('generic PATCH cannot bypass image validation with an arbitrary avatar URL 
   await updateMe({user:{userId:'00000000-0000-4000-8000-000000000001'},body:{avatar_url}} as any,response as any);
   assert.equal(status,400);
  }
+});
+
+
+test('conditional completion validates a canonical version and rejects stale writes under the row lock', async () => {
+  for (const expected_version of [2, null, '', '02', '-1', '1.5', '9223372036854775808']) {
+    const result = await completionRequest({ interests: ['react'], profile: { ...completeProfile, expected_version } });
+    assert.equal(result.status, 400);
+    assert.equal(result.queries.length, 0);
+  }
+  for (const [expected_version, actual] of [['1', '2'], ['9007199254740992', '9007199254740993']]) {
+    const result = await completionRequest({ interests: ['react'], profile: { ...completeProfile, expected_version } }, true, actual);
+    assert.equal(result.status, 412, 'stale completion is distinct from a username conflict');
+    assert.equal(result.queries.length, 1, 'CAS fails before profile, feed, topic or outbox writes');
+    assert.match(result.queries[0].sql, /profile_version/);
+    assert.match(result.queries[0].sql, /FOR UPDATE/);
+  }
+  const accepted = await completionRequest({ interests: ['react'], profile: { ...completeProfile, expected_version: '2' } });
+  assert.equal(accepted.status, 200);
+  assert.equal(accepted.queries.filter(query => query.sql.startsWith('UPDATE app.users')).length, 1);
+});
+
+test('two row-serialized same-version handlers produce one transition and one delivery', async () => {
+  const { completeOnboardingWithProfile } = await import('../../controllers/productV2Controller.js');
+  const profile = { user_id: '00000000-0000-4000-8000-000000000001', username: 'persisted', full_name: 'Persisted Name',
+    date_of_birth: '2000-01-01', bio: 'server bio', github_handle: null, avatar_url: null, profile_version: '2', onboarding_completed: false };
+  const statements: string[] = [];
+  let tail = Promise.resolve();
+  const tx = async (strings: TemplateStringsArray, ...values: unknown[]) => {
+    const statement = strings.join('?').replace(/\s+/g, ' ').trim(); statements.push(statement);
+    if (statement.startsWith('SELECT') && statement.includes('FROM app.users')) return [{ ...profile }];
+    if (statement.startsWith('UPDATE app.users')) {
+      profile.profile_version = String(BigInt(profile.profile_version) + 1n); profile.onboarding_completed = true;
+      return [{ ...profile }];
+    }
+    if (statement.startsWith('INSERT INTO app.topics')) return (values.find(Array.isArray) as unknown[]).map((_value, index) => ({ topic_id: String(index + 1) }));
+    if (statement.includes('SELECT model_policy_sha256')) return [{ model_policy_sha256: null }];
+    return [];
+  };
+  const original = sqlClient.begin;
+  (sqlClient as any).begin = async (work: (transaction: unknown) => Promise<unknown>) => {
+    const previous = tail; let release!: () => void;
+    tail = new Promise<void>(resolve => { release = resolve; });
+    await previous;
+    try { return await work(tx); } finally { release(); }
+  };
+  const call = async () => {
+    let status = 0;
+    const res = { status(value: number) { status = value; return this; }, json() { return this; } };
+    await completeOnboardingWithProfile({ user: { userId: profile.user_id }, body: {
+      interests: ['react'], profile: { ...completeProfile, expected_version: '2' },
+    } } as any, res as any);
+    return status;
+  };
+  try {
+    assert.deepEqual((await Promise.all([call(), call()])).sort(), [200, 412]);
+    assert.equal(profile.profile_version, '3');
+    assert.equal(statements.filter(query => query.startsWith('UPDATE app.users')).length, 1);
+    assert.equal(statements.filter(query => query.startsWith('INSERT INTO app.user_feed_state')).length, 1);
+    assert.equal(statements.filter(query => query.startsWith('INSERT INTO telemetry.ml_outbox')).length, 1);
+    assert.equal(statements.filter(query => query.includes('FOR UPDATE') && query.includes('FROM app.users')).length, 2);
+  } finally { sqlClient.begin = original; }
 });

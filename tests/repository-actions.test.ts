@@ -403,6 +403,32 @@ test('iOS completion alone acknowledges sharing; dismissal and Android chooser n
   }
 });
 
+test('share retry clears an earlier failure without falsely confirming dismissal', async () => {
+  for (const [platform, outcome, expectedShares] of [
+    ['ios', 'sharedAction', 1], ['ios', 'dismissedAction', 0], ['web', 'cancel', 0],
+  ] as const) {
+    let attempts = 0, finish!: () => void;
+    const fixture = await shareFixture(platform, async () => {
+      attempts++;
+      if (attempts === 1) throw new Error('Unable to share the Weave link.');
+      await new Promise<void>(resolve => { finish = resolve; });
+      if (outcome === 'cancel') throw Object.assign(new Error('User canceled share'), { name: 'AbortError' });
+      return { action: outcome };
+    });
+    try {
+      await fixture.press('Share Weave repository link');
+      assert.match(text(fixture.root), /Unable to share the Weave link/);
+      assert.equal(fixture.shared(), 0);
+      await fixture.press('Share Weave repository link');
+      assert.equal(fixture.root.root.findAll(node => node.props.accessibilityRole === 'alert').length, 0,
+        'the old failure is cleared as soon as an explicit retry starts');
+      await act(async () => { finish(); });
+      assert.equal(fixture.shared(), expectedShares);
+      assert.doesNotMatch(text(fixture.root), /Unable to share|User canceled share/);
+    } finally { await fixture.close(); }
+  }
+});
+
 test('copy rejection displays an error without success feedback', async () => {
   const fixture = await shareFixture('ios', async () => ({ action: 'dismissedAction' }), async () => false);
   try {

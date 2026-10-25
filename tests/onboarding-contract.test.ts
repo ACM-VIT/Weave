@@ -104,11 +104,14 @@ describe("onboarding taxonomy", () => {
     const onboarding = loadSource('src/store/OnboardingContext.tsx', {});
     const save = { status: 'idle', message: null as string | null };
     let checks = 0;
+    const retryArguments: unknown[][] = [];
+    const submitted: unknown[] = [];
     const Step3 = loadSource('src/app/onboarding/step3.tsx', {
       '@/components/keyboard/keyboard-layout': { KeyboardForm: 'KeyboardForm' },
       'react-native': { View: 'View', Text: 'Text' },
       '../../store/OnboardingContext': onboarding,
-      '../../store/AuthContext': { useAuth: () => ({ completeOnboarding: async () => {}, checkOnboardingStatus: async () => {},
+      '../../store/AuthContext': { useAuth: () => ({ completeOnboarding: async (data: unknown) => { submitted.push(data); }, checkOnboardingStatus: async () => {},
+        retryOnboarding: async (...args: unknown[]) => { retryArguments.push(args); },
         onboardingSave: save, reconcileOnboarding: async () => { checks++; } }) },
       '../../utils/storage': { getItemAsync: async () => 'fixture' },
       '../../api/onboarding': { setupOnboarding: async () => ({ completed: true }) },
@@ -144,6 +147,71 @@ describe("onboarding taxonomy", () => {
       await React.act(async () => check.props.onPress());
       assert.equal(checks, 1, 'the visible recovery action checks status rather than resubmitting');
       assert.deepEqual(draft.interests, retained, 'unknown outcomes retain the selections');
+      assert.equal(root.root.findAllByProps({ title: 'Retry saved preferences' }).length, 0, 'an unknown pending save cannot expose a mutation retry');
+      save.status = 'retryable'; save.message = 'Retry the preferences from your previous save.';
+      const edited = ['css', 'html', 'ui', 'component', 'browser'];
+      await React.act(async () => updateDraft({ interests: edited }));
+      assert.equal(root.root.findByProps({ title: 'Finish' }).props.disabled, true, 'protected recovery cannot submit the newly edited draft');
+      await React.act(async () => root.root.findByProps({ title: 'Check save status' }).props.onPress());
+      assert.equal(checks, 2, 'a retryable save still permits a read-only recheck before replay');
+      await React.act(async () => root.root.findByProps({ title: 'Retry saved preferences' }).props.onPress());
+      assert.deepEqual(retryArguments, [[]], 'retry delegates the frozen save, never current draft fields');
+      assert.equal(submitted.length, 0);
+      assert.deepEqual(draft.interests, edited, 'retry does not silently replace the editable draft');
+    } finally { await React.act(async () => root.unmount()); }
+  });
+
+  test('replacing skill categories removes hidden interests before Finish can submit them', async () => {
+    const React = await import('react'); const { create } = await import('react-test-renderer');
+    const { ONBOARDING_INTERESTS } = await import('../backend/contracts/onboardingTaxonomy');
+    (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
+    const onboarding = loadSource('src/store/OnboardingContext.tsx', {});
+    const submitted: any[] = [];
+    const Step3 = loadSource('src/app/onboarding/step3.tsx', {
+      '@/components/keyboard/keyboard-layout': { KeyboardForm: 'KeyboardForm' },
+      'react-native': { View: 'View', Text: 'Text' },
+      '../../store/OnboardingContext': onboarding,
+      '../../store/AuthContext': { useAuth: () => ({
+        completeOnboarding: async (data: unknown) => { submitted.push(data); },
+        reconcileOnboarding: async () => {}, onboardingSave: { status: 'idle', message: null },
+      }) },
+      ...Object.fromEntries(['ProgressBar', 'PrimaryButton', 'TechChip', 'LogoPlaceholder', 'StepHeader'].map(name => [
+        `@/components/onboarding/${name}`, { __esModule: true, default: name },
+      ])),
+      '@/constants/onboarding': { INTEREST_CATEGORIES: ONBOARDING_INTERESTS },
+    }).default;
+    let draft: any, updateDraft!: (updates: any) => void, show!: (visible: boolean) => void;
+    function Flow() {
+      const { data, updateData } = onboarding.useOnboarding(); draft = data; updateDraft = updateData;
+      const [visible, setVisible] = React.useState(true); show = setVisible;
+      return visible ? React.createElement(Step3) : null;
+    }
+    let root!: ReturnType<typeof create>;
+    await React.act(async () => { root = create(React.createElement(onboarding.OnboardingProvider, null, React.createElement(Flow))); });
+    try {
+      await React.act(async () => updateDraft({ skills: ['web', 'backend'],
+        interests: ['react', 'vue', 'angular', 'svelte', 'nextjs', 'express'], bio: 'Keep my bio', tech_stack: ['TypeScript'] }));
+      assert.equal(root.root.findByProps({ title: 'Finish' }).props.disabled, false);
+      await React.act(async () => show(false));
+      // Step 1 commits its replacement categories while Step 3 is unmounted.
+      await React.act(async () => updateDraft({ skills: ['backend', 'data'] }));
+      await React.act(async () => show(true));
+      assert.deepEqual(draft.interests, ['express'], 'only choices from retained categories stay selected');
+      assert.equal(draft.bio, 'Keep my bio');
+      assert.deepEqual(draft.tech_stack, ['TypeScript']);
+      assert.equal(root.root.findAllByType('TechChip').some(chip => chip.props.title === 'react'), false);
+      assert.equal(root.root.findByProps({ title: 'Finish' }).props.disabled, true, 'hidden choices cannot satisfy the five-interest minimum');
+      await React.act(async () => root.root.findByProps({ title: 'Finish' }).props.onPress());
+      assert.equal(submitted.length, 0);
+      for (const title of ['django', 'flask', 'fastapi', 'spring']) {
+        await React.act(async () => root.root.findByProps({ title }).props.onPress());
+      }
+      await React.act(async () => root.root.findByProps({ title: 'Finish' }).props.onPress());
+      assert.deepEqual(submitted[0].interests, ['express', 'django', 'flask', 'fastapi', 'spring']);
+      await React.act(async () => updateDraft((previous: any) => ({ skills: [...previous.skills, 'web'] })));
+      assert.deepEqual(draft.interests, ['express', 'django', 'flask', 'fastapi', 'spring'], 'adding a category does not resurrect removed choices');
+      await React.act(async () => updateDraft({ skills: [] }));
+      assert.deepEqual(draft.interests, []);
     } finally { await React.act(async () => root.unmount()); }
   });
 
