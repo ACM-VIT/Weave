@@ -663,6 +663,15 @@ test('fallback refreshes only invalidated cards and preserves selection order, v
     assert.deepEqual(result.items.map(item => item.position), [0, 1, 2]);
     assert.deepEqual(result.items.map(item => item.summary_id), ['summary-first', 'summary-current', null]);
     assert.deepEqual(result.items.map(item => item.repository), [first, refreshed, last]);
+    assert.deepEqual(result.items.map(item => ({
+      viewer_saved: item.repository.viewer_saved,
+      viewer_reaction: item.repository.viewer_reaction,
+      viewer_follows_owner: item.repository.viewer_follows_owner,
+    })), [
+      { viewer_saved: true, viewer_reaction: 'like', viewer_follows_owner: true },
+      { viewer_saved: true, viewer_reaction: null, viewer_follows_owner: false },
+      { viewer_saved: false, viewer_reaction: 'dislike', viewer_follows_owner: false },
+    ]);
     assert.equal(persistence.serve?.items[1].summary_id, 'summary-current');
   } finally { await service.stop(); }
 });
@@ -672,20 +681,27 @@ test('fallback cards are scoped to the viewer and request rather than retained b
   const queue = new FakeQueue();
   queue.reserve = async (_u, _v, requestId, _l, token) => ({ requestId, token, items: [] });
   const viewers: (string | undefined)[] = [];
+  let aliceSaved = true;
+  let aliceReaction: RepositoryProjection['viewer_reaction'] = 'like';
   persistence.getTrendingFallback = async (_limit, _exclude, viewerId) => {
     viewers.push(viewerId);
-    return [{ ...repo, viewer_saved: viewerId === 'alice',
-      viewer_reaction: viewerId === 'alice' ? 'like' : null }];
+    return [{ ...repo, viewer_saved: viewerId === 'alice' && aliceSaved,
+      viewer_reaction: viewerId === 'alice' ? aliceReaction : null }];
   };
   persistence.listActiveRepositories = async () => { throw new Error('Duplicate hydration'); };
   const service = new FeedV2Service(persistence, queue, undefined, true);
   try {
     for (const [index, viewer] of ['alice', 'bob', 'alice'].entries()) {
+      if (index === 2) {
+        aliceSaved = false;
+        aliceReaction = 'dislike';
+      }
       const result = await service.getFeed(viewer, {
         feed_request_id: `viewer-request-${index}`, session_id: `session-${viewer}`, limit: 10, cursor: null,
       });
-      assert.equal(result.items[0].repository.viewer_saved, viewer === 'alice');
-      assert.equal(result.items[0].repository.viewer_reaction, viewer === 'alice' ? 'like' : null);
+      assert.equal(result.items[0].repository.viewer_saved, index === 0);
+      assert.equal(result.items[0].repository.viewer_reaction,
+        index === 0 ? 'like' : index === 2 ? 'dislike' : null);
     }
     assert.deepEqual(viewers, ['alice', 'bob', 'alice']);
   } finally { await service.stop(); }
