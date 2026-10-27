@@ -333,3 +333,57 @@ test('List and Board deletion reconcile bounded SQL work, exact saves and ordere
     await sqlClient`DELETE FROM app.repos WHERE repo_id=ANY(${repos}::uuid[])`;
   }
 });
+
+test('registered HTTP preserves neutral feeds, exclusive reversals and atomic save feedback',{
+  skip:!membershipEnabled,timeout:30_000,
+},async t=>{
+  Object.assign(process.env,{JWT_SECRET:'membership-batch-local-key',DB_SCHEMA_V2_WRITES:'true',REDIS_URL:process.env.REDIS_DATABASE_TEST_URL??'redis://127.0.0.1:57481/15',SUPABASE_URL:'http://127.0.0.1:1',SUPABASE_KEY:'fixture',SUPABASE_SERVICE_ROLE_KEY:'fixture'});
+  const [{default:express},{sqlClient},{default:product},{default:activity},{default:redis}]=await Promise.all([import('express'),import('../../db/index.js'),import('../../routes/productV2Routes.js'),import('../../routes/activityV2Routes.js'),import('../../config/redis.js')]);
+  const user=randomUUID(),repo=randomUUID(),collection=randomUUID(),session=randomUUID(),serve=randomUUID(),fault='fixture_engagement_'+randomUUID().replaceAll('-','');
+  const app=express();app.use(express.json());app.use('/api/v2',activity);app.use('/api/v2',product);
+  const server=app.listen(0,'127.0.0.1');await new Promise<void>(resolve=>server.listening?resolve():server.once('listening',resolve));
+  const address=server.address();assert.ok(address&&typeof address==='object');
+  t.after(async()=>{
+    server.closeAllConnections();await new Promise<void>(resolve=>server.close(()=>resolve()));redis.disconnect();
+    await sqlClient.unsafe(`DROP TRIGGER IF EXISTS ${fault} ON telemetry.ml_outbox`);await sqlClient.unsafe(`DROP FUNCTION IF EXISTS telemetry.${fault}()`);
+    await sqlClient`DELETE FROM telemetry.ml_outbox WHERE aggregate_id=${user}::uuid`;
+    await sqlClient`DELETE FROM app.users WHERE user_id=${user}::uuid`;await sqlClient`DELETE FROM auth.users WHERE id=${user}::uuid`;await sqlClient`DELETE FROM app.repos WHERE repo_id=${repo}::uuid`;
+  });
+  await sqlClient`INSERT INTO auth.users(id) VALUES(${user}::uuid)`;
+  await sqlClient`INSERT INTO app.users(user_id,username,status) VALUES(${user}::uuid,${'engagement_'+user.replaceAll('-','')},'active')`;
+  await sqlClient`INSERT INTO app.user_stats(user_id) VALUES(${user}::uuid)`;
+  await sqlClient`INSERT INTO app.user_feed_state(user_id) VALUES(${user}::uuid)`;
+  await sqlClient`INSERT INTO app.repos(repo_id,github_id,full_name,owner,name,url,status) VALUES(${repo}::uuid,${Date.now()},${'fixture/'+repo},'fixture',${repo},${'https://github.com/fixture/'+repo},'active')`;
+  await sqlClient`INSERT INTO app.repo_engagement(repo_id) VALUES(${repo}::uuid)`;
+  await sqlClient`INSERT INTO app.board_collections(collection_id,user_id,name) VALUES(${collection}::uuid,${user}::uuid,'Tarun engagement List')`;
+  await sqlClient`INSERT INTO telemetry.feed_serves(serve_id,feed_request_id,user_id,session_id,feed_version,source) VALUES(${serve}::uuid,${randomUUID()}::uuid,${user}::uuid,${session}::uuid,1,'fixture')`;
+  await sqlClient`INSERT INTO telemetry.feed_serve_items(serve_id,position,repo_id,source) VALUES(${serve}::uuid,0,${repo}::uuid,'fixture')`;
+  const event=(event_type:InteractionEventV2['event_type']):InteractionEventV2=>({event_id:randomUUID(),schema_version:2,session_id:session,serve_id:serve,repo_id:repo,position:0,event_type,dwell_ms:null,client_occurred_at:new Date().toISOString(),context:{}});
+  const post=(path:string,body:unknown)=>fetch(`http://127.0.0.1:${address.port}/api/v2/${path}`,{method:'POST',headers:{'content-type':'application/json',authorization:`Bearer ${jwt.sign({userId:user},process.env.JWT_SECRET!)}`},body:JSON.stringify(body)});
+  const snapshot=async()=>(await sqlClient`SELECT f.feed_version,f.feedback_version,
+    (SELECT reaction FROM app.reactions WHERE user_id=${user}::uuid AND repo_id=${repo}::uuid) AS reaction,
+    (SELECT count(*)::int FROM app.saves WHERE user_id=${user}::uuid) AS saves,
+    (SELECT count(*)::int FROM telemetry.interaction_events WHERE user_id=${user}::uuid) AS events,
+    (SELECT count(*)::int FROM telemetry.ml_outbox WHERE aggregate_id=${user}::uuid) AS jobs
+    FROM app.user_feed_state f WHERE user_id=${user}::uuid`)[0]!;
+  const before=await snapshot();assert.equal((await post('interactions/batch',{events:[event('impression')]})).status,202);
+  const neutral=await snapshot();assert.equal(neutral.feed_version,before.feed_version);assert.equal(neutral.feedback_version,before.feedback_version);assert.equal(neutral.jobs,0);
+  for(const [action,expected] of [['like','like'],['dislike','dislike'],['like','like'],['unlike',null],['dislike','dislike'],['undislike',null]] as const){
+    assert.equal((await post('interactions/batch',{events:[event(action)]})).status,202);assert.equal((await snapshot()).reaction,expected);
+    const counters=(await sqlClient`SELECT likes_count,dislikes_count FROM app.repo_engagement WHERE repo_id=${repo}::uuid`)[0]!;
+    assert.deepEqual([Number(counters.likes_count),Number(counters.dislikes_count)],[Number(expected==='like'),Number(expected==='dislike')]);
+  }
+  const saveBody={repositoryId:repo,collectionIds:[collection],event:event('save')},unsaved=await snapshot();
+  await sqlClient.unsafe(`CREATE FUNCTION telemetry.${fault}() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.aggregate_id='${user}'::uuid AND NEW.payload->>'event_type'='save' THEN RAISE EXCEPTION 'fixture_save_feedback_failure'; END IF; RETURN NEW; END $$`);
+  await sqlClient.unsafe(`CREATE TRIGGER ${fault} BEFORE INSERT ON telemetry.ml_outbox FOR EACH ROW EXECUTE FUNCTION telemetry.${fault}()`);
+  assert.equal((await post('collections/save',saveBody)).status,500);assert.deepEqual(await snapshot(),unsaved,'Failed membership and feedback must roll back together');
+  assert.equal(Number((await sqlClient`SELECT count(*) FROM app.collection_repos WHERE collection_id=${collection}::uuid`)[0]!.count),0);
+  await sqlClient.unsafe(`DROP TRIGGER ${fault} ON telemetry.ml_outbox`);await sqlClient.unsafe(`DROP FUNCTION telemetry.${fault}()`);
+  assert.equal((await post('collections/save',saveBody)).status,200);const saved=await snapshot();
+  assert.equal(saved.saves,1);assert.equal(saved.events,Number(unsaved.events)+1);assert.equal(saved.jobs,Number(unsaved.jobs)+1);
+  assert.equal((await post('collections/save',saveBody)).status,200);assert.deepEqual(await snapshot(),saved,'Retry cannot duplicate feedback');
+  assert.equal((await post('collections/save',{repositoryId:repo,collectionIds:[],event:event('unsave')})).status,200);
+  const removed=await snapshot();assert.equal(removed.saves,0);assert.equal(removed.events,Number(saved.events)+1);assert.equal(removed.jobs,Number(saved.jobs)+1);
+  const types=await sqlClient`SELECT event_type FROM telemetry.interaction_events WHERE user_id=${user}::uuid ORDER BY server_received_at,event_id`;
+  assert.deepEqual(types.slice(-2).map(row=>row.event_type),['save','unsave']);
+});
