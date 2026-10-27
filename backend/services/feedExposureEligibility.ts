@@ -47,7 +47,8 @@ export async function loadCandidateEligibility(
     throw new Error('Candidate eligibility requires canonical UUIDs and at most 150 repositories.');
   }
   if (!Number.isInteger(days) || days < 1 || days > 365) throw new Error('Invalid recent exposure window.');
-  if (sessionId !== undefined && !uuid.test(sessionId)) throw new Error('Session eligibility requires a canonical UUID.');
+  const canonicalSessionId = sessionId?.toLowerCase();
+  if (canonicalSessionId !== undefined && !uuid.test(canonicalSessionId)) throw new Error('Session eligibility requires a canonical UUID.');
   const requested = [...new Set(repoIds)].sort();
   if (!requested.length) return { identities: [], preferenceIds: [], exposureIds: [], servedIds: [] };
   const rows = await reader.query(`
@@ -66,7 +67,7 @@ export async function loadCandidateEligibility(
       ORDER BY card.created_at DESC LIMIT 1
     ) summary ON true
     WHERE repo.repo_id=ANY($1::uuid[]) AND repo.status='active' ORDER BY repo.repo_id`,
-    [requested, userId, String(days * 86400), sessionId ?? '']);
+    [requested, userId, String(days * 86400), canonicalSessionId ?? '']);
   const seen = new Set<string>();
   for (const row of rows) {
     if (typeof row.repo_id !== 'string' || !requested.includes(row.repo_id) || seen.has(row.repo_id)

@@ -322,6 +322,8 @@ integration('batched canonical eligibility matches separate preference and expos
     assert.ok(!result.preferenceIds.includes(f.repos[0]!));
     assert.ok(!result.exposureIds.includes(f.repos[1]!));
     const serving=await persistence.listCandidateEligibility(f.user,f.repos,f.session);
+    const aliased=await persistence.listCandidateEligibility(f.user,f.repos,f.session.toUpperCase());
+    assert.deepEqual(aliased,serving,'Public UUID case aliases preserve candidate and same-session delivery fences');
     assert.deepEqual(serving.servedIds,[f.repos[1]!]);
     assert.deepEqual(serving.repositories?.map(repo=>repo.repo_id).sort(),[...f.repos].sort());
     const {FeedIntentScopeService}=await import('../../services/feedIntentScopeService.js');
