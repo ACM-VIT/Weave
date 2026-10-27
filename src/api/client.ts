@@ -48,7 +48,7 @@ async function readJson(response: Response): Promise<unknown> {
   const text = await response.text();
   if (!text) return null;
   try { return JSON.parse(text); }
-  catch { throw new Error(`Backend returned invalid JSON (${response.status}).`); }
+  catch { throw Object.assign(new Error(`Backend returned invalid JSON (${response.status}).`), { status: response.status }); }
 }
 
 async function expireStoredSession(lease: SessionLease): Promise<void> {

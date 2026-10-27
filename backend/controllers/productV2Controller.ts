@@ -1,6 +1,7 @@
 import { enqueueProfileDelivery } from '../services/modelOperationService.js';
 import { getReadmeSummaryStatus, readmeSummaryProjection } from '../services/readmeSummaryService.js';
 import type { Response } from 'express';
+import type { Sql, TransactionSql } from 'postgres';
 import { sqlClient } from '../db/index.js';
 import type { AuthRequest } from '../middlewares/authMiddleware.js';
 import { buildMlOnboardingJob, hasMlEmbeddingContext } from '../services/mlOnboardingService.js';
@@ -84,9 +85,8 @@ export function hasCompletedOnboarding(
   return onboardingCompleted === true;
 }
 
-export async function getMe(req: AuthRequest, res: Response): Promise<void> {
-  const id = userId(req, res); if (!id) return;
-  const rows = await sqlClient`
+async function readViewer(sql: Sql | TransactionSql, id: string) {
+  const rows = await sql`
     SELECT u.user_id,u.username,u.full_name,u.date_of_birth,u.bio,u.github_id,u.github_handle,u.avatar_url,u.status,
       u.onboarding_completed,
       u.interests,u.skills,u.tech_stack,u.onboarding_taxonomy,u.profile_version,u.created_at,u.updated_at,
@@ -96,11 +96,17 @@ export async function getMe(req: AuthRequest, res: Response): Promise<void> {
         WHERE ut.user_id=u.user_id),'[]'::json) AS topics
     FROM app.users u JOIN app.user_stats s USING(user_id) JOIN app.user_feed_state f USING(user_id)
     WHERE u.user_id=${id}::uuid AND u.status<>'deleted'`;
-  if (!rows[0]) return sendError(res, 404, 'User profile not found.');
-  sendSuccess(res, 200, {
+  return rows[0] ? {
     ...rows[0],
     onboarding_completed: hasCompletedOnboarding(rows[0].onboarding_completed),
-  });
+  } : null;
+}
+
+export async function getMe(req: AuthRequest, res: Response): Promise<void> {
+  const id = userId(req, res); if (!id) return;
+  const viewer = await readViewer(sqlClient, id);
+  if (!viewer) return sendError(res, 404, 'User profile not found.');
+  sendSuccess(res, 200, viewer);
 }
 
 export async function getUser(req: AuthRequest, res: Response): Promise<void> {
@@ -203,7 +209,24 @@ export async function onboardingStatus(req: AuthRequest, res: Response): Promise
 }
 
 export async function completeOnboarding(req: AuthRequest, res: Response): Promise<void> {
+  return completeOnboardingRequest(req, res, false);
+}
+
+export async function completeOnboardingWithProfile(req: AuthRequest, res: Response): Promise<void> {
+  return completeOnboardingRequest(req, res, true);
+}
+
+async function completeOnboardingRequest(req: AuthRequest, res: Response, atomic: boolean): Promise<void> {
   const id = userId(req, res); if (!id) return;
+  const profile = atomic ? req.body?.profile : undefined;
+  const username = atomic ? normalizeUsername(profile?.username) : null;
+  const fullName = atomic ? text(profile?.full_name, 100, true) : null;
+  const avatarUrl = atomic ? text(profile?.avatar_url ?? null, 2_048) : null;
+  if (atomic && (!profile || typeof profile !== 'object' || Array.isArray(profile)
+    || Object.keys(profile).some(key => !['username','full_name','date_of_birth','avatar_url'].includes(key))
+    || !username || !fullName || !isValidDateOfBirth(profile.date_of_birth) || avatarUrl === undefined)) {
+    return sendError(res, 400, 'Invalid onboarding profile.');
+  }
   const bio = req.body?.bio === undefined ? null : text(req.body.bio, 2_000);
   const structured = ['interests', 'skills', 'tech_stack'].some((key) => Object.hasOwn(req.body ?? {}, key));
   const legacyTopics = structured ? [] : slugArray(req.body?.topics);
@@ -236,13 +259,18 @@ export async function completeOnboarding(req: AuthRequest, res: Response): Promi
         FOR UPDATE
       `;
       if (!profiles[0]) throw Object.assign(new Error('User profile not found.'), { statusCode: 404 });
-      if (!profiles[0].username || !profiles[0].full_name || !profiles[0].date_of_birth) {
+      if (!atomic && (!profiles[0].username || !profiles[0].full_name || !profiles[0].date_of_birth)) {
         throw Object.assign(
           new Error('Complete your full name, username, and date of birth before finishing onboarding.'),
           { statusCode: 400 },
         );
       }
-      const updated = await tx`UPDATE app.users SET bio=COALESCE(${bio},bio),
+      const updated = await tx`UPDATE app.users SET
+        username=CASE WHEN ${atomic} THEN ${username} ELSE username END,
+        full_name=CASE WHEN ${atomic} THEN ${fullName ?? null} ELSE full_name END,
+        date_of_birth=CASE WHEN ${atomic} THEN ${atomic ? profile.date_of_birth : null}::date ELSE date_of_birth END,
+        avatar_url=CASE WHEN ${atomic} THEN ${avatarUrl ?? null} ELSE avatar_url END,
+        bio=CASE WHEN ${atomic} THEN ${bio} ELSE COALESCE(${bio},bio) END,
         interests=${JSON.stringify(interests)}::jsonb,skills=${JSON.stringify(skills)}::jsonb,
         tech_stack=${JSON.stringify(techStack)}::jsonb,onboarding_taxonomy=${JSON.stringify(taxonomy ?? {})}::jsonb,onboarding_completed=true,
         profile_version=profile_version+1,updated_at=now()
@@ -265,7 +293,10 @@ export async function completeOnboarding(req: AuthRequest, res: Response): Promi
         techStack,
       });
       await enqueueProfileDelivery(tx,job);
-      return { completed: true, profile_version: version, topics: uniqueTopics, interests, skills, tech_stack: techStack };
+      const viewer = atomic ? await readViewer(tx, id) : undefined;
+      if (atomic && !viewer) throw Object.assign(new Error('User profile not found.'), { statusCode: 404 });
+      return { completed: true, profile_version: version, topics: uniqueTopics, interests, skills, tech_stack: techStack,
+        ...(atomic ? { viewer } : {}) };
     });
     sendSuccess(res, 200, result);
   } catch (error) { sendControllerError(res, error); }
