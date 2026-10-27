@@ -63,7 +63,7 @@ export type FeedRepositoryPayload = {
 export async function fetchFeed(
   token: string,
   cursor: string | null = null,
-  options: { signal?: AbortSignal; requestId?: string; sessionId?: string; retryUnavailable?: boolean } = {},
+  options: { signal?: AbortSignal; requestId?: string; sessionId?: string; retryUnavailable?: boolean; preparationRetryLimit?: number } = {},
 ): Promise<FeedPage> {
   const body = {
     feed_request_id: options.requestId ?? createUuid(),
@@ -77,6 +77,6 @@ export async function fetchFeed(
       method: 'POST', body: JSON.stringify(request), signal,
     }, token);
     return { data: result.data, traceparent: result.response.headers.get('traceparent') };
-  }, options.signal, undefined, options.retryUnavailable);
+  }, options.signal, undefined, options.retryUnavailable, options.preparationRetryLimit);
   return { ...decodeFeedPage(data.data, body.session_id), serverTraceparent: data.traceparent ?? undefined };
 }

@@ -64,8 +64,6 @@ const WEB_FEED_LIST_STYLE =
     : null;
 const VIEWABILITY_CONFIG = { itemVisiblePercentThreshold: 50 } as const;
 const ACTIVITY_FLUSH_INTERVAL_MS = 8_000;
-const REACTION_ACTIONS = new Set(['like', 'unlike', 'dislike', 'undislike']);
-type PendingActivityFailure = { ownerId: string; generation: number; eventIds: string[]; retrying: boolean };
 
 export default function HomeScreen() {
   const {
@@ -112,11 +110,6 @@ export default function HomeScreen() {
   const pageHeight = viewport.height;
   const listKey = `${pageWidth}-${pageHeight}`;
   const committedListKey = useRef(listKey);
-  const [activityFailure, setActivityFailure] = useState<PendingActivityFailure | null>(null);
-  const visibleActivityFailure = activityFailure && activityFailure.ownerId === user?.user_id
-    && activityFailure.generation === viewerGeneration ? activityFailure : null;
-
-  
   const flushActivityBatch = useCallback(async () => {
     if (!activityOutbox) return { delivered: 0, invalidatedFeed: false, deferred: false };
     const generation = viewerGeneration;
@@ -126,26 +119,6 @@ export default function HomeScreen() {
     if (!token) return { delivered: 0, invalidatedFeed: false, deferred: true };
     return activityOutbox.flush(token, generation);
   }, [activityOutbox, viewerGeneration]);
-
-  const retryPendingActivity = useCallback(async () => {
-    if (!visibleActivityFailure || visibleActivityFailure.retrying
-      || !authSessionLifecycle.isCurrent(visibleActivityFailure.generation)) return;
-    const { ownerId, generation } = visibleActivityFailure;
-    setActivityFailure(current => current?.ownerId === ownerId && current.generation === generation
-      ? { ...current, retrying: true } : current);
-    try {
-      // Flush retries the retained event, including failed local persistence.
-      // Never enqueue again: its UUID, timestamp and attribution are immutable.
-      await flushActivityBatch();
-    } catch { /* Keep pending feedback until an actual acknowledgement arrives. */ }
-    finally {
-      if (authSessionLifecycle.isCurrent(generation)) {
-        setActivityFailure(current => current?.ownerId === ownerId && current.generation === generation
-          ? { ...current, retrying: false } : current);
-      }
-    }
-  }, [flushActivityBatch, visibleActivityFailure]);
-
 
   const {
     data,
@@ -279,14 +252,6 @@ export default function HomeScreen() {
   useEffect(() => {
     if (!activityOutbox || !user?.user_id) return;
     const generation = viewerGeneration;
-    const unsubscribePending = activityOutbox.subscribePending(events => {
-      if (!authSessionLifecycle.isCurrent(generation)) return;
-      const eventIds = events.filter(event => REACTION_ACTIONS.has(event.action)).map(event => event.event_id);
-      setActivityFailure(current => eventIds.length ? {
-        ownerId: user.user_id, generation, eventIds,
-        retrying: current?.ownerId === user.user_id && current.generation === generation && current.retrying,
-      } : null);
-    });
     const unsubscribe = activityOutbox.subscribe(({
       acknowledgedActivities = [],
       invalidatedFeed,
@@ -323,7 +288,6 @@ export default function HomeScreen() {
     return () => {
       stopLifecycle();
       unsubscribe();
-      unsubscribePending();
     };
   }, [
     activityOutbox,
@@ -364,28 +328,64 @@ export default function HomeScreen() {
     );
   }, [responsiveWidth, setViewport]);
 
-  const [sessionError,setSessionError]=useState<string|null>(null);
-  const [resettingSession,setResettingSession]=useState(false);
+  const [refreshState,setRefreshState]=useState({key:feedQueryKey,error:null as string|null,refreshing:false});
+  const sessionError=refreshState.key===feedQueryKey?refreshState.error:null;
+  const resettingSession=refreshState.key===feedQueryKey&&refreshState.refreshing;
+  const setSessionError=(error:string|null)=>setRefreshState(current=>({key:feedQueryKey,error,
+    refreshing:current.key===feedQueryKey&&current.refreshing}));
+  const setResettingSession=(refreshing:boolean)=>setRefreshState(current=>({key:feedQueryKey,refreshing,
+    error:current.key===feedQueryKey?current.error:null}));
   const resettingSessionRef=useRef(false);
+  const refreshRequest = useRef<AbortController | null>(null);
+  useEffect(() => {
+    return () => {
+      refreshRequest.current?.abort();
+      refreshRequest.current = null;
+      resettingSessionRef.current = false;
+    };
+  }, [feedQueryKey]);
   const refreshFeed = async () => {
-    if(resettingSessionRef.current)return;
-    resettingSessionRef.current=true;setResettingSession(true);setSessionError(null);
-    try{
-    const token=await SecureStore.getItemAsync('access_token');
-    const preserveSession=token?await feedSessions(token).reset(pagination.controller.getSessionId()):false;
-    await queryClient.cancelQueries({ queryKey: feedQueryKey, exact: true });
-    pagination.controller.reset({preserveSession});
-    visibleIds.current = [];
-    retentionPins.current = [];
-    scrollOffset.current = 0;
-    committedItems.current = [];
-    listRef.current?.scrollToOffset({ offset: 0, animated: false });
-    await queryClient.resetQueries({ queryKey: feedQueryKey, exact: true });
-    }catch{setSessionError('Could not refresh. Try again.');}finally{resettingSessionRef.current=false;setResettingSession(false);}
+    if (resettingSessionRef.current) return;
+    const request = new AbortController();
+    const generation = authSessionLifecycle.currentGeneration();
+    const assertCurrent = () => {
+      request.signal.throwIfAborted();
+      authSessionLifecycle.assertCurrent(generation);
+    };
+    refreshRequest.current = request;
+    resettingSessionRef.current = true;
+    setResettingSession(true);setSessionError(null);
+    try {
+      await queryClient.cancelQueries({queryKey:feedQueryKey,exact:true});
+      assertCurrent();
+      const token = await SecureStore.getItemAsync('access_token');
+      assertCurrent();
+      if (!token) throw new Error('Your session has expired.');
+      const preserveSession = await feedSessions(token).reset(pagination.controller.getSessionId());
+      assertCurrent();
+      pagination.controller.reset({preserveSession});
+      // Keep the old presentation until a replacement page actually succeeds.
+      // Loading directly also avoids refetching every previously loaded page.
+      const page = await pagination.controller.load(null,request.signal);
+      assertCurrent();
+      visibleIds.current = [];setViewableItems([]);
+      retentionPins.current = [];scrollOffset.current = 0;committedItems.current = [];
+      queryClient.setQueryData<InfiniteData<FeedPage>>(feedQueryKey,{pages:[page],pageParams:[null]});
+      listRef.current?.scrollToOffset({offset:0,animated:false});
+    } catch {
+      if (!request.signal.aborted && authSessionLifecycle.isCurrent(generation)) {
+        pagination.controller.markStale();
+        setSessionError('Could not refresh. Your loaded repositories are still available. Try again.');
+      }
+    } finally {
+      if (refreshRequest.current === request) {
+        refreshRequest.current = null;resettingSessionRef.current = false;setResettingSession(false);
+      }
+    }
   };
   const loadMore = useCallback(() => {
-    if (active && !offline && hasNextPage && !isFetching) void fetchNextPage({ cancelRefetch: false });
-  }, [active, offline, fetchNextPage, hasNextPage, isFetching]);
+    if (!resettingSessionRef.current && !sessionError && active && !offline && hasNextPage && !isFetching) void fetchNextPage({ cancelRefetch: false });
+  }, [active, offline, fetchNextPage, hasNextPage, isFetching, sessionError]);
   useEffect(() => {
     const lastVisible = feedItems.reduce((last, item, index) => viewableItems.includes(item.feedId) ? index : last, -1);
     if (lastVisible >= 0 && shouldPrefetchFeedPage({remaining:feedItems.length-lastVisible-1,
@@ -496,14 +496,7 @@ export default function HomeScreen() {
           viewabilityConfig={VIEWABILITY_CONFIG}
         />
         <FeedHeader pageWidth={pageWidth} discovery={data?.pages[0]?.mode === 'discovery'} onRefresh={refreshFeed} refreshing={resettingSession || (isFetching && !isFetchingNextPage)} statusMessage={sessionError} />
-        {visibleActivityFailure && <View style={styles.activityFailure} accessibilityLiveRegion="polite">
-          <Text style={styles.activityFailureText}>Your reaction is pending. It could not be saved or sent.</Text>
-          <Pressable accessibilityRole="button" accessibilityLabel="Retry pending activity"
-            accessibilityState={{ disabled: visibleActivityFailure.retrying, busy: visibleActivityFailure.retrying }}
-            disabled={visibleActivityFailure.retrying} onPress={retryPendingActivity} style={styles.activityRetry}>
-            <Text style={styles.retryText}>{visibleActivityFailure.retrying ? 'Retrying…' : 'Retry'}</Text>
-          </Pressable>
-        </View>}
+
       </View>
     </View>
   );
@@ -532,13 +525,6 @@ function patchConfirmedProfileRepositories(
 }
 
 const styles = StyleSheet.create({
-  activityFailure: {
-    position: 'absolute', top: 100, left: 12, right: 12, zIndex: 8,
-    padding: 12, borderRadius: 12, borderWidth: 1, borderColor: REFERENCE_THEME.accent,
-    backgroundColor: REFERENCE_THEME.background,
-  },
-  activityFailureText: { color: REFERENCE_THEME.text, fontFamily: 'NataSans-Regular', fontSize: 14, lineHeight: 20 },
-  activityRetry: { minHeight: 44, justifyContent: 'center', alignSelf: 'flex-start', paddingHorizontal: 12 },
   outer: {
     flex: 1,
     alignItems: 'center',

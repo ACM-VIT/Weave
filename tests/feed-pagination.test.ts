@@ -516,3 +516,20 @@ test('consuming navigation attribution preserves the live Home controller and pe
   assert.notStrictEqual(source.homeFeedController(client,'alice'),controller,'Removing Home itself releases the controller');
   source.releaseHomeFeedController(client);client.clear();
 });
+
+
+test('Home follows up preparation once with the same request and stops on persistent failure',async()=>{
+ const {loadSource}=await import('./support/startup-harness');
+ const error=Object.assign(new Error('Recommendations are still being prepared'),{status:503,code:'PERSONALIZED_FEED_UNAVAILABLE',retryAfter:'3'});
+ for(const recovers of [true,false]) {
+  const bodies:unknown[]=[];const waits:number[]=[];
+  const source=loadSource('src/api/home-feed.ts',{
+   './feed':{fetchFeed:async(_token:string,_cursor:unknown,options:any)=>requestFeedWithRetry(request,async body=>{
+     bodies.push(body);if(recovers&&bodies.length===2)return page(['ready']);throw error;
+   },options.signal,async ms=>{waits.push(ms);},options.retryUnavailable,options.preparationRetryLimit)},
+  });
+  if(recovers)assert.equal((await source.fetchHomeFeed('token',null)).items[0].repo_id,'ready');
+  else await assert.rejects(source.fetchHomeFeed('token',null),failure=>failure===error);
+  assert.deepEqual(bodies,[request,request]);assert.deepEqual(waits,[3000]);
+ }
+});
