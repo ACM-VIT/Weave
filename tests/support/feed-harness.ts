@@ -51,6 +51,7 @@ function feed(ids: string[], reducedMotion = false, attribution?: { ownerId: str
     stopAnimation() {}
     interpolate() { return 0; }
   }
+  let moveSaveWindow: (index: number) => void = () => { throw new Error('Save grid is not mounted'); };
   const native = {
     AppState: { currentState: 'active', addEventListener: () => ({ remove() {} }) },
     Platform: { OS: attribution?.platform ?? 'ios', select: (value: any) => value.ios ?? value.default },
@@ -61,11 +62,15 @@ function feed(ids: string[], reducedMotion = false, attribution?: { ownerId: str
     Keyboard: { dismiss() {} }, Linking: { openURL: () => openExternal() },
     Share: { share: async () => ({ action: 'sharedAction' }) },
     ...Object.fromEntries(['ActivityIndicator', 'FlatList', 'Image', 'KeyboardAvoidingView', 'Modal', 'Pressable', 'ScrollView', 'Text', 'TextInput', 'View'].map(name => [name, name])),
-    FlatList: (props: any) => props.numColumns === 2 ? React.createElement('FlatList', props,
-      props.ListHeaderComponent,
-      props.data.length ? props.data.slice(0, props.initialNumToRender * props.numColumns).map((item: any, index: number) =>
-        React.createElement(React.Fragment, {key: props.keyExtractor(item)}, props.renderItem({item, index}))) : props.ListEmptyComponent,
-    ) : React.createElement('FlatList', props),
+    FlatList: (props: any) => {
+      const [first, setFirst] = React.useState(0);
+      moveSaveWindow = setFirst;
+      return props.numColumns === 2 ? React.createElement('FlatList', props,
+        props.ListHeaderComponent,
+        props.data.length ? props.data.slice(first, first + props.initialNumToRender * props.numColumns).map((item: any, index: number) =>
+          React.createElement(React.Fragment, {key: props.keyExtractor(item)}, props.renderItem({item, index:first+index}))) : props.ListEmptyComponent,
+      ) : React.createElement('FlatList', props);
+    },
 
   };
   const auth = { useAuth: () => ({ user: { user_id: attribution?.ownerId ?? 'viewer', username: 'viewer' }, checkOnboardingStatus: async () => undefined }) };
@@ -164,6 +169,7 @@ function feed(ids: string[], reducedMotion = false, attribution?: { ownerId: str
   );
   return {
     requests, events, client,
+    async moveListWindow(index: number) { await act(async () => { moveSaveWindow(index); }); },
     get swipe() {return root.root.findByType('GestureDetector').props;},
     get saveRevealed() {return root.root.findAllByType('Pressable').some(node => node.props.accessibilityLabel === 'Close Save actions');},
     async swipeRight(x = 100, y = 0, success = true) {

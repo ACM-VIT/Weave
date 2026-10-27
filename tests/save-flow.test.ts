@@ -273,12 +273,19 @@ test('the windowed save grid retains offscreen memberships while filtering and c
   try {
     await waitForReadmeState(()=>app.messages.includes('List 00000'));
     assert.ok(!app.messages.includes('List 04999'),'the selected tail membership is outside the render window');
+    await app.moveListWindow(2500);
+    await app.press('List 02500, 2500 repositories');
+    await app.moveListWindow(0);
+    assert.ok(!app.messages.includes('List 02500'));
+    await app.moveListWindow(2500);
+    assert.equal(app.button('List 02500, 2500 repositories').props.accessibilityState.checked,true);
+    await app.moveListWindow(0);
     await app.searchLists('List 00000');
     await app.press('List 00000, 0 repositories');
     await app.searchLists('no match');
     assert.ok(app.messages.includes('No matching Lists'));
     await app.createCollection('New List');
     await app.press('Save repository to selected Lists');
-    assert.deepEqual(submitted.map(ids=>ids.sort()),[['collection:0','legacy-board:4999','collection:new'].sort()]);
+    assert.deepEqual(submitted.map(ids=>ids.sort()),[['collection:0','collection:2500','legacy-board:4999','collection:new'].sort()]);
   } finally {await app.unmount();}
 });
