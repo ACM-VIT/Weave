@@ -63,6 +63,41 @@ test('mapped feed README seeds exact canonical bytes for same-account cache reus
   } finally { await app.unmount(); }
 });
 
+test('matching deferred media manifest keeps feed previews without fetching the README until open', async () => {
+  const manifest = {
+    schema_version: 2 as const, content_version: 7, content_hash: 'fixture-content-hash', readme_available: true,
+    representation: 'deferred' as const,
+    poster: { alt: 'Repository poster', url: 'https://cdn.example.com/poster.png' },
+    images: [{ alt: 'Architecture', url: 'https://cdn.example.com/architecture.png' }],
+    videos: ['https://cdn.example.com/demo.mp4'],
+  };
+  const app = feed(['repo'], true, { ownerId: 'viewer', repository: {
+    readmeFull: null, contentVersion: 7, contentHash: 'fixture-content-hash',
+    hasReadme: true, readmeMediaManifest: manifest,
+  } });
+  app.setReadme(async () => { throw new Error('A matching manifest supplies summary previews without a body request'); });
+  assert.deepEqual(await app.readmeCardImages({ ...repository('repo'), readmeFull: null, readmeMediaManifest: manifest }),
+    ['https://cdn.example.com/poster.png']);
+  await app.mount();
+  try {
+    await app.open(0, 'onReadFullPress');
+    await waitForReadmeState(() => app.previewImages.includes('https://cdn.example.com/architecture.png')
+      && app.videoUrls.includes('https://cdn.example.com/demo.mp4'));
+    assert.deepEqual(app.requests, [], 'the summary manifest avoids an eager canonical body request');
+    assert.equal(app.readmePopupProps.mediaMessage, null);
+    assert.equal(app.videoPopup, undefined, 'manifest videos remain previews until tapped');
+    await app.openVideo();
+    assert.equal(app.videoPopup.props.url, 'https://cdn.example.com/demo.mp4');
+    await app.closeVideo();
+    await app.requestClose();
+
+    app.setReadme(async () => ({ ...repository('repo'), readmeFull: '# Full canonical README' }));
+    await app.open(0, 'onOpenReadme');
+    await waitForReadmeState(() => app.renderedReadmeHtml.includes('Full canonical README'));
+    assert.deepEqual(app.requests, ['readme:repo'], 'opening the original document still fetches it on demand');
+  } finally { await app.unmount(); }
+});
+
 test('feed README viewer loads canonical bytes and retries failures without a second open', async () => {
   const app = feed(['repo'], true, { ownerId: 'viewer', repository: { readmeFull: null } });
   let finish!: (value: unknown) => void;

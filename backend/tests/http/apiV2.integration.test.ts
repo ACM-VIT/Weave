@@ -3,15 +3,18 @@ import crypto from 'node:crypto';
 import type { Server } from 'node:http';
 import test from 'node:test';
 import jwt from 'jsonwebtoken';
+import { gzipSync } from 'node:zlib';
 import type { RepositoryReadmeV2 } from '../../contracts/repository.v2.js';
 
 import { sqlClient } from '../../db/index.js';
 import { PostgresFeedPersistence } from '../../adapters/postgresFeedPersistence.js';
 import { FeedCursorCodec } from '../../services/feedCursor.js';
+import { deriveReadmeMediaManifest } from '../../services/readmeMediaManifest.js';
 
 const integration = process.env.RUN_HTTP_INTEGRATION === '1' ? test : test.skip;
 const userId = '00000000-0000-4000-8000-000000000201';
 const repoId = '00000000-0000-4000-8000-000000000202';
+const deferredRepoId = '00000000-0000-4000-8000-000000000212';
 const sessionId = '00000000-0000-4000-8000-000000000203';
 const spoofOwnerUserId = '00000000-0000-4000-8000-000000000204';
 const ownerUserId = '00000000-0000-4000-8000-000000000205';
@@ -23,6 +26,13 @@ const renamedIngestionProfileId = '00000000-0000-4000-8000-000000000210';
 const recycledHandleProfileId = '00000000-0000-4000-8000-000000000211';
 
 const fixtureReadme = '# HTTP Repo\n\nComplete README content.\n' + 'Full source documentation. '.repeat(40_000);
+const deferredFixtureReadme = '![Screen](https://cdn.example.com/deferred-screen.png)\n'
+  + '[Demo](https://cdn.example.com/deferred-demo.mp4)\n\n' + fixtureReadme;
+const deferredFixtureManifest = deriveReadmeMediaManifest({
+  markdown: deferredFixtureReadme, contentVersion: 1, contentHash: 'http-deferred-fixture',
+  context: { fullName: 'owner/deferred-feed-fixture', githubUrl: 'https://github.com/owner/deferred-feed-fixture',
+    sourcePath: null, defaultBranch: null, baseUrl: null },
+});
 
 async function seed(): Promise<void> {
   await sqlClient`
@@ -58,6 +68,11 @@ async function seed(): Promise<void> {
     VALUES (${repoId}::uuid,202,9001,'owner/http-repo','owner','http-repo','https://github.com/owner/http-repo','active')
   `;
   await sqlClient`
+    INSERT INTO app.repos (repo_id,github_id,full_name,owner,name,url,status)
+    VALUES (${deferredRepoId}::uuid,212,'owner/deferred-feed-fixture','owner','deferred-feed-fixture',
+      'https://github.com/owner/deferred-feed-fixture','active')
+  `;
+  await sqlClient`
     INSERT INTO app.repo_content (
       repo_id,content_hash,description,readme,readme_source_path,
       readme_default_branch,readme_base_url,primary_language,languages
@@ -67,7 +82,11 @@ async function seed(): Promise<void> {
       'TypeScript','["TypeScript","SQL"]'::jsonb
     )
   `;
+  await sqlClient`INSERT INTO app.repo_content(repo_id,content_hash,description,readme,content_version,readme_media_manifest)
+    VALUES(${deferredRepoId}::uuid,'http-deferred-fixture','Deferred feed fixture',${deferredFixtureReadme},1,
+      ${JSON.stringify(deferredFixtureManifest)}::jsonb)`;
   await sqlClient`INSERT INTO app.repo_engagement (repo_id) VALUES (${repoId}::uuid)`;
+  await sqlClient`INSERT INTO app.repo_engagement (repo_id) VALUES (${deferredRepoId}::uuid)`;
   await sqlClient`
     INSERT INTO app.repo_stat_snapshots (
       repo_id,star_count,fork_count,open_issues_count,observed_at
@@ -141,9 +160,9 @@ integration('registered v2 HTTP paths complete controlled integration flows', as
   const token = jwt.sign({ userId, email: 'test@example.com' }, process.env.JWT_SECRET!);
   const authHeaders = { authorization: `Bearer ${token}`, 'content-type': 'application/json' };
   // Recommendation fixtures belong to this isolated HTTP test, never the live catalogue.
-  const seedRecommendation = async () => getApplicationRuntime().queue.replace(
+  const seedRecommendation = async (candidateRepoId = repoId) => getApplicationRuntime().queue.replace(
     userId, await feedPersistence.getFeedVersion(userId),
-    [{repo_id:repoId,score:1,source:'semantic',model_version:'http-test-model',summary_id:null}],600,
+    [{repo_id:candidateRepoId,score:1,source:'semantic',model_version:'http-test-model',summary_id:null}],600,
   );
   try {
     const codec = new FeedCursorCodec(process.env.JWT_SECRET);
@@ -176,13 +195,20 @@ integration('registered v2 HTTP paths complete controlled integration flows', as
     assert.equal(unavailable.status,503,'Missing ML generations must not invent personalized recommendations');
     await seedRecommendation();
     const feedRequestId = crypto.randomUUID();
+    const inlineStartedAt = process.hrtime.bigint();
     const feed = await fetch(`${base}/api/v2/feed`, {
       method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json', 'x-request-id': 'http-integration' },
       body: JSON.stringify({ feed_request_id: feedRequestId, session_id: sessionId, limit: 10, cursor: null }),
     });
     assert.equal(feed.status, 200);
     assert.equal(feed.headers.get('x-request-id'), 'http-integration');
-    const served = await feed.json() as {
+    assert.equal(feed.headers.get('content-encoding'), null,
+      'Express serves this local JSON response without HTTP compression');
+    const inlineBodyText = await feed.text();
+    const inlineElapsedMs = Number(process.hrtime.bigint() - inlineStartedAt) / 1_000_000;
+    const inlineResponseBytes = Buffer.byteLength(inlineBodyText);
+    const inlineGzip6Bytes = gzipSync(Buffer.from(inlineBodyText), { level: 6 }).byteLength;
+    const served = JSON.parse(inlineBodyText) as {
       serve_id: string;
       source: string;
       items: Array<{
@@ -197,6 +223,7 @@ integration('registered v2 HTTP paths complete controlled integration flows', as
           content_version: number;
           content_hash: string;
           readme_available: boolean;
+          readme_md: string | null;
         };
       }>;
     };
@@ -214,6 +241,122 @@ integration('registered v2 HTTP paths complete controlled integration flows', as
     assert.equal(served.items[0].repository.content_version, 1);
     assert.equal(served.items[0].repository.content_hash, 'http-test');
     assert.equal(served.items[0].repository.readme_available, true);
+    assert.equal(served.items[0].repository.readme_md, fixtureReadme,
+      'the default legacy mode retains the exact inline README');
+
+    await seedRecommendation(deferredRepoId);
+    const deferredFeedRequestId = crypto.randomUUID();
+    const deferredStartedAt = process.hrtime.bigint();
+    const deferredFeed = await fetch(`${base}/api/v2/feed`, {
+      method: 'POST', headers: authHeaders,
+      body: JSON.stringify({ feed_request_id: deferredFeedRequestId, session_id: sessionId,
+        limit: 10, cursor: null, readme_mode: 'deferred' }),
+    });
+    assert.equal(deferredFeed.status, 200);
+    assert.equal(deferredFeed.headers.get('content-encoding'), null,
+      'Express serves this local JSON response without HTTP compression');
+    const deferredBodyText = await deferredFeed.text();
+    const deferredElapsedMs = Number(process.hrtime.bigint() - deferredStartedAt) / 1_000_000;
+    const deferredResponseBytes = Buffer.byteLength(deferredBodyText);
+    const deferredGzip6Bytes = gzipSync(Buffer.from(deferredBodyText), { level: 6 }).byteLength;
+    const deferredServed = JSON.parse(deferredBodyText) as {
+      serve_id: string;
+      items: Array<{
+        repo_id: string;
+        position: number;
+        repository: {
+          readme_md?: string | null;
+          content_version: number;
+          content_hash: string;
+          readme_available: boolean;
+          readme_media_manifest: {
+            schema_version: number;
+            content_version: number;
+            content_hash: string;
+            readme_available: boolean;
+            representation: string;
+            poster: { alt: string; url: string } | null;
+            images: Array<{ alt: string; url: string }>;
+            videos: string[];
+          } | null;
+        };
+      }>;
+    };
+    assert.deepEqual(deferredServed.items.map(item => item.repo_id), [deferredRepoId]);
+    const deferredProjection = deferredServed.items[0].repository;
+    assert.equal('readme_md' in deferredProjection, false,
+      'deferred feed omits canonical Markdown at the HTTP boundary');
+    assert.equal(deferredProjection.content_version, 1);
+    assert.equal(deferredProjection.content_hash, 'http-deferred-fixture');
+    assert.equal(deferredProjection.readme_available, true);
+    const deferredManifest = deferredProjection.readme_media_manifest;
+    assert.ok(deferredManifest);
+    assert.equal(deferredManifest.schema_version, 2);
+    assert.equal(deferredManifest.representation, 'deferred');
+    assert.equal(deferredManifest.content_version, deferredProjection.content_version);
+    assert.equal(deferredManifest.content_hash, deferredProjection.content_hash);
+    assert.equal(deferredManifest.readme_available, true);
+    assert.ok(deferredManifest.poster);
+    assert.ok(deferredManifest.images.length > 0);
+    assert.ok(deferredManifest.videos.length > 0);
+    const deferredPosition = deferredServed.items[0].position;
+
+    const deferredReplaySamplesMs: number[] = [];
+    for (let replayIndex = 0; replayIndex < 5; replayIndex += 1) {
+      const replayStartedAt = process.hrtime.bigint();
+      const replay = await fetch(`${base}/api/v2/feed`, {
+        method: 'POST', headers: authHeaders,
+        body: JSON.stringify({ feed_request_id: deferredFeedRequestId, session_id: sessionId,
+          limit: 10, cursor: null, readme_mode: 'inline' }),
+      });
+      assert.equal(replay.status, 200);
+      const replayText = await replay.text();
+      deferredReplaySamplesMs.push(Number(process.hrtime.bigint() - replayStartedAt) / 1_000_000);
+      const replayBody = JSON.parse(replayText) as typeof deferredServed;
+      assert.equal(replayBody.serve_id, deferredServed.serve_id);
+      assert.equal('readme_md' in replayBody.items[0].repository, false,
+        'same-request replay retains the originally stored deferred representation');
+    }
+
+    const changedDeferredReadme = '# Updated deferred fixture\n\nThe current canonical version has no media manifest yet.\n';
+    await sqlClient`UPDATE app.repo_content
+      SET content_version=2,content_hash='http-deferred-next',readme=${changedDeferredReadme}
+      WHERE repo_id=${deferredRepoId}::uuid`;
+    const staleManifestReplay = await fetch(`${base}/api/v2/feed`, {
+      method: 'POST', headers: authHeaders,
+      body: JSON.stringify({ feed_request_id: deferredFeedRequestId, session_id: sessionId,
+        limit: 10, cursor: null, readme_mode: 'deferred' }),
+    });
+    assert.equal(staleManifestReplay.status, 200);
+    const staleManifestReplayBody = JSON.parse(await staleManifestReplay.text()) as typeof deferredServed;
+    assert.equal(staleManifestReplayBody.serve_id, deferredServed.serve_id,
+      'stale-manifest recovery replays the original durable serve');
+    assert.equal(staleManifestReplayBody.items[0].repo_id, deferredRepoId);
+    assert.equal(staleManifestReplayBody.items[0].position, deferredPosition);
+    assert.equal(staleManifestReplayBody.items[0].repository.content_version, 2);
+    assert.equal(staleManifestReplayBody.items[0].repository.content_hash, 'http-deferred-next');
+    assert.equal(staleManifestReplayBody.items[0].repository.readme_md, changedDeferredReadme,
+      'deferred replay returns current canonical bytes when its media identity is stale');
+    assert.equal(staleManifestReplayBody.items[0].repository.readme_available, true);
+    assert.equal(staleManifestReplayBody.items[0].repository.readme_media_manifest, null,
+      'a stale manifest is never published as current media metadata');
+    const deferredServeRows = await sqlClient`
+      SELECT readme_mode FROM telemetry.feed_serves WHERE feed_request_id=${deferredFeedRequestId}::uuid
+    `;
+    assert.equal(deferredServeRows.length, 1, 'replay fallback does not create a second durable serve');
+    assert.equal(deferredServeRows[0].readme_mode, 'deferred');
+    const sortedDeferredReplayMs = [...deferredReplaySamplesMs].sort((left, right) => left - right);
+    const deferredReplayP50Ms = sortedDeferredReplayMs[Math.floor(sortedDeferredReplayMs.length * 0.5)];
+    const deferredReplayP95Ms = sortedDeferredReplayMs[Math.ceil(sortedDeferredReplayMs.length * 0.95) - 1];
+    console.log('HTTP_README_FEED_MEASURE', JSON.stringify({
+      loopback: true,
+      contentEncoding: { inline: feed.headers.get('content-encoding'), deferred: deferredFeed.headers.get('content-encoding') },
+      inline: { responseBytes: inlineResponseBytes, gzip6Bytes: inlineGzip6Bytes, roundTripMs: inlineElapsedMs },
+      deferred: { responseBytes: deferredResponseBytes, gzip6Bytes: deferredGzip6Bytes, roundTripMs: deferredElapsedMs },
+      deferredReplay: { samples: deferredReplaySamplesMs.length, p50Ms: deferredReplayP50Ms, p95Ms: deferredReplayP95Ms },
+    }));
+    await sqlClient`UPDATE app.repos SET status='archived' WHERE repo_id=${deferredRepoId}::uuid`;
+
     await sqlClient`
       UPDATE telemetry.feed_serve_items SET summary_id=NULL
       WHERE serve_id=${served.serve_id}::uuid
@@ -511,7 +654,8 @@ integration('registered v2 HTTP paths complete controlled integration flows', as
     assert.equal(recentExposure.status, 409, 'a fresh request cannot serve the same recently exposed repository');
     const followedFeed = await fetch(`${base}/api/v2/feed`, {
       method: 'POST', headers: authHeaders,
-      body: JSON.stringify({ feed_request_id: feedRequestId, session_id: sessionId, limit: 10, cursor: null }),
+      body: JSON.stringify({ feed_request_id: feedRequestId, session_id: sessionId,
+        limit: 10, cursor: null, readme_mode: 'deferred' }),
     });
     assert.equal(followedFeed.status, 200);
     const followedItems = (await followedFeed.json()) as {
@@ -521,6 +665,7 @@ integration('registered v2 HTTP paths complete controlled integration flows', as
         repository: {
           owner_user_id: string | null;
           viewer_follows_owner: boolean;
+          readme_md: string | null;
         };
       }>;
     };
@@ -528,6 +673,8 @@ integration('registered v2 HTTP paths complete controlled integration flows', as
     // Replay preserves attribution while hydrating the viewer's current follow state.
     assert.equal(followedItems.items[0].repository.owner_user_id, ownerUserId);
     assert.equal(followedItems.items[0].repository.viewer_follows_owner, true);
+    assert.equal(followedItems.items[0].repository.readme_md, fixtureReadme,
+      'same-request replay retains the original inline representation despite a deferred retry');
     assert.deepEqual(await feedPersistence.listFollowedRepositoryIds(userId, 10), [repoId]);
 
     const unfollow = await fetch(`${base}/api/v2/users/${ownerUserId}/follow`, {

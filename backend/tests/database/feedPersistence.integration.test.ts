@@ -5,6 +5,8 @@ import { sqlClient } from '../../db/index.js';
 import { PostgresFeedPersistence } from '../../adapters/postgresFeedPersistence.js';
 import { FeedExposureChangedError, FeedPreferenceChangedError, FeedServeOverlapError } from '../../ports/feedPersistencePort.js';
 import type { CreateServeInput, RepositoryProjection } from '../../contracts/feed.v2.js';
+import { deriveReadmeMediaManifest } from '../../services/readmeMediaManifest.js';
+import { runReadmeMediaBackfill } from '../../scripts/backfill-readme-media.js';
 import { assertDisposableDatabase } from './disposableDatabase.js';
 function ordinaryFeedVersion(value: string | number): number {
   assert.equal(typeof value, 'number', 'This fixture implements only ordinary recommendation responses');
@@ -71,6 +73,77 @@ integration('new serves use one item insert for 1, 24 and 50 cards without follo
     assert.equal(replay?.items[0].repository.content_hash,`feed-identity-${f.repos[0]}`);
     assert.equal(replay?.items[0].repository.readme_available,true);
   }
+});
+
+integration('deferred feed projection omits canonical bytes and replays its version-bound manifest',async()=>{
+  const f=await fixture(1); const persistence=new PostgresFeedPersistence();
+  const canonical='  # Canonical fixture\r\n\r\n![Screen](https://cdn.example.com/screen.png)\n[Demo](https://cdn.example.com/demo.mp4)\r\n';
+  const contentHash='deferred-fixture-hash-v7';
+  const manifest=deriveReadmeMediaManifest({markdown:canonical,contentVersion:7,contentHash,
+    context:{fullName:`fixture/${f.repos[0]}`,githubUrl:`https://github.com/fixture/${f.repos[0]}`,
+      sourcePath:null,defaultBranch:null,baseUrl:null}});
+  assert.equal(manifest.representation,'deferred');
+  await sqlClient`INSERT INTO app.repo_content(repo_id,content_hash,content_version,readme,readme_media_manifest)
+    VALUES(${f.repos[0]}::uuid,${contentHash},7,${canonical},${JSON.stringify(manifest)}::jsonb)`;
+  await persistence.getFeedVersion(f.user);
+
+  const deferred=(await persistence.listActiveRepositories(f.repos,f.user,'deferred'))[0];
+  const inline=(await persistence.listActiveRepositories(f.repos,f.user,'inline'))[0];
+  assert.equal(Object.hasOwn(deferred,'readme_md'),false,'deferred SQL does not project canonical README bytes');
+  assert.equal(inline.readme_md,canonical,'legacy SQL retains exact canonical README bytes');
+  assert.deepEqual(deferred.readme_media_manifest,manifest);
+  assert.equal(deferred.content_version,7);
+  assert.equal(deferred.content_hash,contentHash);
+  assert.equal(deferred.readme_available,true);
+
+  const fresh=await persistence.createServe({...f.input,readme_mode:'deferred',items:[{
+    ...f.input.items[0],repository:deferred,
+  }]});
+  assert.equal(fresh.readme_mode,'deferred');
+  assert.equal(Object.hasOwn(fresh.items[0].repository,'readme_md'),false);
+  const replay=await persistence.getServeByRequest(f.user,f.input.feed_request_id);
+  assert.equal(replay?.readme_mode,'deferred');
+  assert.equal(Object.hasOwn(replay!.items[0].repository,'readme_md'),false,'replay SQL stays on the deferred projection');
+  assert.equal(replay?.items[0].repository.readme_available,true);
+  assert.equal(replay?.items[0].repository.content_version,7);
+  assert.equal(replay?.items[0].repository.content_hash,contentHash);
+  assert.deepEqual(replay?.items[0].repository.readme_media_manifest,manifest);
+});
+
+integration('README media backfill advances past a skipped low UUID and retries it on the next pass',async()=>{
+  const f=await fixture(26); const lowRepo=`00000000-0000-4000-8000-${crypto.randomUUID().slice(-12)}`;
+  const lowName=`backfill/low-${lowRepo.slice(-12)}`;
+  const baseline=await runReadmeMediaBackfill(sqlClient,false);
+  await sqlClient`INSERT INTO app.repos(repo_id,github_id,full_name,owner,name,url,status)
+    VALUES(${lowRepo}::uuid,${crypto.randomInt(1_000_000_000_000,1_000_001_000_000)},${lowName},'backfill',${lowName.split('/')[1]},${`https://github.com/${lowName}`},'active')`;
+  const repos=[lowRepo,...f.repos];
+  await sqlClient`INSERT INTO app.repo_content(repo_id,content_hash,content_version,readme)
+    SELECT repo_id,'backfill-fixture-'||repo_id::text,7,'# Backfill fixture'
+    FROM unnest(${repos}::uuid[]) AS input(repo_id)`;
+
+  let release!:()=>void; let acquired!:()=>void;
+  const locked=new Promise<void>(resolve=>{acquired=resolve;});
+  const hold=new Promise<void>(resolve=>{release=resolve;});
+  const owner=sqlClient.begin(async tx=>{
+    await tx`SELECT repo_id FROM app.repo_content WHERE repo_id=${lowRepo}::uuid FOR UPDATE`;
+    acquired(); await hold;
+  });
+  await locked;
+  let released=false;
+  const database={
+    unsafe:sqlClient.unsafe.bind(sqlClient),
+    async begin(work:(tx:any)=>Promise<unknown>){
+      const result=await sqlClient.begin(work);
+      if(!released){released=true;release();}
+      return result;
+    },
+  } as unknown as typeof sqlClient;
+  let result;
+  try { result=await runReadmeMediaBackfill(database,true); }
+  finally { release(); await owner; }
+  assert.equal(result.before,baseline.before+repos.length);
+  assert.equal(result.written,result.before,'all available rows and the released low UUID are updated');
+  assert.equal(result.remaining,0,'a later forward pass revisits the row skipped while its lock was held');
 });
 
 integration('concurrent duplicate writes return one durable serve and keep exact position order',async()=>{

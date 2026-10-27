@@ -2,7 +2,7 @@ import type { RepositoryUpsert } from '../contracts/ingestion.v2.js';
 import { normalizeCanonicalRepositoryReadme } from './mlRepositoryPayloadService.js';
 
 export const MAX_INGESTION_REPOSITORIES = 100;
-const MAX_BATCH_REPOSITORIES = 25;
+export const MAX_BATCH_REPOSITORIES = 25;
 const MAX_BATCH_BYTES = 4 * 1024 * 1024;
 
 export interface RepositoryObservation {

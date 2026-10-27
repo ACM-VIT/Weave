@@ -21,6 +21,7 @@ import {
   varchar,
 } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
+import type { ReadmeMediaManifest } from '../contracts/readmeMedia.v2.js';
 
 export const appSchema = pgSchema('app');
 export const telemetrySchema = pgSchema('telemetry');
@@ -241,6 +242,7 @@ export const repoContent = appSchema.table('repo_content', {
   readmeSourcePath: text('readme_source_path'),
   readmeDefaultBranch: text('readme_default_branch'),
   readmeBaseUrl: text('readme_base_url'),
+  readmeMediaManifest: jsonb('readme_media_manifest').$type<ReadmeMediaManifest>(),
   primaryLanguage: text('primary_language'),
   languages: jsonb('languages').$type<string[]>().notNull().default([]),
   languageBreakdown: jsonb('language_breakdown').$type<import('../services/repositoryLanguages.js').RepositoryLanguage[]>(),
@@ -518,6 +520,7 @@ export const feedServes = telemetrySchema.table('feed_serves', {
   feedVersion: bigint('feed_version', { mode: 'bigint' }).notNull(),
   generationId: uuid('generation_id'),
   source: text('source').notNull(),
+  readmeMode: text('readme_mode').notNull().default('inline'),
   modelVersion: text('model_version'),
   nextCursor: text('next_cursor'),
   status: text('status').notNull().default('prepared'),
@@ -525,6 +528,7 @@ export const feedServes = telemetrySchema.table('feed_serves', {
   intentEpochWitnessSha256: text('intent_epoch_witness_sha256'), intentPolicySha256: text('intent_policy_sha256'),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 }, (table) => [
+  check('feed_serves_readme_mode_check', sql`${table.readmeMode} IN ('inline','deferred')`),
   index('feed_serves_user_created_idx').on(table.userId, table.createdAt),
   index('feed_serves_user_session_idx').on(table.userId, table.sessionId),
 ]);
