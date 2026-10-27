@@ -42,5 +42,6 @@
   "roles": ["ghsocial_backend", "ghsocial_scoring_writer", "ghsocial_scoring_exporter", "ghsocial_scoring_retention"],
   "columns": ["app.repo_content.language_breakdown", "app.repo_content.language_total_size", "app.repo_content.language_breakdown_complete", "app.repo_content.language_observed_at","telemetry.interaction_events.impression_event_id","private_scoring.export_snapshots.frozen_rows", "private_scoring.export_snapshot_labels.labels", "private_scoring.subject_revocations.revoked_at","app.user_github_unlinks.provider_identity_id", "telemetry.feed_item_provenance.exposure_id",
     "telemetry.feed_item_provenance.generation_id", "telemetry.feed_item_provenance.legacy_generation_hint", "telemetry.feed_item_provenance.record_digest",
-    "private_scoring.scoring_inputs.input_bytes", "private_scoring.scoring_generations.context_bytes"]
+    "private_scoring.scoring_inputs.input_bytes", "private_scoring.scoring_generations.context_bytes",
+    "app.repo_content.readme_media_manifest", "telemetry.feed_serves.readme_mode"]
 }

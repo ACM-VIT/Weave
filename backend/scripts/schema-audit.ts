@@ -62,6 +62,8 @@ try {
     'app.repo_content.readme_source_path',
     'app.repo_content.readme_default_branch',
     'app.repo_content.readme_base_url',
+    'app.repo_content.readme_media_manifest',
+    'telemetry.feed_serves.readme_mode',
     'app.repo_card_summaries.prompt_version',
     'app.repo_card_summaries.format_version',
     'app.repo_card_summaries.highlights',

@@ -11,6 +11,7 @@ import { ReservationOwnedError } from '../redis/feedQueue.js';
 import { incrementMetric, observeMetric } from '../observability/metrics.js';
 import { FeedCursorCodec } from './feedCursor.js';
 import type { FeedGenerationOutcome } from './feedGenerationService.js';
+import { isCurrentReadmeMediaManifest } from './readmeMediaManifest.js';
 import { FeedWaitCoordinator } from './feedWaitCoordinator.js';
 import { FeedRefillScheduler } from './feedRefillScheduler.js';
 
@@ -50,6 +51,15 @@ export class PersonalizedFeedUnavailableError extends Error {
   constructor(readonly cause?: unknown) {
     super('Your personalized recommendations are still being prepared.');
     this.name = 'PersonalizedFeedUnavailableError';
+  }
+}
+
+export class FeedReadmeMediaUnavailableError extends Error {
+  readonly code = 'FEED_README_MEDIA_UNAVAILABLE';
+
+  constructor() {
+    super('Repository preview media is still being prepared.');
+    this.name = 'FeedReadmeMediaUnavailableError';
   }
 }
 
@@ -151,7 +161,8 @@ export class FeedV2Service {
     // publication races nor a 500-item generation-history window reintroduce them.
     for (let batch = 0; batch < 4; batch++) {
       const eligibility = reservation.items.length
-        ? await this.persistence.listCandidateEligibility?.(userId,reservation.items.map(item=>item.repo_id),request.session_id) : undefined;
+        ? await this.persistence.listCandidateEligibility?.(userId,reservation.items.map(item=>item.repo_id),request.session_id,
+          request.readme_mode ?? 'inline') : undefined;
       const delivered = new Set(eligibility?.servedIds ?? []);
       const items = eligibility ? reservation.items.filter(item=>!delivered.has(item.repo_id))
         : await this.excludeSessionDeliveries(userId, request.session_id, reservation.items);
@@ -311,6 +322,7 @@ export class FeedV2Service {
 
   private async prepareFeed(userId: string, request: FeedRequestV2, signal?: AbortSignal, observed?: FeedReplayObservation): Promise<FeedResponseV2> {
     signal?.throwIfAborted();
+    const readmeMode = request.readme_mode ?? 'inline';
     const replay = observed?.userId === userId && observed.requestId === request.feed_request_id
       ? observed.replay : await this.persistence.getServeByRequest(userId, request.feed_request_id);
     if (replay) {
@@ -427,7 +439,7 @@ export class FeedV2Service {
       }
       if (this.fallbackEnabled && !generationCompleted) {
         const fallback = await this.persistence.getTrendingFallback(request.limit,
-          await this.persistence.listExcludedRepositoryIds(userId, request.session_id, 500), userId);
+          await this.persistence.listExcludedRepositoryIds(userId, request.session_id, 500), userId, readmeMode);
         entries = fallback.map(repo => ({repo_id: repo.repo_id, score: 0, source: 'fallback', model_version: 'backend-fallback', summary_id: repo.summary_id}));
         for (const repository of fallback) {
           if (repository.status === 'active') byId.set(repository.repo_id, repository);
@@ -442,7 +454,7 @@ export class FeedV2Service {
     // to the immutable same-request replay returned above.
     try {
       const eligibility = (entries === reservation.items ? reservation.eligibility : undefined)
-        ?? await this.persistence.listCandidateEligibility?.(userId, entries.map(entry => entry.repo_id));
+        ?? await this.persistence.listCandidateEligibility?.(userId, entries.map(entry => entry.repo_id), undefined, readmeMode);
       for (const repository of eligibility?.repositories ?? []) {
         byId.set(repository.repo_id,repository);freshlyHydrated.add(repository.repo_id);
       }
@@ -473,7 +485,7 @@ export class FeedV2Service {
     if (missingRepoIds.length > 0) {
       // A refresh that omits an ID must not retain its invalidated projection.
       for (const repoId of missingRepoIds) byId.delete(repoId);
-      const projections = await this.persistence.listActiveRepositories(missingRepoIds, userId);
+      const projections = await this.persistence.listActiveRepositories(missingRepoIds, userId, readmeMode);
       for (const repository of projections) {
         if (repository.status === 'active') byId.set(repository.repo_id, repository);
       }
@@ -485,6 +497,12 @@ export class FeedV2Service {
     }
 
     try {
+      if (readmeMode === 'deferred' && usable.some(entry => {
+        const repository = byId.get(entry.repo_id)!;
+        return repository.content_version == null || repository.content_hash == null
+          || !isCurrentReadmeMediaManifest(repository.readme_media_manifest,
+            repository.content_version, repository.content_hash);
+      })) throw new FeedReadmeMediaUnavailableError();
       let nextCursor: string | null = null;
       if (queueAvailable && source === 'personalized' && usable.length > 0) {
         try {
@@ -509,6 +527,7 @@ export class FeedV2Service {
         feed_version: version,
         generation_id: usable[0]?.generation_id ?? null,
         source,
+        readme_mode: readmeMode,
         model_version: usable[0]?.model_version ?? null,
         next_cursor: nextCursor,
         items: usable.map((entry, position) => {

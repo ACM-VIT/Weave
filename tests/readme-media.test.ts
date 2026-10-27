@@ -1,6 +1,7 @@
 import test from "node:test";
 import { describe } from "node:test";
 import assert from "node:assert/strict";
+import { deriveReadmeMediaManifest } from "../backend/services/readmeMediaManifest";
 import { extractReadmePreviewImage, renderReadmeMarkdown, resolveReadmeImageUrl, type ReadmeImageContext } from "../src/utils/readme-images";
 import { extractReadmeVideos } from "../src/utils/readme-videos";
 import { readmePopupBlocks } from "../src/utils/readme-popup-content";
@@ -103,6 +104,35 @@ describe("readme images", () => {
       {alt:'Screenshot',url:'https://raw.githubusercontent.com/ACM-VIT/weave/refs/heads/main/docs/images/screen.png'},
       {alt:'Demo',url:'https://raw.githubusercontent.com/ACM-VIT/weave/refs/heads/main/docs/demo.gif'},
     ]);
+  });
+
+  test('deferred feed media manifest matches the existing full README preview extractors', async () => {
+    const markdown = [
+      '![build status](https://img.shields.io/badge/build-passing-green)',
+      '![logo](./images/logo.png)',
+      '![App screenshot](./images/screenshot.png)',
+      '<video src="./demo.mp4"></video>',
+      '[Attachment](https://github.com/user-attachments/assets/1234-abcd)',
+      '```md\n![Example](https://cdn.example.com/fake.png)\n```',
+    ].join('\n');
+    const manifest = deriveReadmeMediaManifest({
+      markdown,
+      context: {
+        fullName: context.fullName!, githubUrl: context.githubUrl!,
+        sourcePath: context.readmeSourcePath!, defaultBranch: context.readmeDefaultBranch!,
+        baseUrl: context.readmeBaseUrl!,
+      },
+      contentVersion: 7,
+      contentHash: 'canonical-hash-7',
+    });
+
+    assert.equal(manifest.content_version, 7);
+    assert.equal(manifest.content_hash, 'canonical-hash-7');
+    assert.equal(manifest.readme_available, true);
+    assert.deepEqual(manifest.poster, extractReadmePreviewImage(markdown, context));
+    const { extractReadmeSummaryImages } = await import('../src/utils/readme-images');
+    assert.deepEqual(manifest.images, extractReadmeSummaryImages(markdown, context));
+    assert.deepEqual(manifest.videos, extractReadmeVideos(markdown, context));
   });
 });
 

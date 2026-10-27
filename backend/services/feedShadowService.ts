@@ -31,7 +31,7 @@ export class FeedShadowService {
         social_repo_ids: socialRepoIds,
         context: { cold_start: false },
       });
-      const projections = await this.persistence.listActiveRepositories(response.items.map((item) => item.repo_id));
+      const projections = await this.persistence.listActiveRepositoryIdentities(response.items.map((item) => item.repo_id));
       if (projections.length !== response.items.length) throw new Error('unknown_repository_id');
       const baseline = new Set(baselineRepoIds);
       const overlap = response.items.filter((item) => baseline.has(item.repo_id)).length;

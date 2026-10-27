@@ -55,7 +55,8 @@ export interface CandidateEligibility {
 }
 
 export interface FeedPersistencePort {
-  listCandidateEligibility?(userId: string, repoIds: string[], sessionId?: string): Promise<CandidateEligibility>;
+  listCandidateEligibility?(userId: string, repoIds: string[], sessionId?: string,
+    readmeMode?: 'inline' | 'deferred'): Promise<CandidateEligibility>;
   /** Current explicit negatives are independent of bounded exposure exclusions. */
   listPreferenceEligibleRepositoryIds(userId: string, repoIds: string[]): Promise<string[]>;
   /** Exact cross-session window check; implementations also fence at createServe. */
@@ -75,12 +76,14 @@ export interface FeedPersistencePort {
   getServeByRequest(userId: string, feedRequestId: string): Promise<StoredServe | null>;
   createServe(input: CreateServeInput): Promise<StoredServe>;
   listActiveRepositoryIdentities(repoIds: string[]): Promise<RepositoryIdentityProjection[]>;
-  listActiveRepositories(repoIds: string[], viewerUserId?: string): Promise<RepositoryProjection[]>;
+  listActiveRepositories(repoIds: string[], viewerUserId?: string,
+    readmeMode?: 'inline' | 'deferred'): Promise<RepositoryProjection[]>;
   /** Fresh active cards for this viewer; callers may reuse them within the requesting serve only. */
   getTrendingFallback(
     limit: number,
     excludeRepoIds: string[],
     viewerUserId?: string,
+    readmeMode?: 'inline' | 'deferred',
   ): Promise<RepositoryProjection[]>;
   getRecentPersonalizedEntries?(
     userId: string,

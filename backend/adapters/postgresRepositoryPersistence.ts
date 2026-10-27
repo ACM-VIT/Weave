@@ -24,6 +24,7 @@ import {
 import { enqueueReadmeSummaryBatch } from '../services/readmeSummaryService.js';
 import { isValidUuid } from '../utils/validators.js';
 import { canonicalGithubProfileSubject, reconcileGithubProfileForIngestion } from '../services/socialProfileService.js';
+import { deriveReadmeMediaManifest } from '../services/readmeMediaManifest.js';
 
 type OutboxInput = {
   job_type: 'repo_index' | 'repo_refresh';
@@ -194,8 +195,17 @@ export class PostgresRepositoryPersistence implements RepositoryPersistencePort 
           ...mergeRepositoryLanguageObservation(repo, old ?? {}) };
         const hash = repositoryContentHash(canonical);
         const changed = !old || old.content_hash !== hash;
+        const contentVersion = changed ? Number(old?.content_version ?? 0) + 1 : Number(old.content_version);
+        const readmeMediaManifest = changed ? deriveReadmeMediaManifest({
+          markdown: canonical.readme ?? null,
+          context: { fullName: canonical.full_name, githubUrl: canonical.url,
+            sourcePath: canonical.readme_source_path ?? null,
+            defaultBranch: canonical.readme_default_branch ?? null,
+            baseUrl: canonical.readme_base_url ?? null },
+          contentVersion, contentHash: hash,
+        }) : null;
         return { ...canonical, content_hash: hash,
-          content_version: changed ? Number(old?.content_version ?? 0) + 1 : Number(old.content_version),
+          content_version: contentVersion, readme_media_manifest: readmeMediaManifest,
           changed, order };
       });
       const preparedSource = JSON.stringify(prepared);
@@ -241,19 +251,22 @@ export class PostgresRepositoryPersistence implements RepositoryPersistencePort 
       await tx`
         INSERT INTO app.repo_content (
           repo_id,description,readme,readme_source_path,readme_default_branch,readme_base_url,
-          primary_language,languages,language_breakdown,language_total_size,language_breakdown_complete,language_observed_at,content_hash,content_version,source_updated_at
+          readme_media_manifest,primary_language,languages,language_breakdown,language_total_size,
+          language_breakdown_complete,language_observed_at,content_hash,content_version,source_updated_at
         )
         SELECT repo_id::uuid,description,readme,readme_source_path,readme_default_branch,readme_base_url,
-          primary_language,COALESCE(languages,'[]'::jsonb),language_breakdown,language_total_size,language_breakdown_complete,language_observed_at,content_hash,content_version,pushed_at
+          readme_media_manifest,primary_language,COALESCE(languages,'[]'::jsonb),language_breakdown,language_total_size,
+          language_breakdown_complete,language_observed_at,content_hash,content_version,pushed_at
         FROM jsonb_to_recordset(${stagedSource}::text::jsonb) AS incoming(
           repo_id text,description text,readme text,readme_source_path text,readme_default_branch text,
-          readme_base_url text,primary_language text,languages jsonb,language_breakdown jsonb,language_total_size bigint,
+          readme_base_url text,readme_media_manifest jsonb,primary_language text,languages jsonb,language_breakdown jsonb,language_total_size bigint,
           language_breakdown_complete boolean,language_observed_at timestamptz,content_hash text,
           content_version integer,pushed_at timestamptz,changed boolean
         ) WHERE changed ORDER BY repo_id
         ON CONFLICT (repo_id) DO UPDATE SET description=EXCLUDED.description,readme=EXCLUDED.readme,
           readme_source_path=EXCLUDED.readme_source_path,readme_default_branch=EXCLUDED.readme_default_branch,
-          readme_base_url=EXCLUDED.readme_base_url,primary_language=EXCLUDED.primary_language,
+          readme_base_url=EXCLUDED.readme_base_url,readme_media_manifest=EXCLUDED.readme_media_manifest,
+          primary_language=EXCLUDED.primary_language,
           languages=EXCLUDED.languages,language_breakdown=EXCLUDED.language_breakdown,language_total_size=EXCLUDED.language_total_size,
           language_breakdown_complete=EXCLUDED.language_breakdown_complete,language_observed_at=EXCLUDED.language_observed_at,content_hash=EXCLUDED.content_hash,content_version=EXCLUDED.content_version,
           source_updated_at=EXCLUDED.source_updated_at,updated_at=now()
