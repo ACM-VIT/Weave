@@ -55,7 +55,7 @@ export function useRepositoryReadme(repository: RepositoryDetail | undefined, ac
   const inline = source?.readmeFull ? source : undefined;
   const document = useQuery<RepositoryReadmeDocument>({
     queryKey:repositoryReadmeQueryKey(repository?.id ?? '',viewer,identity?.contentVersion),
-    enabled:Boolean(active && viewer && identity && !inline),staleTime:Infinity,retry:false,
+    enabled:Boolean(active && viewer && identity && !inline && source?.hasReadme !== false),staleTime:Infinity,retry:false,
     initialData:() => {
       authSessionLifecycle.assertCurrent(generation);
       if (!identity) return undefined;
@@ -83,7 +83,13 @@ export function useRepositoryReadme(repository: RepositoryDetail | undefined, ac
   });
   const error = metadata.error ?? document.error;
   const terminalError = [401,403,404,410].includes((error as {status?:number} | null)?.status ?? 0);
-  const data = terminalError ? undefined : inline ?? document.data;
+  const confirmedAbsence = source?.hasReadme === false;
+  const data = terminalError ? undefined : inline ?? document.data ?? (confirmedAbsence ? source : undefined);
+  const refetch = () => {
+    refresh.current = {scope,used:false};
+    if (!identity) return metadata.refetch();
+    return client.resetQueries({queryKey:metadataKey,exact:true}).then(() => document.refetch());
+  };
   return {data,error,terminalError,isError:Boolean(error),isPending:!error && !data && (metadata.isFetching || document.isPending),
-    refetch:()=> !identity ? metadata.refetch() : document.refetch()};
+    refetch};
 }

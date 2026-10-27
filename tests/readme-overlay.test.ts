@@ -217,6 +217,48 @@ test('a racing README version refresh is bounded and never mixes new body media 
   }finally{await app.unmount();}
 });
 
+test('explicit README retry restarts metadata recovery after its bounded refresh fails',async()=>{
+  const app=feed(['repo'],true,{ownerId:'viewer',repository:{readmeFull:null}});
+  let bodyAttempts=0,metadataAttempts=0;
+  app.setReadme(async()=>{
+    bodyAttempts++;
+    if(bodyAttempts<3)throw Object.assign(new Error('Repository version changed'),{status:409});
+    return {...repository('repo'),contentVersion:2,contentHash:'version-two',readmeFull:'# Recovered version two'};
+  });
+  app.setMetadata(async()=>{
+    metadataAttempts++;
+    if(metadataAttempts===1)throw Object.assign(new Error('Metadata service unavailable'),{status:503});
+    return {...repository('repo'),contentVersion:2,contentHash:'version-two',readmeFull:null};
+  });
+  await app.mount();
+  try{
+    await app.open(0,'onOpenReadme');
+    await waitForReadmeState(()=>app.readmePopupProps?.errorMessage==='Metadata service unavailable');
+    assert.deepEqual(app.requests,['readme:repo','metadata:repo']);
+    assert.equal(bodyAttempts,1,'A failed bounded refresh does not start an automatic retry loop');
+    assert.equal(metadataAttempts,1);
+
+    await app.press('Retry loading README');
+    await waitForReadmeState(()=>app.renderedReadmeHtml.includes('Recovered version two'));
+    assert.deepEqual(app.requests,['readme:repo','metadata:repo','readme:repo','metadata:repo','readme:repo']);
+    assert.equal(bodyAttempts,3);
+    assert.equal(metadataAttempts,2);
+  }finally{await app.unmount();}
+});
+
+test('confirmed README absence settles the active popup without a body request',async()=>{
+  const app=feed(['repo'],true,{ownerId:'viewer',repository:{contentVersion:null,contentHash:null,hasReadme:undefined,readmeFull:null}});
+  app.setMetadata(async()=>({...repository('repo'),contentVersion:null,contentHash:null,hasReadme:false,readmeFull:null}));
+  await app.mount();
+  try{
+    await app.open(0,'onOpenReadme');
+    await waitForReadmeState(()=>app.client.getQueryData<any>(repositoryReadmeMetadataQueryKey('repo','viewer'))?.hasReadme===false);
+    assert.deepEqual(app.requests,['metadata:repo']);
+    assert.equal(app.readmePopupProps.loading,false,'Confirmed absence is a settled result, not a disabled query spinner');
+    assert.equal(app.readmePopupProps.errorMessage,null);
+  }finally{await app.unmount();}
+});
+
 test('a pending README version refresh preserves a confirmed save for the same viewer',async()=>{
   const repoId='00000000-0000-4000-8000-000000000012';
   const app=feed([repoId],true,{ownerId:'viewer',repository:{readmeFull:null}});

@@ -115,6 +115,8 @@ export function mapRepositoryDetail(
   const updatedAt = nullableText(payload.updated_at);
   const readmeFull = normalizeOptionalRepositoryText(payload.readme_md)
     ?? normalizeOptionalRepositoryText(payload.readme);
+  const hasReadme = typeof payload.readme_available === 'boolean' ? payload.readme_available
+    : readmeFull ? true : undefined;
   const summarySource = payload.summary_source === 'generated'
     || payload.summary_source === 'description_fallback'
     ? payload.summary_source
@@ -137,7 +139,7 @@ export function mapRepositoryDetail(
       readmeFull,
     ),
     readmeFull,
-    hasReadme: typeof payload.readme_available === 'boolean' ? payload.readme_available : Boolean(readmeFull),
+    hasReadme,
     contentHash: nullableText(payload.content_hash),
     readmeSourcePath: nullableText(payload.readme_source_path),
     readmeDefaultBranch: nullableText(payload.readme_default_branch),

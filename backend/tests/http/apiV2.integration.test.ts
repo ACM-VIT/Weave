@@ -194,6 +194,9 @@ integration('registered v2 HTTP paths complete controlled integration flows', as
           summary_prompt_version: string | null;
           readme_source_path: string | null;
           readme_base_url: string | null;
+          content_version: number;
+          content_hash: string;
+          readme_available: boolean;
         };
       }>;
     };
@@ -208,6 +211,9 @@ integration('registered v2 HTTP paths complete controlled integration flows', as
       served.items[0].repository.readme_base_url,
       'https://raw.githubusercontent.com/owner/http-repo/refs/heads/main/docs/',
     );
+    assert.equal(served.items[0].repository.content_version, 1);
+    assert.equal(served.items[0].repository.content_hash, 'http-test');
+    assert.equal(served.items[0].repository.readme_available, true);
     await sqlClient`
       UPDATE telemetry.feed_serve_items SET summary_id=NULL
       WHERE serve_id=${served.serve_id}::uuid

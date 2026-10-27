@@ -41,6 +41,9 @@ integration('new serves use one item insert for 1, 24 and 50 cards without follo
   const persistence = new PostgresFeedPersistence();
   for (const count of [1,24,50]) {
     const f = await fixture(count);
+    await sqlClient`INSERT INTO app.repo_content(repo_id,content_hash,content_version,readme)
+      SELECT repo_id,'feed-identity-'||repo_id::text,7,'# Canonical README'
+      FROM unnest(${f.repos}::uuid[]) AS input(repo_id)`;
     await persistence.getFeedVersion(f.user); // Normal requests initialize state before reserving cards.
     const queries:string[]=[]; const previous=sqlClient.options.debug;
     sqlClient.options.debug=(_connection,query)=>{queries.push(query);};
@@ -64,6 +67,9 @@ integration('new serves use one item insert for 1, 24 and 50 cards without follo
     assert.equal(replay?.serve_id,created.serve_id);
     assert.deepEqual(replay?.items.map(item=>[item.repo_id,item.position,item.score,item.summary_id,item.repository.viewer_saved]),
       created.items.map(item=>[item.repo_id,item.position,item.score,item.summary_id,item.repository.viewer_saved]));
+    assert.equal(replay?.items[0].repository.content_version,7);
+    assert.equal(replay?.items[0].repository.content_hash,`feed-identity-${f.repos[0]}`);
+    assert.equal(replay?.items[0].repository.readme_available,true);
   }
 });
 
