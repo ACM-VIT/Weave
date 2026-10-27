@@ -4,6 +4,8 @@ import test from "node:test";
 import { act } from "react";
 import { repositoryDetailQueryKey, repositoryMetadataQueryKey, repositoryReadmeMetadataQueryKey, repositoryReadmeQueryKey } from "../src/models/repository";
 import { authSessionLifecycle } from "../src/api/session-lifecycle";
+import { decodeFeedPage } from "../src/api/feed-data";
+import { createFeedItemMapper } from "../src/utils/feed-items";
 import { repository, feed, waitForReadmeState } from "./support/feed-harness";
 
 // Reduced-motion README intentionally skips the close animation altogether.
@@ -31,6 +33,33 @@ test('one feed action opens the original README viewer without repository naviga
     assert.equal(app.events[0].action, 'readme_open');
     assert.equal(app.events[0].serve_id, 'repo');
     assert.equal(app.events[0].position, 3);
+  } finally { await app.unmount(); }
+});
+
+test('mapped feed README seeds exact canonical bytes for same-account cache reuse', async () => {
+  const canonical = '  # Canonical README\r\n\r\nContent with source whitespace.  \r\n';
+  const page = decodeFeedPage({
+    serve_id: '00000000-0000-4000-8000-000000000011', feed_version: '1', next_cursor: null,
+    items: [{ repo_id: 'repo', position: 0, repository: {
+      full_name: 'owner/repo', url: 'https://github.com/owner/repo', content_version: 7,
+      content_hash: 'body-hash-v7', readme_available: true, readme_md: canonical,
+    } }],
+  }, '00000000-0000-4000-8000-000000000010');
+  const mapped = createFeedItemMapper()([page])[0].repository;
+  assert.equal(mapped.readmeFull, canonical, 'feed mapping retains the canonical response bytes');
+  const app = feed(['repo'], true, { ownerId: 'viewer', repository: mapped });
+  app.setReadme(async () => { throw new Error('An exact feed body must seed the shared version cache'); });
+  await app.mount();
+  try {
+    await app.open(0, 'onOpenReadme');
+    const key = repositoryReadmeQueryKey('repo', 'viewer', 7);
+    assert.equal(app.client.getQueryData<any>(key)?.readmeFull, canonical,
+      'the shared document cache keeps leading and trailing canonical whitespace');
+    assert.deepEqual(app.requests, [], 'the feed body is reusable without a second request');
+    await app.requestClose();
+    await app.open(0, 'onOpenReadme');
+    assert.equal(app.client.getQueryData<any>(key)?.readmeFull, canonical);
+    assert.deepEqual(app.requests, [], 'reopening reuses the same immutable version cache');
   } finally { await app.unmount(); }
 });
 

@@ -113,8 +113,8 @@ export function mapRepositoryDetail(
     ? payload.viewer_reaction
     : null;
   const updatedAt = nullableText(payload.updated_at);
-  const readmeFull = normalizeOptionalRepositoryText(payload.readme_md)
-    ?? normalizeOptionalRepositoryText(payload.readme);
+  const readmeFull = typeof payload.readme_md === 'string' ? payload.readme_md
+    : typeof payload.readme === 'string' ? payload.readme : null;
   const hasReadme = typeof payload.readme_available === 'boolean' ? payload.readme_available
     : readmeFull ? true : undefined;
   const summarySource = payload.summary_source === 'generated'
