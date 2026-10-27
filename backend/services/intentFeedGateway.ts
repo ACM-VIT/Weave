@@ -18,7 +18,7 @@ export class IntentFeedGateway {
   private readonly cursor: FeedCursorCodec;
   constructor(private readonly legacy: FeedService,
     private readonly persistence: Pick<FeedPersistencePort, 'getServeByRequest'>,
-    private readonly scopes: Pick<FeedIntentScopeService, 'snapshot' | 'resolve' | 'restoreCursor'>,
+    private readonly scopes: Pick<FeedIntentScopeService, 'snapshot' | 'resolve' | 'restoreCursor'> & Partial<Pick<FeedIntentScopeService,'admit'>>,
     private readonly create: (scope: FeedIntentScope) => FeedService, cursorSecret?: string,
     private readonly capacityWaitMs = 1_500) {
     if (!Number.isSafeInteger(capacityWaitMs) || capacityWaitMs < 1) throw new RangeError('Invalid feed capacity wait.');
@@ -83,14 +83,19 @@ export class IntentFeedGateway {
     signal?.throwIfAborted();
     if (this.stopping) throw new ModelOperationError();
     // Historical authenticated replay precedes current epoch/expiry admission.
-    if (await this.persistence.getServeByRequest(userId, request.feed_request_id)) return this.legacy.getFeed(userId, request, signal);
     let snapshot: Awaited<ReturnType<FeedIntentScopeService['snapshot']>>;
-    try { snapshot = await this.scopes.snapshot(userId, request.session_id); }
-    catch (error) {
+    let observed: import('./feedV2Service.js').FeedReplayObservation;
+    try {
+      const admission = await this.scopes.admit?.(userId,request.session_id,request.feed_request_id);
+      const replay = admission && !admission.hasReplay ? null : await this.persistence.getServeByRequest(userId,request.feed_request_id);
+      observed = {userId,requestId:request.feed_request_id,replay,feedVersion:admission?.feedVersion};
+      if (replay) return this.legacy.getFeed(userId,request,signal,observed);
+      snapshot = admission ? admission.snapshot : await this.scopes.snapshot(userId,request.session_id);
+    } catch (error) {
       if (request.cursor !== null && error instanceof ModelOperationError && error.code === 'MODEL_SESSION_PENDING') throw new StaleFeedCursorError();
       throw error;
     }
-    if (!snapshot) return this.legacy.getFeed(userId, request, signal);
+    if (!snapshot) return this.legacy.getFeed(userId,request,signal,observed);
     for (const [key, slot] of [...this.slots]) {
       if (slot.active === 0 && BigInt(slot.scope.applied.valid_until_ms) <= BigInt(Date.now())) {
         // stop() can own a slow background refill. Retain its capacity reservation
@@ -126,7 +131,7 @@ export class IntentFeedGateway {
       }
     }
     slot.active++;
-    try { return await slot.service.getFeed(userId, request, signal); }
+    try { return await slot.service.getFeed(userId, request, signal, observed); }
     finally { slot.active--; }
   }
   async stop(): Promise<void> {

@@ -41,9 +41,9 @@ export function createTrendingSnapshotSource(client: typeof sqlClient = sqlClien
         return tx`SELECT i.position,i.score,i.features,r.repo_id,r.github_id,r.owner_github_id,r.full_name,r.owner,r.name,r.url,r.status,r.created_at,r.updated_at,
         c.description,c.primary_language,c.languages,c.content_version,
         ${tx.unsafe(readmeSummaryProjection('r','c'))},
-        to_jsonb(c)->>'readme_source_path' AS readme_source_path,
-        to_jsonb(c)->>'readme_default_branch' AS readme_default_branch,
-        to_jsonb(c)->>'readme_base_url' AS readme_base_url,c.updated_at AS content_updated_at,c.source_updated_at,
+        c.readme_source_path AS readme_source_path,
+        c.readme_default_branch AS readme_default_branch,
+        c.readme_base_url AS readme_base_url,c.updated_at AS content_updated_at,c.source_updated_at,
         e.likes_count,e.dislikes_count,e.saves_count,e.comments_count,e.views_count,
         COALESCE(stat.star_count,0) AS star_count,COALESCE(stat.fork_count,0) AS fork_count,
         COALESCE(stat.open_issues_count,0) AS open_issues_count,stat.observed_at AS stats_observed_at,
@@ -162,7 +162,20 @@ export function createTrendingHandler(
     // admitted database slot until BEGIN/projection/commit or rollback settles.
     const work = Promise.resolve().then(async () => {
       budget.check();
-      const response = await service.get(req.query.period as TrendingPeriod | undefined);
+      const hydrateViewer = async (ids: readonly string[]) => {
+        budget.check();
+        if (viewerHydrations >= TRENDING_VIEWER_HYDRATION_LIMIT) throw new TrendingUnavailableError();
+        viewerHydrations++;
+        try { return await loadViewer(viewerId,[...ids],budget); }
+        finally { viewerHydrations--; }
+      };
+      const cachedIds = service.cachedRepositoryIds(req.query.period as TrendingPeriod | undefined);
+      // Catch immediately: a public-cache failure must not leave an unhandled private query.
+      const early = cachedIds?.length ? hydrateViewer(cachedIds)
+        .then(rows=>({rows,error:undefined}),error=>({rows:undefined,error})) : undefined;
+      const [response, earlyResult] = await Promise.all([
+        service.get(req.query.period as TrendingPeriod | undefined), early,
+      ]);
       budget.check();
       // Parsing creates request-owned objects; overlaying a viewer's state can
       // never mutate the process-shared public snapshot or another request.
@@ -175,15 +188,12 @@ export function createTrendingHandler(
       budget.check();
       let viewerRows: readonly TrendingViewerState[] = [];
       if (repositoryIds.length) {
-        if (viewerHydrations >= TRENDING_VIEWER_HYDRATION_LIMIT) throw new TrendingUnavailableError();
-        viewerHydrations++;
-        try {
-          viewerRows = await loadViewer(viewerId, repositoryIds, budget);
-        } finally {
-          // Never release admission in the HTTP timeout/cleanup path: the
-          // loader promise includes the transaction's actual commit/rollback.
-          viewerHydrations--;
-        }
+        const sameMembership = cachedIds?.length === repositoryIds.length
+          && repositoryIds.every(id=>cachedIds.includes(id));
+        if (sameMembership && earlyResult) {
+          if (earlyResult.error) throw earlyResult.error;
+          viewerRows = earlyResult.rows ?? [];
+        } else viewerRows = await hydrateViewer(repositoryIds);
         budget.check();
       }
       const byId = new Map(viewerRows.map(row => [row.repo_id, row]));

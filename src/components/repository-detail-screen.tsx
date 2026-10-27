@@ -1,5 +1,6 @@
+import { repositoryPreview } from '@/services/repositoryPreview';
 import { useRepositoryReadmeSummary } from '@/hooks/use-repository-readme-summary';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {authSessionLifecycle} from '@/api/session-lifecycle';
 import {takeFeedNavigation,type FeedNavigationAttribution} from '@/services/feedImpressionAttribution';
 import {
@@ -116,23 +117,44 @@ export function RepositoryDetailScreen({ repositoryId,navigationToken }: { repos
   },[navigationToken,queryClient,renderGeneration,repositoryId,viewerUserId]);
   const attribution=origin&&origin.ownerId===viewerUserId&&origin.repoId===repositoryId&&origin.generation===renderGeneration?origin:null;
 
+  const membershipScope = `${viewerUserId ?? ''}:${repositoryId}:${renderGeneration}`;
+  const currentMembershipScope = useRef(membershipScope);
+  useLayoutEffect(() => { currentMembershipScope.current = membershipScope; }, [membershipScope]);
+  const [confirmedMembership, setConfirmedMembership] = useState<{scope: string; listIds: string[]; saved: boolean} | null>(null);
+  const confirmedMembershipRef = useRef(confirmedMembership);
+
   const [saveVisible, setSaveVisible] = useState(false);
   const [shareVisible, setShareVisible] = useState(false);
   const [readmeVisible, setReadmeVisible] = useState(false);
   const [summaryVisible, setSummaryVisible] = useState(false);
 
-  const repositoryQuery = useQuery({
+  const repositoryQuery = useQuery<RepositoryDetail>({
     queryKey: repositoryDetailQueryKey(repositoryId, viewerUserId),
     enabled: Boolean(repositoryId && viewerUserId),
     queryFn: async ({ signal }) => {
+      const confirmationAtStart = confirmedMembershipRef.current;
       const token = await getStorageItem('access_token');
       if (!token) throw new Error('Your session has expired. Please sign in again.');
-      return fetchRepositoryDetail(repositoryId, token, signal);
+      const detail = await fetchRepositoryDetail(repositoryId, token, signal);
+      const confirmed = confirmedMembershipRef.current;
+      // A request begun before a confirmed mutation can return its old snapshot.
+      // Keep the complete response, but retain the newer membership confirmation.
+      return confirmed && confirmed !== confirmationAtStart && confirmed.scope === membershipScope
+        ? {...detail, selectedListIds: confirmed.listIds, viewerSaved: confirmed.saved}
+        : detail;
     },
     staleTime: 60_000,
+    retry: (failures, error) => ![401,403,404,410].includes((error as {status?:number}).status ?? 0) && failures < 1,
+    placeholderData: () => repositoryPreview(queryClient, viewerUserId, repositoryId),
   });
 
-  const repository = repositoryQuery.data;
+  const terminalDetailError = repositoryQuery.isError && [401,403,404,410].includes((repositoryQuery.error as {status?:number})?.status ?? 0);
+  const preview = terminalDetailError ? undefined : repositoryPreview(queryClient, viewerUserId, repositoryId);
+  const partialDetail = repositoryQuery.isPlaceholderData || Boolean(!repositoryQuery.data && preview);
+  const detail = terminalDetailError ? undefined : repositoryQuery.data ?? preview;
+  const repository = useMemo(() => detail && partialDetail && confirmedMembership?.scope === membershipScope
+    ? {...detail, selectedListIds: confirmedMembership.listIds, viewerSaved: confirmedMembership.saved}
+    : detail, [confirmedMembership, detail, membershipScope, partialDetail]);
   const summaryQuery = useRepositoryReadmeSummary(repository);
   const contentWidth = Math.min(Math.max(width - 32, 0), 720);
   const preparedSummary = prepareReadmePreview({
@@ -161,13 +183,17 @@ export function RepositoryDetailScreen({ repositoryId,navigationToken }: { repos
   }, [attribution,renderGeneration,repository, viewerUserId]);
 
   const handleListMembershipsChanged = useCallback((listIds: string[], saved: boolean) => {
+    if (!viewerUserId || currentMembershipScope.current !== membershipScope || !authSessionLifecycle.isCurrent(renderGeneration)) return;
+    const confirmed = {scope: membershipScope, listIds: [...listIds], saved};
+    confirmedMembershipRef.current = confirmed;
+    setConfirmedMembership(confirmed);
     queryClient.setQueryData<RepositoryDetail>(
       repositoryDetailQueryKey(repositoryId, viewerUserId),
       (current) => current
         ? { ...current, selectedListIds: listIds, viewerSaved: saved }
         : current,
     );
-  }, [queryClient, repositoryId, viewerUserId]);
+  }, [membershipScope, queryClient, renderGeneration, repositoryId, viewerUserId]);
 
   const openGithub = useCallback(async () => {
     if (!repository) return;
@@ -190,7 +216,7 @@ export function RepositoryDetailScreen({ repositoryId,navigationToken }: { repos
     );
   }
 
-  if (isAuthLoading || repositoryQuery.isLoading) {
+  if (isAuthLoading || (repositoryQuery.isLoading && !repository)) {
     return (
       <View style={[styles.stateScreen, { paddingTop: insets.top }]}>
         <ActivityIndicator color={REFERENCE_THEME.accent} size="large" />
@@ -347,17 +373,19 @@ export function RepositoryDetailScreen({ repositoryId,navigationToken }: { repos
             </Text>
           </View>
           <Text style={styles.sectionBody}>
-            {repository.readmeFull
+            {partialDetail
+              ? repositoryQuery.isError ? 'The complete README could not be loaded.' : 'Loading the complete README…'
+              : repository.readmeFull
               ? 'Open the complete repository document without leaving Weave.'
               : 'No README is available for this repository.'}
           </Text>
           <Pressable
             accessibilityRole="button"
-            disabled={!repository.readmeFull}
+            disabled={!repository.readmeFull && !partialDetail}
             onPress={() => setReadmeVisible(true)}
             style={({ pressed }) => [
               styles.readmeButton,
-              !repository.readmeFull && styles.disabled,
+              !repository.readmeFull && !partialDetail && styles.disabled,
               pressed && styles.pressed,
             ]}
           >
@@ -405,6 +433,9 @@ export function RepositoryDetailScreen({ repositoryId,navigationToken }: { repos
       {readmeVisible ? <ReadmePopup
         isVisible onClose={() => setReadmeVisible(false)}
         readmeText={repository.readmeFull} readmeSource={readmeSource} title={repository.name}
+        loading={partialDetail && repositoryQuery.isFetching}
+        errorMessage={partialDetail && repositoryQuery.isError ? 'Could not load the complete README.' : undefined}
+        onRetry={() => void repositoryQuery.refetch()}
       /> : null}
     </View>
   );

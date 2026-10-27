@@ -1250,3 +1250,35 @@ integration('registered v2 HTTP paths complete controlled integration flows', as
     await Promise.allSettled([redisClient.quit(), sqlClient.end({ timeout: 1 })]);
   }
 });
+
+
+test('warm Trending overlaps viewer hydration with metadata validation and rehydrates replaced membership', async () => {
+  const {TrendingSnapshotService}=await import('../../services/trendingSnapshotService.js');
+  const {createTrendingHandler}=await import('../../controllers/trendingController.js');
+  const oldId=crypto.randomUUID(),newId=crypto.randomUUID();
+  let metadataCalls=0;
+  let release!: (value:any)=>void;
+  const metadata=new Promise<any>(resolve=>{release=resolve;});
+  const service=new TrendingSnapshotService({
+    available:async()=>++metadataCalls===1 ? [{period:'daily',snapshot_id:'old',captured_at:'2026-01-01T00:00:00Z'}] : metadata,
+    cards:async(snapshot)=>[{repo_id:snapshot==='old'?oldId:newId}],
+  });
+  await service.get();
+  const calls:string[][]=[];
+  const handler=createTrendingHandler(service,async(_viewer,ids)=>{
+    calls.push(ids);
+    return ids.map(repo_id=>({repo_id,viewer_reaction:null,viewer_saved:repo_id===oldId,selected_list_ids:repo_id===oldId?['private-old-list']:[]}));
+  });
+  let body='';
+  const response={status(){return this;},set(){return this;},vary(){return this;},type(){return this;},send(value:string){body=value;return this;},end(){return this;},json(value:unknown){body=JSON.stringify(value);return this;}};
+  const pending=handler({user:{userId:'viewer'},query:{},headers:{},get(){return undefined;}} as never,response as never);
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.deepEqual(calls,[[oldId]],'Private hydration starts while public metadata is still pending');
+  release([{period:'daily',snapshot_id:'new',captured_at:'2026-01-02T00:00:00Z'}]);
+  await pending;
+  assert.deepEqual(calls,[[oldId],[newId]],'Changed membership must not reuse the old private overlay');
+  const payload=JSON.parse(body);
+  assert.equal(payload.data.items[0].repo_id,newId);
+  assert.equal(payload.data.items[0].viewer_saved,false);
+  assert.deepEqual(payload.data.items[0].selected_list_ids,[]);
+});

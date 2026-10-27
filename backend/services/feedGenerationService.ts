@@ -247,7 +247,8 @@ export class FeedGenerationService {
       requireBudget();
       // Canonical failures are provider diagnostics, distinct from current
       // user preferences: the eligibility query intentionally rejects both.
-      const projections = await this.persistence.listActiveRepositoryIdentities(items.map(item => item.repo_id));
+      const eligibility = await this.persistence.listCandidateEligibility?.(userId, items.map(item => item.repo_id));
+      const projections = eligibility?.identities ?? await this.persistence.listActiveRepositoryIdentities(items.map(item => item.repo_id));
       const summaries = new Map(projections.map(repo => [repo.repo_id, repo.summary_id]));
       const activeRepoIds = new Set(projections.map(repo => repo.repo_id));
       const canonicalItems = items.filter(item => activeRepoIds.has(item.repo_id));
@@ -256,10 +257,10 @@ export class FeedGenerationService {
         incrementMetric('feed_v2_invalid_repository_recommendations_total');
       }
       if (items.length > 0 && canonicalItems.length === 0) throw new Error('ML returned no active canonical repositories.');
-      const exposureEligible = this.persistence.listExposureEligibleRepositoryIds
+      const exposureEligible = eligibility ? new Set(eligibility.exposureIds) : this.persistence.listExposureEligibleRepositoryIds
         ? new Set(await this.persistence.listExposureEligibleRepositoryIds(userId, canonicalItems.map(item => item.repo_id)))
         : activeRepoIds;
-      const eligible = new Set(await this.persistence.listPreferenceEligibleRepositoryIds(userId, canonicalItems.map(item => item.repo_id)));
+      const eligible = new Set(eligibility?.preferenceIds ?? await this.persistence.listPreferenceEligibleRepositoryIds(userId, canonicalItems.map(item => item.repo_id)));
       const usableItems = canonicalItems.filter(item => eligible.has(item.repo_id) && exposureEligible.has(item.repo_id));
       if (canonicalItems.length > 0 && usableItems.length === 0) {
         await this.persistence.recordGenerationAttempt?.({
