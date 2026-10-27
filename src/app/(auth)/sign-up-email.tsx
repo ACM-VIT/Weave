@@ -98,7 +98,7 @@ export default function SignUpEmail() {
 
           <View className="flex-row items-center gap-4">
             <LogoCircle size={56} />
-            <View>
+            <View className="flex-1 min-w-0">
               <Text className="font-nata text-[13px] text-[#8A898F]">Join</Text>
               <BrandWord className="font-nataBold text-[28px]" />
             </View>
