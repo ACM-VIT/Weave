@@ -18,9 +18,11 @@ interface MissingManifestRow {
 function manifestStaleSql(alias: 'content'): string {
   return `(
     jsonb_typeof(${alias}.readme_media_manifest) IS DISTINCT FROM 'object'
-    OR ${alias}.readme_media_manifest->>'schema_version' IS DISTINCT FROM '1'
+    OR ${alias}.readme_media_manifest->>'schema_version' IS DISTINCT FROM '2'
     OR ${alias}.readme_media_manifest->>'content_version' IS DISTINCT FROM ${alias}.content_version::text
     OR ${alias}.readme_media_manifest->>'content_hash' IS DISTINCT FROM ${alias}.content_hash
+    OR (${alias}.readme_media_manifest->>'representation' IS DISTINCT FROM 'deferred'
+      AND ${alias}.readme_media_manifest->>'representation' IS DISTINCT FROM 'inline_only')
     OR jsonb_typeof(${alias}.readme_media_manifest->'readme_available') IS DISTINCT FROM 'boolean'
     OR jsonb_typeof(${alias}.readme_media_manifest->'images') IS DISTINCT FROM 'array'
     OR jsonb_typeof(${alias}.readme_media_manifest->'videos') IS DISTINCT FROM 'array'

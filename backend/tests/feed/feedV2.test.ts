@@ -213,7 +213,8 @@ test('deferred README serves use matching media projections and pin representati
   const persistence = new FakePersistence();
   const queue = new FakeQueue();
   const requestId = '00000000-0000-4000-8000-000000000081';
-  const media = { schema_version: 1 as const, content_version: 7, content_hash: 'content-7', readme_available: true, poster: null, images: [], videos: [] };
+  const media = { schema_version: 2 as const, content_version: 7, content_hash: 'content-7', readme_available: true,
+    representation: 'deferred' as const, poster: null, images: [], videos: [] };
   const { readme_md: _inlineReadme, ...deferredBase } = repo;
   const deferredRepository = { ...deferredBase, content_version: 7, content_hash: 'content-7', readme_available: true,
     readme_media_manifest: media } as unknown as RepositoryProjection;
@@ -250,11 +251,12 @@ test('deferred README serves use matching media projections and pin representati
   assert.equal(projectedModes[1], 'inline');
 });
 
-test('deferred README with a missing current manifest releases the reservation before commit', async () => {
+test('deferred README with inline-only media releases the reservation before commit', async () => {
   const persistence = new FakePersistence();
   const queue = new FakeQueue();
   const repository = { ...repo, content_version: 7, content_hash: 'content-7', readme_available: true,
-    readme_media_manifest: null } as unknown as RepositoryProjection;
+    readme_media_manifest: { schema_version: 2, content_version: 7, content_hash: 'content-7',
+      readme_available: true, representation: 'inline_only', poster: null, images: [], videos: [] } } as unknown as RepositoryProjection;
   Object.assign(persistence, {
     listCandidateEligibility: async (_viewer: string, ids: string[]) => ({
       identities: ids.map(repo_id => ({ repo_id, summary_id: null })), preferenceIds: ids, exposureIds: ids,

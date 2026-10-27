@@ -12,6 +12,17 @@ export interface ReadmeMediaContext {
 const BADGE_PATTERN = /(?:^|[\s/_-])(?:badge|badges|build[\s_-]?status|ci|coverage|license|npm[\s_-]?version|pypi|quality[\s_-]?gate)(?:$|[\s/_.-])/i;
 const BADGE_HOST_PATTERN = /(?:^|\.)(?:badge|badges|img\.shields|shields|codecov|coveralls)\./i;
 const PREFERRED_PREVIEW_PATTERN = /(?:screenshot|preview|demo|hero|showcase|interface|dashboard|app[-_ ]?view)/i;
+// Reuse the accepted source and metadata bounds: README ingestion is capped at
+// 1,000,000 characters, repository URLs/base paths at 2,048, and descriptions at 10,000.
+const MAX_README_MEDIA_MANIFEST_BYTES = 1_000_000;
+const MAX_README_MEDIA_ITEMS = 3;
+const MAX_README_MEDIA_URL_LENGTH = 2_048;
+const MAX_README_MEDIA_ALT_LENGTH = 10_000;
+const MAX_README_MEDIA_HASH_LENGTH = 256;
+const MEDIA_IMAGE_KEYS = ['alt', 'url'] as const;
+const MEDIA_MANIFEST_KEYS = [
+  'schema_version', 'content_version', 'content_hash', 'readme_available', 'representation', 'poster', 'images', 'videos',
+] as const;
 
 function decodeBasicHtmlEntities(value: string): string {
   return value.replace(/&amp;/gi, '&').replace(/&quot;/gi, '"')
@@ -144,7 +155,7 @@ function summaryImages(markdown: string, context: ReadmeMediaContext): ReadmeMed
   const add = (candidate: ImageCandidate) => {
     const url = resolveMediaUrl(candidate.source, context);
     const alt = decodeBasicHtmlEntities(candidate.alt).trim();
-    if (!url || seen.has(url) || isBadgeImage(url, alt) || images.length >= 3) return;
+    if (!url || seen.has(url) || isBadgeImage(url, alt) || images.length >= MAX_README_MEDIA_ITEMS) return;
     seen.add(url); images.push({ alt: alt || 'Repository image', url });
   };
   marked.walkTokens(marked.lexer(markdown.slice(0, 1_000_000)), token => {
@@ -160,7 +171,7 @@ function summaryImages(markdown: string, context: ReadmeMediaContext): ReadmeMed
 function summaryVideos(markdown: string, context: ReadmeMediaContext): string[] {
   const videos = new Set<string>();
   const add = (source: string) => {
-    if (videos.size >= 3) return;
+    if (videos.size >= MAX_README_MEDIA_ITEMS) return;
     const url = resolveMediaUrl(source, context);
     if (!url) return;
     const parsed = new URL(url);
@@ -191,29 +202,64 @@ export function deriveReadmeMediaManifest(input: {
   contentHash: string;
 }): ReadmeMediaManifest {
   const markdown = input.markdown ?? '';
-  return {
-    schema_version: 1,
+  const manifest: ReadmeMediaManifest = {
+    schema_version: 2,
     content_version: input.contentVersion,
     content_hash: input.contentHash,
     readme_available: input.markdown !== null,
+    representation: 'deferred',
     poster: previewImage(markdown, input.context),
     images: summaryImages(markdown, input.context),
     videos: summaryVideos(markdown, input.context),
   };
+  if (isCurrentReadmeMediaManifest(manifest, input.contentVersion, input.contentHash)) return manifest;
+  return {
+    schema_version: 2,
+    content_version: input.contentVersion,
+    content_hash: input.contentHash,
+    readme_available: input.markdown !== null,
+    representation: 'inline_only',
+    poster: null,
+    images: [],
+    videos: [],
+  };
+}
+
+function isSafeMediaUrl(value: unknown): value is string {
+  if (typeof value !== 'string' || value.length > MAX_README_MEDIA_URL_LENGTH) return false;
+  try {
+    const url = new URL(value);
+    return isPublicHttpsUrl(url) && url.toString() === value;
+  } catch { return false; }
+}
+
+function hasExactKeys(value: unknown, keys: readonly string[]): value is Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const actual = Object.keys(value);
+  return actual.length === keys.length && keys.every(key => Object.hasOwn(value, key));
 }
 
 function isReadmeMediaImage(value: unknown): value is ReadmeMediaImage {
-  if (!value || typeof value !== 'object') return false;
-  const image = value as Partial<ReadmeMediaImage>;
-  return typeof image.alt === 'string' && typeof image.url === 'string';
+  return hasExactKeys(value, MEDIA_IMAGE_KEYS)
+    && typeof value.alt === 'string' && value.alt.length <= MAX_README_MEDIA_ALT_LENGTH
+    && isSafeMediaUrl(value.url);
 }
 
 export function isCurrentReadmeMediaManifest(value: unknown, contentVersion: number, contentHash: string): value is ReadmeMediaManifest {
-  if (!value || typeof value !== 'object') return false;
-  const manifest = value as Partial<ReadmeMediaManifest>;
-  return manifest.schema_version === 1 && manifest.content_version === contentVersion
-    && manifest.content_hash === contentHash && typeof manifest.readme_available === 'boolean'
-    && Array.isArray(manifest.images) && manifest.images.every(isReadmeMediaImage)
-    && Array.isArray(manifest.videos) && manifest.videos.every(video => typeof video === 'string')
-    && (manifest.poster === null || isReadmeMediaImage(manifest.poster));
+  try {
+    if (!hasExactKeys(value, MEDIA_MANIFEST_KEYS)) return false;
+    const manifest = value as Partial<ReadmeMediaManifest>;
+    if (manifest.schema_version !== 2 || manifest.representation !== 'deferred'
+      || manifest.content_version !== contentVersion || manifest.content_hash !== contentHash
+      || typeof manifest.content_hash !== 'string' || manifest.content_hash.length > MAX_README_MEDIA_HASH_LENGTH
+      || typeof manifest.readme_available !== 'boolean'
+      || !Array.isArray(manifest.images) || manifest.images.length > MAX_README_MEDIA_ITEMS
+      || !manifest.images.every(isReadmeMediaImage)
+      || !Array.isArray(manifest.videos) || manifest.videos.length > MAX_README_MEDIA_ITEMS
+      || !manifest.videos.every(isSafeMediaUrl)
+      || !(manifest.poster === null || isReadmeMediaImage(manifest.poster))) return false;
+    const serialized = JSON.stringify(value);
+    return typeof serialized === 'string'
+      && Buffer.byteLength(serialized, 'utf8') <= MAX_README_MEDIA_MANIFEST_BYTES;
+  } catch { return false; }
 }

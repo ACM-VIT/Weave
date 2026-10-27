@@ -1,8 +1,8 @@
 import test from "node:test";
 import { describe } from "node:test";
 import assert from "node:assert/strict";
-import { deriveReadmeMediaManifest } from "../backend/services/readmeMediaManifest";
-import { extractReadmePreviewImage, renderReadmeMarkdown, resolveReadmeImageUrl, type ReadmeImageContext } from "../src/utils/readme-images";
+import { deriveReadmeMediaManifest, isCurrentReadmeMediaManifest } from "../backend/services/readmeMediaManifest";
+import { extractReadmePreviewImage, extractReadmeSummaryImages, renderReadmeMarkdown, resolveReadmeImageUrl, type ReadmeImageContext } from "../src/utils/readme-images";
 import { extractReadmeVideos } from "../src/utils/readme-videos";
 import { readmePopupBlocks } from "../src/utils/readme-popup-content";
 
@@ -133,6 +133,39 @@ describe("readme images", () => {
     const { extractReadmeSummaryImages } = await import('../src/utils/readme-images');
     assert.deepEqual(manifest.images, extractReadmeSummaryImages(markdown, context));
     assert.deepEqual(manifest.videos, extractReadmeVideos(markdown, context));
+  });
+
+  test('unrepresentable media keeps its complete legacy preview and cannot enter a deferred feed', () => {
+    const cases = [
+      { alt: 'a'.repeat(10_001), url: 'https://cdn.example.com/screenshot.png' },
+      { alt: 'Large image URL', url: `https://cdn.example.com/${'x'.repeat(2_050)}.png` },
+    ];
+    for (const [index, media] of cases.entries()) {
+      const markdown = `![${media.alt}](${media.url})`;
+      const manifest = deriveReadmeMediaManifest({
+        markdown,
+        context: {
+          fullName: context.fullName!, githubUrl: context.githubUrl!,
+          sourcePath: context.readmeSourcePath!, defaultBranch: context.readmeDefaultBranch!,
+          baseUrl: context.readmeBaseUrl!,
+        },
+        contentVersion: 7,
+        contentHash: 'canonical-hash-7',
+      });
+
+      assert.equal(manifest.representation, 'inline_only', `case ${index} cannot be projected safely`);
+      assert.deepEqual(extractReadmePreviewImage(markdown, context), media, `case ${index} keeps the complete card image`);
+      assert.deepEqual(extractReadmeSummaryImages(markdown, context), [media], `case ${index} keeps the complete popup image`);
+    }
+
+    const valid = deriveReadmeMediaManifest({ markdown: '![Preview](https://cdn.example.com/preview.png)',
+      context: { fullName: context.fullName!, githubUrl: context.githubUrl!, sourcePath: null,
+        defaultBranch: null, baseUrl: null }, contentVersion: 7, contentHash: 'canonical-hash-7' });
+    assert.equal(valid.representation, 'deferred');
+    assert.equal(isCurrentReadmeMediaManifest({ ...valid, images: [...valid.images, ...valid.images, ...valid.images, ...valid.images] },
+      7, 'canonical-hash-7'), false, 'over-count manifests are rejected even if a row is marked current');
+    assert.equal(isCurrentReadmeMediaManifest({ ...valid, poster: { alt: 'Preview', url: 'https://localhost/private.png' } },
+      7, 'canonical-hash-7'), false, 'unsafe URLs cannot enter a deferred feed projection');
   });
 });
 
