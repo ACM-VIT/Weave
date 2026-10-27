@@ -91,58 +91,17 @@ export default function SignUpEmail() {
       <KeyboardForm
         className="flex-1 bg-[#000000]"
         showsVerticalScrollIndicator={false}
-        contentContainerStyle={{ paddingBottom: 40, flexGrow: 1, justifyContent: 'center' }}
+        contentContainerStyle={{ paddingBottom: 40, flexGrow: 1 }}
         keyboardShouldPersistTaps="handled"
       >
-        <View className="px-8 pt-14 w-full" style={{ maxWidth: 450, alignSelf: 'center' }}>
+        <View className="px-8 pt-6 w-full" style={{ maxWidth: 450, alignSelf: 'center' }}>
 
-          <View className="items-center">
-              <LogoCircle />
-          </View>
-
-          <View className="mt-8 items-center">
-            <Text className="font-nataBold text-white text-[28px] text-center">
-              Join
-            </Text>
-
-            <BrandWord className="font-nataBold text-[28px] text-center" />
-
-            <Text className="font-nata text-[rgba(235,235,245,0.6)] text-center mt-4 text-[13px] leading-5">
-              Join repositories and connect{"\n"}
-              with developers around the world.
-            </Text>
-          </View>
-
-          <View className="mt-10 gap-y-5">
-              <SocialButton
-                  label={oauthLoading ? "Opening..." : "Continue with GitHub"}
-                  icon={
-                    <GithubIcon
-                      color={oauthLoading ? "rgba(235,235,245,0.35)" : "#FFFFFF"}
-                    />
-                  }
-                  showChevron
-                  disabled={oauthLoading}
-                  onPress={() => handleOAuth('github')}
-              />
-
-              <SocialButton
-                  label={oauthLoading ? "Opening..." : "Continue with Google"}
-                  icon={<GoogleIcon />}
-                  showChevron
-                  disabled={oauthLoading}
-                  onPress={() => handleOAuth('google')}
-              />
-          </View>
-
-          {oauthError ? (
-            <Text className="text-[#FF453A] text-[13px] font-nata mt-3 text-center">
-              {oauthError}
-            </Text>
-          ) : null}
-
-          <View className="mt-7">
-            <OrDivider />
+          <View className="flex-row items-center gap-4">
+            <LogoCircle size={56} />
+            <View>
+              <Text className="font-nata text-[13px] text-[#8A898F]">Join</Text>
+              <BrandWord className="font-nataBold text-[28px]" />
+            </View>
           </View>
 
           <View className="mt-6">
@@ -222,6 +181,38 @@ export default function SignUpEmail() {
             </View>
 
           </View>
+
+          <View className="mt-7">
+            <OrDivider />
+          </View>
+
+          <View className="mt-6 gap-y-5">
+              <SocialButton
+                  label={oauthLoading ? "Opening..." : "Continue with GitHub"}
+                  icon={
+                    <GithubIcon
+                      color={oauthLoading ? "rgba(235,235,245,0.35)" : "#FFFFFF"}
+                    />
+                  }
+                  showChevron
+                  disabled={oauthLoading}
+                  onPress={() => handleOAuth('github')}
+              />
+
+              <SocialButton
+                  label={oauthLoading ? "Opening..." : "Continue with Google"}
+                  icon={<GoogleIcon />}
+                  showChevron
+                  disabled={oauthLoading}
+                  onPress={() => handleOAuth('google')}
+              />
+          </View>
+
+          {oauthError ? (
+            <Text className="text-[#FF453A] text-[13px] font-nata mt-3 text-center">
+              {oauthError}
+            </Text>
+          ) : null}
 
           <AuthFooter
               prompt="Already have an account?"
