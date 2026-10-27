@@ -45,6 +45,9 @@ export interface RepositoryDetailV2 extends RepositoryLanguageObservation {
   /** Compatibility alias for clients predating the `readme_md` field. */
   readme: string | null;
   readme_md: string | null;
+  /** Present on the opt-in metadata projection; null body aliases are deferred. */
+  readme_available?: boolean;
+  content_hash?: string | null;
   readme_source_path: string | null;
   readme_default_branch: string | null;
   readme_base_url: string | null;
@@ -71,4 +74,18 @@ export interface RepositoryDetailV2 extends RepositoryLanguageObservation {
   viewer_reaction: RepositoryViewerReaction;
   viewer_saved: boolean;
   selected_list_ids: string[];
+}
+
+/** Canonical README at one content identity, without viewer membership state. */
+export interface RepositoryReadmeV2 {
+  repo_id: string;
+  content_version: number | null;
+  content_hash: string | null;
+  full_name: string;
+  url: string;
+  readme_available: boolean;
+  readme_md: string | null;
+  readme_source_path: string | null;
+  readme_default_branch: string | null;
+  readme_base_url: string | null;
 }
