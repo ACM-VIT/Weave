@@ -1,3 +1,4 @@
+import { projectRepositoryLanguages } from '../../backend/services/repositoryLanguages';
 import {parseOriginalFeedImpression} from '../services/feedImpressionAttribution';
 import { recommendationSource } from '@/models/recommendation';
 import { parseReadmeDigest } from '@/models/readme-digest';
@@ -104,7 +105,8 @@ export function mapRepositoryDetail(
   const githubUrl = /^https:\/\/github\.com\//i.test(candidateUrl)
     ? candidateUrl
     : `https://github.com/${encodeURIComponent(owner)}/${encodeURIComponent(name)}`;
-  const languages = stringArray(payload.languages ?? payload.language_used);
+  const composition = projectRepositoryLanguages({...payload,languages:payload.languages ?? payload.language_used});
+  const languages = composition.languages;
   const selectedListIds = listIds(payload);
   const viewerReaction = payload.viewer_reaction === 'like'
     || payload.viewer_reaction === 'dislike'
@@ -143,8 +145,12 @@ export function mapRepositoryDetail(
     summaryFormatVersion: nullableText(payload.summary_format_version),
     summarySource,
     languages,
+    languageBreakdown: composition.language_breakdown ?? null,
+    languageTotalSize: composition.language_total_size ?? null,
+    languageBreakdownComplete: composition.language_breakdown_complete ?? null,
+    languageObservedAt: composition.language_observed_at ?? null,
     topics: stringArray(payload.topics),
-    primaryLanguage: nullableText(payload.primary_language) ?? languages[0] ?? null,
+    primaryLanguage: Object.hasOwn(payload,'primary_language') ? nullableText(payload.primary_language) : languages[0] ?? null,
     stats: repositoryStats(payload),
     createdAt: nullableText(payload.repository_created_at ?? payload.created_at),
     updatedAt,
