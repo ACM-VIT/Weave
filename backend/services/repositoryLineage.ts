@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from 'node:util';
 import { LANGUAGE_OBSERVATION_FIELDS, hasLanguageObservation, type RepositoryLanguageObservation } from './repositoryLanguages.js';
 /** Observed GitHub ancestry only; mutable names never establish a fork family. */
 export interface RepositoryLineage {
@@ -73,7 +74,7 @@ export function mergeRepositoryLanguageObservation(
     const difference = next - observation(stored.language_observed_at);
     if (difference < 0n) return selected(stored,stored.language_observed_at);
     if (difference === 0n) {
-      if (JSON.stringify(selected(incoming,null)) !== JSON.stringify(selected(stored,null))) throw new Error('Conflicting language observations share a timestamp.');
+      if (!isDeepStrictEqual(selected(incoming,null), selected(stored,null))) throw new Error('Conflicting language observations share a timestamp.');
       return selected(stored,stored.language_observed_at);
     }
   }

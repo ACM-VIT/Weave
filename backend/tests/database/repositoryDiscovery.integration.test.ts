@@ -79,6 +79,10 @@ integration('canonical language observations survive SQL and outbox without stal
     assert.equal(stored.language_total_size,1000);assert.equal(stored.language_breakdown_complete,false);assert.equal(stored.language_observed_at,source.observed_at);
     const jobs=await sql`SELECT payload FROM telemetry.ml_outbox WHERE aggregate_id=${id}::uuid AND job_type='repo_index'`;
     assert.deepEqual(jobs[0].payload.repository.language_breakdown,rich);assert.equal(jobs[0].payload.repository.language_total_size,1000);
+    const [retry]=await persistence.bulkUpsert([source]);
+    assert.equal(retry.changed,false,'Same-time source retry remains idempotent after JSONB key reordering');
+    assert.deepEqual(await read(),stored);
+    assert.equal((await sql`SELECT count(*)::int AS count FROM telemetry.ml_outbox WHERE aggregate_id=${id}::uuid AND job_type='repo_index'`)[0].count,jobs.length);
     const omitted={...source,language_breakdown:undefined,language_total_size:undefined,language_breakdown_complete:undefined,observed_at:'2026-10-28T00:00:00Z'};
     await persistence.bulkUpsert([omitted]);assert.deepEqual(await read(),stored,'Name-only imports cannot erase sourced composition');
     await persistence.bulkUpsert([{...source,observed_at:'2026-10-27T00:00:00.000001Z',language_total_size:2000,language_breakdown:rich.map(row=>({...row,percentage:row.percentage/2}))}]);
