@@ -1,3 +1,4 @@
+import { passwordPolicyError } from '../contracts/passwordPolicy.js';
 import crypto from "crypto";
 import { and, eq, gt, sql } from "drizzle-orm";
 import type { CookieOptions, Request, Response } from "express";
@@ -168,6 +169,8 @@ const createAndStoreRefreshToken = async (userId: string, tx: any = db) => {
 // POST /api/auth/signup
 export async function signUp(req: Request, res: Response): Promise<void> {
   const { email, password, full_name, date_of_birth } = req.body;
+  const passwordError = passwordPolicyError(password);
+  if (passwordError) return sendError(res, 400, passwordError);
   const usernameInput = req.body?.username;
   const explicitUsername = usernameInput === undefined || usernameInput === null
     ? null
@@ -459,9 +462,11 @@ export async function confirmPasswordReset(req: Request, res: Response): Promise
     : "";
   const password = typeof req.body?.password === "string" ? req.body.password : "";
 
-  if (!accessToken || !refreshToken || password.length < 12 || password.length > 128) {
-    return sendError(res, 400, "A valid reset session and a 12-128 character password are required.");
+  if (!accessToken || !refreshToken) {
+    return sendError(res, 400, "A valid reset session is required.");
   }
+  const passwordError = passwordPolicyError(password);
+  if (passwordError) return sendError(res, 400, passwordError);
 
   try {
     // Recovery tokens represent a user session, not an admin credential. Keep

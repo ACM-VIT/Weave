@@ -1,3 +1,4 @@
+import { PASSWORD_POLICY, PASSWORD_REQUIREMENTS } from '@/utils/password-policy';
 import { Text, View } from "react-native";
 
 
@@ -22,15 +23,11 @@ function Rule({ text, met }: { text: string; met: boolean }) {
 }
 
 export default function PasswordRules({ password = "" }: { password?: string }) {
-  const hasMinLength = password.length >= 8;
-  const hasNumber = /\d/.test(password);
-  const hasUppercase = /[A-Z]/.test(password);
+  const validLength = password.length >= PASSWORD_POLICY.minimumLength && password.length <= PASSWORD_POLICY.maximumLength;
 
   return (
     <View className="mt-5">
-      <Rule text="At least 8 characters" met={hasMinLength} />
-      <Rule text="Includes a number" met={hasNumber} />
-      <Rule text="Includes an uppercase letter" met={hasUppercase} />
+      <Rule text={PASSWORD_REQUIREMENTS} met={validLength} />
     </View>
   );
 }

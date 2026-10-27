@@ -54,3 +54,13 @@ test('password recovery never updates through an invalid session', async () => {
   assert.equal(result, 'invalid-session');
   assert.equal(updateCalled, false);
 });
+
+
+test('password policy rejects malformed and out-of-bounds values before provider admission', async () => {
+  const {passwordPolicyError}=await import('../../contracts/passwordPolicy.js');
+  assert.equal(passwordPolicyError(undefined),'Enter a password.');
+  assert.equal(passwordPolicyError(123456789012),'Enter a password.');
+  assert.equal(passwordPolicyError('short'),'Use at least 12 characters.');
+  assert.equal(passwordPolicyError('a'.repeat(129)),'Use no more than 128 characters.');
+  assert.equal(passwordPolicyError('a'.repeat(12)),null);
+});
