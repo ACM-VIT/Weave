@@ -34,6 +34,11 @@ export function useBrowsePrefetch(viewer: string | undefined, ready: boolean) {
         schedule(); return;
       }
       const options = exploreBrowseQueryOptions(viewer, stage === 0 ? 'Latest' : 'Trending');
+      // A stale infinite query can contain an arbitrary loaded history. Its
+      // selected screen owns refresh; Home only warms missing tab data.
+      if (client.getQueryState(options.queryKey)?.data !== undefined) {
+        stage++; schedule(); return;
+      }
       currentKey = options.queryKey;
       running = true;
       try { await client.prefetchInfiniteQuery({...options, retry:false}); }
