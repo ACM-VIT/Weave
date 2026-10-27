@@ -90,18 +90,18 @@ integration('canonical language observations survive SQL and outbox without stal
     await assert.rejects(persistence.bulkUpsert([{...source,language_breakdown:rich.map(row=>({...row,color:'#000000'}))}]),/Conflicting language/);
     await persistence.bulkUpsert([{...source,observed_at:'2026-10-27T00:00:00.000003Z'}]);
     assert.equal((await read()).language_observed_at,'2026-10-27T00:00:00.000003Z','Identical content still advances its observation clock');
-    const detail=await getRepositoryDetail(viewer,id!);assert.deepEqual(detail?.language_breakdown,rich);assert.equal(detail?.primary_language,'Rust');
+    const detail=await getRepositoryDetail(viewer,id!);assert.deepEqual(detail?.language_breakdown,rich);assert.equal(detail?.primary_language,'Rust');assert.equal(detail?.language_observed_at,'2026-10-27T00:00:00.000003Z');
     await sql`INSERT INTO auth.users(id) VALUES(${viewer}::uuid)`;
     await sql`INSERT INTO app.users(user_id,username,status) VALUES(${viewer}::uuid,${'language_viewer_'+viewer.replaceAll('-','')},'active')`;
     await sql`INSERT INTO app.user_stats(user_id) VALUES(${viewer}::uuid)`;
     await sql`INSERT INTO app.user_feed_state(user_id) VALUES(${viewer}::uuid)`;
     const {PostgresFeedPersistence}=await import('../../adapters/postgresFeedPersistence.js');const feed=new PostgresFeedPersistence();
-    const [projection]=await feed.listActiveRepositories([id!],viewer);assert.deepEqual(projection.language_breakdown,rich);
+    const [projection]=await feed.listActiveRepositories([id!],viewer);assert.deepEqual(projection.language_breakdown,rich);assert.equal(projection.language_observed_at,'2026-10-27T00:00:00.000003Z');
     const requestId=crypto.randomUUID();
     const serve=await feed.createServe({user_id:viewer,session_id:crypto.randomUUID(),feed_request_id:requestId,feed_version:1n,generation_id:null,
       source:'personalized',model_version:'language-fixture',next_cursor:null,items:[{repo_id:id!,position:0,score:1,source:'semantic',model_version:'language-fixture',summary_id:null,repository:projection}]});
     assert.deepEqual(serve.items[0].repository.language_breakdown,rich);
-    const replay=await feed.getServeByRequest(viewer,requestId);assert.equal(replay?.serve_id,serve.serve_id);assert.deepEqual(replay?.items[0].repository.language_breakdown,rich);
+    const replay=await feed.getServeByRequest(viewer,requestId);assert.equal(replay?.serve_id,serve.serve_id);assert.deepEqual(replay?.items[0].repository.language_breakdown,rich);assert.equal(replay?.items[0].repository.language_observed_at,'2026-10-27T00:00:00.000003Z');
     await persistence.bulkUpsert([{...source,languages:[],primary_language:null,language_breakdown:[],language_total_size:0,language_breakdown_complete:true,observed_at:'2026-10-29T00:00:00Z'}]);
     assert.deepEqual((await read()).language_breakdown,[]);assert.equal((await read()).primary_language,null);
   }finally{
