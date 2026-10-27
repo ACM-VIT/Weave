@@ -22,15 +22,45 @@ test('feed retries preserve request identity, respect Retry-After and stop after
   assert.deepEqual(waits, [2000, 2000]);
 });
 
+test('deferred feed retries inline only after an explicit pre-commit compatibility rejection', async () => {
+  const body = { ...request, readme_mode: 'deferred' as const };
+  for (const failure of [
+    Object.assign(new Error('media manifest is incomplete'), { status: 409, code: 'FEED_README_MEDIA_UNAVAILABLE' }),
+    Object.assign(new Error('deferred mode is unsupported'), { status: 400, code: 'INVALID_FEED_README_MODE' }),
+  ]) {
+    const bodies: unknown[] = [];
+    let calls = 0;
+    const result = await requestFeedWithRetry(body, async (sent) => {
+      bodies.push(sent);
+      if (calls++ === 0) throw failure;
+      return 'served';
+    }, undefined, async () => { throw new Error('Explicit compatibility fallback does not wait'); });
+
+    assert.equal(result, 'served');
+    assert.deepEqual(bodies, [body, { ...body, readme_mode: 'inline' }]);
+  }
+});
+
 test('transient network and server failures recover, validation and expired sessions do not retry', async () => {
   let calls = 0;
-  const result = await requestFeedWithRetry(request, async () => {
+  const bodies: { readme_mode?: string }[] = [];
+  const result = await requestFeedWithRetry({ ...request, readme_mode: 'deferred' }, async (body) => {
+    bodies.push(body);
     calls++;
     if (calls === 1) throw new TypeError('Network request failed');
     if (calls === 2) throw Object.assign(new Error('unavailable'), { status: 503 });
     return 'ready';
   }, undefined, async () => {});
   assert.equal(result, 'ready');
+  assert.deepEqual(bodies.map(body => body.readme_mode), ['deferred','deferred','deferred']);
+  const conflictBodies: { readme_mode?: string }[] = [];
+  let conflictCalls = 0;
+  await requestFeedWithRetry({ ...request, readme_mode: 'deferred' }, async (body) => {
+    conflictBodies.push(body);
+    if (conflictCalls++ === 0) throw Object.assign(new Error('unrelated conflict'), { status: 409, code: 'OTHER_CONFLICT' });
+    return 'ready';
+  }, undefined, async () => {});
+  assert.deepEqual(conflictBodies.map(body => body.readme_mode), ['deferred','deferred']);
   for (const failure of [stale(), Object.assign(new Error('unauthorized'), { status: 401 }),
     Object.assign(new Error('account changed'), { code: 'SESSION_CHANGED' })]) {
     let attempts = 0;

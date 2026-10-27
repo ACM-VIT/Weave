@@ -69,6 +69,7 @@ export async function fetchFeed(
     session_id: options.sessionId ?? getAppSessionId(),
     limit: 10,
     cursor,
+    readme_mode: 'deferred' as const,
   };
   const data = await requestFeedWithRetry(body, async (request, signal) => {
     const result = await apiV2Raw<FeedResponseV2>('/feed', {
