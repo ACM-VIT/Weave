@@ -159,3 +159,30 @@ test('summary image tap opens a separate viewer and returns to the retained dige
     assert.equal(app.mountedOverlays,1);
   }finally{await app.unmount();}
 });
+
+
+test('passive visibility requires a full second for impressions and three seconds for neutral dwell', async t => {
+  t.mock.timers.enable({apis:['setTimeout','Date']});
+  const app=feed(['repo'],true,{ownerId:'viewer',repository:{},viewable:false});
+  await app.mount();
+  try {
+    await app.setViewable(true);
+    await act(async()=>{t.mock.timers.tick(999);});
+    assert.deepEqual(app.events,[]);
+    await app.setViewable(false);
+    await act(async()=>{t.mock.timers.tick(3001);});
+    assert.deepEqual(app.events,[],'Quick swipe cancels impression and never emits a negative label');
+    await app.setViewable(true);
+    await act(async()=>{t.mock.timers.tick(1000);});
+    assert.deepEqual(app.events.map(event=>event.action),['impression']);
+    await act(async()=>{t.mock.timers.tick(1999);});
+    await app.setViewable(false);
+    assert.deepEqual(app.events.map(event=>event.action),['impression'],'Sub-three-second dwell remains neutral');
+    await app.setViewable(true);
+    await act(async()=>{t.mock.timers.tick(3000);});
+    await app.setViewable(false);
+    assert.deepEqual(app.events.map(event=>event.action),['impression','impression','dwell']);
+    assert.equal(app.events.at(-1).dwell_seconds,3);
+    assert.ok(app.events.every(event=>!['skip','dislike'].includes(event.action)));
+  } finally {await app.unmount();}
+});
