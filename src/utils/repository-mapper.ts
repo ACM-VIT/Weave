@@ -6,9 +6,74 @@ import type { RepositoryApiPayload } from '@/api/repositories';
 import type { RepositoryDetail, RepositoryStats, RepositoryStatus } from '@/models/repository';
 import type { PinnedRepository } from '@/services/pinnedRepositoryCodec';
 import {
+  README_MEDIA_ALT_LIMIT,
+  README_MEDIA_HASH_LIMIT,
+  README_MEDIA_ITEM_LIMIT,
+  README_MEDIA_MANIFEST_BYTE_LIMIT,
+  README_MEDIA_SCHEMA_VERSION,
+  README_MEDIA_URL_LIMIT,
+  type ReadmeMediaImage,
+  type ReadmeMediaManifest,
+} from '../../backend/contracts/readmeMedia.v2';
+import { resolveReadmeImageUrl, type ReadmeImageContext } from '@/utils/readme-images';
+import { resolveReadmeVideoUrl } from '@/utils/readme-videos';
+import {
   normalizeOptionalRepositoryText,
   normalizeRepositoryCardSummary,
 } from '@/utils/readme';
+
+function hasExactKeys(value: unknown, keys: readonly string[]): value is Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const actual = Object.keys(value);
+  return actual.length === keys.length && keys.every(key => Object.hasOwn(value, key));
+}
+
+function utf8ByteLength(value: string): number {
+  let length = 0;
+  for (const character of value) {
+    const codePoint = character.codePointAt(0)!;
+    length += codePoint <= 0x7f ? 1 : codePoint <= 0x7ff ? 2 : codePoint <= 0xffff ? 3 : 4;
+  }
+  return length;
+}
+
+function isManifestImage(value: unknown, context: ReadmeImageContext): value is ReadmeMediaImage {
+  return hasExactKeys(value, ['alt', 'url'])
+    && typeof value.alt === 'string' && value.alt.length <= README_MEDIA_ALT_LIMIT
+    && typeof value.url === 'string' && value.url.length <= README_MEDIA_URL_LIMIT
+    && resolveReadmeImageUrl(value.url, context) === value.url;
+}
+
+function currentReadmeMediaManifest(
+  value: unknown,
+  contentVersion: number | null,
+  contentHash: string | null,
+  hasReadme: boolean | undefined,
+  context: ReadmeImageContext,
+): ReadmeMediaManifest | null {
+  if (!Number.isSafeInteger(contentVersion) || contentVersion === null || contentVersion < 1
+    || !contentHash || contentHash.length > README_MEDIA_HASH_LIMIT || typeof hasReadme !== 'boolean'
+    || !hasExactKeys(value, ['schema_version', 'content_version', 'content_hash', 'readme_available', 'representation', 'poster', 'images', 'videos'])) {
+    return null;
+  }
+  const manifest = value as Partial<ReadmeMediaManifest>;
+  if (manifest.schema_version !== README_MEDIA_SCHEMA_VERSION || manifest.representation !== 'deferred'
+    || manifest.content_version !== contentVersion || manifest.content_hash !== contentHash
+    || manifest.readme_available !== hasReadme
+    || !(manifest.poster === null || isManifestImage(manifest.poster, context))
+    || !Array.isArray(manifest.images) || manifest.images.length > README_MEDIA_ITEM_LIMIT
+    || !manifest.images.every(image => isManifestImage(image, context))
+    || !Array.isArray(manifest.videos) || manifest.videos.length > README_MEDIA_ITEM_LIMIT
+    || !manifest.videos.every(url => typeof url === 'string' && url.length <= README_MEDIA_URL_LIMIT
+      && resolveReadmeVideoUrl(url, context) === url)) {
+    return null;
+  }
+  try {
+    const serialized = JSON.stringify(value);
+    if (typeof serialized !== 'string' || utf8ByteLength(serialized) > README_MEDIA_MANIFEST_BYTE_LIMIT) return null;
+  } catch { return null; }
+  return value as unknown as ReadmeMediaManifest;
+}
 
 function text(value: unknown): string {
   return typeof value === 'string' ? value.trim() : '';
@@ -117,6 +182,15 @@ export function mapRepositoryDetail(
     : typeof payload.readme === 'string' ? payload.readme : null;
   const hasReadme = typeof payload.readme_available === 'boolean' ? payload.readme_available
     : readmeFull ? true : undefined;
+  const contentVersion = nullableCount(payload.content_version);
+  const contentHash = nullableText(payload.content_hash);
+  const readmeSourcePath = nullableText(payload.readme_source_path);
+  const readmeDefaultBranch = nullableText(payload.readme_default_branch);
+  const readmeBaseUrl = nullableText(payload.readme_base_url);
+  const readmeContext = { fullName, githubUrl, readmeSourcePath, readmeDefaultBranch, readmeBaseUrl };
+  const readmeMediaManifest = currentReadmeMediaManifest(
+    payload.readme_media_manifest, contentVersion, contentHash, hasReadme, readmeContext,
+  );
   const summarySource = payload.summary_source === 'generated'
     || payload.summary_source === 'description_fallback'
     ? payload.summary_source
@@ -139,11 +213,12 @@ export function mapRepositoryDetail(
       readmeFull,
     ),
     readmeFull,
+    readmeMediaManifest,
     hasReadme,
-    contentHash: nullableText(payload.content_hash),
-    readmeSourcePath: nullableText(payload.readme_source_path),
-    readmeDefaultBranch: nullableText(payload.readme_default_branch),
-    readmeBaseUrl: nullableText(payload.readme_base_url),
+    contentHash,
+    readmeSourcePath,
+    readmeDefaultBranch,
+    readmeBaseUrl,
     summaryHighlights: stringArray(payload.summary_highlights),
     summaryPromptVersion: nullableText(payload.summary_prompt_version),
     summaryFormatVersion: nullableText(payload.summary_format_version),
@@ -161,7 +236,7 @@ export function mapRepositoryDetail(
     observedAt: nullableText(payload.stats_observed_at ?? payload.observed_at),
     contentUpdatedAt: nullableText(payload.content_updated_at),
     sourceUpdatedAt: nullableText(payload.source_updated_at),
-    contentVersion: nullableCount(payload.content_version),
+    contentVersion,
     summaryModelVersion: nullableText(payload.summary_model_version ?? payload.model_version),
     viewerReaction,
     viewerSaved: payload.viewer_saved === true || payload.saved === true,

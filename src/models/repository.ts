@@ -1,6 +1,7 @@
 import type { RepositoryLanguage } from '../../backend/services/repositoryLanguages';
 import type { RecommendationSource } from './recommendation';
 import type { ReadmeDigest } from './readme-digest';
+import type { ReadmeMediaManifest } from '../../backend/contracts/readmeMedia.v2';
 export type RepositoryReaction = 'like' | 'dislike' | null;
 export type RepositoryStatus = 'active' | 'archived' | 'deleted' | 'blocked' | null;
 
@@ -36,6 +37,7 @@ export type RepositoryDetail = {
   readmeSummary: string | null;
   readmeDigest?: ReadmeDigest | null;
   readmeFull: string | null;
+  readmeMediaManifest?: ReadmeMediaManifest | null;
   hasReadme?: boolean;
   contentHash?: string | null;
   readmeSourcePath: string | null;

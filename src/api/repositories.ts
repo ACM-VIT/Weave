@@ -49,6 +49,7 @@ export type RepositoryApiPayload = {
   content_hash?: unknown;
   readme_md?: unknown;
   readme?: unknown;
+  readme_media_manifest?: unknown;
   readme_source_path?: unknown;
   readme_default_branch?: unknown;
   readme_base_url?: unknown;

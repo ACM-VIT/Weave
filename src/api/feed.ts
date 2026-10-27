@@ -25,6 +25,7 @@ export type FeedRepositoryPayload = {
   // Active concise V2 summary artifact for the larger feed card.
   summary: string | null;
   readme_md: string | null;
+  readme_media_manifest?: unknown;
   readme_available?: boolean;
   content_version?: number | null;
   content_hash?: string | null;

@@ -57,7 +57,8 @@ function feed(ids: string[], reducedMotion = false, attribution?: { ownerId: str
     AppState: { currentState: 'active', addEventListener: () => ({ remove() {} }) },
     Platform: { OS: attribution?.platform ?? 'ios', select: (value: any) => value.ios ?? value.default },
     StyleSheet: { create: (value: unknown) => value, absoluteFill: {}, hairlineWidth: 1 },
-    Animated: { Value, View: 'AnimatedView', timing: animation, parallel: animation, sequence: animation, delay: animation },
+    Animated: { Value, View: 'AnimatedView', createAnimatedComponent: (component: unknown) => component,
+      timing: animation, parallel: animation, sequence: animation, delay: animation },
     Easing: { bezier: () => 0, in: () => 0, out: () => 0, cubic: 0, quad: 0 },
     useWindowDimensions: () => ({ height: shareHeight, width: 400 }),
     Keyboard: { dismiss() {} }, Linking: { openURL: () => openExternal() },
@@ -230,6 +231,17 @@ function feed(ids: string[], reducedMotion = false, attribution?: { ownerId: str
         React.createElement(overlayTypes[0], {repoId, isVisible: true, onClose: () => undefined}),
       )); });
       await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)); });
+    },
+    async readmeCardImages(cardRepository: RepositoryData) {
+      const Card = loadSource('src/components/home/ReadmeCard.tsx').default;
+      let cardRoot: ReturnType<typeof create>;
+      await act(async () => { cardRoot = create(React.createElement(QueryClientProvider, { client },
+        React.createElement(Card, { repository: cardRepository, availableWidth: 400, isActive: false,
+          onReadFullPress: () => undefined, onOpenReadme: () => undefined }),
+      )); });
+      const images = cardRoot!.root.findAllByType('SafeReadmeImage').map(node => node.props.url);
+      await act(async () => { cardRoot!.unmount(); });
+      return images;
     },
     async mount() { await act(async () => { root = create(renderRows()); }); },
     async rerender() { await act(async () => { root.update(renderRows()); }); },

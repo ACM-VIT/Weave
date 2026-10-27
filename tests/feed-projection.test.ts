@@ -94,16 +94,21 @@ describe("feed items", () => {
       prompt_version:'digest-v1',format_version:'readme-digest-json-v1',model_version:'fixture',source:'generated',
       generated_at:'2026-10-27T00:00:00.000Z',overview:'Digest for the prior source version.',
       capabilities:['First capability.','Second capability.'],use_cases:['A valid use case.'],considerations:[]};
+    const media={schema_version:2,content_version:7,content_hash:'body-hash-v7',readme_available:true,representation:'deferred',
+      poster:{alt:'Poster',url:'https://cdn.example.com/poster.png'},images:[{alt:'Screenshot',url:'https://cdn.example.com/screen.png'}],
+      videos:['https://cdn.example.com/demo.mp4']};
     const page=decodeFeedPage({serve_id:'00000000-0000-4000-8000-000000000011',feed_version:'1',next_cursor:null,
       items:[{repo_id:'00000000-0000-4000-8000-000000000012',position:0,repository:{
         repo_id:'00000000-0000-4000-8000-000000000012',full_name:'fixture/project',url:'https://github.com/fixture/project',
-        content_version:7,content_hash:'body-hash-v7',readme_available:true,readme_md:'  # Canonical body\n\n',readme_digest:digest,
+        content_version:7,content_hash:'body-hash-v7',readme_available:true,readme_md:'  # Canonical body\n\n',
+        readme_media_manifest:media,readme_digest:digest,
       }}]},session);
     const mapped=createFeedItemMapper()([page])[0].repository;
     assert.equal(mapped.contentVersion,7);
     assert.equal(mapped.contentHash,'body-hash-v7');
     assert.equal(mapped.hasReadme,true);
     assert.equal(mapped.readmeFull,'  # Canonical body\n\n');
+    assert.deepEqual(mapped.readmeMediaManifest,media);
     assert.equal(mapped.readmeDigest?.content_version,6);
     assert.equal(mapped.readmeDigest?.content_hash,'digest-hash-v6');
   });
@@ -112,6 +117,15 @@ describe("feed items", () => {
     const mapped=mapFeedRepository({repo_id:'repo',full_name:'fixture/project',readme_md:null});
     assert.ok(mapped);
     assert.equal(mapped.hasReadme,undefined);
+  });
+
+  test('feed mapper rejects deferred media with a stale identity or unsafe source URL',()=>{
+    const manifest={schema_version:2,content_version:7,content_hash:'body-hash-v7',readme_available:true,representation:'deferred',
+      poster:null,images:[],videos:['https://cdn.example.com/demo.mp4']};
+    const row={repo_id:'repo',full_name:'fixture/project',url:'https://github.com/fixture/project',content_version:7,
+      content_hash:'body-hash-v7',readme_available:true,readme_media_manifest:manifest};
+    assert.equal(mapFeedRepository({...row,readme_media_manifest:{...manifest,content_version:6}})?.readmeMediaManifest,null);
+    assert.equal(mapFeedRepository({...row,readme_media_manifest:{...manifest,videos:['javascript:alert(1)']}})?.readmeMediaManifest,null);
   });
 });
 
