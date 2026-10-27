@@ -292,3 +292,38 @@ describe("readme popup content", () => {
     assert.equal(blocks.filter(block=>block.kind==='html').map(block=>block.content).join(''),html);
   });
 });
+
+
+test('GitHub file-page images resolve to image bytes without rewriting attachments or other hosts', () => {
+  assert.equal(resolveReadmeImageUrl('https://github.com/g3n/g3nd/blob/master/data/images/g3n_logo.png',{}),
+    'https://raw.githubusercontent.com/g3n/g3nd/master/data/images/g3n_logo.png');
+  assert.equal(resolveReadmeImageUrl('https://github.com/org/repo/blob/feature/demo/docs/image%20one.png?raw=true',{}),
+    'https://raw.githubusercontent.com/org/repo/feature/demo/docs/image%20one.png');
+  for(const url of ['https://github.com/user-attachments/assets/image.png','https://cdn.example.com/org/repo/blob/main/image.png'])
+    assert.equal(resolveReadmeImageUrl(url,{}),url);
+});
+
+
+test('a recycled README image recovers after its failed URL changes', async () => {
+  const React=await import('react');const {act}=React;const {create}=await import('react-test-renderer');
+  const {loadSource}=await import('./support/startup-harness');
+  const images=await import('../src/utils/readme-images');
+  (globalThis as any).IS_REACT_ACT_ENVIRONMENT=true;
+  const {SafeReadmeImage}=loadSource('src/components/home/SafeReadmeImage.tsx',{
+    'react-native':{ActivityIndicator:'ActivityIndicator',Text:'Text',View:'View',StyleSheet:{create:(v:unknown)=>v,absoluteFill:{}}},
+    'expo-image':{Image:'Image'},'react-native-render-html':{useContentWidth:()=>320},
+    '@/utils/readme-images':images,'@/constants/theme':{REFERENCE_THEME:{}},
+  });
+  let root!:ReturnType<typeof create>;
+  const render=(url:string)=>React.createElement(SafeReadmeImage,{url,alt:'Banner',maximumWidth:320});
+  await act(async()=>{root=create(render('https://cdn.example.com/missing.png'));});
+  try {
+    await act(async()=>root.root.findByType('Image').props.onError());
+    assert.ok(root.root.findAllByType('Text').some(node=>node.children.includes('Image unavailable: Banner')));
+    await act(async()=>root.update(render('https://github.com/g3n/g3nd/blob/master/data/images/g3n_logo.png')));
+    const image=root.root.findByType('Image');
+    assert.equal(image.props.source.uri,'https://raw.githubusercontent.com/g3n/g3nd/master/data/images/g3n_logo.png');
+    await act(async()=>image.props.onLoad({source:{width:400,height:200}}));
+    assert.equal(root.root.findAllByType('ActivityIndicator').length,0);
+  }finally{await act(async()=>root.unmount());}
+});

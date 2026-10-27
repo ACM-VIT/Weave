@@ -253,8 +253,8 @@ export function feed(ids: string[], reducedMotion = false, attribution?: { owner
     },
     async mount() { await act(async () => { root = create(renderRows()); }); },
     async rerender() { await act(async () => { root.update(renderRows()); }); },
-    async open(index: number, action: string) {
-      await act(async () => { root.root.findAllByType('RepositoryScreen')[index].props[action](); });
+    async open(index: number, action: string, value?: unknown) {
+      await act(async () => { root.root.findAllByType('RepositoryScreen')[index].props[action](value); });
       await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)); });
     },
     async requestClose() {

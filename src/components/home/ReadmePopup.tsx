@@ -424,8 +424,8 @@ function VisibleReadmePopup({
               />)}
               {mediaMessage ? <View>
                 <Text style={{ color: REFERENCE_THEME.textSecondary }}>{mediaMessage}</Text>
-                {onRetry ? <Pressable accessibilityRole="button" onPress={onRetry} style={styles.retryButton}>
-                  <Text style={styles.headerText}>Retry loading videos</Text>
+                {onRetry ? <Pressable accessibilityRole="button" accessibilityLabel="Retry loading README media" onPress={onRetry} style={styles.retryButton}>
+                  <Text style={styles.headerText}>Retry loading images and videos</Text>
                 </Pressable> : null}
               </View> : null}
             </Animated.View>

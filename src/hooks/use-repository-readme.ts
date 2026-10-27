@@ -35,6 +35,15 @@ export function useRepositoryReadme(repository: RepositoryDetail | undefined, ac
   const loadMetadata = async (signal?: AbortSignal) => {
     const value = await fetchRepositoryMetadata(repository!.id, await token(), signal);
     authSessionLifecycle.assertCurrent(generation);
+    // Older servers ignore the metadata projection and return the full body.
+    // Seed only its verified immutable document, never viewer state or an
+    // unversioned inline feed body. Keep the metadata cache identity-only.
+    if (value.readmeFull && identified(value)) {
+      client.setQueryData<RepositoryReadmeDocument>(repositoryReadmeQueryKey(value.id,viewer,value.contentVersion), {
+        ...readmeMetadata(value),contentVersion:value.contentVersion,contentHash:value.contentHash,
+        readmeFull:value.readmeFull,hasReadme:true,
+      });
+    }
     return value;
   };
   const metadataKey = repositoryReadmeMetadataQueryKey(repository?.id ?? '',viewer);
@@ -90,6 +99,6 @@ export function useRepositoryReadme(repository: RepositoryDetail | undefined, ac
     if (!identity) return metadata.refetch();
     return client.resetQueries({queryKey:metadataKey,exact:true}).then(() => document.refetch());
   };
-  return {data,error,terminalError,isError:Boolean(error),isPending:!error && !data && (metadata.isFetching || document.isPending),
+  return {data,error,terminalError,isError:Boolean(error),isFetching:metadata.isFetching || document.isFetching,isPending:!error && !data && (metadata.isFetching || document.isPending),
     refetch};
 }

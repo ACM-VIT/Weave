@@ -3,6 +3,7 @@ import { Modal, Pressable, ScrollView, Text, View, useWindowDimensions } from 'r
 import { Image } from 'expo-image';
 import { X, ZoomIn, ZoomOut } from 'lucide-react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { normalizeGithubReadmeImageUrl } from '@/utils/readme-images';
 import { REFERENCE_THEME } from '@/constants/theme';
 
 /** The digest stays mounted underneath, preserving its scroll position. */
@@ -42,7 +43,7 @@ export function ReadmeImagePopup({ url, alt, onClose }: {url: string; alt: strin
             <ScrollView ref={horizontal} horizontal nestedScrollEnabled
               contentContainerStyle={{minWidth:viewportWidth,alignItems:'center',justifyContent:'center'}}
               style={{height:Math.max(viewportHeight,fittedHeight*zoom)}}>
-              <Image accessibilityLabel={alt||'README image'} accessibilityRole="image" source={{uri:url}}
+              <Image accessibilityLabel={alt||'README image'} accessibilityRole="image" source={{uri:normalizeGithubReadmeImageUrl(url)}}
                 contentFit="contain" cachePolicy="memory-disk" style={{width:fittedWidth*zoom,height:fittedHeight*zoom}}
                 onLoad={event=>{if(event.source.width>0&&event.source.height>0)setRatio(event.source.width/event.source.height);}}
                 onError={()=>setFailed(true)}/>

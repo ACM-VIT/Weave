@@ -1,3 +1,4 @@
+import { useMemo } from 'react';
 import { useRepositoryReadme } from '@/hooks/use-repository-readme';
 import type { RepositoryData } from '@/data/repositories';
 import { ReadmePopup } from './ReadmePopup';
@@ -18,7 +19,12 @@ export function FeedReadmePopup({ repository, onClose, summaryText, summaryVersi
     && manifest.content_version === expectedVersion && manifest.content_hash === expectedHash
     && manifest.content_version === repository.contentVersion && manifest.content_hash === repository.contentHash
     && manifest.readme_available === repository.hasReadme);
-  const query = useRepositoryReadme(repository, summaryText === undefined || !manifestMatchesSummary);
+  // Older feeds include canonical bytes but omit their content identity. Verify
+  // the current detail instead of pairing an unversioned body with a newer digest.
+  const mediaRepository = useMemo(() => summaryText !== undefined
+    && (!repository.contentVersion || !repository.contentHash)
+    ? {...repository,readmeFull:null} : repository, [repository,summaryText]);
+  const query = useRepositoryReadme(mediaRepository, summaryText === undefined || !manifestMatchesSummary);
   const source = query.data ?? (query.terminalError ? {...repository,readmeFull:null} : repository);
   const matchingMedia = summaryText === undefined || source.contentVersion === expectedVersion
     && (!expectedHash || source.contentHash === expectedHash);
@@ -28,10 +34,11 @@ export function FeedReadmePopup({ repository, onClose, summaryText, summaryVersi
     readmeText={summaryText === undefined ? source.readmeFull : summaryText} mediaMarkdown={media}
     mediaImages={manifestMedia?.images} mediaVideos={manifestMedia?.videos}
     mediaMessage={summaryText !== undefined && !media && !manifestMedia
-      ? !matchingMedia ? 'Repository updated. Reopen its detail for the current summary.' : query.isError ? 'Could not load README videos.' : query.isPending ? 'Checking README for videos…' : null : null}
+      ? query.isFetching || query.isPending ? 'Loading images and videos…' : query.isError ? 'Could not load README images and videos.'
+        : !matchingMedia ? 'Repository updated. Reopen its detail for the current summary.' : null : null}
     loading={summaryText === undefined && !source.readmeFull && query.isPending}
     errorMessage={summaryText === undefined && !source.readmeFull && query.error instanceof Error ? query.error.message : null}
-    onRetry={() => void query.refetch()} readmeSource={{ fullName: source.fullName, githubUrl: source.githubUrl,
+    onRetry={summaryText === undefined || (query.isError && !query.isFetching) ? () => void query.refetch() : undefined} readmeSource={{ fullName: source.fullName, githubUrl: source.githubUrl,
       readmeBaseUrl: source.readmeBaseUrl, readmeDefaultBranch: source.readmeDefaultBranch,
       readmeSourcePath: source.readmeSourcePath }} />;
 }

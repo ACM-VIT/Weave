@@ -152,10 +152,24 @@ function trustedMetadataBase(context: ReadmeImageContext, root: URL): URL | null
   }
 }
 
+/** GitHub blob URLs serve HTML, even when their path ends in an image suffix. */
+export function normalizeGithubReadmeImageUrl(value: string): string {
+  try {
+    const url=new URL(value);
+    const parts=url.pathname.split('/').filter(Boolean);
+    if (url.protocol==='https:' && url.hostname==='github.com' && !url.username && !url.password
+      && parts.length>=5 && parts[2]==='blob'
+      && /\.(?:png|jpe?g|gif|webp|svg|avif|bmp|ico|tiff?)$/i.test(url.pathname)) {
+      return `https://raw.githubusercontent.com/${parts.slice(0,2).join('/')}/${parts.slice(3).join('/')}`;
+    }
+  } catch { /* The resolver still rejects invalid or unsafe sources. */ }
+  return value;
+}
+
 function safeAbsoluteUrl(value: string): string | null {
   try {
     const url = new URL(value);
-    return isPublicHttpsUrl(url) ? url.toString() : null;
+    return isPublicHttpsUrl(url) ? normalizeGithubReadmeImageUrl(url.toString()) : null;
   } catch {
     return null;
   }
