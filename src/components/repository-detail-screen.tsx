@@ -121,6 +121,7 @@ export function RepositoryDetailScreen({ repositoryId,navigationToken }: { repos
   const currentMembershipScope = useRef(membershipScope);
   useLayoutEffect(() => { currentMembershipScope.current = membershipScope; }, [membershipScope]);
   const [confirmedMembership, setConfirmedMembership] = useState<{scope: string; listIds: string[]; saved: boolean} | null>(null);
+  const confirmedMembershipRef = useRef(confirmedMembership);
 
   const [saveVisible, setSaveVisible] = useState(false);
   const [shareVisible, setShareVisible] = useState(false);
@@ -131,9 +132,16 @@ export function RepositoryDetailScreen({ repositoryId,navigationToken }: { repos
     queryKey: repositoryDetailQueryKey(repositoryId, viewerUserId),
     enabled: Boolean(repositoryId && viewerUserId),
     queryFn: async ({ signal }) => {
+      const confirmationAtStart = confirmedMembershipRef.current;
       const token = await getStorageItem('access_token');
       if (!token) throw new Error('Your session has expired. Please sign in again.');
-      return fetchRepositoryDetail(repositoryId, token, signal);
+      const detail = await fetchRepositoryDetail(repositoryId, token, signal);
+      const confirmed = confirmedMembershipRef.current;
+      // A request begun before a confirmed mutation can return its old snapshot.
+      // Keep the complete response, but retain the newer membership confirmation.
+      return confirmed && confirmed !== confirmationAtStart && confirmed.scope === membershipScope
+        ? {...detail, selectedListIds: confirmed.listIds, viewerSaved: confirmed.saved}
+        : detail;
     },
     staleTime: 60_000,
     retry: (failures, error) => ![401,403,404,410].includes((error as {status?:number}).status ?? 0) && failures < 1,
@@ -176,7 +184,9 @@ export function RepositoryDetailScreen({ repositoryId,navigationToken }: { repos
 
   const handleListMembershipsChanged = useCallback((listIds: string[], saved: boolean) => {
     if (!viewerUserId || currentMembershipScope.current !== membershipScope || !authSessionLifecycle.isCurrent(renderGeneration)) return;
-    setConfirmedMembership({scope: membershipScope, listIds: [...listIds], saved});
+    const confirmed = {scope: membershipScope, listIds: [...listIds], saved};
+    confirmedMembershipRef.current = confirmed;
+    setConfirmedMembership(confirmed);
     queryClient.setQueryData<RepositoryDetail>(
       repositoryDetailQueryKey(repositoryId, viewerUserId),
       (current) => current

@@ -148,7 +148,7 @@ test('repository previews show immediately without marking incomplete details fr
   } finally {unsubscribe();client.clear();}
 });
 
-test('confirmed preview memberships render immediately without completing detail or crossing accounts', async () => {
+for (const saved of [true, false]) test(`confirmed preview membership ${saved} survives a delayed pre-save detail without crossing accounts`, async () => {
   const React=await import('react');
   const {act}=React;
   const {create}=await import('react-test-renderer');
@@ -163,6 +163,9 @@ test('confirmed preview memberships render immediately without completing detail
   assert.ok(card);rememberRepositoryPreview(client,viewer,card);rememberRepositoryPreview(client,'bob',card);
   let finish!:(value:typeof card)=>void;
   const pending=new Promise<typeof card>(resolve=>{finish=resolve;});
+  let finishBob!:(value:typeof card)=>void;
+  const bobPending=new Promise<typeof card>(resolve=>{finishBob=resolve;});
+  let aliceRequests=0;
   const icon=()=>null;
   const {RepositoryDetailScreen}=loadSource('src/components/repository-detail-screen.tsx',{
     '@tanstack/react-query':await import('@tanstack/react-query'),
@@ -171,7 +174,7 @@ test('confirmed preview memberships render immediately without completing detail
     'expo-router':{router:{}},'react-native-safe-area-context':{useSafeAreaInsets:()=>({top:0,bottom:0})},
     'lucide-react-native':new Proxy({},{get:()=>icon}),
     '@/constants/theme':{REFERENCE_THEME:{}},'@/store/AuthContext':{useAuth:()=>({user:{user_id:viewer},isLoading:false})},
-    '@/api/repositories':{repositoryDetailQueryKey,fetchRepositoryDetail:()=>pending},
+    '@/api/repositories':{repositoryDetailQueryKey,fetchRepositoryDetail:()=>viewer==='alice'?(aliceRequests++===0?pending:Promise.resolve({...card,viewerSaved:!saved,selectedListIds:[]})):bobPending},
     '@/utils/storage':{getStorageItem:async()=> 'token'},
     '@/components/home/ReadmePopup':{ReadmePopup:()=>null},
     '@/components/home/save-popup':{SavePopup:(props:any)=>React.createElement('SavePopup',props)},
@@ -184,17 +187,22 @@ test('confirmed preview memberships render immediately without completing detail
   await act(async()=>{root=create(render());});
   try {
     const callback=root.root.findByType('SavePopup').props.onListMembershipsChanged;
-    await act(async()=>{callback(['list-a'],true);});
-    assert.equal(root.root.findAllByProps({accessibilityLabel:'Manage saved Lists'}).length>0,true);
-    assert.equal(root.root.findAllByType('Text').some(node=>node.props.children==='In 1 List'),true);
+    await act(async()=>{callback(saved?['list-a']:[],saved);});
+    const label=saved?'Manage saved Lists':'Save repository to Lists';
+    assert.equal(root.root.findAllByProps({accessibilityLabel:label}).length>0,true);
     assert.equal(client.getQueryData(repositoryDetailQueryKey('repo','alice')),undefined);
-    await act(async()=>{callback([],false);});
-    assert.equal(root.root.findAllByProps({accessibilityLabel:'Save repository to Lists'}).length>0,true);
+    await act(async()=>{finish({...card,viewerSaved:!saved,selectedListIds:saved?[]:['old-list'],readmeFull:'# Complete'});await pending;});
+    await act(async()=>{await new Promise(resolve=>setTimeout(resolve,0));});
+    assert.equal(root.root.findAllByProps({accessibilityLabel:label}).length>0,true,'Pre-save detail cannot undo confirmed membership');
+    assert.equal(client.getQueryData<any>(repositoryDetailQueryKey('repo','alice'))?.viewerSaved,saved);
+    assert.equal(client.getQueryData<any>(repositoryDetailQueryKey('repo','alice'))?.readmeFull,'# Complete');
+    await act(async()=>{await client.invalidateQueries({queryKey:repositoryDetailQueryKey('repo','alice'),exact:true});});
+    assert.equal(client.getQueryData<any>(repositoryDetailQueryKey('repo','alice'))?.viewerSaved,!saved,'A fetch started after confirmation remains authoritative');
     await act(async()=>{viewer='bob';root.update(render());});
     await act(async()=>{callback(['alice-only'],true);});
     assert.equal(root.root.findAllByProps({accessibilityLabel:'Save repository to Lists'}).length>0,true);
     assert.equal(client.getQueryData(repositoryDetailQueryKey('repo','bob')),undefined);
-    await act(async()=>{finish({...card,description:'complete README',readmeFull:'# Complete'});await pending;});
+    await act(async()=>{finishBob({...card,description:'complete README',readmeFull:'# Complete'});await bobPending;});
     assert.equal(client.getQueryData<any>(repositoryDetailQueryKey('repo','bob'))?.readmeFull,'# Complete');
   } finally {await act(async()=>root.unmount());client.clear();}
 });
