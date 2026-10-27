@@ -172,3 +172,32 @@ for (const mode of ['quota-retry']) {
     assert.deepEqual(await app.start('load').message, { phase: 'loaded', events: [] }, 'acknowledged records cannot resurrect');
   });
 }
+
+
+test('an explicit backend scope isolates new work while preserving the unscoped backlog',async()=>{
+  const {loadSource}=await import('./support/startup-harness');
+  const previousScope=process.env.EXPO_PUBLIC_ACTIVITY_STORAGE_SCOPE;
+  const previousStorage=globalThis.localStorage;
+  const values=new Map<string,string>();
+  const memory={get length(){return values.size;},key:(i:number)=>[...values.keys()][i]??null,
+    getItem:(key:string)=>values.get(key)??null,setItem:(key:string,value:string)=>{values.set(key,value);},removeItem:(key:string)=>{values.delete(key);},clear:()=>values.clear()};
+  Object.defineProperty(globalThis,'localStorage',{value:memory,configurable:true});
+  const owner='00000000-0000-4000-8000-000000000001';
+  const load=()=>loadSource('src/services/activityOutboxStorage.ts',{'react-native':{Platform:{OS:'web'}}});
+  try {
+    delete process.env.EXPO_PUBLIC_ACTIVITY_STORAGE_SCOPE;
+    const old=load();await old.appendActivityOutboxEvent(owner,event(1));
+    const original=new Map(values);
+    process.env.EXPO_PUBLIC_ACTIVITY_STORAGE_SCOPE='azure-test';const azure=load();
+    assert.deepEqual(await azure.loadActivityOutbox(owner),[]);
+    await azure.appendActivityOutboxEvent(owner,event(2));
+    assert.deepEqual((await azure.loadActivityOutbox(owner)).map((e:QueuedActivity)=>e.event_id),[event(2).event_id]);
+    process.env.EXPO_PUBLIC_ACTIVITY_STORAGE_SCOPE='other-backend';assert.deepEqual(await load().loadActivityOutbox(owner),[]);
+    for(const [key,value] of original)assert.equal(values.get(key),value,'Unknown-source work remains intact');
+    delete process.env.EXPO_PUBLIC_ACTIVITY_STORAGE_SCOPE;
+    assert.deepEqual((await load().loadActivityOutbox(owner)).map((e:QueuedActivity)=>e.event_id),[event(1).event_id]);
+  }finally{
+    if(previousScope===undefined)delete process.env.EXPO_PUBLIC_ACTIVITY_STORAGE_SCOPE;else process.env.EXPO_PUBLIC_ACTIVITY_STORAGE_SCOPE=previousScope;
+    Object.defineProperty(globalThis,'localStorage',{value:previousStorage,configurable:true});
+  }
+});

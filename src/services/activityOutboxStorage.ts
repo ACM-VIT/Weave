@@ -10,6 +10,9 @@ import { IncrementalActivityStorage, type ActivityRecordFileSystem } from './act
 
 const LEGACY_KEY_PREFIX = 'ghsocial.activity-outbox.v2';
 const RECORD_KEY_PREFIX = 'ghsocial.activity-outbox.v3';
+// Explicitly separate test/backend databases that can reuse account UUIDs.
+// Unscoped work remains untouched; its source must be recovered independently.
+const STORAGE_SCOPE = process.env.EXPO_PUBLIC_ACTIVITY_STORAGE_SCOPE?.trim();
 const ACCOUNT_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const userStores = new Map<string, Promise<IncrementalActivityStorage>>();
 
@@ -23,7 +26,8 @@ function legacyUserId(userId: string): string {
 async function createStorage(userId: string): Promise<IncrementalActivityStorage> {
   // Use an injective, path-safe encoding rather than replacing characters or interpolating URI separators.
   const encodedUser = userId.split('').map(character => character.charCodeAt(0).toString(16).padStart(4, '0')).join('');
-  const namespace = `${RECORD_KEY_PREFIX}.${encodedUser}`;
+  const encodedScope = STORAGE_SCOPE?.split('').map(character => character.charCodeAt(0).toString(16).padStart(4,'0')).join('');
+  const namespace = `${RECORD_KEY_PREFIX}${encodedScope ? `.scope.${encodedScope}` : ''}.${encodedUser}`;
   if (Platform.OS === 'web') {
     if (typeof localStorage === 'undefined') throw new Error('Activity outbox storage is unavailable.');
     const prefix = `${namespace}.`;
@@ -55,6 +59,7 @@ async function createStorage(userId: string): Promise<IncrementalActivityStorage
       warn: (message, error) => console.warn(message, error),
     };
     return new IncrementalActivityStorage(fileSystem, async () => {
+      if (STORAGE_SCOPE) return [];
       const value = localStorage.getItem(`${LEGACY_KEY_PREFIX}.${legacyUserId(userId)}`);
       // Do not overwrite or silently normalize away a malformed legacy event.
       return value === null ? [] : deserializeActivitySnapshot(value);
@@ -86,6 +91,7 @@ async function createStorage(userId: string): Promise<IncrementalActivityStorage
     },
   };
   return new IncrementalActivityStorage(fileSystem, async () => {
+      if (STORAGE_SCOPE) return [];
     const legacy = snapshotFileSystem(Paths.document);
     const path = `${LEGACY_KEY_PREFIX}.${legacyUserId(userId)}.json`;
     const temporaryPath = `${path}.tmp`;
