@@ -1,5 +1,14 @@
 import { marked } from 'marked';
-import type { ReadmeMediaImage, ReadmeMediaManifest } from '../contracts/readmeMedia.v2.js';
+import {
+  README_MEDIA_ALT_LIMIT as MAX_README_MEDIA_ALT_LENGTH,
+  README_MEDIA_HASH_LIMIT as MAX_README_MEDIA_HASH_LENGTH,
+  README_MEDIA_ITEM_LIMIT as MAX_README_MEDIA_ITEMS,
+  README_MEDIA_MANIFEST_BYTE_LIMIT as MAX_README_MEDIA_MANIFEST_BYTES,
+  README_MEDIA_SCHEMA_VERSION,
+  README_MEDIA_URL_LIMIT as MAX_README_MEDIA_URL_LENGTH,
+  type ReadmeMediaImage,
+  type ReadmeMediaManifest,
+} from '../contracts/readmeMedia.v2.js';
 
 export interface ReadmeMediaContext {
   fullName: string;
@@ -14,11 +23,6 @@ const BADGE_HOST_PATTERN = /(?:^|\.)(?:badge|badges|img\.shields|shields|codecov
 const PREFERRED_PREVIEW_PATTERN = /(?:screenshot|preview|demo|hero|showcase|interface|dashboard|app[-_ ]?view)/i;
 // Reuse the accepted source and metadata bounds: README ingestion is capped at
 // 1,000,000 characters, repository URLs/base paths at 2,048, and descriptions at 10,000.
-const MAX_README_MEDIA_MANIFEST_BYTES = 1_000_000;
-const MAX_README_MEDIA_ITEMS = 3;
-const MAX_README_MEDIA_URL_LENGTH = 2_048;
-const MAX_README_MEDIA_ALT_LENGTH = 10_000;
-const MAX_README_MEDIA_HASH_LENGTH = 256;
 const MEDIA_IMAGE_KEYS = ['alt', 'url'] as const;
 const MEDIA_MANIFEST_KEYS = [
   'schema_version', 'content_version', 'content_hash', 'readme_available', 'representation', 'poster', 'images', 'videos',
@@ -203,7 +207,7 @@ export function deriveReadmeMediaManifest(input: {
 }): ReadmeMediaManifest {
   const markdown = input.markdown ?? '';
   const manifest: ReadmeMediaManifest = {
-    schema_version: 2,
+    schema_version: README_MEDIA_SCHEMA_VERSION,
     content_version: input.contentVersion,
     content_hash: input.contentHash,
     readme_available: input.markdown !== null,
@@ -214,7 +218,7 @@ export function deriveReadmeMediaManifest(input: {
   };
   if (isCurrentReadmeMediaManifest(manifest, input.contentVersion, input.contentHash)) return manifest;
   return {
-    schema_version: 2,
+    schema_version: README_MEDIA_SCHEMA_VERSION,
     content_version: input.contentVersion,
     content_hash: input.contentHash,
     readme_available: input.markdown !== null,
@@ -249,7 +253,7 @@ export function isCurrentReadmeMediaManifest(value: unknown, contentVersion: num
   try {
     if (!hasExactKeys(value, MEDIA_MANIFEST_KEYS)) return false;
     const manifest = value as Partial<ReadmeMediaManifest>;
-    if (manifest.schema_version !== 2 || manifest.representation !== 'deferred'
+    if (manifest.schema_version !== README_MEDIA_SCHEMA_VERSION || manifest.representation !== 'deferred'
       || manifest.content_version !== contentVersion || manifest.content_hash !== contentHash
       || typeof manifest.content_hash !== 'string' || manifest.content_hash.length > MAX_README_MEDIA_HASH_LENGTH
       || typeof manifest.readme_available !== 'boolean'
