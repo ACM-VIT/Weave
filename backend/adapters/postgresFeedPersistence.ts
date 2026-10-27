@@ -7,6 +7,7 @@ import { FeedProvenanceUnavailableError, FeedProvenanceDependencyError } from '.
 import { loadSocialNeighborhoodRows } from '../services/socialNeighborhoodProjection.js';
 import { projectSocialCandidates, type SocialCandidateProjection } from '../services/socialCandidateProjection.js';
 import { readmeSummaryProjection } from '../services/readmeSummaryService.js';
+import { isCurrentReadmeMediaManifest } from '../services/readmeMediaManifest.js';
 import type {
   CreateServeInput,
   RepositoryProjection,
@@ -466,6 +467,10 @@ export class PostgresFeedPersistence implements FeedPersistencePort, FeedReconci
   }
 
   async getServeByRequest(userId: string, feedRequestId: string): Promise<StoredServe | null> {
+    return this.readServeByRequest(userId, feedRequestId, 1);
+  }
+
+  private async readServeByRequest(userId: string, feedRequestId: string, bodyRaceRetries: number): Promise<StoredServe | null> {
     const serves = await sqlClient`
       SELECT * FROM telemetry.feed_serves
       WHERE user_id = ${userId}::uuid AND feed_request_id = ${feedRequestId}::uuid
@@ -581,6 +586,46 @@ export class PostgresFeedPersistence implements FeedPersistencePort, FeedReconci
       ...(row.capture_status !== 'captured' ? {} : {scoring_reference:{generation_id:String(row.generation_id),
         repo_id:String(row.repo_id),record_digest:String(row.record_digest)}}),
     }));
+    if (readmeMode === 'deferred') {
+      const fallbackByRepoId = new Map(items.flatMap(item => {
+        const repository = item.repository;
+        if (repository.content_version == null || repository.content_hash == null
+          || isCurrentReadmeMediaManifest(repository.readme_media_manifest,
+            repository.content_version, repository.content_hash)) return [];
+        return [[item.repo_id, {
+          repo_id: item.repo_id,
+          content_version: repository.content_version,
+          content_hash: repository.content_hash,
+        }] as const];
+      }));
+      if (fallbackByRepoId.size > 0) {
+        const expected = JSON.stringify([...fallbackByRepoId.values()]);
+        const bodies = await sqlClient`
+          WITH expected AS (
+            SELECT repo_id,content_version,content_hash
+            FROM jsonb_to_recordset(${expected}::jsonb) AS row(repo_id uuid,content_version integer,content_hash text)
+          )
+          SELECT content.repo_id,content.readme
+          FROM expected JOIN app.repo_content content ON content.repo_id=expected.repo_id
+            AND content.content_version=expected.content_version AND content.content_hash=expected.content_hash
+        `;
+        if (bodies.length !== fallbackByRepoId.size) {
+          if (bodyRaceRetries > 0) return this.readServeByRequest(userId, feedRequestId, bodyRaceRetries - 1);
+          throw new Error('Canonical README changed during deferred feed replay hydration.');
+        }
+        const bodyByRepoId = new Map(bodies.map(row => [String(row.repo_id), row.readme == null ? null : String(row.readme)]));
+        for (const item of items) {
+          if (!fallbackByRepoId.has(item.repo_id)) continue;
+          const readme = bodyByRepoId.get(item.repo_id) ?? null;
+          item.repository = {
+            ...item.repository,
+            readme_md: readme,
+            readme_available: readme !== null,
+            readme_media_manifest: null,
+          };
+        }
+      }
+    }
     return {
       serve_id: String(serve.serve_id), feed_request_id: String(serve.feed_request_id), user_id: String(serve.user_id),
       session_id: String(serve.session_id), feed_version: BigInt(serve.feed_version),
