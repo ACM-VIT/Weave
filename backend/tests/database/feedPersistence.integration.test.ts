@@ -5,6 +5,7 @@ import { sqlClient } from '../../db/index.js';
 import { PostgresFeedPersistence } from '../../adapters/postgresFeedPersistence.js';
 import { FeedExposureChangedError, FeedPreferenceChangedError, FeedServeOverlapError } from '../../ports/feedPersistencePort.js';
 import type { CreateServeInput, RepositoryProjection } from '../../contracts/feed.v2.js';
+import { deriveReadmeMediaManifest } from '../../services/readmeMediaManifest.js';
 import { assertDisposableDatabase } from './disposableDatabase.js';
 function ordinaryFeedVersion(value: string | number): number {
   assert.equal(typeof value, 'number', 'This fixture implements only ordinary recommendation responses');
@@ -71,6 +72,41 @@ integration('new serves use one item insert for 1, 24 and 50 cards without follo
     assert.equal(replay?.items[0].repository.content_hash,`feed-identity-${f.repos[0]}`);
     assert.equal(replay?.items[0].repository.readme_available,true);
   }
+});
+
+integration('deferred feed projection omits canonical bytes and replays its version-bound manifest',async()=>{
+  const f=await fixture(1); const persistence=new PostgresFeedPersistence();
+  const canonical='  # Canonical fixture\r\n\r\n![Screen](https://cdn.example.com/screen.png)\n[Demo](https://cdn.example.com/demo.mp4)\r\n';
+  const contentHash='deferred-fixture-hash-v7';
+  const manifest=deriveReadmeMediaManifest({markdown:canonical,contentVersion:7,contentHash,
+    context:{fullName:`fixture/${f.repos[0]}`,githubUrl:`https://github.com/fixture/${f.repos[0]}`,
+      sourcePath:null,defaultBranch:null,baseUrl:null}});
+  assert.equal(manifest.representation,'deferred');
+  await sqlClient`INSERT INTO app.repo_content(repo_id,content_hash,content_version,readme,readme_media_manifest)
+    VALUES(${f.repos[0]}::uuid,${contentHash},7,${canonical},${JSON.stringify(manifest)}::jsonb)`;
+  await persistence.getFeedVersion(f.user);
+
+  const deferred=(await persistence.listActiveRepositories(f.repos,f.user,'deferred'))[0];
+  const inline=(await persistence.listActiveRepositories(f.repos,f.user,'inline'))[0];
+  assert.equal(Object.hasOwn(deferred,'readme_md'),false,'deferred SQL does not project canonical README bytes');
+  assert.equal(inline.readme_md,canonical,'legacy SQL retains exact canonical README bytes');
+  assert.deepEqual(deferred.readme_media_manifest,manifest);
+  assert.equal(deferred.content_version,7);
+  assert.equal(deferred.content_hash,contentHash);
+  assert.equal(deferred.readme_available,true);
+
+  const fresh=await persistence.createServe({...f.input,readme_mode:'deferred',items:[{
+    ...f.input.items[0],repository:deferred,
+  }]});
+  assert.equal(fresh.readme_mode,'deferred');
+  assert.equal(Object.hasOwn(fresh.items[0].repository,'readme_md'),false);
+  const replay=await persistence.getServeByRequest(f.user,f.input.feed_request_id);
+  assert.equal(replay?.readme_mode,'deferred');
+  assert.equal(Object.hasOwn(replay!.items[0].repository,'readme_md'),false,'replay SQL stays on the deferred projection');
+  assert.equal(replay?.items[0].repository.readme_available,true);
+  assert.equal(replay?.items[0].repository.content_version,7);
+  assert.equal(replay?.items[0].repository.content_hash,contentHash);
+  assert.deepEqual(replay?.items[0].repository.readme_media_manifest,manifest);
 });
 
 integration('concurrent duplicate writes return one durable serve and keep exact position order',async()=>{
