@@ -2084,6 +2084,60 @@
         "title": "RepositoryJob",
         "type": "object"
       },
+      "RepositoryLanguage": {
+        "additionalProperties": false,
+        "properties": {
+          "color": {
+            "anyOf": [
+              {
+                "pattern": "^#[0-9a-fA-F]{6}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Color"
+          },
+          "name": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "percentage": {
+            "anyOf": [
+              {
+                "maximum": 100.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Percentage"
+          },
+          "size": {
+            "anyOf": [
+              {
+                "maximum": 9007199254740991.0,
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Size"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "title": "RepositoryLanguage",
+        "type": "object"
+      },
       "RepositoryLifecycleObservation": {
         "additionalProperties": false,
         "description": "One backend-owned GitHub response, never inferred from push recency.\n\nUnavailable includes permission errors, timeouts and ambiguous not-found\nresponses. It supplies no archive/disable evidence and cannot revive a repo.",
@@ -2575,6 +2629,45 @@
               }
             ],
             "title": "Is Fork"
+          },
+          "language_breakdown": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/RepositoryLanguage"
+                },
+                "maxItems": 100,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Language Breakdown"
+          },
+          "language_breakdown_complete": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Language Breakdown Complete"
+          },
+          "language_total_size": {
+            "anyOf": [
+              {
+                "maximum": 9007199254740991.0,
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Language Total Size"
           },
           "languages": {
             "items": {

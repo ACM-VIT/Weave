@@ -30,7 +30,10 @@ def source(index: int, readme: str | None = None):
     return SimpleNamespace(payload={
         "full_name": name, "github_id": str(index + 1), "github_node_id": f"R_wire_{index}", "owner_github_id": "800000",
         "html_url": f"https://github.com/{name}", "description": "Synthetic transport fixture",
-        "observed_at": "2026-10-23T00:00:00Z", "languages": ["Python"], "topics": ["transport"],
+        "observed_at": "2026-10-23T00:00:00Z", "languages": ["Python", "Rust"], "primary_language": "Rust", "topics": ["transport"],
+        "language_breakdown": [{"name": "Python", "color": "#3572A5", "size": 300, "percentage": 30},
+                               {"name": "Rust", "color": None, "size": 200, "percentage": 20}],
+        "language_total_size": 1000, "language_breakdown_complete": False,
     }, raw_repository={}, warnings=[], readme=SimpleNamespace(
         raw_markdown=readme if readme is not None else '# Fixture\n\n![Preview](images/demo.png)\n\n```sh\nprintf "界é"\n```\n',
         source_path="docs/README.md", default_branch="main",
@@ -86,6 +89,7 @@ def stats():
 def expected_records(items):
     # Expectations are independent of the production conversion under test.
     return [{"github_id": item.payload["github_id"],
+             **{key: item.payload[key] for key in ("languages", "primary_language", "language_breakdown", "language_total_size", "language_breakdown_complete")},
              "readme_hash": hashlib.sha256(item.readme.raw_markdown.encode()).hexdigest(),
              "readme_source_path": item.readme.source_path,
              "readme_default_branch": item.readme.default_branch,
@@ -178,6 +182,10 @@ assert response.status_code == 401, "auth must precede the 8 MiB parser"
 response = session.post(origin + "/api/v2/wire-test", data=json.dumps({"padding": "x" * 300_000}), headers=HEADERS, timeout=10)
 assert response.status_code == 413 and "256 KB" in response.json()["error"]
 assert stats()["accepted"] == before["accepted"]
+observed = next(record for batch in stats()["accepted"] for record in batch if record["github_id"] == "1")
+assert observed["languages"] == ["Python", "Rust"] and observed["primary_language"] == "Rust"
+assert observed["language_breakdown"] == source(0).payload["language_breakdown"]
+assert observed["language_total_size"] == 1000 and observed["language_breakdown_complete"] is False
 session.close()
 print(json.dumps({"byte_boundaries": [LIMIT - 1, LIMIT, LIMIT + 1], "record_boundaries": [100, 101],
                   "non_retryable_413_attempts": 1, "oversized_record_isolated": True}))

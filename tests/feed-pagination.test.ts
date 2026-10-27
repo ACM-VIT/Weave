@@ -403,3 +403,43 @@ test('an explicit multi-page refresh may replace catalogue pages with personaliz
   assert.equal((await controller.load(null,signal)).mode,'personalized');
   assert.equal((await controller.load('next',signal)).mode,'personalized');
 });
+
+
+test('page prefetch starts with six remaining cards and stops for background, offline, failure or outstanding work', async () => {
+  const {shouldPrefetchFeedPage}=await import('../src/services/feedPagination');
+  const ready={remaining:6,hasNextPage:true,fetching:false,failed:false,active:true,online:true};
+  assert.equal(shouldPrefetchFeedPage(ready),true);
+  for(const changed of [{remaining:7},{remaining:-1},{hasNextPage:false},{fetching:true},{failed:true},{active:false},{online:false}]) {
+    assert.equal(shouldPrefetchFeedPage({...ready,...changed}),false);
+  }
+});
+
+test('consuming navigation attribution preserves the live Home controller and pending page', async () => {
+  const {loadSource}=await import('./support/startup-harness');
+  const {SessionLifecycle}=await import('../src/api/session-lifecycle');
+  const {takeFeedNavigation}=await import('../src/services/feedImpressionAttribution');
+  const lifecycle=new SessionLifecycle();
+  let finish!: (value:FeedPage)=>void;
+  const pending=new Promise<FeedPage>(resolve=>{finish=resolve;});
+  const token=`header.${Buffer.from(JSON.stringify({userId:'alice'})).toString('base64url')}.signature`;
+  const source=loadSource('src/services/homeFeedQuery.ts',{
+    '../utils/storage':{getStorageItem:async()=>token},
+    '../api/session-lifecycle':{authSessionLifecycle:lifecycle},
+    '../api/feed-sessions':{feedSessions:()=>({prepare:async(session:string)=>session})},
+    '../api/home-feed':{fetchHomeFeed:()=>pending},
+  });
+  const client=new QueryClient();
+  client.setQueryData(['feed','alice'],{pages:[page(['loaded'])],pageParams:[null]});
+  const controller=source.homeFeedController(client,'alice');
+  const loading=controller.load('next');
+  await new Promise(resolve=>setTimeout(resolve,0));
+  const navigationKey=['feed','alice','navigation','00000000-0000-4000-8000-000000000010'];
+  client.setQueryData(navigationKey,{ownerId:'alice',repoId:'loaded',generation:lifecycle.currentGeneration()});
+  takeFeedNavigation(client,'alice','loaded','00000000-0000-4000-8000-000000000010',lifecycle.currentGeneration());
+  assert.strictEqual(source.homeFeedController(client,'alice'),controller);
+  finish(page(['next']));
+  assert.equal((await loading).items[0].repo_id,'next');
+  client.removeQueries({queryKey:['feed','alice'],exact:true});
+  assert.notStrictEqual(source.homeFeedController(client,'alice'),controller,'Removing Home itself releases the controller');
+  source.releaseHomeFeedController(client);client.clear();
+});

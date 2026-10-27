@@ -3,6 +3,7 @@ import crypto from 'node:crypto';
 import type { Server } from 'node:http';
 import test from 'node:test';
 import jwt from 'jsonwebtoken';
+import type { RepositoryReadmeV2 } from '../../contracts/repository.v2.js';
 
 import { sqlClient } from '../../db/index.js';
 import { PostgresFeedPersistence } from '../../adapters/postgresFeedPersistence.js';
@@ -193,6 +194,9 @@ integration('registered v2 HTTP paths complete controlled integration flows', as
           summary_prompt_version: string | null;
           readme_source_path: string | null;
           readme_base_url: string | null;
+          content_version: number;
+          content_hash: string;
+          readme_available: boolean;
         };
       }>;
     };
@@ -207,6 +211,9 @@ integration('registered v2 HTTP paths complete controlled integration flows', as
       served.items[0].repository.readme_base_url,
       'https://raw.githubusercontent.com/owner/http-repo/refs/heads/main/docs/',
     );
+    assert.equal(served.items[0].repository.content_version, 1);
+    assert.equal(served.items[0].repository.content_hash, 'http-test');
+    assert.equal(served.items[0].repository.readme_available, true);
     await sqlClient`
       UPDATE telemetry.feed_serve_items SET summary_id=NULL
       WHERE serve_id=${served.serve_id}::uuid
@@ -247,6 +254,7 @@ integration('registered v2 HTTP paths complete controlled integration flows', as
         summary_prompt_version: string | null;
         summary_format_version: string | null;
         summary_source: string | null;
+        readme: string | null;
         readme_md: string | null;
         readme_source_path: string | null;
         readme_default_branch: string | null;
@@ -274,6 +282,8 @@ integration('registered v2 HTTP paths complete controlled integration flows', as
     assert.equal(repositoryDetailData.data.summary_format_version, 'repo-card-summary-json-v1');
     assert.equal(repositoryDetailData.data.summary_source, 'generated');
     assert.equal(repositoryDetailData.data.readme_md, fixtureReadme, 'Detail retains the entire million-character document');
+    assert.equal(repositoryDetailData.data.readme, fixtureReadme);
+    assert.equal('readme_available' in repositoryDetailData.data, false, 'Legacy full projection remains unchanged');
     assert.equal(repositoryDetailData.data.readme_source_path, 'docs/README.md');
     assert.equal(repositoryDetailData.data.readme_default_branch, 'main');
     assert.equal(
@@ -288,6 +298,60 @@ integration('registered v2 HTTP paths complete controlled integration flows', as
     assert.equal(repositoryDetailData.data.viewer_reaction, 'like');
     assert.equal(repositoryDetailData.data.viewer_saved, false);
     assert.deepEqual(repositoryDetailData.data.selected_list_ids, []);
+
+    {
+      // Metadata arrives without transferring either full-body compatibility alias.
+      const metadataResponse = await fetch(`${base}/api/v2/repositories/${repoId}?projection=metadata`, { headers: authHeaders });
+      assert.equal(metadataResponse.status, 200);
+      const metadataText = await metadataResponse.text();
+      const metadata = JSON.parse(metadataText).data;
+      assert.equal(metadata.readme, null);
+      assert.equal(metadata.readme_md, null);
+      assert.equal(metadata.readme_available, true);
+      assert.equal(metadata.content_version, 1);
+      assert.equal(metadata.content_hash, 'http-test');
+      assert.equal(metadata.summary, repositoryDetailData.data.summary);
+      assert.equal(metadata.owner_user_id, ownerUserId);
+      assert.equal(metadata.viewer_reaction, 'like');
+      assert.ok(Buffer.byteLength(metadataText) < Buffer.byteLength(fixtureReadme) / 100);
+      const readmeUrl = `${base}/api/v2/repositories/${repoId}/readme`;
+      assert.equal((await fetch(readmeUrl)).status, 401);
+      for (const query of ['', '?content_version=0', '?content_version=1.5', '?content_version=2147483648']) {
+        assert.equal((await fetch(readmeUrl + query, { headers: authHeaders })).status, 400);
+      }
+      const bodyResponse = await fetch(`${readmeUrl}?content_version=1`, { headers: authHeaders });
+      assert.equal(bodyResponse.status, 200);
+      const body = ((await bodyResponse.json()) as {data: RepositoryReadmeV2}).data;
+      assert.equal(body.readme_md, fixtureReadme);
+      assert.equal('readme' in body, false, 'Deferred document has one body field');
+      assert.equal(body.repo_id, repoId);
+      assert.equal(body.content_hash, metadata.content_hash);
+      assert.equal(body.content_version, metadata.content_version);
+      assert.equal(body.readme_available, true);
+      assert.equal(body.readme_source_path, repositoryDetailData.data.readme_source_path);
+      assert.equal(body.readme_base_url, repositoryDetailData.data.readme_base_url);
+      // A newer canonical document must never be published under the old cache identity.
+      await sqlClient`UPDATE app.repo_content SET content_version=2,content_hash='http-next',readme='# New document' WHERE repo_id=${repoId}::uuid`;
+      const changedResponse = await fetch(`${readmeUrl}?content_version=1`, { headers: authHeaders });
+      assert.equal(changedResponse.status, 409);
+      const changed = (await changedResponse.json()) as {code: string};
+      assert.equal(changed.code, 'README_VERSION_CHANGED');
+      assert.equal('data' in changed, false);
+      await sqlClient`UPDATE app.repo_content SET readme=NULL WHERE repo_id=${repoId}::uuid`;
+      const absent = await fetch(`${readmeUrl}?content_version=2`, { headers: authHeaders });
+      assert.equal(absent.status, 200);
+      const absentBody = ((await absent.json()) as {data: RepositoryReadmeV2}).data;
+      assert.equal(absentBody.readme_available, false);
+      assert.equal(absentBody.readme_md, null);
+      const absentMetadata = await fetch(`${base}/api/v2/repositories/${repoId}?projection=metadata`, { headers: authHeaders });
+      assert.equal(((await absentMetadata.json()) as {data: {readme_available: boolean}}).data.readme_available, false);
+      await sqlClient`UPDATE app.repos SET status='blocked' WHERE repo_id=${repoId}::uuid`;
+      assert.equal((await fetch(`${readmeUrl}?content_version=2`, { headers: authHeaders })).status, 404);
+      assert.equal((await fetch(`${base}/api/v2/repositories/${repoId}?projection=metadata`, { headers: authHeaders })).status, 404);
+      await sqlClient`UPDATE app.repos SET status='active' WHERE repo_id=${repoId}::uuid`;
+      await sqlClient`UPDATE app.repo_content SET content_version=1,content_hash='http-test',readme=${fixtureReadme} WHERE repo_id=${repoId}::uuid`;
+
+    }
 
     type ViewerAwareRepositoryListItem = {
       repo_id: string;
@@ -1249,4 +1313,36 @@ integration('registered v2 HTTP paths complete controlled integration flows', as
     await getApplicationRuntime().supervisor.stop();
     await Promise.allSettled([redisClient.quit(), sqlClient.end({ timeout: 1 })]);
   }
+});
+
+
+test('warm Trending overlaps viewer hydration with metadata validation and rehydrates replaced membership', async () => {
+  const {TrendingSnapshotService}=await import('../../services/trendingSnapshotService.js');
+  const {createTrendingHandler}=await import('../../controllers/trendingController.js');
+  const oldId=crypto.randomUUID(),newId=crypto.randomUUID();
+  let metadataCalls=0;
+  let release!: (value:any)=>void;
+  const metadata=new Promise<any>(resolve=>{release=resolve;});
+  const service=new TrendingSnapshotService({
+    available:async()=>++metadataCalls===1 ? [{period:'daily',snapshot_id:'old',captured_at:'2026-01-01T00:00:00Z'}] : metadata,
+    cards:async(snapshot)=>[{repo_id:snapshot==='old'?oldId:newId}],
+  });
+  await service.get();
+  const calls:string[][]=[];
+  const handler=createTrendingHandler(service,async(_viewer,ids)=>{
+    calls.push(ids);
+    return ids.map(repo_id=>({repo_id,viewer_reaction:null,viewer_saved:repo_id===oldId,selected_list_ids:repo_id===oldId?['private-old-list']:[]}));
+  });
+  let body='';
+  const response={status(){return this;},set(){return this;},vary(){return this;},type(){return this;},send(value:string){body=value;return this;},end(){return this;},json(value:unknown){body=JSON.stringify(value);return this;}};
+  const pending=handler({user:{userId:'viewer'},query:{},headers:{},get(){return undefined;}} as never,response as never);
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.deepEqual(calls,[[oldId]],'Private hydration starts while public metadata is still pending');
+  release([{period:'daily',snapshot_id:'new',captured_at:'2026-01-02T00:00:00Z'}]);
+  await pending;
+  assert.deepEqual(calls,[[oldId],[newId]],'Changed membership must not reuse the old private overlay');
+  const payload=JSON.parse(body);
+  assert.equal(payload.data.items[0].repo_id,newId);
+  assert.equal(payload.data.items[0].viewer_saved,false);
+  assert.deepEqual(payload.data.items[0].selected_list_ids,[]);
 });

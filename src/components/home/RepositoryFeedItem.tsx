@@ -69,6 +69,7 @@ export function RepositoryFeedItem({
   const [isReadmeVisible, setIsReadmeVisible] = useState(false);
   const [isOriginalReadmeVisible, setIsOriginalReadmeVisible] = useState(false);
   const [expandedSummary, setExpandedSummary] = useState<string | null>(null);
+  const [summaryIdentity,setSummaryIdentity] = useState<{version:number | null;hash:string | null}>({version:null,hash:null});
   const [isCommentsVisible, setIsCommentsVisible] = useState(false);
   // Keep only lightweight composer state while the expensive sheet is unmounted.
   const [commentComposer, setCommentComposer] = useState<CommentComposerState>({ draft: '', error: null, pending: false });
@@ -257,6 +258,7 @@ export function RepositoryFeedItem({
               }}
               onReadFullPress={(digest) => {
                 setExpandedSummary(prepareReadmeSummaryDocument({ ...repository, readmeDigest: digest }));
+                setSummaryIdentity({version:digest?.content_version ?? repository.contentVersion,hash:digest?.content_hash ?? repository.contentHash ?? null});
                 queueRepositoryActivity(
                   { repo_id: repository.id, action: FEEDBACK_ACTIONS.readmeOpen },
                   true
@@ -316,7 +318,7 @@ export function RepositoryFeedItem({
       {isOriginalReadmeVisible ? <FeedReadmePopup repository={repository} onClose={() => setIsOriginalReadmeVisible(false)} /> : null}
       {isReadmeVisible ? (
         <FeedReadmePopup repository={repository} onClose={() => setIsReadmeVisible(false)}
-          summaryText={expandedSummary} />
+          summaryText={expandedSummary} summaryVersion={summaryIdentity.version} summaryHash={summaryIdentity.hash} />
       ) : null}
     </View>
   );

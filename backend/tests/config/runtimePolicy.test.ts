@@ -193,3 +193,27 @@ describe("runtimeConfig", () => {
     }));
   });
 });
+
+test('scoped persistence overrides emit one complete timing per operation', async () => {
+  const {measureFeedPersistence}=await import('../../observability/feedPersistence.js');
+  const {snapshotMetrics}=await import('../../observability/metrics.js');
+  const count=(operation:string,outcome:string)=>Object.entries(snapshotMetrics().distributions as Record<string,{count:number}>)
+    .find(([key])=>key===`feed_persistence_duration_ms:${JSON.stringify([['operation',operation],['outcome',outcome]])}`)?.[1].count??0;
+  const before=count('getGenerationContext','success');
+  const failedBefore=count('getRecentPersonalizedEntries','failure');
+  const work:string[]=[];
+  const persistence=measureFeedPersistence({
+    async getGenerationContext(){work.push('context');return {delivered:false};},
+    async getRecentPersonalizedEntries():Promise<string[]>{work.push('recent');return ['entry'];},
+  }, raw=>{
+    const context=raw.getGenerationContext.bind(raw);
+    raw.getGenerationContext=async()=>({...await context(),delivered:true});
+    const recent=raw.getRecentPersonalizedEntries.bind(raw);
+    raw.getRecentPersonalizedEntries=async()=>{await recent();work.push('scope');throw new Error('scope lookup failed');};
+  });
+  assert.deepEqual(await persistence.getGenerationContext(),{delivered:true});
+  await assert.rejects(persistence.getRecentPersonalizedEntries(),/scope lookup failed/);
+  assert.deepEqual(work,['context','recent','scope']);
+  assert.equal(count('getGenerationContext','success')-before,1);
+  assert.equal(count('getRecentPersonalizedEntries','failure')-failedBefore,1);
+});

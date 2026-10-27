@@ -46,7 +46,16 @@ export class FeedProvenanceUnavailableError extends Error {
   constructor() { super('FEED_PROVENANCE_UNAVAILABLE'); }
 }
 
+export interface CandidateEligibility {
+  identities: RepositoryIdentityProjection[];
+  preferenceIds: string[];
+  exposureIds: string[];
+  servedIds?: string[];
+  repositories?: RepositoryProjection[];
+}
+
 export interface FeedPersistencePort {
+  listCandidateEligibility?(userId: string, repoIds: string[], sessionId?: string): Promise<CandidateEligibility>;
   /** Current explicit negatives are independent of bounded exposure exclusions. */
   listPreferenceEligibleRepositoryIds(userId: string, repoIds: string[]): Promise<string[]>;
   /** Exact cross-session window check; implementations also fence at createServe. */

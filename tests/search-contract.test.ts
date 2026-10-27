@@ -241,3 +241,32 @@ describe("search repository model", () => {
     unsubscribe();client.clear();
   });
 });
+
+test('idle browse warmup preserves populated stale infinite pages and fetches only the missing tab',async t=>{
+  const {loadSource}=await import('./support/startup-harness');
+  const {exploreBrowseQueryOptions}=loadSource('src/api/explore.ts',{
+    '../utils/storage':{},'./client':{},'@/utils/repository-mapper':{},
+  });
+  const client=new QueryClient();
+  const latest=exploreBrowseQueryOptions('alice','Latest');
+  const key=latest.queryKey;
+  const cached={pages:[{items:['one'],nextOffset:20},{items:['two'],nextOffset:40},{items:['three'],nextOffset:60}],pageParams:[0,20,40]};
+  client.setQueryData(key,cached,{updatedAt:1});
+  let effect:()=>void|(()=>void)=()=>{};
+  const requests:string[]=[];
+  const source=loadSource('src/hooks/use-browse-prefetch.ts',{
+    react:{useCallback:(callback:unknown)=>callback},
+    'react-native':{AppState:{currentState:'active',addEventListener:()=>({remove(){}})}},
+    '@react-native-community/netinfo':{__esModule:true,default:{addEventListener:(callback:(state:unknown)=>void)=>{callback({isConnected:true});return()=>{};}}},
+    'expo-router':{useFocusEffect:(callback:()=>void)=>{effect=callback;}},
+    '@tanstack/react-query':{useQueryClient:()=>client},
+    '../api/explore':{exploreBrowseQueryOptions:(viewer:string,tab:string)=>({...exploreBrowseQueryOptions(viewer,tab),queryFn:async({pageParam}:{pageParam:number})=>{requests.push(`${tab}:${pageParam}`);return {items:[],nextOffset:tab==='Latest'?pageParam+20:undefined};}})},
+  });
+  t.mock.timers.enable({apis:['setTimeout']});
+  source.useBrowsePrefetch('alice',true);const cleanup=effect();
+  try {
+    for(let stage=0;stage<3;stage++){t.mock.timers.tick(1000);await new Promise(resolve=>setImmediate(resolve));}
+    assert.deepEqual(requests,['Trending:0'],'Home must not refetch every stale page already loaded by Explore');
+    assert.deepEqual(client.getQueryData(key),cached,'Warmup retains every loaded page and pagination offset');
+  }finally{cleanup?.();client.clear();}
+});

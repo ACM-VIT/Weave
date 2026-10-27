@@ -1,3 +1,4 @@
+import { projectRepositoryLanguages } from '../../backend/services/repositoryLanguages';
 import {parseOriginalFeedImpression} from '../services/feedImpressionAttribution';
 import { recommendationSource } from '@/models/recommendation';
 import { parseReadmeDigest } from '@/models/readme-digest';
@@ -104,15 +105,18 @@ export function mapRepositoryDetail(
   const githubUrl = /^https:\/\/github\.com\//i.test(candidateUrl)
     ? candidateUrl
     : `https://github.com/${encodeURIComponent(owner)}/${encodeURIComponent(name)}`;
-  const languages = stringArray(payload.languages ?? payload.language_used);
+  const composition = projectRepositoryLanguages({...payload,languages:payload.languages ?? payload.language_used});
+  const languages = composition.languages;
   const selectedListIds = listIds(payload);
   const viewerReaction = payload.viewer_reaction === 'like'
     || payload.viewer_reaction === 'dislike'
     ? payload.viewer_reaction
     : null;
   const updatedAt = nullableText(payload.updated_at);
-  const readmeFull = normalizeOptionalRepositoryText(payload.readme_md)
-    ?? normalizeOptionalRepositoryText(payload.readme);
+  const readmeFull = typeof payload.readme_md === 'string' ? payload.readme_md
+    : typeof payload.readme === 'string' ? payload.readme : null;
+  const hasReadme = typeof payload.readme_available === 'boolean' ? payload.readme_available
+    : readmeFull ? true : undefined;
   const summarySource = payload.summary_source === 'generated'
     || payload.summary_source === 'description_fallback'
     ? payload.summary_source
@@ -135,6 +139,8 @@ export function mapRepositoryDetail(
       readmeFull,
     ),
     readmeFull,
+    hasReadme,
+    contentHash: nullableText(payload.content_hash),
     readmeSourcePath: nullableText(payload.readme_source_path),
     readmeDefaultBranch: nullableText(payload.readme_default_branch),
     readmeBaseUrl: nullableText(payload.readme_base_url),
@@ -143,8 +149,12 @@ export function mapRepositoryDetail(
     summaryFormatVersion: nullableText(payload.summary_format_version),
     summarySource,
     languages,
+    languageBreakdown: composition.language_breakdown ?? null,
+    languageTotalSize: composition.language_total_size ?? null,
+    languageBreakdownComplete: composition.language_breakdown_complete ?? null,
+    languageObservedAt: composition.language_observed_at ?? null,
     topics: stringArray(payload.topics),
-    primaryLanguage: nullableText(payload.primary_language) ?? languages[0] ?? null,
+    primaryLanguage: Object.hasOwn(payload,'primary_language') ? nullableText(payload.primary_language) : languages[0] ?? null,
     stats: repositoryStats(payload),
     createdAt: nullableText(payload.repository_created_at ?? payload.created_at),
     updatedAt,

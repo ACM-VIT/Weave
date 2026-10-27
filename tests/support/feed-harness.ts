@@ -8,7 +8,7 @@ import { create } from "react-test-renderer";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import ts from "typescript";
 import { type RepositoryData } from "../../src/data/repositories";
-import { repositoryDetailQueryKey } from "../../src/models/repository";
+import { repositoryDetailQueryKey, repositoryMetadataQueryKey, repositoryReadmeQueryKey } from "../../src/models/repository";
 import { authSessionLifecycle } from "../../src/api/session-lifecycle";
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
@@ -17,6 +17,7 @@ import { authSessionLifecycle } from "../../src/api/session-lifecycle";
 
 export function repository(id: string): RepositoryData {
   return {
+    contentVersion:1,contentHash:'fixture-content-hash',hasReadme:true,
     id, name: id, fullName: `owner/${id}`, owner: 'owner', description: '', readmeSummary: 'Summary.', readmeFull: '# README',
     serveId: id, feedPosition: 3, githubUrl: `https://github.com/owner/${id}`,
     stats: { stars: 0, views: 0, openIssues: 0, forks: 0, comments: 0, likes: 0, dislikes: 0, saves: 0 },
@@ -40,6 +41,7 @@ function feed(ids: string[], reducedMotion = false, attribution?: { ownerId: str
   let loadLists = async () => saveCollections;
   let openExternal: () => Promise<void> = async () => undefined;
   let shareHeight=800;
+  let loadMetadata: (id:string)=>Promise<any> = async(id)=>({...repository(id),readmeFull:null});
   let loadReadme: () => Promise<any> = async () => ({ ...repository('canonical'), readmeFull: '# Canonical fetched README' });
   let root: ReturnType<typeof create>;
   const animation = () => ({
@@ -120,7 +122,9 @@ function feed(ids: string[], reducedMotion = false, attribution?: { ownerId: str
       createRepositoryList: () => createCollection(),
       syncRepositoryLists: (...args: any[]) => saveRepository(...args),
     },
-    '@/api/repositories': { repositoryDetailQueryKey, fetchRepositoryDetail: async (id: string) => { requests.push(`readme:${id}`); return loadReadme(); } },
+    '@/api/repositories': { repositoryDetailQueryKey, repositoryMetadataQueryKey, repositoryReadmeQueryKey,
+      fetchRepositoryMetadata:async(id:string)=>{requests.push(`metadata:${id}`);return loadMetadata(id);},
+      fetchRepositoryReadme: async (id: string) => { requests.push(`readme:${id}`); return loadReadme(); } },
     '@/api/repository-actions': {
       getSaveCollections: async (id: string) => { requests.push(`save:${id}`); return saveCollections; },
       getRepositoryShareDetails: async (id: string) => { requests.push(`share:${id}`); return {}; },
@@ -163,13 +167,15 @@ function feed(ids: string[], reducedMotion = false, attribution?: { ownerId: str
     loadSource('src/components/home/CommentSheet.tsx').CommentSheet,
     loadSource('src/components/home/ReadmePopup.tsx').ReadmePopup,
   ];
+  let viewable = attribution?.viewable ?? false;
   const renderRows = () => React.createElement(QueryClientProvider, { client },
-    ids.map(id => React.createElement(Row, { key: id, isViewable: attribution?.viewable ?? false, repository: { ...repository(id), ...attribution?.repository }, boundary: attribution?.boundary, pageWidth: 400, pageHeight: 800,
+    ids.map(id => React.createElement(Row, { key: id, isViewable: viewable, repository: { ...repository(id), ...attribution?.repository }, boundary: attribution?.boundary, pageWidth: 400, pageHeight: 800,
       onQueueActivity: (event: unknown) => events.push(event) })),
   );
   return {
     requests, events, client,
     async moveListWindow(index: number) { await act(async () => { moveSaveWindow(index); }); },
+    async setViewable(value: boolean) { viewable = value; await act(async () => { root.update(renderRows()); }); },
     get swipe() {return root.root.findByType('GestureDetector').props;},
     get saveRevealed() {return root.root.findAllByType('Pressable').some(node => node.props.accessibilityLabel === 'Close Save actions');},
     async swipeRight(x = 100, y = 0, success = true) {
@@ -184,6 +190,7 @@ function feed(ids: string[], reducedMotion = false, attribution?: { ownerId: str
     },
     setExternalOpen(value: () => Promise<void>) {openExternal=value;},
     setHeight(value:number) {shareHeight=value;},
+    setMetadata(value:(id:string)=>Promise<any>) {loadMetadata=value;},
     setReadme(value: () => Promise<any>) {loadReadme=value;},
     get readmePopupProps() {return root.root.findAllByType(overlayTypes[3])[0]?.props;},
     get screenHeight() {return root.root.findByType('RepositoryScreen').props.pageHeight;},

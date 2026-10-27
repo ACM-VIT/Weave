@@ -36,10 +36,19 @@ interface CacheEntry {
   expiresAt: number;
   pending: boolean;
   response: Promise<TrendingResponse>;
+  repositoryIds?: readonly string[];
 }
 
 export class TrendingSnapshotService {
   private readonly cache = new Map<TrendingPeriod, CacheEntry>();
+  private defaultPeriod?: TrendingPeriod;
+
+  cachedRepositoryIds(requestedPeriod?: TrendingPeriod): readonly string[] | undefined {
+    const period = requestedPeriod ?? this.defaultPeriod;
+    const entry = period ? this.cache.get(period) : undefined;
+    if (!entry || entry.pending || this.now() >= entry.expiresAt) return undefined;
+    return entry.repositoryIds?.slice();
+  }
 
   constructor(
     private readonly source: TrendingSnapshotSource,
@@ -55,6 +64,7 @@ export class TrendingSnapshotService {
       ?? available.find(row => row.period === 'daily')?.period
       ?? available[0]?.period ?? 'daily';
     const snapshot = available.find(row => row.period === period);
+    if (!requestedPeriod) this.defaultPeriod = period;
     const metadata = {
       period,
       available_periods: available.map(row => row.period),
@@ -86,6 +96,7 @@ export class TrendingSnapshotService {
       response: Promise.resolve().then(async () => {
         const items = snapshot ? await this.source.cards(snapshot.snapshot_id) : [];
         if (this.now() >= entry.expiresAt) throw new TrendingUnavailableError();
+        entry.repositoryIds = items.map(item => String(item.repo_id));
         const body = JSON.stringify({ success: true, data: { ...metadata, items } });
         const response = { body, etag: `"${createHash('sha256').update(body).digest('hex')}"` };
         if (this.now() >= entry.expiresAt) throw new TrendingUnavailableError();
