@@ -1,3 +1,5 @@
+import { repositoryObservationMicros } from '../services/repositoryLineage.js';
+import { normalizeRepositoryLanguages, hasLanguageObservation } from '../services/repositoryLanguages.js';
 import { validateRepositoryLifecycle } from '../services/repositoryLifecycle.js';
 import { validateRepositoryLineage, type RepositoryLineage } from '../services/repositoryLineage.js';
 import type { RepositoryUpsert } from '../contracts/ingestion.v2.js';
@@ -59,6 +61,7 @@ export function isRepositoryUpsert(value: unknown): value is RepositoryUpsert {
   if (typeof item.owner_github_id !== 'string' || !/^[0-9]{1,32}$/.test(item.owner_github_id)) return false;
   try { validateRepositoryLineage(item as RepositoryLineage,item.github_id); } catch { return false; }
   try { if (item.lifecycle != null) validateRepositoryLifecycle(item.lifecycle); } catch { return false; }
+  try { if (hasLanguageObservation(normalizeRepositoryLanguages(item.languages, item))) repositoryObservationMicros(item.observed_at); } catch { return false; }
   const githubId = BigInt(item.github_id);
   const ownerGithubId = BigInt(item.owner_github_id);
   return githubId > 0n && githubId <= POSTGRES_BIGINT_MAX
@@ -75,7 +78,6 @@ export function isRepositoryUpsert(value: unknown): value is RepositoryUpsert {
     && optionalSafeSlashPath(item.readme_default_branch, 256, false)
     && optionalHttpsDirectory(item.readme_base_url)
     && optionalText(item.primary_language, 128)
-    && optionalList(item.languages, 100)
     && optionalList(item.topics, 200)
     && optionalInteger(item.star_count, 0, POSTGRES_INTEGER_MAX)
     && optionalInteger(item.fork_count, 0, POSTGRES_INTEGER_MAX)

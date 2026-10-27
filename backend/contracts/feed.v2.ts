@@ -1,3 +1,4 @@
+import type { RepositoryLanguageObservation } from '../services/repositoryLanguages.js';
 import type { FeedIntentScope } from './feedIntent.js';
 import type { ScoringInputReference } from './scoringCapture.js';
 import type { ReadmeSummaryArtifact } from './readmeSummary.v2.js';
@@ -18,7 +19,8 @@ export interface RecommendationEntry {
   scoring_reference?: ScoringInputReference;
 }
 
-export interface RepositoryProjection {
+export interface RepositoryProjection extends RepositoryLanguageObservation {
+  language_observed_at?: string | null;
   repo_id: string;
   full_name: string;
   owner_user_id: string | null;

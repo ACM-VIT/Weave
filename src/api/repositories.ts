@@ -25,6 +25,10 @@ export type RepositoryApiPayload = {
   summary_id?: unknown;
   primary_language?: unknown;
   languages?: unknown;
+  language_breakdown?: unknown;
+  language_total_size?: unknown;
+  language_breakdown_complete?: unknown;
+  language_observed_at?: unknown;
   language_used?: unknown;
   topics?: unknown;
   star_count?: unknown;

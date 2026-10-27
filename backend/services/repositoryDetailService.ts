@@ -1,3 +1,4 @@
+import { projectRepositoryLanguages } from './repositoryLanguages.js';
 import type { TransactionSql } from 'postgres';
 import { readmeSummaryProjection } from './readmeSummaryService.js';
 import type { RepositoryDetailV2, RepositoryStatus } from '../contracts/repository.v2.js';
@@ -70,7 +71,7 @@ export function mapRepositoryDetailRow(row: Record<string, unknown>): Repository
     readme_default_branch: optionalString(row.readme_default_branch),
     readme_base_url: optionalString(row.readme_base_url),
     primary_language: optionalString(row.primary_language),
-    languages: stringArray(row.languages),
+    ...projectRepositoryLanguages(row),
     topics: stringArray(row.topics),
 
     star_count: count(row.star_count),
@@ -112,7 +113,7 @@ export async function getRepositoryDetails(
       ${sql.unsafe(readmeSummaryProjection('repo','content'))},
       content.description,CASE WHEN ${includeReadme} THEN content.readme ELSE NULL END AS readme_md,content.readme_source_path AS readme_source_path,
       content.readme_default_branch AS readme_default_branch,content.readme_base_url AS readme_base_url,content.primary_language,
-      COALESCE(content.languages,'[]'::jsonb) AS languages,
+      COALESCE(content.languages,'[]'::jsonb) AS languages,content.language_breakdown,content.language_total_size::float8 AS language_total_size,content.language_breakdown_complete,to_char(content.language_observed_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS language_observed_at,
       content.content_version,content.updated_at AS content_updated_at,content.source_updated_at,
       summary.summary_id,summary.summary,summary.highlights AS summary_highlights,
       summary.prompt_version AS summary_prompt_version,

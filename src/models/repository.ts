@@ -1,3 +1,4 @@
+import type { RepositoryLanguage } from '../../backend/services/repositoryLanguages';
 import type { RecommendationSource } from './recommendation';
 import type { ReadmeDigest } from './readme-digest';
 export type RepositoryReaction = 'like' | 'dislike' | null;
@@ -43,6 +44,10 @@ export type RepositoryDetail = {
   summaryFormatVersion: string | null;
   summarySource: 'generated' | 'description_fallback' | null;
   languages: string[];
+  languageBreakdown?: RepositoryLanguage[] | null;
+  languageTotalSize?: number | null;
+  languageBreakdownComplete?: boolean | null;
+  languageObservedAt?: string | null;
   topics: string[];
   primaryLanguage: string | null;
   stats: RepositoryStats;

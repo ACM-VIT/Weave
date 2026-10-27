@@ -1,3 +1,4 @@
+import type { RepositoryLanguageObservation } from '../services/repositoryLanguages.js';
 import type { ReadmeSummaryArtifact } from './readmeSummary.v2.js';
 export type RepositoryViewerReaction = 'like' | 'dislike' | null;
 
@@ -11,7 +12,8 @@ export type RepositoryStatus = 'active' | 'archived' | 'deleted' | 'blocked';
  * fields. `selected_list_ids` contains source-qualified product List IDs backed
  * by the existing collection and legacy Board membership tables.
  */
-export interface RepositoryDetailV2 {
+export interface RepositoryDetailV2 extends RepositoryLanguageObservation {
+  language_observed_at?: string | null;
   repo_id: string;
   github_id: string;
   full_name: string;
