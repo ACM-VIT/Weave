@@ -1,6 +1,6 @@
 import { repositoryPreview } from '@/services/repositoryPreview';
 import { useRepositoryReadmeSummary } from '@/hooks/use-repository-readme-summary';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {authSessionLifecycle} from '@/api/session-lifecycle';
 import {takeFeedNavigation,type FeedNavigationAttribution} from '@/services/feedImpressionAttribution';
 import {
@@ -117,6 +117,11 @@ export function RepositoryDetailScreen({ repositoryId,navigationToken }: { repos
   },[navigationToken,queryClient,renderGeneration,repositoryId,viewerUserId]);
   const attribution=origin&&origin.ownerId===viewerUserId&&origin.repoId===repositoryId&&origin.generation===renderGeneration?origin:null;
 
+  const membershipScope = `${viewerUserId ?? ''}:${repositoryId}:${renderGeneration}`;
+  const currentMembershipScope = useRef(membershipScope);
+  useLayoutEffect(() => { currentMembershipScope.current = membershipScope; }, [membershipScope]);
+  const [confirmedMembership, setConfirmedMembership] = useState<{scope: string; listIds: string[]; saved: boolean} | null>(null);
+
   const [saveVisible, setSaveVisible] = useState(false);
   const [shareVisible, setShareVisible] = useState(false);
   const [readmeVisible, setReadmeVisible] = useState(false);
@@ -137,8 +142,11 @@ export function RepositoryDetailScreen({ repositoryId,navigationToken }: { repos
 
   const terminalDetailError = repositoryQuery.isError && [401,403,404,410].includes((repositoryQuery.error as {status?:number})?.status ?? 0);
   const preview = terminalDetailError ? undefined : repositoryPreview(queryClient, viewerUserId, repositoryId);
-  const repository = terminalDetailError ? undefined : repositoryQuery.data ?? preview;
   const partialDetail = repositoryQuery.isPlaceholderData || Boolean(!repositoryQuery.data && preview);
+  const detail = terminalDetailError ? undefined : repositoryQuery.data ?? preview;
+  const repository = useMemo(() => detail && partialDetail && confirmedMembership?.scope === membershipScope
+    ? {...detail, selectedListIds: confirmedMembership.listIds, viewerSaved: confirmedMembership.saved}
+    : detail, [confirmedMembership, detail, membershipScope, partialDetail]);
   const summaryQuery = useRepositoryReadmeSummary(repository);
   const contentWidth = Math.min(Math.max(width - 32, 0), 720);
   const preparedSummary = prepareReadmePreview({
@@ -167,13 +175,15 @@ export function RepositoryDetailScreen({ repositoryId,navigationToken }: { repos
   }, [attribution,renderGeneration,repository, viewerUserId]);
 
   const handleListMembershipsChanged = useCallback((listIds: string[], saved: boolean) => {
+    if (!viewerUserId || currentMembershipScope.current !== membershipScope || !authSessionLifecycle.isCurrent(renderGeneration)) return;
+    setConfirmedMembership({scope: membershipScope, listIds: [...listIds], saved});
     queryClient.setQueryData<RepositoryDetail>(
       repositoryDetailQueryKey(repositoryId, viewerUserId),
       (current) => current
         ? { ...current, selectedListIds: listIds, viewerSaved: saved }
         : current,
     );
-  }, [queryClient, repositoryId, viewerUserId]);
+  }, [membershipScope, queryClient, renderGeneration, repositoryId, viewerUserId]);
 
   const openGithub = useCallback(async () => {
     if (!repository) return;

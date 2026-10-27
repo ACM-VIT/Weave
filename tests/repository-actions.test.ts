@@ -147,3 +147,54 @@ test('repository previews show immediately without marking incomplete details fr
     assert.equal(repositoryPreview(client,'alice','109'),undefined);
   } finally {unsubscribe();client.clear();}
 });
+
+test('confirmed preview memberships render immediately without completing detail or crossing accounts', async () => {
+  const React=await import('react');
+  const {act}=React;
+  const {create}=await import('react-test-renderer');
+  const {QueryClient,QueryClientProvider}=await import('@tanstack/react-query');
+  const {loadSource}=await import('./support/startup-harness');
+  const {rememberRepositoryPreview}=await import('../src/services/repositoryPreview');
+  const {mapRepositoryDetail}=await import('../src/utils/repository-mapper');
+  const {repositoryDetailQueryKey}=await import('../src/models/repository');
+  const client=new QueryClient({defaultOptions:{queries:{retry:false,gcTime:Infinity}}});
+  let viewer='alice';
+  const card=mapRepositoryDetail({repo_id:'repo',full_name:'owner/repo',name:'repo',status:'active',url:'https://github.com/owner/repo'});
+  assert.ok(card);rememberRepositoryPreview(client,viewer,card);rememberRepositoryPreview(client,'bob',card);
+  let finish!:(value:typeof card)=>void;
+  const pending=new Promise<typeof card>(resolve=>{finish=resolve;});
+  const icon=()=>null;
+  const {RepositoryDetailScreen}=loadSource('src/components/repository-detail-screen.tsx',{
+    '@tanstack/react-query':await import('@tanstack/react-query'),
+    'react-native':{ActivityIndicator:'ActivityIndicator',Pressable:'Pressable',ScrollView:'ScrollView',Text:'Text',View:'View',
+      StyleSheet:{create:(value:unknown)=>value},useWindowDimensions:()=>({width:400})},
+    'expo-router':{router:{}},'react-native-safe-area-context':{useSafeAreaInsets:()=>({top:0,bottom:0})},
+    'lucide-react-native':new Proxy({},{get:()=>icon}),
+    '@/constants/theme':{REFERENCE_THEME:{}},'@/store/AuthContext':{useAuth:()=>({user:{user_id:viewer},isLoading:false})},
+    '@/api/repositories':{repositoryDetailQueryKey,fetchRepositoryDetail:()=>pending},
+    '@/utils/storage':{getStorageItem:async()=> 'token'},
+    '@/components/home/ReadmePopup':{ReadmePopup:()=>null},
+    '@/components/home/save-popup':{SavePopup:(props:any)=>React.createElement('SavePopup',props)},
+    '@/components/home/share-repository-sheet':{ShareRepositorySheet:()=>null},
+    '@/hooks/use-repository-readme-summary':{useRepositoryReadmeSummary:()=>({})},
+    '@/services/activityOutboxClient':{},
+  });
+  let root!:ReturnType<typeof create>;
+  const render=()=>React.createElement(QueryClientProvider,{client},React.createElement(RepositoryDetailScreen,{repositoryId:'repo'}));
+  await act(async()=>{root=create(render());});
+  try {
+    const callback=root.root.findByType('SavePopup').props.onListMembershipsChanged;
+    await act(async()=>{callback(['list-a'],true);});
+    assert.equal(root.root.findAllByProps({accessibilityLabel:'Manage saved Lists'}).length>0,true);
+    assert.equal(root.root.findAllByType('Text').some(node=>node.props.children==='In 1 List'),true);
+    assert.equal(client.getQueryData(repositoryDetailQueryKey('repo','alice')),undefined);
+    await act(async()=>{callback([],false);});
+    assert.equal(root.root.findAllByProps({accessibilityLabel:'Save repository to Lists'}).length>0,true);
+    await act(async()=>{viewer='bob';root.update(render());});
+    await act(async()=>{callback(['alice-only'],true);});
+    assert.equal(root.root.findAllByProps({accessibilityLabel:'Save repository to Lists'}).length>0,true);
+    assert.equal(client.getQueryData(repositoryDetailQueryKey('repo','bob')),undefined);
+    await act(async()=>{finish({...card,description:'complete README',readmeFull:'# Complete'});await pending;});
+    assert.equal(client.getQueryData<any>(repositoryDetailQueryKey('repo','bob'))?.readmeFull,'# Complete');
+  } finally {await act(async()=>root.unmount());client.clear();}
+});
