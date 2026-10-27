@@ -28,6 +28,7 @@ type RepositoryData = {
   description: string;
   readmeSummary: string | null;
   readmeDigest?: ReadmeDigest | null;
+  readmeMediaManifest?: { poster: { alt: string; url: string } | null } | null;
   summarySource?: 'generated' | 'description_fallback' | null;
   readmeFull: string | null;
   fullName: string;
@@ -104,13 +105,14 @@ export default function ReadmeCard({
       readmeBaseUrl: repository.readmeBaseUrl,
       readmeDefaultBranch: repository.readmeDefaultBranch,
       readmeSourcePath: repository.readmeSourcePath,
-    }),
+    }) ?? repository.readmeMediaManifest?.poster ?? null,
     [
       repository.fullName,
       repository.githubUrl,
       repository.readmeBaseUrl,
       repository.readmeDefaultBranch,
       repository.readmeFull,
+      repository.readmeMediaManifest,
       repository.readmeSourcePath,
     ],
   );

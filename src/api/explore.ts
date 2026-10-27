@@ -30,3 +30,14 @@ export async function fetchExploreRepos(
 
   return { items, nextOffset, availablePeriods: data.available_periods, period: data.period };
 }
+
+/** Shared by the selected screen and bounded idle prefetching. */
+export function exploreBrowseQueryOptions(viewer: string | undefined, tab: TabName, period?: string) {
+  return {
+    queryKey: ['exploreRepos', viewer, tab, period] as const,
+    queryFn: ({pageParam, signal}: {pageParam: number; signal: AbortSignal}) => fetchExploreRepos(tab, '', pageParam, signal, period),
+    initialPageParam: 0,
+    getNextPageParam: (page: ExploreRepoPage) => page.nextOffset,
+    staleTime: 60_000,
+  };
+}

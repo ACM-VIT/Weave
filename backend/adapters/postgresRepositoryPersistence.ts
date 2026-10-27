@@ -1,6 +1,6 @@
 import { withOutboxTrace } from '../observability/tracing.js';
 import crypto from 'node:crypto';
-import { mergeRepositoryLineage, type RepositoryLineage } from '../services/repositoryLineage.js';
+import { mergeRepositoryLanguageObservation, mergeRepositoryLineage, type RepositoryLineage } from '../services/repositoryLineage.js';
 import type { Sql, TransactionSql } from 'postgres';
 
 import type {
@@ -24,6 +24,7 @@ import {
 import { enqueueReadmeSummaryBatch } from '../services/readmeSummaryService.js';
 import { isValidUuid } from '../utils/validators.js';
 import { canonicalGithubProfileSubject, reconcileGithubProfileForIngestion } from '../services/socialProfileService.js';
+import { deriveReadmeMediaManifest } from '../services/readmeMediaManifest.js';
 
 type OutboxInput = {
   job_type: 'repo_index' | 'repo_refresh';
@@ -175,6 +176,8 @@ export class PostgresRepositoryPersistence implements RepositoryPersistencePort 
       const source = JSON.stringify(repositories);
       const previousRows = await tx`
         SELECT repo.github_id::text,repo.repo_id,content.content_hash,content.content_version,
+          content.language_breakdown,content.language_total_size::float8 AS language_total_size,content.language_breakdown_complete,
+          to_char(content.language_observed_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS language_observed_at,
           repo.is_fork,repo.fork_parent_github_id::text,repo.fork_family_github_id::text,repo.lineage_source,
           to_char(repo.lineage_observed_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS lineage_observed_at
         FROM app.repos repo LEFT JOIN app.repo_content content USING(repo_id)
@@ -188,11 +191,21 @@ export class PostgresRepositoryPersistence implements RepositoryPersistencePort 
         const old = previous.get(BigInt(repo.github_id).toString());
         // This orders ancestry observations only. Owner/name arrival ordering
         // and profile reconciliation above retain their existing behavior.
-        const canonical = { ...repo, ...mergeRepositoryLineage(repo, (old ?? {}) as RepositoryLineage, repo.github_id) };
+        const canonical = { ...repo, ...mergeRepositoryLineage(repo, (old ?? {}) as RepositoryLineage, repo.github_id),
+          ...mergeRepositoryLanguageObservation(repo, old ?? {}) };
         const hash = repositoryContentHash(canonical);
         const changed = !old || old.content_hash !== hash;
+        const contentVersion = changed ? Number(old?.content_version ?? 0) + 1 : Number(old.content_version);
+        const readmeMediaManifest = changed ? deriveReadmeMediaManifest({
+          markdown: canonical.readme ?? null,
+          context: { fullName: canonical.full_name, githubUrl: canonical.url,
+            sourcePath: canonical.readme_source_path ?? null,
+            defaultBranch: canonical.readme_default_branch ?? null,
+            baseUrl: canonical.readme_base_url ?? null },
+          contentVersion, contentHash: hash,
+        }) : null;
         return { ...canonical, content_hash: hash,
-          content_version: changed ? Number(old?.content_version ?? 0) + 1 : Number(old.content_version),
+          content_version: contentVersion, readme_media_manifest: readmeMediaManifest,
           changed, order };
       });
       const preparedSource = JSON.stringify(prepared);
@@ -238,28 +251,33 @@ export class PostgresRepositoryPersistence implements RepositoryPersistencePort 
       await tx`
         INSERT INTO app.repo_content (
           repo_id,description,readme,readme_source_path,readme_default_branch,readme_base_url,
-          primary_language,languages,content_hash,content_version,source_updated_at
+          readme_media_manifest,primary_language,languages,language_breakdown,language_total_size,
+          language_breakdown_complete,language_observed_at,content_hash,content_version,source_updated_at
         )
         SELECT repo_id::uuid,description,readme,readme_source_path,readme_default_branch,readme_base_url,
-          primary_language,COALESCE(languages,'[]'::jsonb),content_hash,content_version,pushed_at
+          readme_media_manifest,primary_language,COALESCE(languages,'[]'::jsonb),language_breakdown,language_total_size,
+          language_breakdown_complete,language_observed_at,content_hash,content_version,pushed_at
         FROM jsonb_to_recordset(${stagedSource}::text::jsonb) AS incoming(
           repo_id text,description text,readme text,readme_source_path text,readme_default_branch text,
-          readme_base_url text,primary_language text,languages jsonb,content_hash text,
+          readme_base_url text,readme_media_manifest jsonb,primary_language text,languages jsonb,language_breakdown jsonb,language_total_size bigint,
+          language_breakdown_complete boolean,language_observed_at timestamptz,content_hash text,
           content_version integer,pushed_at timestamptz,changed boolean
         ) WHERE changed ORDER BY repo_id
         ON CONFLICT (repo_id) DO UPDATE SET description=EXCLUDED.description,readme=EXCLUDED.readme,
           readme_source_path=EXCLUDED.readme_source_path,readme_default_branch=EXCLUDED.readme_default_branch,
-          readme_base_url=EXCLUDED.readme_base_url,primary_language=EXCLUDED.primary_language,
-          languages=EXCLUDED.languages,content_hash=EXCLUDED.content_hash,content_version=EXCLUDED.content_version,
+          readme_base_url=EXCLUDED.readme_base_url,readme_media_manifest=EXCLUDED.readme_media_manifest,
+          primary_language=EXCLUDED.primary_language,
+          languages=EXCLUDED.languages,language_breakdown=EXCLUDED.language_breakdown,language_total_size=EXCLUDED.language_total_size,
+          language_breakdown_complete=EXCLUDED.language_breakdown_complete,language_observed_at=EXCLUDED.language_observed_at,content_hash=EXCLUDED.content_hash,content_version=EXCLUDED.content_version,
           source_updated_at=EXCLUDED.source_updated_at,updated_at=now()
         WHERE app.repo_content.content_hash IS DISTINCT FROM EXCLUDED.content_hash
       `;
       await tx`
-        UPDATE app.repo_content content SET source_updated_at=incoming.pushed_at
+        UPDATE app.repo_content content SET source_updated_at=incoming.pushed_at,language_observed_at=incoming.language_observed_at
         FROM jsonb_to_recordset(${stagedSource}::text::jsonb)
-          AS incoming(repo_id text,pushed_at timestamptz,changed boolean)
+          AS incoming(repo_id text,pushed_at timestamptz,language_observed_at timestamptz,changed boolean)
         WHERE content.repo_id=incoming.repo_id::uuid AND NOT incoming.changed
-          AND content.source_updated_at IS DISTINCT FROM incoming.pushed_at
+          AND (content.source_updated_at IS DISTINCT FROM incoming.pushed_at OR content.language_observed_at IS DISTINCT FROM incoming.language_observed_at)
       `;
       await tx`
         UPDATE app.repo_card_summaries summary SET active=false

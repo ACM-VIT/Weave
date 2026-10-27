@@ -24,7 +24,11 @@ export type FeedRepositoryPayload = {
   open_issues_count: number;
   // Active concise V2 summary artifact for the larger feed card.
   summary: string | null;
-  readme_md: string | null;
+  readme_md?: string | null;
+  readme_media_manifest?: unknown;
+  readme_available?: boolean;
+  content_version?: number | null;
+  content_hash?: string | null;
   readme_digest?: unknown;
   readme_source_path?: string | null;
   readme_default_branch?: string | null;
@@ -66,6 +70,7 @@ export async function fetchFeed(
     session_id: options.sessionId ?? getAppSessionId(),
     limit: 10,
     cursor,
+    readme_mode: 'deferred' as const,
   };
   const data = await requestFeedWithRetry(body, async (request, signal) => {
     const result = await apiV2Raw<FeedResponseV2>('/feed', {

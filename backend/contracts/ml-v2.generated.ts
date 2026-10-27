@@ -926,6 +926,17 @@ export interface components {
              */
             schema_version: 2;
         };
+        /** RepositoryLanguage */
+        RepositoryLanguage: {
+            /** Color */
+            color?: string | null;
+            /** Name */
+            name: string;
+            /** Percentage */
+            percentage?: number | null;
+            /** Size */
+            size?: number | null;
+        };
         /**
          * RepositoryLifecycleObservation
          * @description One backend-owned GitHub response, never inferred from push recency.
@@ -1112,6 +1123,12 @@ export interface components {
             html_url?: string | null;
             /** Is Fork */
             is_fork?: boolean | null;
+            /** Language Breakdown */
+            language_breakdown?: components["schemas"]["RepositoryLanguage"][] | null;
+            /** Language Breakdown Complete */
+            language_breakdown_complete?: boolean | null;
+            /** Language Total Size */
+            language_total_size?: number | null;
             /** Languages */
             languages?: string[];
             lifecycle?: components["schemas"]["RepositoryLifecycleObservation"] | null;

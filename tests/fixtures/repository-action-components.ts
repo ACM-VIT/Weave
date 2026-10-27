@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { resolve } from 'node:path';
 import ts from 'typescript';
+import { QueryClient } from '@tanstack/react-query';
 import * as githubOpen from '../../src/services/repositoryGithubOpen';
 import * as repositoryLinks from '../../src/utils/repository-links';
 import * as shareFeedback from '../../src/utils/share-feedback';
@@ -29,6 +30,7 @@ export function loadActionComponent(path: string, overrides: Record<string, any>
     useWindowDimensions: () => ({ width: 320, height: 568, fontScale: 1.6 }),
     ...overrides.native,
   };
+  const client = new QueryClient({defaultOptions:{queries:{gcTime:Infinity}}});
   const mocks: Record<string, any> = {
     'react-native': native,
     'react-native-reanimated': { useReducedMotion: () => true },
@@ -38,11 +40,12 @@ export function loadActionComponent(path: string, overrides: Record<string, any>
     'expo-linking': { createURL: () => 'ghsocial://repository/repo' },
     'expo-haptics': { selectionAsync: async () => {}, notificationAsync: async () => {}, NotificationFeedbackType: { Success: 'success' } },
     'expo-router': { router: { canGoBack: () => true, back() {}, replace() {} } },
-    '@tanstack/react-query': { useQuery: () => ({ data: repository }), useQueryClient: () => ({}) },
+    '@tanstack/react-query': { useQuery: () => ({ data: repository }), useQueryClient: () => client },
     'lucide-react-native': new Proxy({}, { get: (_, key) => typeof key === 'string' ? key : undefined }),
-    '@/api/repositories': { repositoryDetailQueryKey: () => ['repository'], fetchRepositoryDetail: async () => repository },
+    '@/api/repositories': { repositoryDetailQueryKey: () => ['repository'], repositoryMetadataQueryKey:()=>['repository'], fetchRepositoryMetadata:async()=>repository, fetchRepositoryDetail: async () => repository },
     '@/constants/theme': { REFERENCE_THEME },
     '@/hooks/use-modal-scroll-lock': { useModalScrollLock() {} },
+    '@/hooks/use-repository-readme': {useRepositoryReadme:()=>({})},
     '@/hooks/use-repository-readme-summary': { useRepositoryReadmeSummary: () => ({ digest: null }) },
     '@/store/AuthContext': { useAuth: () => ({ user: { user_id: 'viewer' } }) },
     '@/utils/storage': { getStorageItem: async () => 'token' },

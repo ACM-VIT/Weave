@@ -32,6 +32,7 @@ router.put('/onboarding/complete', product.completeOnboardingWithProfile);
 router.get('/repositories', product.listRepositories);
 router.get('/repositories/trending', product.listTrending);
 router.get('/repositories/saved', product.listSaved);
+router.get('/repositories/:repoId/readme', product.getRepositoryReadme);
 router.get('/repositories/:repoId/readme-summary', product.getRepositoryReadmeSummary);
 router.get('/repositories/:repoId', product.getRepository);
 router.get('/repositories/:repoId/comments', product.listComments);

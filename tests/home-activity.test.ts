@@ -49,14 +49,21 @@ async function fixture(t:test.TestContext){
  const mocks:Record<string,unknown>={
   'react-native':{FlatList,View:'View',Text:'Text',Pressable:'Pressable',ActivityIndicator:'ActivityIndicator',AppState:{addEventListener:()=>({remove(){}})},Platform:{OS:'web'},StyleSheet:{create:(styles:unknown)=>styles},useWindowDimensions:()=>({width:400,height:800})},
   '@/components/responsive-layout':{getResponsiveContentWidth:()=>400},'@/components/home/RepositoryFeedItem':{RepositoryFeedItem:Card},'@/components/home/FeedHeader':{FeedHeader:()=>null},
-  '@/constants/theme':{REFERENCE_THEME:{}},'expo-router':{router:{push(){}}},
+  '@/constants/theme':{REFERENCE_THEME:{}},'expo-router':{router:{push(){}},useFocusEffect:(callback:any)=>useEffect(callback,[])},
   '../../utils/storage':{getItemAsync:async()=>{await tokenWait;return owner;}},
   '@/api/feed-sessions':{feedSessions:()=>({prepare:async(id:string)=>id,reset:async()=>true})},
   '@/api/home-feed':{fetchHomeFeed:async()=>page},'@/api/session-lifecycle':{authSessionLifecycle:lifecycle},
   '@/store/AuthContext':{useAuth:()=>({...auth,user:{user_id:owner}})},
   '@/services/activityOutboxClient':{getActivityOutbox:(id:string)=>outboxes.get(id)??null},
-  '@react-native-community/netinfo':{addEventListener:(listener:typeof connectivity)=>{connectivity=listener;return ()=>{};}},
+  '@react-native-community/netinfo':{useNetInfo:()=>({isConnected:true,isInternetReachable:true}),addEventListener:(listener:typeof connectivity)=>{connectivity=listener;return ()=>{};}},
  };
+ const {loadSource}=await import('./support/startup-harness');
+ mocks['@/hooks/use-browse-prefetch']={useBrowsePrefetch(){}};
+ mocks['@/services/homeFeedQuery']=loadSource('src/services/homeFeedQuery.ts',{
+  '../utils/storage':{getStorageItem:async()=>owner},'../api/access-token-owner':{accessTokenOwner:()=>owner},
+  '../api/session-lifecycle':{authSessionLifecycle:lifecycle,SessionChangedError},
+  '../api/feed-sessions':mocks['@/api/feed-sessions'],'../api/home-feed':mocks['@/api/home-feed'],
+ });
  const javascript=ts.transpileModule(readFileSync(filename,'utf8'),{fileName:filename,compilerOptions:{module:ts.ModuleKind.CommonJS,jsx:ts.JsxEmit.ReactJSX,esModuleInterop:true}}).outputText;
  const mod:{exports:any}={exports:{}};new Function('require','module','exports',javascript)((name:string)=>name in mocks?mocks[name]:nativeRequire(name),mod,mod.exports);
  let root!:ReturnType<typeof create>;

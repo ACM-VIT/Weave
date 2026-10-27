@@ -209,6 +209,71 @@ test('v2 feed replaces a stale queued summary id with the current persisted proj
   assert.equal(persistence.serve?.items[0].summary_id, currentSummaryId);
 });
 
+test('deferred README serves use matching media projections and pin representation across replay', async () => {
+  const persistence = new FakePersistence();
+  const queue = new FakeQueue();
+  const requestId = '00000000-0000-4000-8000-000000000081';
+  const media = { schema_version: 2 as const, content_version: 7, content_hash: 'content-7', readme_available: true,
+    representation: 'deferred' as const, poster: null, images: [], videos: [] };
+  const { readme_md: _inlineReadme, ...deferredBase } = repo;
+  const deferredRepository = { ...deferredBase, content_version: 7, content_hash: 'content-7', readme_available: true,
+    readme_media_manifest: media } as unknown as RepositoryProjection;
+  const inlineRepository = { ...deferredRepository, readme_md: '# Inline README' } as RepositoryProjection;
+  const projectedModes: unknown[] = [];
+  Object.assign(persistence, {
+    listCandidateEligibility: async (_viewer: string, ids: string[], _session: string | undefined, mode?: string) => {
+      projectedModes.push(mode);
+      const repository = mode === 'deferred' ? deferredRepository : inlineRepository;
+      return { identities: ids.map(repo_id => ({ repo_id, summary_id: repository.summary_id })),
+        preferenceIds: ids, exposureIds: ids, servedIds: [], repositories: ids.map(repo_id => ({ ...repository, repo_id })) };
+    },
+  });
+  const service = new FeedV2Service(persistence, queue);
+  const request = { feed_request_id: requestId, session_id: '00000000-0000-4000-8000-000000000020',
+    limit: 10, cursor: null, readme_mode: 'deferred' } as unknown as Parameters<typeof service.getFeed>[1];
+  const first = await service.getFeed('00000000-0000-4000-8000-000000000030', request);
+  assert.equal(projectedModes[0], 'deferred');
+  assert.equal(persistence.serve?.readme_mode, 'deferred');
+  assert.equal('readme_md' in first.items[0].repository, false);
+  assert.equal(first.items[0].repository.readme_media_manifest, media);
+
+  const replay = await service.getFeed('00000000-0000-4000-8000-000000000030', {
+    ...request, readme_mode: 'inline',
+  } as unknown as Parameters<typeof service.getFeed>[1]);
+  assert.deepEqual(replay, first, 'request-id replay keeps the stored representation');
+  assert.equal(projectedModes.length, 1, 'replay does not rehydrate with new client defaults');
+
+  const legacy = await service.getFeed('00000000-0000-4000-8000-000000000030', {
+    ...request, feed_request_id: '00000000-0000-4000-8000-000000000082', readme_mode: undefined,
+  } as unknown as Parameters<typeof service.getFeed>[1]);
+  assert.equal(persistence.serve?.readme_mode, 'inline');
+  assert.equal(legacy.items[0].repository.readme_md, '# Inline README', 'older clients retain inline posters');
+  assert.equal(projectedModes[1], 'inline');
+});
+
+test('deferred README with inline-only media releases the reservation before commit', async () => {
+  const persistence = new FakePersistence();
+  const queue = new FakeQueue();
+  const repository = { ...repo, content_version: 7, content_hash: 'content-7', readme_available: true,
+    readme_media_manifest: { schema_version: 2, content_version: 7, content_hash: 'content-7',
+      readme_available: true, representation: 'inline_only', poster: null, images: [], videos: [] } } as unknown as RepositoryProjection;
+  Object.assign(persistence, {
+    listCandidateEligibility: async (_viewer: string, ids: string[]) => ({
+      identities: ids.map(repo_id => ({ repo_id, summary_id: null })), preferenceIds: ids, exposureIds: ids,
+      servedIds: [], repositories: ids.map(repo_id => ({ ...repository, repo_id })),
+    }),
+  });
+  const service = new FeedV2Service(persistence, queue);
+  await assert.rejects(service.getFeed('00000000-0000-4000-8000-000000000030', {
+    feed_request_id: '00000000-0000-4000-8000-000000000083',
+    session_id: '00000000-0000-4000-8000-000000000020', limit: 10, cursor: null, readme_mode: 'deferred',
+  } as unknown as Parameters<typeof service.getFeed>[1]), (error: unknown) =>
+    error instanceof Error && (error as Error & { code?: string }).code === 'FEED_README_MEDIA_UNAVAILABLE');
+  assert.equal(persistence.serve, null, 'incomplete media metadata cannot create a durable serve');
+  assert.equal(queue.released, 1, 'the token-owned reservation remains retryable');
+  assert.equal(queue.committed, 0, 'missing media does not retire queue items or record exhaustion');
+});
+
 test('v2 feed reuses only current-version personalized entries when Redis is unavailable', async () => {
   const persistence = new FakePersistence();
   const queue = new FakeQueue();
@@ -627,6 +692,87 @@ test('fallback serves reuse only the freshly hydrated cards for the requesting v
   assert.equal(persistence.fallbackCalls,1);
   assert.equal(extraHydrations,0);
   assert.equal(result.items[0].repo_id,repo.repo_id);
+});
+
+test('fallback refreshes only invalidated cards and preserves selection order, viewer flags and summary identity', async () => {
+  const persistence = new FakePersistence();
+  const queue = new FakeQueue();
+  queue.reserve = async (_u, _v, requestId, _l, token) => ({ requestId, token, items: [] });
+  const viewer = '00000000-0000-4000-8000-000000000030';
+  const first = { ...repo, viewer_reaction: 'like' as const, viewer_saved: true,
+    viewer_follows_owner: true, summary_id: 'summary-first', summary: 'First summary' };
+  const changed = { ...repo, repo_id: 'changed', summary_id: 'summary-old' };
+  const inactive = { ...repo, repo_id: 'inactive', status: 'archived' as const };
+  const last = { ...repo, repo_id: 'last', viewer_reaction: 'dislike' as const };
+  persistence.getTrendingFallback = async (_limit, _exclude, viewerId) => {
+    assert.equal(viewerId, viewer);
+    return [first, changed, inactive, last];
+  };
+  // Simulate invalidation while the intervening eligibility check is pending.
+  persistence.listPreferenceEligibleRepositoryIds = async (_user, ids) => {
+    changed.summary_id = 'summary-invalidated';
+    return ids;
+  };
+  const calls: string[][] = [];
+  const refreshed = { ...changed, summary_id: 'summary-current', summary: 'Current summary', viewer_saved: true };
+  persistence.listActiveRepositories = async (ids, viewerId?: string) => {
+    assert.equal(viewerId, viewer);
+    calls.push(ids);
+    // The inactive repository disappeared; it must never survive from fallback.
+    return [refreshed];
+  };
+  const service = new FeedV2Service(persistence, queue, undefined, true);
+  try {
+    const result = await service.getFeed(viewer, {
+      feed_request_id: 'mixed-fallback', session_id: 'session', limit: 10, cursor: null,
+    });
+    assert.deepEqual(calls, [['changed', 'inactive']]);
+    assert.deepEqual(result.items.map(item => item.repo_id), [first.repo_id, 'changed', 'last']);
+    assert.deepEqual(result.items.map(item => item.position), [0, 1, 2]);
+    assert.deepEqual(result.items.map(item => item.summary_id), ['summary-first', 'summary-current', null]);
+    assert.deepEqual(result.items.map(item => item.repository), [first, refreshed, last]);
+    assert.deepEqual(result.items.map(item => ({
+      viewer_saved: item.repository.viewer_saved,
+      viewer_reaction: item.repository.viewer_reaction,
+      viewer_follows_owner: item.repository.viewer_follows_owner,
+    })), [
+      { viewer_saved: true, viewer_reaction: 'like', viewer_follows_owner: true },
+      { viewer_saved: true, viewer_reaction: null, viewer_follows_owner: false },
+      { viewer_saved: false, viewer_reaction: 'dislike', viewer_follows_owner: false },
+    ]);
+    assert.equal(persistence.serve?.items[1].summary_id, 'summary-current');
+  } finally { await service.stop(); }
+});
+
+test('fallback cards are scoped to the viewer and request rather than retained by the service', async () => {
+  const persistence = new FakePersistence();
+  const queue = new FakeQueue();
+  queue.reserve = async (_u, _v, requestId, _l, token) => ({ requestId, token, items: [] });
+  const viewers: (string | undefined)[] = [];
+  let aliceSaved = true;
+  let aliceReaction: RepositoryProjection['viewer_reaction'] = 'like';
+  persistence.getTrendingFallback = async (_limit, _exclude, viewerId) => {
+    viewers.push(viewerId);
+    return [{ ...repo, viewer_saved: viewerId === 'alice' && aliceSaved,
+      viewer_reaction: viewerId === 'alice' ? aliceReaction : null }];
+  };
+  persistence.listActiveRepositories = async () => { throw new Error('Duplicate hydration'); };
+  const service = new FeedV2Service(persistence, queue, undefined, true);
+  try {
+    for (const [index, viewer] of ['alice', 'bob', 'alice'].entries()) {
+      if (index === 2) {
+        aliceSaved = false;
+        aliceReaction = 'dislike';
+      }
+      const result = await service.getFeed(viewer, {
+        feed_request_id: `viewer-request-${index}`, session_id: `session-${viewer}`, limit: 10, cursor: null,
+      });
+      assert.equal(result.items[0].repository.viewer_saved, index === 0);
+      assert.equal(result.items[0].repository.viewer_reaction,
+        index === 0 ? 'like' : index === 2 ? 'dislike' : null);
+    }
+    assert.deepEqual(viewers, ['alice', 'bob', 'alice']);
+  } finally { await service.stop(); }
 });
 
 test('foreground budget expires while one real generation continues, coalesces retries, and drains', async () => {
@@ -1082,4 +1228,18 @@ test('competing admissions share one timeout budget across lost capacity races',
  } finally {releaseFirst();releaseOthers();releaseActive();await Promise.allSettled(pending);await gateway.stop();}
 });
 
+});
+
+test('gateway replay observation avoids a second lookup but cannot bypass durable serving', async () => {
+  const persistence=new FakePersistence(); const queue=new FakeQueue();
+  let lookups=0;
+  const original=persistence.getServeByRequest.bind(persistence);
+  persistence.getServeByRequest=async (...args)=>{lookups++;return original(...args);};
+  const service=new FeedV2Service(persistence,queue);
+  const request={feed_request_id:'00000000-0000-4000-8000-000000000010',session_id:'00000000-0000-4000-8000-000000000020',limit:10,cursor:null};
+  const first=await service.getFeed('viewer',request,undefined,{userId:'viewer',requestId:request.feed_request_id,replay:null});
+  assert.equal(lookups,0);
+  assert.equal(persistence.serve?.serve_id,first.serve_id);
+  await service.getFeed('viewer',request,undefined,{userId:'other',requestId:request.feed_request_id,replay:null});
+  assert.equal(lookups,1,'An observation for a different viewer is never reusable');
 });

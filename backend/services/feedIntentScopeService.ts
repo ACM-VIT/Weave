@@ -8,12 +8,19 @@ import { canonicalJson,modelDigest,ModelOperationError,type CanonicalValue } fro
 import { ModelLaneAuthorityService } from './modelLaneAuthorityService.js';
 export class FeedIntentScopeService {
  constructor(private readonly authority:ModelLaneAuthorityService,private readonly db:Sql=sqlClient){}
- async snapshot(userId:string,sessionId:string){
-  const [row]=await this.db`SELECT state.feed_version,state.model_operation_version,state.model_policy_sha256,state.model_initialized,
-    state.feedback_version,state.model_policy_limits,u.profile_version,s.intent_epoch,s.epoch_started_ms,s.status,s.epoch_witness_sha256,s.policy_sha256
-    FROM app.user_feed_state state JOIN app.users u USING(user_id)
-    LEFT JOIN telemetry.feed_intent_sessions s ON s.user_id=state.user_id AND s.session_id=${sessionId}::uuid
-    WHERE state.user_id=${userId}::uuid AND u.status='active'`;
+ private async readAdmission(userId:string,sessionId:string,requestId:string|null){
+  const [row]=await this.db`SELECT snapshot.*,EXISTS(SELECT 1 FROM telemetry.feed_serves
+    WHERE user_id=${userId}::uuid AND feed_request_id=${requestId}::uuid) AS has_replay
+    FROM (SELECT 1) anchor LEFT JOIN LATERAL (
+      SELECT state.feed_version,state.model_operation_version,state.model_policy_sha256,state.model_initialized,
+        state.feedback_version,state.model_policy_limits,u.profile_version,s.intent_epoch,s.epoch_started_ms,s.status,s.epoch_witness_sha256,s.policy_sha256
+      FROM app.user_feed_state state JOIN app.users u USING(user_id)
+      LEFT JOIN telemetry.feed_intent_sessions s ON s.user_id=state.user_id AND s.session_id=${sessionId}::uuid
+      WHERE state.user_id=${userId}::uuid AND u.status='active'
+    ) snapshot ON true`;
+  return row;
+ }
+ private parseSnapshot(row:Record<string,unknown>|undefined,userId:string,sessionId:string){
   if(!row?.model_policy_sha256)return null;
   if(!row.model_initialized||row.status!=='active'||row.policy_sha256!==row.model_policy_sha256)throw new ModelOperationError('MODEL_SESSION_PENDING',409);
   const limits=row.model_policy_limits as Record<string,unknown>;
@@ -21,6 +28,15 @@ export class FeedIntentScopeService {
   return {generationFreshnessMs:Number(limits.generation_freshness_ms),userId,sessionId,feedVersion:String(row.feed_version),profileVersion:String(row.profile_version),acceptedOperationVersion:String(row.model_operation_version),
     feedbackVersion:String(row.feedback_version),epoch:String(row.intent_epoch),epochStartedMs:String(row.epoch_started_ms),
     witnessSha256:String(row.epoch_witness_sha256),policySha256:String(row.policy_sha256)};
+ }
+ async snapshot(userId:string,sessionId:string){
+  return this.parseSnapshot(await this.readAdmission(userId,sessionId,null),userId,sessionId);
+ }
+ async admit(userId:string,sessionId:string,requestId:string){
+  const row=await this.readAdmission(userId,sessionId,requestId);
+  return {hasReplay:row?.has_replay===true,
+    feedVersion:row?.feed_version==null?undefined:BigInt(String(row.feed_version)),
+    snapshot:row?.has_replay?null:this.parseSnapshot(row,userId,sessionId)};
  }
  async resolve(userId:string,sessionId:string,asOfMs?:string):Promise<FeedIntentScope|null>{
   if(!await this.authority.isEnabled(userId))return null;

@@ -23,15 +23,45 @@ test('feed retries preserve request identity, respect Retry-After and stop after
   assert.deepEqual(waits, [2000, 2000]);
 });
 
+test('deferred feed retries inline only after an explicit pre-commit compatibility rejection', async () => {
+  const body = { ...request, readme_mode: 'deferred' as const };
+  for (const failure of [
+    Object.assign(new Error('media manifest is incomplete'), { status: 409, code: 'FEED_README_MEDIA_UNAVAILABLE' }),
+    Object.assign(new Error('deferred mode is unsupported'), { status: 400, code: 'INVALID_FEED_README_MODE' }),
+  ]) {
+    const bodies: unknown[] = [];
+    let calls = 0;
+    const result = await requestFeedWithRetry(body, async (sent) => {
+      bodies.push(sent);
+      if (calls++ === 0) throw failure;
+      return 'served';
+    }, undefined, async () => { throw new Error('Explicit compatibility fallback does not wait'); });
+
+    assert.equal(result, 'served');
+    assert.deepEqual(bodies, [body, { ...body, readme_mode: 'inline' }]);
+  }
+});
+
 test('transient network and server failures recover, validation and expired sessions do not retry', async () => {
   let calls = 0;
-  const result = await requestFeedWithRetry(request, async () => {
+  const bodies: { readme_mode?: string }[] = [];
+  const result = await requestFeedWithRetry({ ...request, readme_mode: 'deferred' }, async (body) => {
+    bodies.push(body);
     calls++;
     if (calls === 1) throw new TypeError('Network request failed');
     if (calls === 2) throw Object.assign(new Error('unavailable'), { status: 503 });
     return 'ready';
   }, undefined, async () => {});
   assert.equal(result, 'ready');
+  assert.deepEqual(bodies.map(body => body.readme_mode), ['deferred','deferred','deferred']);
+  const conflictBodies: { readme_mode?: string }[] = [];
+  let conflictCalls = 0;
+  await requestFeedWithRetry({ ...request, readme_mode: 'deferred' }, async (body) => {
+    conflictBodies.push(body);
+    if (conflictCalls++ === 0) throw Object.assign(new Error('unrelated conflict'), { status: 409, code: 'OTHER_CONFLICT' });
+    return 'ready';
+  }, undefined, async () => {});
+  assert.deepEqual(conflictBodies.map(body => body.readme_mode), ['deferred','deferred']);
   for (const failure of [stale(), Object.assign(new Error('unauthorized'), { status: 401 }),
     Object.assign(new Error('account changed'), { code: 'SESSION_CHANGED' })]) {
     let attempts = 0;
@@ -447,3 +477,42 @@ test('failed acknowledgement persistence retries changed state without reissuing
  assert.equal(sends,1);assert.equal(JSON.parse(stored!).entries[0].pending.length,0);
 });
 }
+
+test('page prefetch starts with six remaining cards and stops for background, offline, failure or outstanding work', async () => {
+  const {shouldPrefetchFeedPage}=await import('../src/services/feedPagination');
+  const ready={remaining:6,hasNextPage:true,fetching:false,failed:false,active:true,online:true};
+  assert.equal(shouldPrefetchFeedPage(ready),true);
+  for(const changed of [{remaining:7},{remaining:-1},{hasNextPage:false},{fetching:true},{failed:true},{active:false},{online:false}]) {
+    assert.equal(shouldPrefetchFeedPage({...ready,...changed}),false);
+  }
+});
+
+test('consuming navigation attribution preserves the live Home controller and pending page', async () => {
+  const {loadSource}=await import('./support/startup-harness');
+  const {SessionLifecycle}=await import('../src/api/session-lifecycle');
+  const {takeFeedNavigation}=await import('../src/services/feedImpressionAttribution');
+  const lifecycle=new SessionLifecycle();
+  let finish!: (value:FeedPage)=>void;
+  const pending=new Promise<FeedPage>(resolve=>{finish=resolve;});
+  const token=`header.${Buffer.from(JSON.stringify({userId:'alice'})).toString('base64url')}.signature`;
+  const source=loadSource('src/services/homeFeedQuery.ts',{
+    '../utils/storage':{getStorageItem:async()=>token},
+    '../api/session-lifecycle':{authSessionLifecycle:lifecycle},
+    '../api/feed-sessions':{feedSessions:()=>({prepare:async(session:string)=>session})},
+    '../api/home-feed':{fetchHomeFeed:()=>pending},
+  });
+  const client=new QueryClient();
+  client.setQueryData(['feed','alice'],{pages:[page(['loaded'])],pageParams:[null]});
+  const controller=source.homeFeedController(client,'alice');
+  const loading=controller.load('next');
+  await new Promise(resolve=>setTimeout(resolve,0));
+  const navigationKey=['feed','alice','navigation','00000000-0000-4000-8000-000000000010'];
+  client.setQueryData(navigationKey,{ownerId:'alice',repoId:'loaded',generation:lifecycle.currentGeneration()});
+  takeFeedNavigation(client,'alice','loaded','00000000-0000-4000-8000-000000000010',lifecycle.currentGeneration());
+  assert.strictEqual(source.homeFeedController(client,'alice'),controller);
+  finish(page(['next']));
+  assert.equal((await loading).items[0].repo_id,'next');
+  client.removeQueries({queryKey:['feed','alice'],exact:true});
+  assert.notStrictEqual(source.homeFeedController(client,'alice'),controller,'Removing Home itself releases the controller');
+  source.releaseHomeFeedController(client);client.clear();
+});

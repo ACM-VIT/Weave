@@ -1,4 +1,5 @@
 import { Renderer, marked } from 'marked';
+import { scanReadmeHtmlMediaCandidates } from '../../backend/contracts/readmeMedia.v2';
 
 export type ReadmeImageContext = {
   fullName?: string | null;
@@ -205,20 +206,12 @@ type ImageCandidate = { alt: string; source: string };
 
 function readmeImageCandidates(markdown: string): ImageCandidate[] {
   const candidates: ImageCandidate[] = [];
-  const markdownImage = /!\[([^\]]*)\]\(\s*(?:<([^>]+)>|([^\s)]+))(?:\s+["'][^"']*["'])?\s*\)/g;
-  const htmlImage = /<img\b[^>]*\bsrc\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))[^>]*>/gi;
-
-  for (const match of markdown.matchAll(markdownImage)) {
-    candidates.push({ alt: match[1] ?? '', source: match[2] ?? match[3] ?? '' });
-  }
-  for (const match of markdown.matchAll(htmlImage)) {
-    const tag = match[0];
-    const altMatch = /\balt\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/i.exec(tag);
-    candidates.push({
-      alt: altMatch?.[1] ?? altMatch?.[2] ?? altMatch?.[3] ?? '',
-      source: match[1] ?? match[2] ?? match[3] ?? '',
-    });
-  }
+  marked.walkTokens(marked.lexer(markdown.slice(0, 1_000_000)), token => {
+    if (token.type === 'image') candidates.push({ alt: token.text, source: token.href });
+    if (token.type === 'html') for (const candidate of scanReadmeHtmlMediaCandidates(token.raw)) {
+      if (candidate.kind === 'image') candidates.push({ alt: candidate.alt, source: candidate.source });
+    }
+  });
   return candidates;
 }
 
@@ -286,9 +279,8 @@ export function extractReadmeSummaryImages(markdown: string | null | undefined, 
   };
   marked.walkTokens(marked.lexer((markdown??'').slice(0,1_000_000)),token=>{
     if(token.type==='image')add({source:token.href,alt:token.text});
-    if(token.type==='html'){
-      const html=token.raw.replace(/<!--[\s\S]*?-->|<(script|style)\b[^>]*>[\s\S]*?<\/\1>/gi,'');
-      for(const candidate of readmeImageCandidates(html))add(candidate);
+    if(token.type==='html')for(const candidate of scanReadmeHtmlMediaCandidates(token.raw)){
+      if(candidate.kind==='image')add(candidate);
     }
   });
   return images;
