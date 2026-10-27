@@ -36,18 +36,18 @@ export async function countMissingReadmeMediaManifests(db: Sql): Promise<number>
   return Number(rows[0]?.count ?? 0);
 }
 
-async function backfillBatch(tx: TransactionSql): Promise<number> {
+async function backfillBatch(tx: TransactionSql, cursor: string | null): Promise<{ lastRepoId: string | null; written: number }> {
   const rows = await tx.unsafe(`
     SELECT repo.repo_id,repo.full_name,repo.url,content.readme,
       content.readme_source_path,content.readme_default_branch,content.readme_base_url,
       content.content_version,content.content_hash
     FROM app.repo_content content JOIN app.repos repo USING(repo_id)
-    WHERE ${manifestStaleSql('content')}
+    WHERE ${manifestStaleSql('content')} AND ($1::uuid IS NULL OR repo.repo_id > $1::uuid)
     ORDER BY repo.repo_id
     LIMIT ${MAX_BATCH_REPOSITORIES}
     FOR UPDATE OF content SKIP LOCKED
-  `) as unknown as MissingManifestRow[];
-  if (!rows.length) return 0;
+  `, [cursor]) as unknown as MissingManifestRow[];
+  if (!rows.length) return { lastRepoId: null, written: 0 };
   const updates = rows.map(row => ({
     repo_id: String(row.repo_id),
     content_version: Number(row.content_version),
@@ -74,7 +74,7 @@ async function backfillBatch(tx: TransactionSql): Promise<number> {
       AND ${tx.unsafe(manifestStaleSql('content'))}
     RETURNING content.repo_id
   `;
-  return written.length;
+  return { lastRepoId: String(rows.at(-1)!.repo_id), written: written.length };
 }
 
 export async function runReadmeMediaBackfill(db: Sql, apply: boolean): Promise<{
@@ -84,9 +84,16 @@ export async function runReadmeMediaBackfill(db: Sql, apply: boolean): Promise<{
   let written = 0;
   if (apply) {
     while (true) {
-      const batchWritten = await db.begin(backfillBatch);
-      if (batchWritten === 0) break;
-      written += batchWritten;
+      let cursor: string | null = null;
+      let passWritten = 0;
+      while (true) {
+        const batch = await db.begin(tx => backfillBatch(tx, cursor));
+        if (!batch.lastRepoId) break;
+        cursor = batch.lastRepoId;
+        written += batch.written;
+        passWritten += batch.written;
+      }
+      if (passWritten === 0) break;
     }
   }
   const remaining = await countMissingReadmeMediaManifests(db);
