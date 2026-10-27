@@ -3,9 +3,6 @@ import React from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import {
   Pressable,
-  Linking,
-  Modal,
-  Platform,
   ScrollView,
   StyleSheet,
   Text,
@@ -15,14 +12,12 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
-  Bookmark,
   ChevronRight,
   CircleAlert,
   Eye,
-  ExternalLink,
   GitFork,
   MessageCircle,
-  Share as ShareIcon,
+  Forward as ShareIcon,
   Star,
   ThumbsDown,
   ThumbsUp,
@@ -40,10 +35,7 @@ import DescriptionCard from './DescriptionCard';
 import ReadmeCard from './ReadmeCard';
 import type { FeedbackAction } from '../../api/activity';
 import { FEEDBACK_ACTIONS } from '../../constants/feedbackActions';
-import { RecommendationReason } from './RecommendationReason';
 import { FollowButton } from '../follow-button';
-import { openRepositoryOnGitHub } from '@/services/repositoryGithubOpen';
-import { authSessionLifecycle } from '@/api/session-lifecycle';
 
 type QueueActivity = (
   event: { repo_id: string; action: FeedbackAction; dwell_seconds?: number },
@@ -168,17 +160,14 @@ export function RepositoryScreen({
   pageHeight,
   repository,
   isActive,
-  isSaved,
   commentCount,
   onReadFullPress,
   onOpenReadme,
-  onSavePress,
   onSharePress,
   onCommentPress,
   onOwnerPress,
   onRepositoryPress,
   onQueueActivity,
-  onGithubOpenErrorVisibilityChange,
 }: {
   pageWidth: number;
   pageHeight: number;
@@ -194,26 +183,10 @@ export function RepositoryScreen({
   onOwnerPress?: () => void;
   onRepositoryPress?: () => void;
   onQueueActivity?: QueueActivity;
-  onGithubOpenErrorVisibilityChange?: (visible: boolean) => void;
 }) {
   const insets = useSafeAreaInsets();
   const { user } = useAuth();
   const queryClient = useQueryClient();
-  const [githubOpenFailedFor, setGithubOpenFailedFor] = React.useState<string | null>(null);
-  // A late OS rejection belongs only to the viewer and served row that opened it.
-  const githubOpenGeneration = authSessionLifecycle.currentGeneration();
-  const githubOpenScope = JSON.stringify([user?.user_id, githubOpenGeneration, repository.id,
-    repository.serveId, repository.feedSessionId, repository.feedPosition]);
-  const githubOpenAttempt = React.useRef<{ scope: string } | null>(null);
-  React.useLayoutEffect(() => {
-    githubOpenAttempt.current = { scope: githubOpenScope };
-    return () => { githubOpenAttempt.current = null; };
-  }, [githubOpenScope]);
-  const githubOpenErrorVisible = githubOpenFailedFor === githubOpenScope && isActive !== false;
-  React.useEffect(() => {
-    onGithubOpenErrorVisibilityChange?.(githubOpenErrorVisible);
-    return () => onGithubOpenErrorVisibilityChange?.(false);
-  }, [githubOpenErrorVisible, onGithubOpenErrorVisibilityChange]);
   const compact = pageWidth < 360 || pageHeight < 720;
   const serverReaction = repository.viewerReaction ?? null;
   const reactionStateKey = `${repository.serveId ?? 'repository'}:${repository.id}:${repository.feedPosition ?? 'unknown'}`;
@@ -247,7 +220,7 @@ export function RepositoryScreen({
     : compact
       ? Math.max(96, insets.top + 62)
       : Math.max(116, insets.top + 70);
-  const actionRailBottom = Math.max(insets.bottom, 10) + 8;
+  const actionRailBottom = Math.max(insets.bottom, 10) + 56;
   const outerGutter = veryNarrow ? 10 : 14;
   const bodyLeft = outerGutter + insets.left;
   const outerRight = outerGutter + insets.right;
@@ -306,44 +279,8 @@ export function RepositoryScreen({
     });
   };
 
-  const openGithubRepository = async () => {
-    if (githubOpenAttempt.current?.scope !== githubOpenScope || !authSessionLifecycle.isCurrent(githubOpenGeneration)) return;
-    const attempt = { scope: githubOpenScope };
-    githubOpenAttempt.current = attempt;
-    setGithubOpenFailedFor(null);
-    const opened = await openRepositoryOnGitHub(repository.id, repository.githubUrl, {
-      open: (url) => Linking.openURL(url),
-      platform: Platform.OS,
-      browser: Platform.OS === 'web' && typeof window !== 'undefined' ? window : undefined,
-      onOpened: () => onQueueActivity?.({ repo_id: repository.id, action: FEEDBACK_ACTIONS.githubOpen }, true),
-    });
-    // Ignore retired rows, unmounts and older attempts before touching current UI state.
-    if (githubOpenAttempt.current !== attempt || !authSessionLifecycle.isCurrent(githubOpenGeneration)) return;
-    if (!opened) setGithubOpenFailedFor(githubOpenScope);
-  };
   return (
     <View style={[styles.screen, { width: pageWidth, height: pageHeight }]}>
-      {githubOpenErrorVisible ? (
-        <Modal transparent visible animationType="none" onRequestClose={() => setGithubOpenFailedFor(null)}>
-          <View style={styles.githubFailureOverlay}>
-            <View accessibilityRole="alert" accessibilityViewIsModal style={styles.githubFailureDialog}>
-              <ScrollView style={{ flexShrink: 1, minHeight: 0 }}>
-                <Text style={styles.githubFailureText}>Unable to open GitHub. Please try again.</Text>
-              </ScrollView>
-              <View style={styles.githubFailureActions}>
-                <Pressable accessibilityRole="button" accessibilityLabel="Retry opening GitHub"
-                  onPress={openGithubRepository} style={[styles.githubFailureButton, { backgroundColor: REFERENCE_THEME.accent }]}>
-                  <Text style={{ color: '#07130A' }}>Try again</Text>
-                </Pressable>
-                <Pressable accessibilityRole="button" accessibilityLabel="Dismiss GitHub opening error"
-                  onPress={() => setGithubOpenFailedFor(null)} style={styles.githubFailureButton}>
-                  <Text style={{ color: REFERENCE_THEME.text }}>Dismiss</Text>
-                </Pressable>
-              </View>
-            </View>
-          </View>
-        </Modal>
-      ) : null}
       <View style={[styles.body, bodyStyle]}>
         <DescriptionCard
           availableWidth={availableStackWidth}
@@ -364,7 +301,6 @@ export function RepositoryScreen({
           />
 
           <View style={[styles.repoDetails, compact && styles.repoDetailsCompact]}>
-            <RecommendationReason source={repository.recommendationSource} />
             <View style={[styles.ownerRow, compact && styles.ownerRowCompact]}>
               <View
                 style={[
@@ -395,7 +331,7 @@ export function RepositoryScreen({
               </Pressable>
               {!isViewerOwner ? (
                 <FollowButton
-                  compact={compact}
+                  compact
                   identityKey={repository.owner}
                   isFollowing={repository.viewerFollowsOwner === true}
                   neutral
@@ -435,6 +371,7 @@ export function RepositoryScreen({
                   color={REFERENCE_THEME.textSecondary}
                   size={compact ? 17 : 19}
                   strokeWidth={2}
+                  style={styles.repoTitleChevron}
                 />
               ) : null}
             </Pressable>
@@ -447,7 +384,7 @@ export function RepositoryScreen({
               directionalLockEnabled
               bounces={false}
               overScrollMode="never"
-              showsVerticalScrollIndicator
+              showsVerticalScrollIndicator={false}
             >
               <Text style={[styles.description, compact && styles.descriptionCompact]}>
                 {repository.description}
@@ -533,23 +470,6 @@ export function RepositoryScreen({
               onPress={onCommentPress}
             />
             <ActionButton
-              accessibilityLabel="Save repository"
-              active={isSaved}
-              dense={veryShort}
-              icon={Bookmark}
-              iconSize={26}
-              label="Save"
-              onPress={onSavePress}
-            />
-            <ActionButton
-              accessibilityLabel="Open repository on GitHub"
-              dense={veryShort}
-              icon={ExternalLink}
-              iconSize={26}
-              label="Open on GitHub"
-              onPress={openGithubRepository}
-            />
-            <ActionButton
               accessibilityLabel="Share repository"
               dense={veryShort}
               icon={ShareIcon}
@@ -565,11 +485,6 @@ export function RepositoryScreen({
 }
 
 const styles = StyleSheet.create({
-  githubFailureOverlay: { flex: 1, justifyContent: 'center', alignItems: 'center', padding: 24, backgroundColor: 'rgba(0,0,0,0.7)' },
-  githubFailureDialog: { width: '100%', maxWidth: 360, maxHeight: '90%', padding: 16, gap: 16, borderRadius: 16, backgroundColor: REFERENCE_THEME.surfaceElevated },
-  githubFailureText: { color: REFERENCE_THEME.text, fontFamily: 'NataSans-Regular', fontSize: 14, lineHeight: 20 },
-  githubFailureActions: { flexDirection: 'row', flexWrap: 'wrap', flexShrink: 0, gap: 10 },
-  githubFailureButton: { minHeight: 44, flexBasis: 120, flexGrow: 1, padding: 12, alignItems: 'center', justifyContent: 'center', borderRadius: 10 },
   screen: {
     position: 'relative',
     overflow: 'hidden',
@@ -607,6 +522,7 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   repoTitleButton: {
+    minWidth: 0,
     alignItems: 'center',
     alignSelf: 'flex-start',
     flexDirection: 'row',
@@ -648,7 +564,12 @@ const styles = StyleSheet.create({
     opacity: 0.65,
     transform: [{ scale: 0.97 }],
   },
+  repoTitleChevron: {
+    flexShrink: 0,
+  },
   repoTitle: {
+    minWidth: 0,
+    flexShrink: 1,
     color: REFERENCE_THEME.text,
     fontFamily: 'NataSans-Bold',
     fontSize: 25,

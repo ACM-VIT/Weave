@@ -213,7 +213,7 @@ test('web navigation rejection closes the blank tab without acknowledging succes
   assert.deepEqual(calls, ['closed']);
 });
 
-for (const surface of ['feed', 'detail', 'share'] as const) {
+for (const surface of ['detail', 'share'] as const) {
   test(`${surface} shows an opening error without feedback, then clears it on successful retry`, async () => {
     let recorded = 0, opens = 0;
     let reject = true;
@@ -221,14 +221,11 @@ for (const surface of ['feed', 'detail', 'share'] as const) {
       native: { Linking: { openURL: async () => { opens++; if (reject) throw new Error('OS refused'); } } },
       '@/services/activityOutboxClient': { queueActivityForViewer: async () => { recorded++; } },
     };
-    const path = surface === 'feed' ? 'src/components/home/RepositoryScreen.tsx'
-      : surface === 'detail' ? 'src/components/repository-detail-screen.tsx'
+    const path = surface === 'detail' ? 'src/components/repository-detail-screen.tsx'
         : 'src/components/home/share-repository-sheet.tsx';
     const exports = loadActionComponent(path, overrides);
-    const Component = exports.RepositoryScreen ?? exports.RepositoryDetailScreen ?? exports.ShareRepositorySheet;
-    const props = surface === 'feed'
-      ? { repository, pageWidth: 320, pageHeight: 568, onReadFullPress() {}, onSavePress() {}, onSharePress() {}, onCommentPress() {}, onQueueActivity: () => { recorded++; } }
-      : surface === 'detail' ? { repositoryId: 'repo' }
+    const Component = exports.RepositoryDetailScreen ?? exports.ShareRepositorySheet;
+    const props = surface === 'detail' ? { repositoryId: 'repo' }
         : { repositoryId: 'repo', repositoryDetails: repository, isVisible: true, onClose() {}, onGithubOpened: () => { recorded++; } };
     let root!: ReturnType<typeof create>;
     await act(async () => { root = create(React.createElement(Component, props)); });
@@ -254,7 +251,7 @@ for (const surface of ['feed', 'detail', 'share'] as const) {
   });
 }
 
-for (const surface of ['feed', 'detail', 'share'] as const) {
+for (const surface of ['detail', 'share'] as const) {
   test(`${surface} preserves the native Linking receiver and records only after it resolves`, async () => {
     const calls: string[] = [];
     const overrides = {
@@ -264,14 +261,11 @@ for (const surface of ['feed', 'detail', 'share'] as const) {
       } } },
       '@/services/activityOutboxClient': { queueActivityForViewer: async () => { calls.push('recorded'); } },
     };
-    const path = surface === 'feed' ? 'src/components/home/RepositoryScreen.tsx'
-      : surface === 'detail' ? 'src/components/repository-detail-screen.tsx'
+    const path = surface === 'detail' ? 'src/components/repository-detail-screen.tsx'
         : 'src/components/home/share-repository-sheet.tsx';
     const exports = loadActionComponent(path, overrides);
-    const Component = exports.RepositoryScreen ?? exports.RepositoryDetailScreen ?? exports.ShareRepositorySheet;
-    const props = surface === 'feed'
-      ? { repository, pageWidth: 320, pageHeight: 568, onReadFullPress() {}, onSavePress() {}, onSharePress() {}, onCommentPress() {}, onQueueActivity: () => { calls.push('recorded'); } }
-      : surface === 'detail' ? { repositoryId: 'repo' }
+    const Component = exports.RepositoryDetailScreen ?? exports.ShareRepositorySheet;
+    const props = surface === 'detail' ? { repositoryId: 'repo' }
         : { repositoryId: 'repo', repositoryDetails: repository, isVisible: true, onClose() {}, onGithubOpened: () => { calls.push('recorded'); } };
     let root!: ReturnType<typeof create>;
     await act(async () => { root = create(React.createElement(Component, props)); });
@@ -290,16 +284,13 @@ test('all external-action surfaces expose blocked web popups without using nativ
   let nativeOpens = 0, feedback = 0, popupAttempts = 0;
   (globalThis as any).window = { location: { origin: 'https://weave.test' }, open: () => { popupAttempts++; return null; } };
   try {
-    for (const surface of ['feed', 'detail', 'share'] as const) {
-      const exports = loadActionComponent(surface === 'feed' ? 'src/components/home/RepositoryScreen.tsx'
-        : surface === 'detail' ? 'src/components/repository-detail-screen.tsx' : 'src/components/home/share-repository-sheet.tsx', {
+    for (const surface of ['detail', 'share'] as const) {
+      const exports = loadActionComponent(surface === 'detail' ? 'src/components/repository-detail-screen.tsx' : 'src/components/home/share-repository-sheet.tsx', {
         native: { Platform: { OS: 'web' }, Linking: { openURL: async () => { nativeOpens++; } } },
         '@/services/activityOutboxClient': { queueActivityForViewer: async () => { feedback++; } },
       });
-      const Component = exports.RepositoryScreen ?? exports.RepositoryDetailScreen ?? exports.ShareRepositorySheet;
-      const props = surface === 'feed'
-        ? { repository, pageWidth: 320, pageHeight: 568, onReadFullPress() {}, onSavePress() {}, onSharePress() {}, onCommentPress() {}, onQueueActivity: () => { feedback++; } }
-        : surface === 'detail' ? { repositoryId: 'repo' }
+      const Component = exports.RepositoryDetailScreen ?? exports.ShareRepositorySheet;
+      const props = surface === 'detail' ? { repositoryId: 'repo' }
           : { repositoryId: 'repo', repositoryDetails: repository, isVisible: true, onClose() {}, onGithubOpened: () => { feedback++; } };
       let root!: ReturnType<typeof create>;
       await act(async () => { root = create(React.createElement(Component, props)); });
@@ -311,7 +302,7 @@ test('all external-action surfaces expose blocked web popups without using nativ
         assert.equal(root.root.findAll(node => node.props.accessibilityRole === 'alert').length, 1, surface);
       } finally { await act(async () => root.unmount()); }
     }
-    assert.equal(popupAttempts, 3);
+    assert.equal(popupAttempts, 2);
     assert.equal(nativeOpens, 0);
     assert.equal(feedback, 0);
   } finally {
@@ -319,35 +310,21 @@ test('all external-action surfaces expose blocked web popups without using nativ
   }
 });
 
-test('feed opening failure uses an active-row modal with dismiss and retry instead of the covered page header', async () => {
-  let reject = true, recorded = 0;
-  const { RepositoryScreen } = loadActionComponent('src/components/home/RepositoryScreen.tsx', {
-    native: { Linking: { openURL: async () => { if (reject) throw new Error('OS refused'); } } },
-  });
-  const props = { repository, pageWidth: 320, pageHeight: 568, isActive: true,
-    onReadFullPress() {}, onSavePress() {}, onSharePress() {}, onCommentPress() {}, onQueueActivity: () => { recorded++; } };
-  let root!: ReturnType<typeof create>;
-  await act(async () => { root = create(React.createElement(RepositoryScreen, props)); });
-  const press = async (label: string) => act(async () => {
-    root.root.findAllByType('Pressable').find(node => node.props.accessibilityLabel === label)!.props.onPress();
-    await new Promise(resolve => setImmediate(resolve));
-  });
+test('feed actions retain share, comments and swipe saving without redundant Save or GitHub buttons',async()=>{
+  const {RepositoryScreen}=loadActionComponent('src/components/home/RepositoryScreen.tsx');
+  let shared=0;
+  let root!:ReturnType<typeof create>;
+  await act(async()=>{root=create(React.createElement(RepositoryScreen,{repository,pageWidth:390,pageHeight:800,
+    onReadFullPress(){},onSavePress(){},onSharePress(){shared++;},onCommentPress(){}}));});
   try {
-    await press('Open repository on GitHub');
-    const modal = root.root.findAllByType('Modal');
-    assert.equal(modal.length, 1, 'error needs an app-level surface, not the row beneath FeedHeader');
-    assert.equal(modal[0].findAll(node => node.props.accessibilityRole === 'alert').length, 1);
-    await act(async () => modal[0].props.onRequestClose());
-    assert.equal(root.root.findAllByType('Modal').length, 0);
-    await press('Open repository on GitHub');
-    await act(async () => root.update(React.createElement(RepositoryScreen, { ...props, isActive: false })));
-    assert.equal(root.root.findAllByType('Modal').length, 0, 'an offscreen feed row must not own an app modal');
-    await act(async () => root.update(React.createElement(RepositoryScreen, props)));
-    reject = false;
-    await press('Retry opening GitHub');
-    assert.equal(root.root.findAllByType('Modal').length, 0);
-    assert.equal(recorded, 1);
-  } finally { await act(async () => root.unmount()); }
+    const labels=root.root.findAllByType('Pressable').map(node=>node.props.accessibilityLabel);
+    assert.ok(!labels.includes('Save repository'));
+    assert.ok(!labels.includes('Open repository on GitHub'));
+    assert.ok(labels.includes('Open comments'));
+    await act(async()=>root.root.findAllByType('Pressable').find(node=>node.props.accessibilityLabel==='Share repository')!.props.onPress());
+    assert.equal(shared,1);
+    assert.equal(root.root.findAllByProps({testID:'recommendation-reason'}).length,0);
+  }finally{await act(async()=>root.unmount());}
 });
 
 
