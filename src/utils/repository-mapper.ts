@@ -137,6 +137,8 @@ export function mapRepositoryDetail(
       readmeFull,
     ),
     readmeFull,
+    hasReadme: typeof payload.readme_available === 'boolean' ? payload.readme_available : Boolean(readmeFull),
+    contentHash: nullableText(payload.content_hash),
     readmeSourcePath: nullableText(payload.readme_source_path),
     readmeDefaultBranch: nullableText(payload.readme_default_branch),
     readmeBaseUrl: nullableText(payload.readme_base_url),

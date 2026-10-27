@@ -377,8 +377,8 @@ export function SavePopup({
           : 'Removed from Lists.',
       });
       if (repoId) {
-        queryClient.setQueryData<RepositoryDetail>(
-          repositoryDetailQueryKey(repoId, viewerUserId),
+        queryClient.setQueriesData<RepositoryDetail>(
+          {queryKey:repositoryDetailQueryKey(repoId, viewerUserId)},
           (current) => current ? {
             ...current,
             selectedListIds: result.selectedListIds,
