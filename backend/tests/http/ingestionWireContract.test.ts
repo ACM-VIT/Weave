@@ -30,6 +30,7 @@ test('Python ingestion batches satisfy the registered HTTP UTF-8 byte/count cont
   PostgresRepositoryPersistence.prototype.bulkUpsert = async function (repositories) {
     accepted.push(repositories.map(item => ({
       github_id: item.github_id,
+      languages:item.languages,primary_language:item.primary_language,language_breakdown:item.language_breakdown,language_total_size:item.language_total_size,language_breakdown_complete:item.language_breakdown_complete,
       readme_hash: createHash('sha256').update(item.readme ?? '').digest('hex'),
       readme_source_path: item.readme_source_path,
       readme_default_branch: item.readme_default_branch,
@@ -73,4 +74,47 @@ test('Python ingestion batches satisfy the registered HTTP UTF-8 byte/count cont
     for (const key of Object.keys(process.env)) if (!(key in previous)) delete process.env[key];
     Object.assign(process.env, previous);
   }
+});
+
+test('canonical language input retains sourced composition and treats legacy names as unknown weights',async()=>{
+  const {normalizeRepositoryLanguages}=await import('../../services/repositoryLanguages.js');
+  const rich=[{name:' Python ',color:'#3572A5',size:300,percentage:30},{name:'Rust',color:null,size:200,percentage:20}];
+  assert.deepEqual(normalizeRepositoryLanguages(rich),{languages:['Python','Rust'],language_breakdown:[{...rich[0],name:'Python'},rich[1]],language_total_size:null,language_breakdown_complete:null});
+  assert.deepEqual(normalizeRepositoryLanguages({Python:300,Rust:200}).language_breakdown,
+    [{name:'Python',color:null,size:300,percentage:null},{name:'Rust',color:null,size:200,percentage:null}]);
+  for(const value of [null,[],undefined])assert.deepEqual(normalizeRepositoryLanguages(value),{languages:[]});
+  assert.deepEqual(normalizeRepositoryLanguages([' Python ','Rust','Python']),{languages:['Python','Rust']});
+  const observed=normalizeRepositoryLanguages(['Python','Rust'],{language_breakdown:rich,language_total_size:1000,language_breakdown_complete:false});
+  assert.equal(observed.language_total_size,1000);assert.equal(observed.language_breakdown_complete,false);
+  assert.throws(()=>normalizeRepositoryLanguages(['0','1']),/language/i);
+});
+
+test('rich language validation fences totals and supplied percentage rounding without inventing absent evidence',async()=>{
+  const {normalizeRepositoryLanguages}=await import('../../services/repositoryLanguages.js');
+  const rounded=Array.from({length:6},(_,i)=>({name:`Lang${i}`,color:null,size:1,percentage:16.67}));
+  assert.equal(normalizeRepositoryLanguages([], {language_breakdown:rounded,language_total_size:6,language_breakdown_complete:true}).language_breakdown?.length,6);
+  const unknown=Array.from({length:98},(_,i)=>({name:`Unknown${i}`,color:null,size:null,percentage:null}));
+  assert.throws(()=>normalizeRepositoryLanguages([],{language_breakdown:[{name:'A',percentage:50.4},{name:'B',percentage:50.4},...unknown]}),/percentage/i);
+  assert.throws(()=>normalizeRepositoryLanguages([],{language_breakdown:[{name:'A',size:10,percentage:70}],language_total_size:100}),/percentage/i);
+  assert.throws(()=>normalizeRepositoryLanguages([],{language_breakdown:[{name:'A',size:101}],language_total_size:100}),/size|total/i);
+  assert.deepEqual(normalizeRepositoryLanguages(['Python'],{language_breakdown:null,language_total_size:null,language_breakdown_complete:null}),{languages:['Python']});
+  assert.deepEqual(normalizeRepositoryLanguages([],{language_breakdown:[],language_total_size:0,language_breakdown_complete:true}),
+    {languages:[],language_breakdown:[],language_total_size:0,language_breakdown_complete:true});
+});
+
+
+test('reindex dry-run job normalization retains historical language names without invented percentages', async () => {
+  const {buildCampaignRepositoryJob} = await import('../../scripts/reindex-active-repositories.js');
+  const base = {repo_id:randomUUID(),github_id:'123',owner_github_id:'456',full_name:'fixture/languages',
+    url:'https://github.com/fixture/languages',description:'A language fixture.',readme:null,readme_source_path:null,
+    readme_default_branch:null,readme_base_url:null,primary_language:'Rust',topics:[],content_hash:'a'.repeat(64),
+    content_version:1,source_updated_at:null,star_count:0,fork_count:0,open_issues_count:0,observed_at:'2026-10-27T00:00:00Z'};
+  for (const languages of [{Python:300,Rust:200},[{name:'Python',size:300},{name:'Rust',size:200}]]) {
+    const job = buildCampaignRepositoryJob({...base,languages});
+    assert.ok(job);assert.deepEqual(job.repository.languages,['Python','Rust']);
+    assert.equal(job.repository.primary_language,'Rust');
+    assert.equal(job.repository.language_total_size,null);
+    assert.deepEqual(job.repository.language_breakdown?.map(row=>row.percentage),[null,null]);
+  }
+  assert.equal(buildCampaignRepositoryJob({...base,languages:['0','1']}),null);
 });

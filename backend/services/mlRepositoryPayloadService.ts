@@ -1,3 +1,4 @@
+import { normalizeRepositoryLanguages, hasLanguageObservation } from './repositoryLanguages.js';
 import { lifecycleForMl } from './repositoryLifecycle.js';
 import crypto from 'node:crypto';
 import { canonicalGithubRepositoryId, LINEAGE_FIELDS } from './repositoryLineage.js';
@@ -23,6 +24,7 @@ export function normalizeCanonicalRepositoryReadme(
     : repository.readme;
   return {
     ...repository,
+    ...normalizeRepositoryLanguages(repository.languages, repository),
     readme,
     readme_source_path: readme === null ? null : repository.readme_source_path ?? null,
     readme_default_branch: readme === null ? null : repository.readme_default_branch ?? null,
@@ -71,6 +73,11 @@ export function buildMlRepositorySource(
     description: canonical.description ?? '',
     primary_language: canonical.primary_language?.trim() || 'Unknown',
     languages: [...(canonical.languages ?? [])],
+    ...(hasLanguageObservation(canonical) ? {
+      language_breakdown: canonical.language_breakdown ?? null,
+      language_total_size: canonical.language_total_size ?? null,
+      language_breakdown_complete: canonical.language_breakdown_complete ?? null,
+    } : {}),
     topics: [...(canonical.topics ?? [])],
     readme: canonical.readme ?? null,
     readme_source_path: canonical.readme_source_path ?? null,

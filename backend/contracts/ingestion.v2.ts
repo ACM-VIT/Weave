@@ -1,8 +1,10 @@
+import type { RepositoryLanguageObservation } from '../services/repositoryLanguages.js';
 import type { RepositoryLifecycleObservation } from '../services/repositoryLifecycle.js';
 import type { RepositoryLineage } from '../services/repositoryLineage.js';
 
-export interface RepositoryUpsert extends RepositoryLineage {
+export interface RepositoryUpsert extends RepositoryLineage, RepositoryLanguageObservation {
   lifecycle?: RepositoryLifecycleObservation | null;
+  language_observed_at?: string | null;
   github_id: string;
   github_node_id?: string | null;
   owner_github_id: string;

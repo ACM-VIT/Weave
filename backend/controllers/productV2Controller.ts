@@ -507,7 +507,7 @@ export async function listLikesGiven(req: AuthRequest, res: Response): Promise<v
       to_char(reaction.updated_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS __page_secondary,r.repo_id,r.github_id,r.owner_github_id,r.url AS github_repo_url,
       r.owner AS owner_id,r.name AS repo_name,r.full_name,r.owner,r.name,r.url,r.status,
       r.created_at,r.updated_at,c.description,c.languages AS language_used,
-      c.primary_language,c.languages,${sqlClient.unsafe(readmeSummaryProjection('r','c'))},c.readme_source_path AS readme_source_path,
+      c.primary_language,c.languages,c.language_breakdown,c.language_total_size::float8 AS language_total_size,c.language_breakdown_complete,c.language_observed_at,${sqlClient.unsafe(readmeSummaryProjection('r','c'))},c.readme_source_path AS readme_source_path,
       c.readme_default_branch AS readme_default_branch,c.readme_base_url AS readme_base_url,c.content_version,
       c.updated_at AS content_updated_at,c.source_updated_at,
       COALESCE((SELECT json_agg(t.slug ORDER BY t.slug) FROM app.repo_topics rt JOIN app.topics t USING(topic_id)
@@ -552,7 +552,7 @@ export async function listLikesGiven(req: AuthRequest, res: Response): Promise<v
   sendSuccess(res, 200, keyset ? result : { ...result, ...page });
 }
 
-const repoProjection = `r.repo_id,r.github_id,r.full_name,r.owner,r.name,r.url,c.description,c.primary_language,c.languages,c.content_version,
+const repoProjection = `r.repo_id,r.github_id,r.full_name,r.owner,r.name,r.url,c.description,c.primary_language,c.languages,c.language_breakdown,c.language_total_size::float8 AS language_total_size,c.language_breakdown_complete,c.language_observed_at,c.content_version,
   e.likes_count,e.dislikes_count,e.saves_count,e.comments_count,e.views_count,
   s.star_count,s.fork_count,s.open_issues_count,s.observed_at,cs.summary,cs.model_version`;
 
@@ -679,7 +679,7 @@ export async function listSaved(req: AuthRequest, res: Response): Promise<void> 
     to_char(s.created_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS __page_timestamp,
     to_char(s.created_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS __page_secondary,s.created_at,s.created_at AS saved_at,r.repo_id,r.github_id,r.owner_github_id,
     r.full_name,r.owner,r.name,r.url,r.status,r.created_at AS repository_created_at,r.updated_at,
-    c.description,c.primary_language,c.languages,${sqlClient.unsafe(readmeSummaryProjection('r','c'))},c.readme_source_path AS readme_source_path,
+    c.description,c.primary_language,c.languages,c.language_breakdown,c.language_total_size::float8 AS language_total_size,c.language_breakdown_complete,c.language_observed_at,${sqlClient.unsafe(readmeSummaryProjection('r','c'))},c.readme_source_path AS readme_source_path,
     c.readme_default_branch AS readme_default_branch,c.readme_base_url AS readme_base_url,c.content_version,
     c.updated_at AS content_updated_at,c.source_updated_at,
     e.likes_count,e.dislikes_count,e.saves_count,e.comments_count,e.views_count,
@@ -906,7 +906,7 @@ export async function listCollectionRepos(req: AuthRequest, res: Response): Prom
       to_char(cr.added_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS __page_timestamp,
       to_char(cr.added_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS __page_secondary,
       cr.added_at,r.repo_id,r.github_id,r.owner_github_id,r.full_name,r.owner,r.name,r.url,
-      r.status,r.created_at,r.updated_at,c.description,c.primary_language,c.languages,
+      r.status,r.created_at,r.updated_at,c.description,c.primary_language,c.languages,c.language_breakdown,c.language_total_size::float8 AS language_total_size,c.language_breakdown_complete,c.language_observed_at,
       ${sqlClient.unsafe(readmeSummaryProjection('r','c'))},c.readme_source_path AS readme_source_path,c.readme_default_branch AS readme_default_branch,c.readme_base_url AS readme_base_url,
       c.content_version,c.updated_at AS content_updated_at,c.source_updated_at,
       e.likes_count,e.dislikes_count,e.saves_count,e.comments_count,e.views_count,
@@ -997,7 +997,7 @@ export async function listBoardRepos(req: AuthRequest, res: Response): Promise<v
       to_char(br.added_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS __page_timestamp,
       to_char(br.added_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS __page_secondary,
       br.added_at,r.repo_id,r.github_id,r.owner_github_id,r.full_name,r.owner,r.name,r.url,
-      r.status,r.created_at,r.updated_at,c.description,c.primary_language,c.languages,
+      r.status,r.created_at,r.updated_at,c.description,c.primary_language,c.languages,c.language_breakdown,c.language_total_size::float8 AS language_total_size,c.language_breakdown_complete,c.language_observed_at,
       ${sqlClient.unsafe(readmeSummaryProjection('r','c'))},c.readme_source_path AS readme_source_path,c.readme_default_branch AS readme_default_branch,c.readme_base_url AS readme_base_url,
       c.content_version,c.updated_at AS content_updated_at,c.source_updated_at,
       e.likes_count,e.dislikes_count,e.saves_count,e.comments_count,e.views_count,

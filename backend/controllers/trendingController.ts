@@ -39,7 +39,7 @@ export function createTrendingSnapshotSource(client: typeof sqlClient = sqlClien
         // timeout to another request reusing this pooled connection.
         await tx`SELECT set_config('statement_timeout', ${String(TRENDING_QUERY_TIMEOUT_MS)}, true)`;
         return tx`SELECT i.position,i.score,i.features,r.repo_id,r.github_id,r.owner_github_id,r.full_name,r.owner,r.name,r.url,r.status,r.created_at,r.updated_at,
-        c.description,c.primary_language,c.languages,c.content_version,
+        c.description,c.primary_language,c.languages,c.language_breakdown,c.language_total_size::float8 AS language_total_size,c.language_breakdown_complete,c.language_observed_at,c.content_version,
         ${tx.unsafe(readmeSummaryProjection('r','c'))},
         c.readme_source_path AS readme_source_path,
         c.readme_default_branch AS readme_default_branch,

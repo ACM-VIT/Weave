@@ -1,3 +1,4 @@
+import { projectRepositoryLanguages } from '../services/repositoryLanguages.js';
 import { unfamiliarRepositorySql, canonicalGithubIdSql } from '../services/familiarRepositoryEligibility.js';
 import { lockModelLane } from '../services/modelOperationService.js';
 import { lockedSession } from '../services/feedIntentSessionService.js';
@@ -34,7 +35,7 @@ function projection(row: Record<string, unknown>): RepositoryProjection {
     owner_bio: row.owner_bio == null ? null : String(row.owner_bio),
     description: row.description == null ? null : String(row.description),
     primary_language: row.primary_language == null ? null : String(row.primary_language),
-    languages: Array.isArray(row.languages) ? row.languages.map(String) : [],
+    ...projectRepositoryLanguages(row),
     topics: Array.isArray(row.topics) ? row.topics.map(String) : [],
     star_count: Number(row.star_count ?? 0),
     fork_count: Number(row.fork_count ?? 0),
@@ -474,7 +475,7 @@ export class PostgresFeedPersistence implements FeedPersistencePort, FeedReconci
              COALESCE(exact_summary.summary_id,current_summary.summary_id) AS summary_id,
              ${sqlClient.unsafe(readmeSummaryProjection('repo','content'))},
              repo.full_name, repo.updated_at, content.description, content.primary_language,
-             content.languages, content.readme,content.readme_source_path AS readme_source_path,
+             content.languages,content.language_breakdown,content.language_total_size::float8 AS language_total_size,content.language_breakdown_complete,content.language_observed_at, content.readme,content.readme_source_path AS readme_source_path,
              content.readme_default_branch AS readme_default_branch,content.readme_base_url AS readme_base_url,
              COALESCE(topic_values.topics, '[]'::jsonb) AS topics,
              stats.star_count, stats.fork_count, stats.open_issues_count,
@@ -742,7 +743,7 @@ export class PostgresFeedPersistence implements FeedPersistencePort, FeedReconci
       SELECT ${eligibility ? sqlClient.unsafe('eligibility.preference_eligible,eligibility.exposure_eligible,eligibility.session_served,') : sqlClient.unsafe('')}
         ${sqlClient.unsafe(readmeSummaryProjection('repo','content'))},
              repo.repo_id, repo.full_name, repo.status, repo.updated_at, content.description,
-             content.primary_language,content.languages,content.readme,content.readme_source_path AS readme_source_path,
+             content.primary_language,content.languages,content.language_breakdown,content.language_total_size::float8 AS language_total_size,content.language_breakdown_complete,content.language_observed_at,content.readme,content.readme_source_path AS readme_source_path,
              content.readme_default_branch AS readme_default_branch,content.readme_base_url AS readme_base_url,
              COALESCE(topic_values.topics, '[]'::jsonb) AS topics,
              COALESCE(stats.star_count, 0) AS star_count, COALESCE(stats.fork_count, 0) AS fork_count, COALESCE(stats.open_issues_count, 0) AS open_issues_count,
