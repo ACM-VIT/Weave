@@ -478,7 +478,8 @@ export async function confirmPasswordReset(req: Request, res: Response): Promise
       password,
     );
     if (result === "invalid-session") {
-      return sendError(res, 400, "This password reset link is invalid or expired.");
+      res.status(400).json({success:false, error:"This password reset link is invalid or expired.", code:"PASSWORD_RESET_SESSION_INVALID"});
+      return;
     }
     if (result === "update-failed") {
       return sendError(res, 400, "Unable to update the password. Request a new reset link and try again.");

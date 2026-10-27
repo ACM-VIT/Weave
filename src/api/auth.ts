@@ -166,6 +166,8 @@ export const confirmPasswordReset = async (
     }),
   });
   const data = await readJson(response);
-  if (!response.ok) throw new Error(data.error || 'Unable to reset your password.');
+  if (!response.ok) throw Object.assign(new Error(data.error || 'Unable to reset your password.'), {
+    status: response.status, code: data.code,
+  });
   return data.data?.message ?? 'Password updated successfully.';
 };
