@@ -7,7 +7,7 @@ import type { AuthRequest } from '../middlewares/authMiddleware.js';
 import { buildMlOnboardingJob, hasMlEmbeddingContext } from '../services/mlOnboardingService.js';
 import { setFollowRelationship } from '../services/followService.js';
 import { setSocialProfileFollowing } from '../services/socialProfileService.js';
-import { getRepositoryDetail } from '../services/repositoryDetailService.js';
+import { getRepositoryDetail, getRepositoryReadme as getCanonicalRepositoryReadme } from '../services/repositoryDetailService.js';
 import {
   addRepositoryToBoard,
   deleteRepositoryBoard,
@@ -634,9 +634,32 @@ export async function getRepository(req: AuthRequest, res: Response): Promise<vo
   const viewer = userId(req, res); const repo = idParam(req, res, 'repoId');
   if (!viewer || !repo) return;
   try {
-    const detail = await getRepositoryDetail(viewer, repo);
+    const projection = req.query.projection;
+    if (projection !== undefined && projection !== 'metadata') {
+      return sendError(res, 400, 'projection must be metadata when supplied.');
+    }
+    const detail = await getRepositoryDetail(viewer, repo, projection === 'metadata' ? 'metadata' : 'full');
     if (!detail) return sendError(res, 404, 'Repository not found.');
     sendSuccess(res, 200, detail);
+  } catch (error) { sendControllerError(res, error); }
+}
+
+export async function getRepositoryReadme(req: AuthRequest, res: Response): Promise<void> {
+  const viewer = userId(req, res); const repo = idParam(req, res, 'repoId');
+  if (!viewer || !repo) return;
+  const rawVersion = req.query.content_version;
+  const version = typeof rawVersion === 'string' && /^[1-9]\d*$/.test(rawVersion) ? Number(rawVersion) : NaN;
+  if (!Number.isSafeInteger(version) || version > 2_147_483_647) {
+    return sendError(res, 400, 'content_version must be a positive integer.');
+  }
+  try {
+    const document = await getCanonicalRepositoryReadme(repo, version);
+    if (!document) return sendError(res, 404, 'Repository not found.');
+    if (document.content_version !== version) {
+      res.status(409).json({ success: false, error: 'Repository content changed; reload metadata.', code: 'README_VERSION_CHANGED' });
+      return;
+    }
+    sendSuccess(res, 200, document);
   } catch (error) { sendControllerError(res, error); }
 }
 

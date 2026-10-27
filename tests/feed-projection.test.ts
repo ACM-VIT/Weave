@@ -86,6 +86,33 @@ describe("feed items", () => {
     const mapped=createFeedItemMapper()([page]);
     assert.equal(mapped[0].repository.feedSessionId,session);
   });
+
+  test('decoded feed rows preserve canonical README bytes separately from README digest identity',async()=>{
+    const {decodeFeedPage}=await import('../src/api/feed-data');
+    const session='00000000-0000-4000-8000-000000000010';
+    const digest={summary_id:'00000000-0000-4000-8000-000000000013',content_version:6,content_hash:'digest-hash-v6',
+      prompt_version:'digest-v1',format_version:'readme-digest-json-v1',model_version:'fixture',source:'generated',
+      generated_at:'2026-10-27T00:00:00.000Z',overview:'Digest for the prior source version.',
+      capabilities:['First capability.','Second capability.'],use_cases:['A valid use case.'],considerations:[]};
+    const page=decodeFeedPage({serve_id:'00000000-0000-4000-8000-000000000011',feed_version:'1',next_cursor:null,
+      items:[{repo_id:'00000000-0000-4000-8000-000000000012',position:0,repository:{
+        repo_id:'00000000-0000-4000-8000-000000000012',full_name:'fixture/project',url:'https://github.com/fixture/project',
+        content_version:7,content_hash:'body-hash-v7',readme_available:true,readme_md:'  # Canonical body\n\n',readme_digest:digest,
+      }}]},session);
+    const mapped=createFeedItemMapper()([page])[0].repository;
+    assert.equal(mapped.contentVersion,7);
+    assert.equal(mapped.contentHash,'body-hash-v7');
+    assert.equal(mapped.hasReadme,true);
+    assert.equal(mapped.readmeFull,'  # Canonical body\n\n');
+    assert.equal(mapped.readmeDigest?.content_version,6);
+    assert.equal(mapped.readmeDigest?.content_hash,'digest-hash-v6');
+  });
+
+  test('omitted README availability remains unknown when neither availability nor body was projected',()=>{
+    const mapped=mapFeedRepository({repo_id:'repo',full_name:'fixture/project',readme_md:null});
+    assert.ok(mapped);
+    assert.equal(mapped.hasReadme,undefined);
+  });
 });
 
 describe("feed repository", () => {
@@ -129,7 +156,7 @@ describe("feed repository", () => {
 
     assert.ok(mapped);
     assert.equal(mapped.readmeSummary, 'Active summary');
-    assert.equal(mapped.readmeFull, '# Full README\n\nComplete content.');
+    assert.equal(mapped.readmeFull, '  # Full README\n\nComplete content.  ');
   });
 
   test('legacy placeholders map to missing content without borrowing from a long README', () => {
@@ -142,7 +169,7 @@ describe("feed repository", () => {
 
     assert.ok(mapped);
     assert.equal(mapped.readmeSummary, null);
-    assert.equal(mapped.readmeFull, longReadme.trim());
+    assert.equal(mapped.readmeFull, longReadme);
     const preview = prepareReadmePreview({
       summary: mapped.readmeSummary,
       description: mapped.description,

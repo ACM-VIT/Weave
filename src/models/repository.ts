@@ -36,6 +36,8 @@ export type RepositoryDetail = {
   readmeSummary: string | null;
   readmeDigest?: ReadmeDigest | null;
   readmeFull: string | null;
+  hasReadme?: boolean;
+  contentHash?: string | null;
   readmeSourcePath: string | null;
   readmeDefaultBranch: string | null;
   readmeBaseUrl: string | null;
@@ -86,3 +88,23 @@ export function repositoryDetailQueryKey(
 ) {
   return ['repository-detail', viewerUserId ?? null, repositoryId] as const;
 }
+
+export function repositoryMetadataQueryKey(repositoryId: string, viewerUserId: string | null | undefined) {
+  return [...repositoryDetailQueryKey(repositoryId, viewerUserId), 'metadata'] as const;
+}
+
+export function repositoryReadmeMetadataQueryKey(repositoryId: string, viewerUserId: string | null | undefined) {
+  return ['repository-readme-metadata', viewerUserId ?? null, repositoryId] as const;
+}
+
+export function repositoryReadmeQueryKey(repositoryId: string, viewerUserId: string | null | undefined, contentVersion: number | null | undefined) {
+  return ['repository-readme', viewerUserId ?? null, repositoryId, contentVersion ?? null] as const;
+}
+
+export type RepositoryReadmeMetadata = Pick<RepositoryDetail,
+  'id' | 'fullName' | 'githubUrl' | 'contentVersion' | 'contentHash' | 'hasReadme'
+  | 'readmeSourcePath' | 'readmeDefaultBranch' | 'readmeBaseUrl'>;
+
+export type RepositoryReadmeDocument = Pick<RepositoryDetail, 'id' | 'fullName' | 'githubUrl' | 'readmeFull' | 'readmeSourcePath' | 'readmeDefaultBranch' | 'readmeBaseUrl'> & {
+  contentVersion: number; contentHash: string; hasReadme: boolean;
+};

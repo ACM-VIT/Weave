@@ -156,7 +156,7 @@ for (const saved of [true, false]) test(`confirmed preview membership ${saved} s
   const {loadSource}=await import('./support/startup-harness');
   const {rememberRepositoryPreview}=await import('../src/services/repositoryPreview');
   const {mapRepositoryDetail}=await import('../src/utils/repository-mapper');
-  const {repositoryDetailQueryKey}=await import('../src/models/repository');
+  const {repositoryMetadataQueryKey:repositoryDetailQueryKey}=await import('../src/models/repository');
   const client=new QueryClient({defaultOptions:{queries:{retry:false,gcTime:Infinity}}});
   let viewer='alice';
   const card=mapRepositoryDetail({repo_id:'repo',full_name:'owner/repo',name:'repo',status:'active',url:'https://github.com/owner/repo'});
@@ -174,11 +174,12 @@ for (const saved of [true, false]) test(`confirmed preview membership ${saved} s
     'expo-router':{router:{}},'react-native-safe-area-context':{useSafeAreaInsets:()=>({top:0,bottom:0})},
     'lucide-react-native':new Proxy({},{get:()=>icon}),
     '@/constants/theme':{REFERENCE_THEME:{}},'@/store/AuthContext':{useAuth:()=>({user:{user_id:viewer},isLoading:false})},
-    '@/api/repositories':{repositoryDetailQueryKey,fetchRepositoryDetail:()=>viewer==='alice'?(aliceRequests++===0?pending:Promise.resolve({...card,viewerSaved:!saved,selectedListIds:[]})):bobPending},
+    '@/api/repositories':{repositoryDetailQueryKey,repositoryMetadataQueryKey:repositoryDetailQueryKey,fetchRepositoryMetadata:()=>viewer==='alice'?(aliceRequests++===0?pending:Promise.resolve({...card,viewerSaved:!saved,selectedListIds:[]})):bobPending},
     '@/utils/storage':{getStorageItem:async()=> 'token'},
     '@/components/home/ReadmePopup':{ReadmePopup:()=>null},
     '@/components/home/save-popup':{SavePopup:(props:any)=>React.createElement('SavePopup',props)},
     '@/components/home/share-repository-sheet':{ShareRepositorySheet:()=>null},
+    '@/hooks/use-repository-readme':{useRepositoryReadme:()=>({})},
     '@/hooks/use-repository-readme-summary':{useRepositoryReadmeSummary:()=>({})},
     '@/services/activityOutboxClient':{},
   });
@@ -191,18 +192,66 @@ for (const saved of [true, false]) test(`confirmed preview membership ${saved} s
     const label=saved?'Manage saved Lists':'Save repository to Lists';
     assert.equal(root.root.findAllByProps({accessibilityLabel:label}).length>0,true);
     assert.equal(client.getQueryData(repositoryDetailQueryKey('repo','alice')),undefined);
-    await act(async()=>{finish({...card,viewerSaved:!saved,selectedListIds:saved?[]:['old-list'],readmeFull:'# Complete'});await pending;});
+    await act(async()=>{finish({...card,viewerSaved:!saved,selectedListIds:saved?[]:['old-list'],readmeFull:null,hasReadme:true});await pending;});
     await act(async()=>{await new Promise(resolve=>setTimeout(resolve,0));});
     assert.equal(root.root.findAllByProps({accessibilityLabel:label}).length>0,true,'Pre-save detail cannot undo confirmed membership');
     assert.equal(client.getQueryData<any>(repositoryDetailQueryKey('repo','alice'))?.viewerSaved,saved);
-    assert.equal(client.getQueryData<any>(repositoryDetailQueryKey('repo','alice'))?.readmeFull,'# Complete');
+    assert.equal(client.getQueryData<any>(repositoryDetailQueryKey('repo','alice'))?.readmeFull,null);
     await act(async()=>{await client.invalidateQueries({queryKey:repositoryDetailQueryKey('repo','alice'),exact:true});});
     assert.equal(client.getQueryData<any>(repositoryDetailQueryKey('repo','alice'))?.viewerSaved,!saved,'A fetch started after confirmation remains authoritative');
     await act(async()=>{viewer='bob';root.update(render());});
     await act(async()=>{callback(['alice-only'],true);});
     assert.equal(root.root.findAllByProps({accessibilityLabel:'Save repository to Lists'}).length>0,true);
     assert.equal(client.getQueryData(repositoryDetailQueryKey('repo','bob')),undefined);
-    await act(async()=>{finishBob({...card,description:'complete README',readmeFull:'# Complete'});await bobPending;});
-    assert.equal(client.getQueryData<any>(repositoryDetailQueryKey('repo','bob'))?.readmeFull,'# Complete');
+    await act(async()=>{finishBob({...card,description:'complete README',readmeFull:null,hasReadme:true});await bobPending;});
+    assert.equal(client.getQueryData<any>(repositoryDetailQueryKey('repo','bob'))?.readmeFull,null);
   } finally {await act(async()=>root.unmount());client.clear();}
+});
+
+test('cold detail renders metadata before one lazy canonical body and reuses it without changing viewer state',async()=>{
+  const React=await import('react');const {act}=React;const {create}=await import('react-test-renderer');
+  const query=await import('@tanstack/react-query');const {loadSource}=await import('./support/startup-harness');
+  const models=await import('../src/models/repository');const {authSessionLifecycle}=await import('../src/api/session-lifecycle');
+  const requests:string[]=[];let finishMetadata!:(value:unknown)=>void,finishBody!:(value:unknown)=>void;
+  const metadata=new Promise(resolve=>{finishMetadata=resolve;});const body=new Promise(resolve=>{finishBody=resolve;});
+  const {waitForReadmeState}=await import('./support/feed-harness');
+  const canonical='# Original README\n\n'+('Long canonical content.\n'.repeat(10000));
+  const payload={repo_id:'repo',full_name:'owner/repo',name:'repo',url:'https://github.com/owner/repo',status:'active',description:'Metadata ready independently',
+    content_version:7,content_hash:'canonical-hash',readme_available:true,readme:null,readme_md:null,primary_language:null,
+    selected_list_ids:['confirmed-list'],viewer_saved:true,readme_source_path:'docs/README.md',readme_default_branch:'main',readme_base_url:'https://raw.githubusercontent.com/owner/repo/main/docs/'};
+  const mocks:Record<string,any>={
+    '@tanstack/react-query':query,'@/models/repository':models,'@/api/session-lifecycle':{authSessionLifecycle},
+    '@/models/readme-digest':await import('../src/models/readme-digest'),'@/utils/repository-mapper':await import('../src/utils/repository-mapper'),
+    '@/api/client':{apiV2:async(path:string)=>{requests.push(path);return path.includes('/readme?')?body:metadata;}},
+    '@/store/AuthContext':{useAuth:()=>({user:{user_id:'alice'},isLoading:false})},'@/utils/storage':{getStorageItem:async()=> 'token'},
+    'react-native':{ActivityIndicator:'ActivityIndicator',Pressable:'Pressable',ScrollView:'ScrollView',Text:'Text',View:'View',
+      StyleSheet:{create:(value:unknown)=>value},useWindowDimensions:()=>({width:360})},
+    'expo-router':{router:{}},'react-native-safe-area-context':{useSafeAreaInsets:()=>({top:0,bottom:0})},
+    'lucide-react-native':new Proxy({},{get:()=>()=>null}),'@/constants/theme':{REFERENCE_THEME:{}},
+    '@/components/home/ReadmePopup':{ReadmePopup:(props:any)=>React.createElement('ReadmePopup',props)},
+    '@/components/home/save-popup':{SavePopup:()=>null},'@/components/home/share-repository-sheet':{ShareRepositorySheet:()=>null},
+    '@/hooks/use-repository-readme-summary':{useRepositoryReadmeSummary:()=>({})},'@/services/activityOutboxClient':{},
+  };
+  mocks['@/api/repositories']=loadSource('src/api/repositories.ts',mocks);
+  mocks['@/hooks/use-repository-readme']=loadSource('src/hooks/use-repository-readme.ts',mocks);
+  const {RepositoryDetailScreen}=loadSource('src/components/repository-detail-screen.tsx',mocks);
+  const client=new query.QueryClient({defaultOptions:{queries:{retry:false,gcTime:Infinity}}});let root!:ReturnType<typeof create>;
+  await act(async()=>{root=create(React.createElement(query.QueryClientProvider,{client},React.createElement(RepositoryDetailScreen,{repositoryId:'repo'})));});
+  try{
+    assert.deepEqual(requests,['/repositories/repo?projection=metadata']);
+    await act(async()=>{finishMetadata(payload);await metadata;await new Promise(resolve=>setTimeout(resolve,0));});
+    await waitForReadmeState(()=>root.root.findAllByType('Text').some(node=>node.children.includes('Metadata ready independently')));
+    assert.equal(requests.length,1,'Metadata never starts a full document transfer');
+    const open=()=>root.root.findAllByType('Text').find(node=>node.children.includes('View README'))!.parent!.props.onPress();
+    await act(async()=>{open();});assert.equal(requests.length,2);assert.equal(root.root.findByType('ReadmePopup').props.loading,true);
+    await act(async()=>{finishBody({...payload,readme_md:canonical});await body;await new Promise(resolve=>setTimeout(resolve,0));});
+    await waitForReadmeState(()=>root.root.findByType('ReadmePopup').props.readmeText===canonical);
+    assert.equal(root.root.findByType('ReadmePopup').props.readmeText,canonical,'No trim, truncation, or summary substitution');
+    await act(async()=>{root.root.findByType('ReadmePopup').props.onClose();});await act(async()=>{open();});
+    assert.equal(requests.length,2,'Repeat open reuses the same version body');
+    const key=models.repositoryMetadataQueryKey('repo','alice');assert.equal(client.getQueryData<any>(key)?.viewerSaved,true);
+    assert.deepEqual(client.getQueryData<any>(key)?.selectedListIds,['confirmed-list']);
+    assert.equal(client.getQueryData<any>(models.repositoryReadmeQueryKey('repo','alice',7))?.viewerSaved,undefined);
+    assert.equal(client.getQueryData(models.repositoryDetailQueryKey('repo','alice')),undefined,'Metadata never replaces a legacy full cache entry');
+  }finally{await act(async()=>root.unmount());client.clear();}
 });

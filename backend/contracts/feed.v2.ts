@@ -45,6 +45,10 @@ export interface RepositoryProjection extends RepositoryLanguageObservation {
   summary_format_version: string | null;
   summary_source: 'generated' | 'description_fallback' | null;
   readme_digest?: ReadmeSummaryArtifact | null;
+  /** Identity of the canonical body carried by readme_md, separate from digest identity. */
+  content_version?: number | null;
+  content_hash?: string | null;
+  readme_available?: boolean;
   readme_md: string | null;
   readme_source_path: string | null;
   readme_default_branch: string | null;
