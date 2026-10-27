@@ -6,6 +6,8 @@ import {
   README_MEDIA_MANIFEST_BYTE_LIMIT as MAX_README_MEDIA_MANIFEST_BYTES,
   README_MEDIA_SCHEMA_VERSION,
   README_MEDIA_URL_LIMIT as MAX_README_MEDIA_URL_LENGTH,
+  isCanonicalReadmeMediaUrl,
+  scanReadmeHtmlMediaCandidates,
   type ReadmeMediaImage,
   type ReadmeMediaManifest,
 } from '../contracts/readmeMedia.v2.js';
@@ -132,13 +134,12 @@ type ImageCandidate = { alt: string; source: string };
 
 function readmeImageCandidates(markdown: string): ImageCandidate[] {
   const candidates: ImageCandidate[] = [];
-  const markdownImage = /!\[([^\]]*)\]\(\s*(?:<([^>]+)>|([^\s)]+))(?:\s+["'][^"']*["'])?\s*\)/g;
-  const htmlImage = /<img\b[^>]*\bsrc\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))[^>]*>/gi;
-  for (const match of markdown.matchAll(markdownImage)) candidates.push({ alt: match[1] ?? '', source: match[2] ?? match[3] ?? '' });
-  for (const match of markdown.matchAll(htmlImage)) {
-    const altMatch = /\balt\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/i.exec(match[0]);
-    candidates.push({ alt: altMatch?.[1] ?? altMatch?.[2] ?? altMatch?.[3] ?? '', source: match[1] ?? match[2] ?? match[3] ?? '' });
-  }
+  marked.walkTokens(marked.lexer(markdown.slice(0, 1_000_000)), token => {
+    if (token.type === 'image') candidates.push({ alt: token.text, source: token.href });
+    if (token.type === 'html') for (const candidate of scanReadmeHtmlMediaCandidates(token.raw)) {
+      if (candidate.kind === 'image') candidates.push({ alt: candidate.alt, source: candidate.source });
+    }
+  });
   return candidates;
 }
 
@@ -164,9 +165,8 @@ function summaryImages(markdown: string, context: ReadmeMediaContext): ReadmeMed
   };
   marked.walkTokens(marked.lexer(markdown.slice(0, 1_000_000)), token => {
     if (token.type === 'image') add({ source: token.href, alt: token.text });
-    if (token.type === 'html') {
-      const html = token.raw.replace(/<!--[\s\S]*?-->|<(script|style)\b[^>]*>[\s\S]*?<\/\1>/gi, '');
-      for (const candidate of readmeImageCandidates(html)) add(candidate);
+    if (token.type === 'html') for (const candidate of scanReadmeHtmlMediaCandidates(token.raw)) {
+      if (candidate.kind === 'image') add(candidate);
     }
   });
   return images;
@@ -188,12 +188,8 @@ function summaryVideos(markdown: string, context: ReadmeMediaContext): string[] 
   };
   marked.walkTokens(marked.lexer(markdown.slice(0, 1_000_000)), token => {
     if (token.type === 'link') add(token.href);
-    if (token.type === 'html') {
-      const html = token.raw.replace(/<!--[\s\S]*?-->|<(script|style)\b[^>]*>[\s\S]*?<\/\1>/gi, '');
-      for (const tag of html.matchAll(/<(?:video|source)\b[^>]*>/gi)) {
-        const src = /\ssrc\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/i.exec(tag[0]);
-        if (src) add(src[1] ?? src[2] ?? src[3]);
-      }
+    if (token.type === 'html') for (const candidate of scanReadmeHtmlMediaCandidates(token.raw)) {
+      if (candidate.kind === 'video') add(candidate.source);
     }
   });
   return [...videos];
@@ -230,11 +226,7 @@ export function deriveReadmeMediaManifest(input: {
 }
 
 function isSafeMediaUrl(value: unknown): value is string {
-  if (typeof value !== 'string' || value.length > MAX_README_MEDIA_URL_LENGTH) return false;
-  try {
-    const url = new URL(value);
-    return isPublicHttpsUrl(url) && url.toString() === value;
-  } catch { return false; }
+  return typeof value === 'string' && value.length <= MAX_README_MEDIA_URL_LENGTH && isCanonicalReadmeMediaUrl(value);
 }
 
 function hasExactKeys(value: unknown, keys: readonly string[]): value is Record<string, unknown> {

@@ -135,6 +135,32 @@ describe("readme images", () => {
     assert.deepEqual(manifest.videos, extractReadmeVideos(markdown, context));
   });
 
+  test('malformed README image syntax avoids repeated suffix scans in backend and legacy extractors', () => {
+    const malformedMarkdown = '!['.repeat(50_000);
+    const malformedHtml = '<img src="'.repeat(10_000);
+    const started = performance.now();
+
+    assert.equal(extractReadmePreviewImage(malformedMarkdown, context), null);
+    const markdownManifest = deriveReadmeMediaManifest({
+      markdown: malformedMarkdown,
+      context: { fullName: context.fullName!, githubUrl: context.githubUrl!,
+        sourcePath: null, defaultBranch: null, baseUrl: null },
+      contentVersion: 7, contentHash: 'malformed-markdown-v7',
+    });
+    assert.equal(markdownManifest.poster, null);
+
+    assert.deepEqual(extractReadmeSummaryImages(malformedHtml, context), []);
+    const htmlManifest = deriveReadmeMediaManifest({
+      markdown: malformedHtml,
+      context: { fullName: context.fullName!, githubUrl: context.githubUrl!,
+        sourcePath: null, defaultBranch: null, baseUrl: null },
+      contentVersion: 7, contentHash: 'malformed-html-v7',
+    });
+    assert.equal(htmlManifest.poster, null);
+    assert.ok(performance.now() - started < 1_500,
+      'accepted-size malformed media input should remain bounded during both API derivation and client extraction');
+  });
+
   test('unrepresentable media keeps its complete legacy preview and cannot enter a deferred feed', () => {
     const cases = [
       { alt: 'a'.repeat(10_001), url: 'https://cdn.example.com/screenshot.png' },

@@ -6,6 +6,8 @@ import type { RepositoryApiPayload } from '@/api/repositories';
 import type { RepositoryDetail, RepositoryStats, RepositoryStatus } from '@/models/repository';
 import type { PinnedRepository } from '@/services/pinnedRepositoryCodec';
 import {
+  isCanonicalReadmeMediaUrl,
+  isReadmeMediaVideoUrl,
   README_MEDIA_ALT_LIMIT,
   README_MEDIA_HASH_LIMIT,
   README_MEDIA_ITEM_LIMIT,
@@ -15,8 +17,6 @@ import {
   type ReadmeMediaImage,
   type ReadmeMediaManifest,
 } from '../../backend/contracts/readmeMedia.v2';
-import { resolveReadmeImageUrl, type ReadmeImageContext } from '@/utils/readme-images';
-import { resolveReadmeVideoUrl } from '@/utils/readme-videos';
 import {
   normalizeOptionalRepositoryText,
   normalizeRepositoryCardSummary,
@@ -37,11 +37,11 @@ function utf8ByteLength(value: string): number {
   return length;
 }
 
-function isManifestImage(value: unknown, context: ReadmeImageContext): value is ReadmeMediaImage {
+function isManifestImage(value: unknown): value is ReadmeMediaImage {
   return hasExactKeys(value, ['alt', 'url'])
     && typeof value.alt === 'string' && value.alt.length <= README_MEDIA_ALT_LIMIT
     && typeof value.url === 'string' && value.url.length <= README_MEDIA_URL_LIMIT
-    && resolveReadmeImageUrl(value.url, context) === value.url;
+    && isCanonicalReadmeMediaUrl(value.url);
 }
 
 function currentReadmeMediaManifest(
@@ -49,7 +49,6 @@ function currentReadmeMediaManifest(
   contentVersion: number | null,
   contentHash: string | null,
   hasReadme: boolean | undefined,
-  context: ReadmeImageContext,
 ): ReadmeMediaManifest | null {
   if (!Number.isSafeInteger(contentVersion) || contentVersion === null || contentVersion < 1
     || !contentHash || contentHash.length > README_MEDIA_HASH_LIMIT || typeof hasReadme !== 'boolean'
@@ -60,12 +59,12 @@ function currentReadmeMediaManifest(
   if (manifest.schema_version !== README_MEDIA_SCHEMA_VERSION || manifest.representation !== 'deferred'
     || manifest.content_version !== contentVersion || manifest.content_hash !== contentHash
     || manifest.readme_available !== hasReadme
-    || !(manifest.poster === null || isManifestImage(manifest.poster, context))
+    || !(manifest.poster === null || isManifestImage(manifest.poster))
     || !Array.isArray(manifest.images) || manifest.images.length > README_MEDIA_ITEM_LIMIT
-    || !manifest.images.every(image => isManifestImage(image, context))
+    || !manifest.images.every(isManifestImage)
     || !Array.isArray(manifest.videos) || manifest.videos.length > README_MEDIA_ITEM_LIMIT
     || !manifest.videos.every(url => typeof url === 'string' && url.length <= README_MEDIA_URL_LIMIT
-      && resolveReadmeVideoUrl(url, context) === url)) {
+      && isReadmeMediaVideoUrl(url))) {
     return null;
   }
   try {
@@ -187,9 +186,8 @@ export function mapRepositoryDetail(
   const readmeSourcePath = nullableText(payload.readme_source_path);
   const readmeDefaultBranch = nullableText(payload.readme_default_branch);
   const readmeBaseUrl = nullableText(payload.readme_base_url);
-  const readmeContext = { fullName, githubUrl, readmeSourcePath, readmeDefaultBranch, readmeBaseUrl };
   const readmeMediaManifest = currentReadmeMediaManifest(
-    payload.readme_media_manifest, contentVersion, contentHash, hasReadme, readmeContext,
+    payload.readme_media_manifest, contentVersion, contentHash, hasReadme,
   );
   const summarySource = payload.summary_source === 'generated'
     || payload.summary_source === 'description_fallback'

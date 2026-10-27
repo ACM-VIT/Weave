@@ -127,6 +127,18 @@ describe("feed items", () => {
     assert.equal(mapFeedRepository({...row,readme_media_manifest:{...manifest,content_version:6}})?.readmeMediaManifest,null);
     assert.equal(mapFeedRepository({...row,readme_media_manifest:{...manifest,videos:['javascript:alert(1)']}})?.readmeMediaManifest,null);
   });
+
+  test('feed mapper preserves already-decoded manifest URLs and still validates video media types',()=>{
+    const manifest={schema_version:2,content_version:7,content_hash:'body-hash-v7',readme_available:true,representation:'deferred',
+      poster:{alt:'Poster',url:'https://cdn.example.com/poster.png?x=1&amp;y=2'},images:[],
+      videos:['https://cdn.example.com/demo.mp4?x=1&amp;y=2']};
+    const row={repo_id:'repo',full_name:'fixture/project',url:'https://github.com/fixture/project',content_version:7,
+      content_hash:'body-hash-v7',readme_available:true,readme_media_manifest:manifest};
+    assert.deepEqual(mapFeedRepository(row)?.readmeMediaManifest,manifest,
+      'manifest URLs already contain the once-decoded source and must not be HTML-decoded again');
+    assert.equal(mapFeedRepository({...row,readme_media_manifest:{...manifest,videos:['https://cdn.example.com/demo.png?x=1&amp;y=2']}})
+      ?.readmeMediaManifest,null,'video manifests still reject image and page URLs');
+  });
 });
 
 describe("feed repository", () => {

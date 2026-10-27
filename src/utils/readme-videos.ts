@@ -1,4 +1,5 @@
 import { marked } from 'marked';
+import { scanReadmeHtmlMediaCandidates } from '../../backend/contracts/readmeMedia.v2';
 import { resolveReadmeImageUrl, type ReadmeImageContext } from './readme-images';
 
 /** Resolve only the direct video files and GitHub attachments used by README previews. */
@@ -26,11 +27,8 @@ export function extractReadmeVideos(markdown: string | null | undefined, context
   };
   marked.walkTokens(marked.lexer((markdown ?? '').slice(0, 1_000_000)), (token) => {
     if (token.type === 'link') add(token.href);
-    if (token.type === 'html') {
-      for (const tag of token.raw.replace(/<!--[\s\S]*?-->|<(script|style)\b[^>]*>[\s\S]*?<\/\1>/gi, '').matchAll(/<(?:video|source)\b[^>]*>/gi)) {
-        const src = /\ssrc\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/i.exec(tag[0]);
-        if (src) add(src[1] ?? src[2] ?? src[3]);
-      }
+    if (token.type === 'html') for (const candidate of scanReadmeHtmlMediaCandidates(token.raw)) {
+      if (candidate.kind === 'video') add(candidate.source);
     }
   });
   return [...videos];
