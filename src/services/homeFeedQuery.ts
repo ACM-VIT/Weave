@@ -34,7 +34,7 @@ export function homeFeedController(client: QueryClient, viewer: string) {
   }, client.getQueryData<InfiniteData<FeedPage>>(key)?.pages,
   () => client.getQueryData<InfiniteData<FeedPage>>(key)?.pages ?? []);
   const unsubscribe = client.getQueryCache().subscribe(event => {
-    if (event.type === 'removed' && event.query.queryKey[0] === 'feed' && event.query.queryKey[1] === viewer
+    if (event.type === 'removed' && event.query.queryKey.length === key.length && event.query.queryKey[0] === 'feed' && event.query.queryKey[1] === viewer
       && controllers.get(client)?.controller === controller) releaseHomeFeedController(client);
   });
   controllers.set(client, {viewer, generation, controller, unsubscribe});
