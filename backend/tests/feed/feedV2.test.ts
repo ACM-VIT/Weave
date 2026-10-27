@@ -629,6 +629,87 @@ test('fallback serves reuse only the freshly hydrated cards for the requesting v
   assert.equal(result.items[0].repo_id,repo.repo_id);
 });
 
+test('fallback refreshes only invalidated cards and preserves selection order, viewer flags and summary identity', async () => {
+  const persistence = new FakePersistence();
+  const queue = new FakeQueue();
+  queue.reserve = async (_u, _v, requestId, _l, token) => ({ requestId, token, items: [] });
+  const viewer = '00000000-0000-4000-8000-000000000030';
+  const first = { ...repo, viewer_reaction: 'like' as const, viewer_saved: true,
+    viewer_follows_owner: true, summary_id: 'summary-first', summary: 'First summary' };
+  const changed = { ...repo, repo_id: 'changed', summary_id: 'summary-old' };
+  const inactive = { ...repo, repo_id: 'inactive', status: 'archived' as const };
+  const last = { ...repo, repo_id: 'last', viewer_reaction: 'dislike' as const };
+  persistence.getTrendingFallback = async (_limit, _exclude, viewerId) => {
+    assert.equal(viewerId, viewer);
+    return [first, changed, inactive, last];
+  };
+  // Simulate invalidation while the intervening eligibility check is pending.
+  persistence.listPreferenceEligibleRepositoryIds = async (_user, ids) => {
+    changed.summary_id = 'summary-invalidated';
+    return ids;
+  };
+  const calls: string[][] = [];
+  const refreshed = { ...changed, summary_id: 'summary-current', summary: 'Current summary', viewer_saved: true };
+  persistence.listActiveRepositories = async (ids, viewerId?: string) => {
+    assert.equal(viewerId, viewer);
+    calls.push(ids);
+    // The inactive repository disappeared; it must never survive from fallback.
+    return [refreshed];
+  };
+  const service = new FeedV2Service(persistence, queue, undefined, true);
+  try {
+    const result = await service.getFeed(viewer, {
+      feed_request_id: 'mixed-fallback', session_id: 'session', limit: 10, cursor: null,
+    });
+    assert.deepEqual(calls, [['changed', 'inactive']]);
+    assert.deepEqual(result.items.map(item => item.repo_id), [first.repo_id, 'changed', 'last']);
+    assert.deepEqual(result.items.map(item => item.position), [0, 1, 2]);
+    assert.deepEqual(result.items.map(item => item.summary_id), ['summary-first', 'summary-current', null]);
+    assert.deepEqual(result.items.map(item => item.repository), [first, refreshed, last]);
+    assert.deepEqual(result.items.map(item => ({
+      viewer_saved: item.repository.viewer_saved,
+      viewer_reaction: item.repository.viewer_reaction,
+      viewer_follows_owner: item.repository.viewer_follows_owner,
+    })), [
+      { viewer_saved: true, viewer_reaction: 'like', viewer_follows_owner: true },
+      { viewer_saved: true, viewer_reaction: null, viewer_follows_owner: false },
+      { viewer_saved: false, viewer_reaction: 'dislike', viewer_follows_owner: false },
+    ]);
+    assert.equal(persistence.serve?.items[1].summary_id, 'summary-current');
+  } finally { await service.stop(); }
+});
+
+test('fallback cards are scoped to the viewer and request rather than retained by the service', async () => {
+  const persistence = new FakePersistence();
+  const queue = new FakeQueue();
+  queue.reserve = async (_u, _v, requestId, _l, token) => ({ requestId, token, items: [] });
+  const viewers: (string | undefined)[] = [];
+  let aliceSaved = true;
+  let aliceReaction: RepositoryProjection['viewer_reaction'] = 'like';
+  persistence.getTrendingFallback = async (_limit, _exclude, viewerId) => {
+    viewers.push(viewerId);
+    return [{ ...repo, viewer_saved: viewerId === 'alice' && aliceSaved,
+      viewer_reaction: viewerId === 'alice' ? aliceReaction : null }];
+  };
+  persistence.listActiveRepositories = async () => { throw new Error('Duplicate hydration'); };
+  const service = new FeedV2Service(persistence, queue, undefined, true);
+  try {
+    for (const [index, viewer] of ['alice', 'bob', 'alice'].entries()) {
+      if (index === 2) {
+        aliceSaved = false;
+        aliceReaction = 'dislike';
+      }
+      const result = await service.getFeed(viewer, {
+        feed_request_id: `viewer-request-${index}`, session_id: `session-${viewer}`, limit: 10, cursor: null,
+      });
+      assert.equal(result.items[0].repository.viewer_saved, index === 0);
+      assert.equal(result.items[0].repository.viewer_reaction,
+        index === 0 ? 'like' : index === 2 ? 'dislike' : null);
+    }
+    assert.deepEqual(viewers, ['alice', 'bob', 'alice']);
+  } finally { await service.stop(); }
+});
+
 test('foreground budget expires while one real generation continues, coalesces retries, and drains', async () => {
   const { snapshotMetrics } = await import('../../observability/metrics.js');
   const metricKey = 'feed_v2_generation_after_wait_total:[["outcome","generated"]]';
