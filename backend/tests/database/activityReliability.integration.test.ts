@@ -367,7 +367,7 @@ test('registered HTTP preserves neutral feeds, exclusive reversals and atomic sa
     (SELECT count(*)::int FROM telemetry.ml_outbox WHERE aggregate_id=${user}::uuid) AS jobs
     FROM app.user_feed_state f WHERE user_id=${user}::uuid`)[0]!;
   const before=await snapshot();assert.equal((await post('interactions/batch',{events:[event('impression')]})).status,202);
-  const neutral=await snapshot();assert.equal(neutral.feed_version,before.feed_version);assert.equal(neutral.feedback_version,before.feedback_version);assert.equal(neutral.jobs,0);
+  const neutral=await snapshot();assert.equal(neutral.events,Number(before.events)+1,'The neutral impression must still be persisted');assert.equal(neutral.feed_version,before.feed_version);assert.equal(neutral.feedback_version,before.feedback_version);assert.equal(neutral.jobs,0);
   for(const [action,expected] of [['like','like'],['dislike','dislike'],['like','like'],['unlike',null],['dislike','dislike'],['undislike',null]] as const){
     assert.equal((await post('interactions/batch',{events:[event(action)]})).status,202);assert.equal((await snapshot()).reaction,expected);
     const counters=(await sqlClient`SELECT likes_count,dislikes_count FROM app.repo_engagement WHERE repo_id=${repo}::uuid`)[0]!;
