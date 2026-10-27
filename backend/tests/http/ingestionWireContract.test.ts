@@ -87,6 +87,7 @@ test('canonical language input retains sourced composition and treats legacy nam
   const observed=normalizeRepositoryLanguages(['Python','Rust'],{language_breakdown:rich,language_total_size:1000,language_breakdown_complete:false});
   assert.equal(observed.language_total_size,1000);assert.equal(observed.language_breakdown_complete,false);
   assert.throws(()=>normalizeRepositoryLanguages(['0','1']),/language/i);
+  assert.throws(()=>normalizeRepositoryLanguages({Python:'300',Rust:200}),/size/i);
 });
 
 test('rich language validation fences totals and supplied percentage rounding without inventing absent evidence',async()=>{

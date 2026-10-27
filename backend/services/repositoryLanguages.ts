@@ -92,13 +92,25 @@ export function hasLanguageObservation(value: RepositoryLanguageObservation): bo
   return LANGUAGE_OBSERVATION_FIELDS.some(key => value[key] != null);
 }
 
+/** Recover labels only: malformed historical weights must not hide valid language names. */
+function historicalLanguageNames(value: unknown): string[] {
+  const candidates = Array.isArray(value)
+    ? value.slice(0, 100).map(item => typeof item === 'string' ? item
+      : item && typeof item === 'object' ? (item as Record<string, unknown>).name : null)
+    : value && typeof value === 'object' ? Object.keys(value).slice(0, 100) : [];
+  const names = new Set<string>();
+  for (const candidate of candidates) {
+    try { names.add(languageName(candidate)); } catch { /* Invalid labels remain unknown. */ }
+  }
+  return [...names];
+}
+
 /** Public reads remain usable for historical malformed rows, with unknown composition. */
 export function projectRepositoryLanguages(value: Record<string, unknown>): {languages: string[]} & RepositoryLanguageObservation & {language_observed_at?: string | null} {
   let result: {languages:string[]} & RepositoryLanguageObservation;
   try { result = normalizeRepositoryLanguages(value.languages,value); }
   catch {
-    try { result = {languages:normalizeRepositoryLanguages(value.languages).languages}; }
-    catch { result = {languages:[]}; }
+    result = {languages:historicalLanguageNames(value.languages)};
   }
   const stamp = value.language_observed_at;
   return {...result,language_observed_at:stamp instanceof Date ? stamp.toISOString() : typeof stamp === 'string' ? stamp : null};

@@ -291,6 +291,10 @@ test('language composition keeps source rows and explicit primary while legacy s
   const mapped=mapFeedRepository({repo_id:'repo',full_name:'owner/repo',primary_language:null,languages:['Python','Rust'],language_breakdown:rich,language_total_size:1000,language_breakdown_complete:false});
   assert.ok(mapped);assert.deepEqual(mapped.languages,['Python','Rust']);assert.equal(mapped.primaryLanguage,null);
   assert.deepEqual(mapped.languageBreakdown,rich);assert.equal(mapped.languageTotalSize,1000);assert.equal(mapped.languageBreakdownComplete,false);
+  for(const value of [{Python:'300',Rust:200},[{name:'Python',size:'300'},{name:'Rust',color:'bad'}]]){
+    const repository=mapFeedRepository({repo_id:'repo',full_name:'owner/repo',languages:value});
+    assert.ok(repository);assert.deepEqual(repository.languages,['Python','Rust']);assert.equal(repository.languageBreakdown,null);
+  }
   for(const value of [rich,{Python:300,Rust:200},['Python','Rust'],null,[]]){
     const repository=mapFeedRepository({repo_id:'repo',full_name:'owner/repo',primary_language:'Rust',languages:value});
     assert.ok(repository);assert.equal(repository.primaryLanguage,'Rust');assert.ok(repository.languages.every(name=>!/^\d+$/.test(name)));
