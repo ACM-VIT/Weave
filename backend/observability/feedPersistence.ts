@@ -9,7 +9,9 @@ const measured = new Set([
 ]);
 
 /** Fixed operation labels only; never record SQL, parameters or product identities. */
-export function measureFeedPersistence<T extends object>(persistence: T): T {
+export function measureFeedPersistence<T extends object>(persistence: T, configure?: (raw: T) => void): T {
+  // Bind scoped overrides to the raw adapter so only the final operation is timed.
+  configure?.(persistence);
   return new Proxy(persistence, {
     get(target, property, receiver) {
       const value = Reflect.get(target, property, receiver);

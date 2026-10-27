@@ -138,20 +138,21 @@ export class ApplicationRuntime {
   readonly feed=this.flags.ML_V2_RECOMMENDATIONS&&this.modelScopes?new IntentFeedGateway(this.legacyFeed,this.persistence,this.modelScopes,scope=>this.createIntentFeed(scope),process.env.JWT_SECRET):this.legacyFeed;
   private createIntentFeed(scope:FeedIntentScope):FeedV2Service{
     if(!this.ml||!this.modelScopes)throw new Error('Model feed dependencies are unavailable.');
-    const persistence=measureFeedPersistence(new PostgresFeedPersistence());
-    const context=persistence.getGenerationContext.bind(persistence);
-    persistence.getGenerationContext=async userId=>{
-      const current=await context(userId);
-      return current&&userId===scope.userId&&current.modelPolicySha256===scope.policySha256?{...current,delivered:true}:null;
-    };
-    const recent=persistence.getRecentPersonalizedEntries.bind(persistence);
-    persistence.getRecentPersonalizedEntries=async(...args)=>{
-      const entries=await recent(...args);
-      const ids=entries.map(item=>item.generation_id).filter((id):id is string=>Boolean(id));
-      const rows=await sqlClient`SELECT generation_id FROM telemetry.feed_model_generations WHERE generation_id=ANY(${ids}::uuid[])
-        AND user_id=${scope.userId}::uuid AND queue_scope=${scope.queueScope} AND valid_until_ms>floor(extract(epoch FROM clock_timestamp())*1000)::bigint`;
-      const valid=new Set(rows.map(row=>String(row.generation_id)));return entries.filter(entry=>entry.generation_id&&valid.has(entry.generation_id));
-    };
+    const persistence=measureFeedPersistence(new PostgresFeedPersistence(), persistence => {
+      const context=persistence.getGenerationContext.bind(persistence);
+      persistence.getGenerationContext=async userId=>{
+        const current=await context(userId);
+        return current&&userId===scope.userId&&current.modelPolicySha256===scope.policySha256?{...current,delivered:true}:null;
+      };
+      const recent=persistence.getRecentPersonalizedEntries.bind(persistence);
+      persistence.getRecentPersonalizedEntries=async(...args)=>{
+        const entries=await recent(...args);
+        const ids=entries.map(item=>item.generation_id).filter((id):id is string=>Boolean(id));
+        const rows=await sqlClient`SELECT generation_id FROM telemetry.feed_model_generations WHERE generation_id=ANY(${ids}::uuid[])
+          AND user_id=${scope.userId}::uuid AND queue_scope=${scope.queueScope} AND valid_until_ms>floor(extract(epoch FROM clock_timestamp())*1000)::bigint`;
+        const valid=new Set(rows.map(row=>String(row.generation_id)));return entries.filter(entry=>entry.generation_id&&valid.has(entry.generation_id));
+      };
+    });
     const queue=this.queue.withScope(scope.queueScope);
     const generation=new FeedGenerationService(persistence,queue,this.ml,600,15000,undefined,this.indexedFeedRefill,
       socialCandidatesConfiguration(),feedGenerationBudget(),this.scoringCapture.enabled&&this.privateScoring?
