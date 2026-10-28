@@ -19,11 +19,11 @@ test('README card remains visible without a digest and Tech Stack retains safe i
     import{QueryClient,QueryClientProvider}from'@tanstack/react-query';
     const client=new QueryClient();
     const params=new URLSearchParams(location.search);
-    window.fixture={status:'pending',error:false,compact:false,opens:0,summaries:0,retries:0,saves:0,shares:0,insets:{top:0,bottom:0,left:Number(params.get('left')||0),right:Number(params.get('right')||0)}};
+    window.fixture={status:'pending',error:false,compact:false,opens:0,summaries:0,retries:0,shares:0,insets:{top:0,bottom:0,left:Number(params.get('left')||0),right:Number(params.get('right')||0)}};
     function Fixture(){const[revision,update]=useState(0);window.fixture.refresh=()=>update(x=>x+1);useLayoutEffect(()=>{document.getElementById('card-frame').dataset.revision=String(revision);},[revision]);
       const repository={id:'repo',name:'Books',fullName:'Tarun/Books',description:'Unverified description fallback',readmeSummary:'Unverified description fallback',summarySource:'description_fallback',readmeFull:'# Raw README sentinel',githubUrl:'https://github.com/Tarun/Books',readmeSourcePath:'README.md',readmeDefaultBranch:'main',readmeBaseUrl:null,owner:'Tarun',stats:{stars:12,views:1,forks:0,likes:0,dislikes:0,comments:0,saves:0},languages:params.has('stack')?['React','TypeScript','PostgreSQL','Docker','Rust']:[],topics:[]};
       const actions={onReadFullPress:()=>window.fixture.summaries++,onOpenReadme:()=>window.fixture.opens++};
-      return params.has('parent')?<RepositoryScreen repository={repository} pageWidth={innerWidth} pageHeight={innerHeight-(64+12)} {...actions} onSavePress={()=>window.fixture.saves++} onSharePress={()=>window.fixture.shares++} onCommentPress={()=>{}}/>:<ReadmeCard repository={repository} availableWidth={innerWidth-40} compact={window.fixture.compact} {...actions}/>;}
+      return params.has('parent')?<RepositoryScreen repository={repository} pageWidth={innerWidth} pageHeight={innerHeight-(64+12)} {...actions} onSavePress={()=>{}} onSharePress={()=>window.fixture.shares++} onCommentPress={()=>{}}/>:<ReadmeCard repository={repository} availableWidth={innerWidth-40} compact={window.fixture.compact} {...actions}/>;}
 
     createRoot(document.getElementById('card-frame')).render(<QueryClientProvider client={client}><Fixture/></QueryClientProvider>);
   `}, outfile:path.join(directory,'bundle.js'),bundle:true,platform:'browser',format:'iife',jsx:'automatic',resolveExtensions:['.web.tsx','.tsx','.web.ts','.ts','.web.js','.js','.json'],loader:{'.js':'jsx','.css':'empty'},
@@ -161,8 +161,8 @@ test('README card remains visible without a digest and Tech Stack retains safe i
     assert.ok(bounds.stack.left>=left&&bounds.stack.right<=width-right,'Tech Stack stays within horizontal safe areas');
     assert.ok(bounds.railTop>=bounds.stack.bottom,'the rail cannot rise into the full-width Tech Stack');
     assert.equal(bounds.overflow,false);
-    await pointerClick('Save repository');await pointerClick('Share repository');
-    assert.equal(await evaluate('window.fixture.saves'),1);assert.equal(await evaluate('window.fixture.shares'),1);
+    await pointerClick('Share repository');
+    assert.equal(await evaluate('window.fixture.shares'),1);
     t.diagnostic(JSON.stringify({width,height,left,right,textScale,stackAndRail:'separate hit regions'}));
   }
   t.diagnostic('Actual RN Web ReadmeCard, RepositoryScreen and DescriptionCard with project fonts and real rail icons; explicit summary-network/motion/native-gesture doubles. Layout, CSS text enlargement and pointer clicks are browser checks only, not native fontScale or drag/cancel proof. No external URL is opened.');

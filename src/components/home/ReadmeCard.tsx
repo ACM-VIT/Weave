@@ -134,13 +134,12 @@ export default function ReadmeCard({
           onLayout={(event) => setPreviewHeight(event.nativeEvent.layout.height)}
           style={[
             styles.markdownViewport,
-            preview.source === 'pending' && { flex: 0, minHeight: (compact ? 17 : 21) * fontScale * 2 },
           ]}
         >
           <View style={styles.summaryRow}>
             <Text
               ellipsizeMode="tail"
-              numberOfLines={preview.source === 'pending' ? 2 : previewLines}
+              numberOfLines={preview.source === 'pending' ? Math.min(2, previewLines) : previewLines}
               selectable
               style={[
                 styles.summaryText,
@@ -221,7 +220,8 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
   },
   cardUnavailable: {
-    flex: 0,
+    paddingTop: 4,
+    paddingBottom: 4,
   },
   cardCompact: {
     marginTop: 8,
