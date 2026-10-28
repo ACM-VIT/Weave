@@ -173,13 +173,17 @@ export function SavePopup({
     queryKey: repositoryListsQueryKey(repoId, viewerUserId),
     queryFn: async ({ signal }) => {
       if (!repoId) throw new Error('Repository information is missing.');
+      const generation = authSessionLifecycle.currentGeneration();
       const token = await SecureStore.getItemAsync('access_token');
+      authSessionLifecycle.assertCurrent(generation);
       if (!token) throw new Error('Sign in to manage repository Lists.');
-      return getRepositoryLists(repoId, token, signal);
+      const lists = await getRepositoryLists(repoId, token, signal);
+      authSessionLifecycle.assertCurrent(generation);
+      return lists;
     },
     enabled: isVisible && Boolean(repoId && viewerUserId),
-    staleTime: 0,
-    refetchOnMount: 'always',
+    staleTime: 30_000,
+    refetchOnMount: true,
     retry: 1,
     retryDelay: 500,
   });
@@ -302,7 +306,7 @@ export function SavePopup({
       await haptic('success');
       if (!authSessionLifecycle.isCurrent(generation)) return;
       await queryClient.invalidateQueries({
-        queryKey: repositoryListsQueryKey(repoId, viewerUserId),
+        queryKey: ['repository-lists', viewerUserId],
       });
     },
     onError: (error, generation) => {
@@ -407,7 +411,7 @@ export function SavePopup({
       if (!authSessionLifecycle.isCurrent(input.generation)) return;
       await Promise.all([
         queryClient.invalidateQueries({
-          queryKey: repositoryListsQueryKey(repoId, viewerUserId),
+          queryKey: ['repository-lists', viewerUserId],
         }),
         queryClient.invalidateQueries({
           queryKey: repositoryDetailQueryKey(repoId ?? '', viewerUserId),

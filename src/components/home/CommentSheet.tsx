@@ -412,16 +412,16 @@ export function CommentSheet({
   const renderComment = useCallback(
     ({ item }: { item: CommentRecord }) => {
       const author = authorById[item.user_id];
-      const handle = author?.username
-        ? `@${author.username.replace(/^@/, '')}`
-        : fallbackHandle(item.user_id);
+      const displayName = author?.full_name?.trim()
+        || author?.username?.replace(/^@/, '')
+        || 'Weave user';
       return (
         <View style={styles.commentRow}>
           <CommentAvatar author={author} userId={item.user_id} />
           <View style={styles.commentContent}>
             <View style={styles.commentMeta}>
               <Text numberOfLines={1} style={styles.handle}>
-                {handle}
+                {displayName}
               </Text>
               <Text style={styles.timestamp}>{formatRelativeTime(item.created_at)}</Text>
             </View>
@@ -699,7 +699,6 @@ const styles = StyleSheet.create({
   },
   listContent: {
     paddingVertical: 14,
-    paddingHorizontal: 20,
   },
   emptyListContent: {
     flexGrow: 1,
@@ -708,6 +707,9 @@ const styles = StyleSheet.create({
     height: 17,
   },
   commentRow: {
+    marginHorizontal: 20,
+    paddingTop: 8,
+    paddingBottom: 4,
     flexDirection: 'row',
     alignItems: 'flex-start',
   },

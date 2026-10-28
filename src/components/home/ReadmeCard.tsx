@@ -155,6 +155,7 @@ export default function ReadmeCard({
                 compact
                 key={previewImage.url}
                 maximumWidth={previewImageWidth}
+                priority={isActive ? 'high' : 'low'}
                 url={previewImage.url}
               />
             ) : null}
