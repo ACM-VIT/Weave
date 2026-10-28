@@ -1,3 +1,4 @@
+import { passwordPolicyError } from '@/utils/password-policy';
 import { KeyboardForm } from '@/components/keyboard/keyboard-layout';
 import { useRouter } from "expo-router";
 import { useState } from "react";
@@ -38,10 +39,8 @@ export default function SignUpEmail() {
   const [isLoading, setIsLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState("");
 
-  const hasMinLength = password.length >= 8;
-  const hasNumber = /\d/.test(password);
-  const hasUppercase = /[A-Z]/.test(password);
-  const isPasswordValid = hasMinLength && hasNumber && hasUppercase;
+  const passwordError = passwordPolicyError(password);
+  const isPasswordValid = passwordError === null;
 
   const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
   const isEmailValid = emailRegex.test(email);
@@ -61,7 +60,7 @@ export default function SignUpEmail() {
     if (!isUsernameValid) return USERNAME_GUIDANCE;
     if (!isDateOfBirthValid) return 'Select your date of birth.';
     if (!isEmailValid) return 'Enter a valid email address.';
-    if (!isPasswordValid) return 'Your password must satisfy all three rules.';
+    if (passwordError) return passwordError;
     return '';
   };
 
