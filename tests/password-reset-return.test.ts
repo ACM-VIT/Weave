@@ -9,7 +9,7 @@ import ts from 'typescript';
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
-function fixture(platform: 'web' | 'ios' | 'android', options: { updateFails?: boolean; blocked?: boolean; invalid?: boolean; reply?: Promise<void> } = {}) {
+function fixture(platform: 'web' | 'ios' | 'android', options: { updateFails?: boolean; blocked?: boolean; invalid?: boolean; reply?: Promise<void>; expired?: boolean; providerError?: boolean } = {}) {
   const events: string[] = [];
   const calls: string[][] = [];
   const filename = resolve('src/app/(auth)/reset-password.tsx');
@@ -23,13 +23,14 @@ function fixture(platform: 'web' | 'ios' | 'android', options: { updateFails?: b
     '@/api/auth': { confirmPasswordReset: async (...args: string[]) => {
       calls.push(args);
       await options.reply;
-      if (options.updateFails) throw new Error('Reset expired');
+      if (options.expired) throw Object.assign(new Error('This password reset link is invalid or expired.'),{code:'PASSWORD_RESET_SESSION_INVALID'});
+      if (options.updateFails) throw new Error('Reset temporarily unavailable');
       events.push('updated');
       return 'Password updated successfully.';
     } },
     'react-native': { Platform: { OS: platform }, Pressable: 'Pressable', Text: 'Text', View: 'View' },
     'expo-router': {
-      useLocalSearchParams: () => options.invalid ? {} : { access_token: 'recovery-access', refresh_token: 'recovery-refresh' },
+      useLocalSearchParams: () => options.providerError ? {error_description:'private-provider-token-detail'} : options.invalid ? {} : { access_token: 'recovery-access', refresh_token: 'recovery-refresh' },
       useRouter: () => ({ replace: (path: string) => events.push(path) }),
     },
 
@@ -94,11 +95,11 @@ for (const options of [{ updateFails: true }, { invalid: true }]) {
     await act(async () => {
       for (const input of screen.root.findAllByType('LoginInput')) input.props.onChangeText('a-new-password-123');
     });
-    await act(async () => { screen.root.findByType('PrimaryButton').props.onPress(); });
+    if (!options.invalid) await act(async () => { screen.root.findByType('PrimaryButton').props.onPress(); });
     assert.deepEqual(f.events, []);
-    assert.equal(screen.root.findAllByType('LoginInput').length, 2);
+    assert.equal(screen.root.findAllByType('LoginInput').length, options.invalid ? 0 : 2);
     if (options.invalid) assert.equal(f.calls.length, 0);
-    else assert.match(JSON.stringify(screen.toJSON()), /Reset expired/);
+    else assert.match(JSON.stringify(screen.toJSON()), /Reset temporarily unavailable/);
     await act(async () => screen.unmount());
   });
 }
@@ -186,4 +187,31 @@ test('signup blocks the former eight-character rule and accepts the same policy 
     await act(async()=>{await screen.root.findByType('PrimaryButton').props.onPress();});
     assert.equal(submissions.length,1);
   } finally {await act(async()=>screen.unmount());}
+});
+
+
+for(const options of [{invalid:true},{providerError:true},{expired:true}]) test(`invalid recovery offers one-tap restart and hides password fields ${JSON.stringify(options)}`,async()=>{
+  const f=fixture('web',options);let screen!:ReturnType<typeof create>;
+  await act(async()=>{screen=create(React.createElement(f.Screen));});
+  try {
+    if(options.expired){
+      await act(async()=>{for(const input of screen.root.findAllByType('LoginInput'))input.props.onChangeText('a-new-password-123');});
+      await act(async()=>{await screen.root.findByType('PrimaryButton').props.onPress();});
+    }
+    assert.equal(screen.root.findAllByType('LoginInput').length,0);
+    assert.equal(screen.root.findAllByType('PrimaryButton').some(node=>node.props.label==='Update password'),false);
+    assert.match(JSON.stringify(screen.toJSON()),/This reset link is invalid or expired/);
+    assert.equal(JSON.stringify(screen.toJSON()).includes('private-provider-token-detail'),false);
+    const restart=screen.root.findByType('PrimaryButton');assert.equal(restart.props.label,'Request a new reset link');
+    await act(async()=>restart.props.onPress());assert.equal(f.events.at(-1),'/(auth)/forgot-password');
+  }finally{await act(async()=>screen.unmount());}
+});
+
+test('password reset transport preserves terminal recovery codes for the restart state',async t=>{
+  const {loadSource}=await import('./support/startup-harness');
+  const {confirmPasswordReset}=loadSource('src/api/auth.ts',{
+    './config':{API_URL:'http://fixture.invalid/api'},'./session-transitions':{},
+  });
+  t.mock.method(globalThis,'fetch',async()=>new Response(JSON.stringify({success:false,error:'This password reset link is invalid or expired.',code:'PASSWORD_RESET_SESSION_INVALID'}),{status:400}));
+  await assert.rejects(confirmPasswordReset('access','refresh','a-new-password-123'),{code:'PASSWORD_RESET_SESSION_INVALID',status:400});
 });
