@@ -2,7 +2,7 @@ import { homeFeedQueryOptions } from '@/services/homeFeedQuery';
 import { KeyboardProvider } from 'react-native-keyboard-controller';
 import '@/global.css';
 import { useEffect, useRef, useState } from 'react';
-import { Pressable, Text, View } from 'react-native';
+import { Platform, Pressable, Text, View } from 'react-native';
 import { Stack, type Href, usePathname, useRouter, useSegments, useGlobalSearchParams } from 'expo-router';
 import Head from 'expo-router/head';
 import { useFonts } from 'expo-font';
@@ -125,7 +125,16 @@ function RootLayoutNav({ fontsReady }: { fontsReady: boolean }) {
   }
   if (!isReady && !startupComplete && !publicRouteReady) return null;
 
-  return <Stack screenOptions={{ headerShown: false }} />;
+  return <Stack screenOptions={({ route }) => ({
+    headerShown: false,
+    // Web's default stack hides the covered route with display:none. That
+    // collapses Explore's measured masonry cells and visibly rebuilds them on
+    // Back. Keep its layout behind the opaque detail page instead.
+    ...(Platform.OS === 'web' && route.name === 'repository/[repoId]' ? {
+      presentation: 'transparentModal',
+      contentStyle: { backgroundColor: REFERENCE_THEME.background },
+    } : {}),
+  })} />;
 }
 
 const queryClient = new QueryClient();

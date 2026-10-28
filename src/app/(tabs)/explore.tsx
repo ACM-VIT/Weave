@@ -1,9 +1,9 @@
 import { rememberRepositoryPreview } from '@/services/repositoryPreview';
 import { KeyboardSurface } from '@/components/keyboard/keyboard-layout';
-import { useMemo, useState } from 'react';
-import { ActivityIndicator, FlatList, Pressable, ScrollView, StatusBar, Text, View } from 'react-native';
+import { useCallback, useMemo, useRef, useState } from 'react';
+import { ActivityIndicator, FlatList, Platform, Pressable, ScrollView, StatusBar, Text, View } from 'react-native';
 import { FlashList } from '@shopify/flash-list';
-import { router } from 'expo-router';
+import { router, useFocusEffect } from 'expo-router';
 import { randomUUID } from 'expo-crypto';
 import { useNetInfo } from '@react-native-community/netinfo';
 import { useInfiniteQuery, useQueryClient } from '@tanstack/react-query';
@@ -20,13 +20,8 @@ import { searchResultHref, type SearchGroup, type SearchItem } from '@/models/se
 import { useAuth } from '@/store/AuthContext';
 import type { TabName } from '@/types';
 
-function SearchRow({ item }: { item: SearchItem }) {
-  const { user } = useAuth();
-  const queryClient = useQueryClient();
-  const open = () => {
-    if (item.type === 'repository') rememberRepositoryPreview(queryClient, user?.user_id, item.data);
-    router.push(searchResultHref(item));
-  };
+function SearchRow({ item, onOpen }: { item: SearchItem; onOpen: (item: SearchItem) => void }) {
+  const open = () => onOpen(item);
   if (item.type === 'repository') return <TrendingRepoCard repo={item.data} onPress={open} />;
   const title = item.type === 'person' ? item.data.display_name || item.data.username : item.data.name;
   const subtitle = item.type === 'person' ? `@${item.data.username}${item.data.bio ? ` · ${item.data.bio}` : ''}` : `${item.data.repositoryCount} repositories${item.data.description ? ` · ${item.data.description}` : ''}`;
@@ -84,6 +79,41 @@ export default function ExploreScreen() {
   const ResultsList = twoColumns ? FlashList<SearchItem> : FlatList<SearchItem>;
   const periods = browse.data?.pages[0]?.availablePeriods ?? [];
   const selectedPeriod = browse.data?.pages[0]?.period ?? period;
+  const listKey = JSON.stringify([user?.user_id, searching ? [group, query, searchId] : [activeTab, selectedPeriod]]);
+  const listRef = useRef<{
+    scrollToOffset: (options: {offset:number;animated:boolean}) => void;
+    getScrollableNode?: () => unknown;
+  } | null>(null);
+  const scrollPosition = useRef({key:listKey,offset:0});
+  const returnPosition = useRef<{key:string;offset:number} | null>(null);
+  const focused = useRef(false);
+  const restorePosition = useCallback(() => {
+    const saved = returnPosition.current;
+    if (!focused.current || !saved) return;
+    if (saved.key !== listKey) { returnPosition.current = null; return; }
+    if (!listRef.current) return;
+    if (Platform.OS === 'web' && saved.offset > 0) {
+      const node = listRef.current.getScrollableNode?.() as {clientHeight:number;scrollHeight:number} | undefined;
+      // A focused screen may still have collapsed content. Scrolling now would
+      // clamp to zero; keep the snapshot until visible content is laid out.
+      if (node && (!node.clientHeight || node.scrollHeight - node.clientHeight + 1 < saved.offset)) return;
+    }
+    listRef.current.scrollToOffset({offset:saved.offset,animated:false});
+    scrollPosition.current = saved;
+    returnPosition.current = null;
+  }, [listKey]);
+  useFocusEffect(useCallback(() => {
+    focused.current = true;
+    // The retained list can receive a zero-sized layout while the detail is on
+    // top. Restore after it is visible, without refetching/remounting results.
+    const frame = requestAnimationFrame(restorePosition);
+    return () => { focused.current = false; cancelAnimationFrame(frame); };
+  }, [restorePosition]));
+  const openResult = (item: SearchItem) => {
+    returnPosition.current = scrollPosition.current.key === listKey ? {...scrollPosition.current} : {key:listKey,offset:0};
+    if (item.type === 'repository') rememberRepositoryPreview(queryClient, user?.user_id, item.data);
+    router.push(searchResultHref(item));
+  };
   const fallback = searching && search.data?.pages.some(page => page.mode === 'lexical');
   const status = searching && query.length < MIN_SEARCH_LENGTH ? 'Type at least 2 characters to search.'
     : composing ? 'Finish typing to search.'
@@ -105,12 +135,25 @@ export default function ExploreScreen() {
       </ScrollView> : null}
     </View>
     <ResultsList
-      key={`${searching ? group : activeTab}:${query}:${selectedPeriod ?? ''}`}
+      key={listKey}
+      ref={instance => { listRef.current = instance; }}
+      onScroll={event => {
+        if (focused.current) scrollPosition.current = {key:listKey,offset:event.nativeEvent.contentOffset.y};
+      }}
+      scrollEventThrottle={16}
+      onLayout={event => { if (event.nativeEvent.layout.height > 0) restorePosition(); }}
+      onContentSizeChange={restorePosition}
+      onScrollBeginDrag={() => { returnPosition.current = null; }}
+      {...(Platform.OS === 'web' ? {
+        onWheel: () => { returnPosition.current = null; },
+        onKeyDown: () => { returnPosition.current = null; },
+      } : {})}
       data={items}
       keyExtractor={item => `${item.type}:${item.id}`}
       {...(twoColumns ? {
         numColumns: 2,
         masonry: true,
+        onCommitLayoutEffect: restorePosition,
         optimizeItemArrangement: false,
         getItemType: (item: SearchItem) => item.type,
         showsVerticalScrollIndicator: false,
@@ -123,13 +166,10 @@ export default function ExploreScreen() {
       renderItem={({ item }) => twoColumns ? (
         <View style={{ minWidth: 0, paddingHorizontal: 5, paddingBottom: 10 }}>
           {item.type === 'repository'
-            ? <RepoCard repo={item.data} onPress={() => {
-              rememberRepositoryPreview(queryClient, user?.user_id, item.data);
-              router.push(searchResultHref(item));
-            }} />
-            : <SearchRow item={item} />}
+            ? <RepoCard repo={item.data} onPress={() => openResult(item)} />
+            : <SearchRow item={item} onOpen={openResult} />}
         </View>
-      ) : <SearchRow item={item} />}
+      ) : <SearchRow item={item} onOpen={openResult} />}
       keyboardDismissMode="on-drag"
       keyboardShouldPersistTaps="handled"
       contentInsetAdjustmentBehavior="automatic"

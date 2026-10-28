@@ -2,6 +2,8 @@ import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { resolve } from 'node:path';
 import ts from 'typescript';
+import React from 'react';
+import { create } from 'react-test-renderer';
 import type { fetchExploreRepos } from '../src/api/explore';
 import test, { describe } from "node:test";
 import assert from "node:assert/strict";
@@ -350,4 +352,88 @@ test('idle browse warmup preserves populated stale infinite pages and fetches on
     assert.deepEqual(requests,['Trending:0'],'Home must not refetch every stale page already loaded by Explore');
     assert.deepEqual(client.getQueryData(key),cached,'Warmup retains every loaded page and pagination offset');
   }finally{cleanup?.();client.clear();}
+});
+
+// Reproduce the real screen losing its native list offset while hidden.
+function exploreNavigation() {
+  const filename = resolve('src/app/(tabs)/explore.tsx'), nativeRequire = createRequire(filename);
+  let focused = true, viewer = 'viewer-a', physicalOffset = 0, sequence = 0, contentHeight = 6000;
+  const frames = new Map<number, FrameRequestCallback>();
+  const originalFrame = globalThis.requestAnimationFrame, originalCancel = globalThis.cancelAnimationFrame;
+  globalThis.requestAnimationFrame = callback => { frames.set(++sequence, callback); return sequence; };
+  globalThis.cancelAnimationFrame = id => { frames.delete(id); };
+  (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
+  const List = React.forwardRef(function NavigationList(props: any, ref) {
+    React.useImperativeHandle(ref, () => ({
+      scrollToOffset: ({offset}: {offset:number}) => { physicalOffset = Math.min(offset,contentHeight-600); },
+      getScrollableNode: () => ({scrollHeight:contentHeight,clientHeight:600}),
+    }));
+    return React.createElement('ResultList', props, props.data.map((item: any) => React.createElement(React.Fragment,{key:item.id},props.renderItem({item}))));
+  });
+  const repo = mapRepositoryDetail({repo_id:'repo',full_name:'owner/repo'})!;
+  const module = {exports:{} as any};
+  const javascript = ts.transpileModule(readFileSync(filename,'utf8'), {fileName:filename,
+    compilerOptions:{module:ts.ModuleKind.CommonJS,jsx:ts.JsxEmit.ReactJSX,esModuleInterop:true}}).outputText;
+  new Function('require','module','exports',javascript)((name:string) => {
+    if(name==='react-native')return {Platform:{OS:'web'},FlatList:List,View:'View',Text:'Text',Pressable:'Pressable',ScrollView:'ScrollView',StatusBar:'StatusBar',ActivityIndicator:'ActivityIndicator'};
+    if(name==='@shopify/flash-list')return {FlashList:List};
+    if(name==='expo-router')return {router:{push(){}},useFocusEffect:(effect:()=>void|(()=>void))=>{
+      const active=focused;
+      React.useEffect(()=>active?effect():undefined,[active,effect]);
+    }};
+    if(name==='expo-crypto')return {randomUUID:()=>`search-${++sequence}`};
+    if(name==='@react-native-community/netinfo')return {useNetInfo:()=>({isConnected:true})};
+    if(name==='react-native-safe-area-context')return {useSafeAreaInsets:()=>({top:0,bottom:0})};
+    if(name==='@/store/AuthContext')return {useAuth:()=>({user:{user_id:viewer}})};
+    if(name==='@tanstack/react-query')return {useQueryClient:()=>({}),useInfiniteQuery:(options:any)=>({data:{pages:[{items:options.queryKey[0]==='explore-search'?[{type:'repository',id:repo.id,data:repo}]:[repo]}]}})};
+    if(name==='@/services/repositoryPreview')return {rememberRepositoryPreview(){}};
+    if(name==='@/api/explore')return {exploreBrowseQueryOptions:()=>({queryKey:['browse']}),mergeExplorePages:(pages:any[])=>pages.flatMap(page=>page.items)};
+    if(name==='@/api/search')return {fetchSearch(){throw Error('No search transport in navigation regression');}};
+    if(name==='@/components/keyboard/keyboard-layout')return {KeyboardSurface:'KeyboardSurface'};
+    if(name.startsWith('@/components/explore/'))return {__esModule:true,default:name.split('/').at(-1)};
+    return nativeRequire(name);
+  },module,module.exports);
+  let root: ReturnType<typeof create>;
+  const render=()=>React.act(()=>{if(root)root.update(React.createElement(module.exports.default));else root=create(React.createElement(module.exports.default));});
+  return {
+    async mount(){await render();},
+    async scroll(offset:number){physicalOffset=offset;await React.act(()=>root.root.findByType('ResultList').props.onScroll?.({nativeEvent:{contentOffset:{y:offset}}}));},
+    async interrupt(){await React.act(()=>root.root.findByType('ResultList').props.onScrollBeginDrag?.());},
+    async open(){await React.act(()=>root.root.findByType('RepoCard').props.onPress());},
+    async focus(value:boolean){focused=value;if(!value)contentHeight=600;await render();},
+    async layout(height=6000){contentHeight=height;await React.act(()=>{
+      const props=root.root.findByType('ResultList').props;
+      if(props.masonry)props.onCommitLayoutEffect?.();else props.onContentSizeChange?.(400,6000);
+    });},
+    async frame(){await React.act(()=>{for(const [id,callback] of [...frames]){frames.delete(id);callback(0);}});},
+    async owner(value:string){viewer=value;await render();},
+    get offset(){return physicalOffset;},
+    async close(){await React.act(()=>root.unmount());globalThis.requestAnimationFrame=originalFrame;globalThis.cancelAnimationFrame=originalCancel;},
+  };
+}
+
+test('Explore restores the scrolled list after repository Back without retaining hidden zero offsets', async () => {
+  const app=exploreNavigation();await app.mount();
+  try {
+    await app.frame();await app.scroll(915);await app.open();
+    await app.focus(false);await app.scroll(0);
+    await app.focus(true);await app.frame();await app.frame();
+    assert.equal(app.offset,0,'focus can precede the retained list content layout');
+    await app.layout(1000);await app.frame();
+    assert.equal(app.offset,0,'partially measured cells must not consume the return position');
+    await app.layout();await app.frame();
+    assert.equal(app.offset,915,'Back must restore the same loaded results position');
+    await app.open();await app.focus(false);await app.scroll(0);await app.focus(true);await app.frame();
+    await app.interrupt();await app.scroll(300);await app.layout();await app.frame();
+    assert.equal(app.offset,300,'late layout cannot override a new user scroll');
+  } finally {await app.close();}
+});
+
+test('Explore never restores a prior account navigation offset into the next account', async () => {
+  const app=exploreNavigation();await app.mount();
+  try {
+    await app.frame();await app.scroll(915);await app.open();await app.focus(false);
+    await app.scroll(0);await app.owner('viewer-b');await app.focus(true);await app.frame();await app.layout();await app.frame();
+    assert.equal(app.offset,0);
+  } finally {await app.close();}
 });

@@ -22,7 +22,7 @@ export async function buildExploreBrowser(directory: string) {
       const stubs={
         auth:"import{useEffect,useState}from'react';export function useAuth(){const[,update]=useState(0);useEffect(()=>{const event=()=>update(x=>x+1);window.addEventListener('fixture-change',event);return()=>window.removeEventListener('fixture-change',event);},[]);return{user:{user_id:window.fixture.owner}};}",
         net:"import{useEffect,useState}from'react';export function useNetInfo(){const[,update]=useState(0);useEffect(()=>{const event=()=>update(x=>x+1);window.addEventListener('fixture-change',event);return()=>window.removeEventListener('fixture-change',event);},[]);return{isConnected:!window.fixture.offline,isInternetReachable:!window.fixture.offline};}",
-        router:"export const router={push:value=>{window.fixture.route=value;}};",
+        router:"import{useEffect}from'react';export function useFocusEffect(effect){useEffect(effect,[effect]);}export const router={push:value=>{window.fixture.route=value;}};",
         safe:"export const useSafeAreaInsets=()=>({top:0,bottom:0,left:0,right:0});",
         keyboard:"import React from'react';import{View}from'react-native';export const KeyboardSurface=props=><View {...props}/>;",
         crypto:"export const randomUUID=()=>window.crypto.randomUUID();",
