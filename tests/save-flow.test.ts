@@ -257,3 +257,35 @@ describe("Swipe admission", () => {
     assert.equal(shouldOpenSavePicker(SAVE_SWIPE_THRESHOLD, -60), false);
   });
 });
+
+
+test('the windowed save grid retains offscreen memberships while filtering and creating a List', async()=>{
+  const app=feed([],true);const submitted:string[][]=[];
+  app.setSave(async(_repo, selected)=>{
+    submitted.push([...selected]);
+    return {saved:true,selectedListIds:selected,saveStateChanged:false};
+  });
+  const lists=Array.from({length:5000},(_,index)=>({id:String(index),source:index%2?'legacy-board':'collection',
+    name:`List ${String(index).padStart(5,'0')}`,selected:index===4999,repositoryCount:index}));
+  app.setListLoader(async()=>lists);
+  app.setCreate(async()=>({id:'new',source:'collection',name:'New List',selected:false,repositoryCount:0}));
+  await app.mountStandaloneSave('00000000-0000-4000-8000-000000000011');
+  try {
+    await waitForReadmeState(()=>app.messages.includes('List 00000'));
+    assert.ok(!app.messages.includes('List 04999'),'the selected tail membership is outside the render window');
+    await app.moveListWindow(2500);
+    await app.press('List 02500, 2500 repositories');
+    await app.moveListWindow(0);
+    assert.ok(!app.messages.includes('List 02500'));
+    await app.moveListWindow(2500);
+    assert.equal(app.button('List 02500, 2500 repositories').props.accessibilityState.checked,true);
+    await app.moveListWindow(0);
+    await app.searchLists('List 00000');
+    await app.press('List 00000, 0 repositories');
+    await app.searchLists('no match');
+    assert.ok(app.messages.includes('No matching Lists'));
+    await app.createCollection('New List');
+    await app.press('Save repository to selected Lists');
+    assert.deepEqual(submitted.map(ids=>ids.sort()),[['collection:0','collection:2500','legacy-board:4999','collection:new'].sort()]);
+  } finally {await app.unmount();}
+});
