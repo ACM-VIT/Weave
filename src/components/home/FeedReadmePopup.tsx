@@ -30,9 +30,13 @@ export function FeedReadmePopup({ repository, onClose, summaryText, summaryVersi
     && (!expectedHash || source.contentHash === expectedHash);
   const media = matchingMedia ? source.readmeFull : null;
   const manifestMedia = manifestMatchesSummary ? manifest : null;
+  const manifestImages = useMemo(() => manifestMedia
+    ? [...new Map([...(manifestMedia.poster ? [manifestMedia.poster] : []), ...manifestMedia.images]
+      .map(image => [image.url, image])).values()].slice(0, 3)
+    : undefined, [manifestMedia]);
   return <ReadmePopup isVisible onClose={onClose} title={repository.name} contentKind={summaryText === undefined ? "readme" : "summary"}
     readmeText={summaryText === undefined ? source.readmeFull : summaryText} mediaMarkdown={media}
-    mediaImages={manifestMedia?.images} mediaVideos={manifestMedia?.videos}
+    mediaImages={manifestImages} mediaVideos={manifestMedia?.videos}
     mediaMessage={summaryText !== undefined && !media && !manifestMedia
       ? query.isFetching || query.isPending ? 'Loading images and videos…' : query.isError ? 'Could not load README images and videos.'
         : !matchingMedia ? 'Repository updated. Reopen its detail for the current summary.' : null : null}

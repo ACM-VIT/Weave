@@ -68,7 +68,8 @@ test('matching deferred media manifest keeps feed previews without fetching the 
     schema_version: 2 as const, content_version: 7, content_hash: 'fixture-content-hash', readme_available: true,
     representation: 'deferred' as const,
     poster: { alt: 'Repository poster', url: 'https://cdn.example.com/poster.png' },
-    images: [{ alt: 'Architecture', url: 'https://cdn.example.com/architecture.png' }],
+    images: [{ alt: 'Architecture', url: 'https://cdn.example.com/architecture.png' },
+      {alt:'Diagram',url:'https://cdn.example.com/diagram.png'}, {alt:'Extra',url:'https://cdn.example.com/extra.png'}],
     videos: ['https://cdn.example.com/demo.mp4'],
   };
   const app = feed(['repo'], true, { ownerId: 'viewer', repository: {
@@ -84,6 +85,7 @@ test('matching deferred media manifest keeps feed previews without fetching the 
     await waitForReadmeState(() => app.previewImages.includes('https://cdn.example.com/architecture.png')
       && app.videoUrls.includes('https://cdn.example.com/demo.mp4'));
     assert.deepEqual(app.requests, [], 'the summary manifest avoids an eager canonical body request');
+    assert.deepEqual(app.previewImages,['https://cdn.example.com/poster.png','https://cdn.example.com/architecture.png','https://cdn.example.com/diagram.png'], 'include the cached card poster while keeping summary images bounded');
     assert.equal(app.readmePopupProps.mediaMessage, null);
     assert.equal(app.videoPopup, undefined, 'manifest videos remain previews until tapped');
     await app.openVideo();
