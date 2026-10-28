@@ -8,20 +8,22 @@ import {
   View,
   useWindowDimensions,
 } from 'react-native';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useInfiniteQuery, useQueryClient } from '@tanstack/react-query';
 import { ArrowLeft, CircleAlert, FolderOpen, Pin } from 'lucide-react-native';
 import { router, useLocalSearchParams } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import {
-  getBoardRepositories,
-  getCollectionRepositories,
+  getBoardRepositoriesPage,
+  getCollectionRepositoriesPage,
 } from '@/api/boards';
 import RepoCard from '@/components/explore/RepoCard';
 import { loadPinnedRepositories } from '@/services/pinnedRepositoryStorage';
-import { listRepositoryQueryKey } from '@/services/accountQueryCache';
+import { listRepositoryQueryOptions } from '@/services/accountQueryCache';
 import { useAuth } from '@/store/AuthContext';
 import { repositoryHref } from '@/utils/repository-links';
+import { retryKeysetQuery } from '@/services/keysetQueryRecovery';
+import { authSessionLifecycle } from '@/api/session-lifecycle';
 import { mapPinnedRepository } from '@/utils/repository-mapper';
 import { getStorageItem } from '@/utils/storage';
 
@@ -52,29 +54,29 @@ export default function BoardScreen() {
   const boardDescription = firstParam(params.boardDescription);
   const isCompact = width < 360;
 
-  const repositoriesQuery = useQuery({
-    queryKey: listRepositoryQueryKey(isPinnedCollection ? 'pinned' : isRepositoryCollection ? 'collection' : 'board',
-      user?.user_id, isPinnedCollection ? '' : isRepositoryCollection ? collectionId : boardId),
-    enabled: Boolean(user?.user_id) && (isPinnedCollection || Boolean(isRepositoryCollection ? collectionId : boardId)),
-    staleTime: 30_000,
-    // Surface failures promptly; the error state provides an explicit retry action.
-    retry: false,
-    queryFn: async ({ signal }) => {
+  const repositoriesQuery = useInfiniteQuery(listRepositoryQueryOptions(
+    isPinnedCollection ? 'pinned' : isRepositoryCollection ? 'collection' : 'board',
+    user?.user_id, isPinnedCollection ? '' : isRepositoryCollection ? collectionId : boardId,
+    async (cursor, signal) => {
+      const generation = authSessionLifecycle.currentGeneration();
       if (isPinnedCollection) {
-        if (!user?.user_id) throw new Error('Sign in to view pinned repositories.');
-        return (await loadPinnedRepositories(user.user_id))
-          .map(mapPinnedRepository)
+        const items = (await loadPinnedRepositories(user!.user_id)).map(mapPinnedRepository)
           .filter((repository) => repository !== null);
+        authSessionLifecycle.assertCurrent(generation); signal.throwIfAborted();
+        return {items, has_more:false, next_cursor:null};
       }
       const token = await getStorageItem('access_token');
+      authSessionLifecycle.assertCurrent(generation); signal.throwIfAborted();
       if (!token) throw new Error('Your session has expired. Please log in again.');
-      return isRepositoryCollection
-        ? await getCollectionRepositories(collectionId, token, signal)
-        : await getBoardRepositories(boardId, token, signal);
+      const page = await (isRepositoryCollection
+        ? getCollectionRepositoriesPage(collectionId, token, {limit:25,cursor:cursor ?? undefined}, signal)
+        : getBoardRepositoriesPage(boardId, token, {limit:25,cursor:cursor ?? undefined}, signal));
+      authSessionLifecycle.assertCurrent(generation);
+      return page;
     },
-  });
-
-  const repositories = repositoriesQuery.data ?? [];
+  ));
+  const repositories = [...new Map((repositoriesQuery.data?.pages.flatMap(page => page.items) ?? [])
+    .map(repository => [repository.id,repository])).values()];
 
   const goBack = () => {
     if (router.canGoBack()) router.back();
@@ -88,7 +90,7 @@ export default function BoardScreen() {
   };
 
   const repositoryCountLabel = repositoriesQuery.isSuccess
-    ? `${repositories.length} ${repositories.length === 1 ? 'repository' : 'repositories'}`
+    ? `${repositories.length} ${repositories.length === 1 ? 'repository' : 'repositories'}${repositoriesQuery.hasNextPage ? ' loaded' : ''}`
     : null;
 
   return (
@@ -203,6 +205,21 @@ export default function BoardScreen() {
               )}
             </View>
           }
+          ListFooterComponent={repositoriesQuery.hasNextPage || (repositories.length > 0 && repositoriesQuery.isError) ? (
+            <Pressable accessibilityRole="button" accessibilityLabel="Load more List repositories"
+              disabled={repositoriesQuery.isFetching}
+              onPress={() => void (repositoriesQuery.isError ? retryKeysetQuery(repositoriesQuery)
+                : repositoriesQuery.fetchNextPage({cancelRefetch:false}))}
+              style={styles.retryButton}>
+              {repositoriesQuery.isFetching ? <ActivityIndicator color="#63E08A" />
+                : <Text style={styles.retryButtonLabel}>{repositoriesQuery.isError ? 'Try again' : 'Load more'}</Text>}
+            </Pressable>
+          ) : null}
+          onEndReached={() => {
+            if (repositoriesQuery.hasNextPage && !repositoriesQuery.isFetching && !repositoriesQuery.isError)
+              void repositoriesQuery.fetchNextPage({cancelRefetch:false});
+          }}
+          onEndReachedThreshold={0.5}
           renderItem={({ item }) => (
             <View>
               <RepoCard
