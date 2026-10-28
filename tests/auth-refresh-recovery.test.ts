@@ -330,10 +330,12 @@ test('logout timeout reports an unsafe marker failure without restoring a supers
     const aliceToken = fixtureToken('alice');
     const bobToken = fixtureToken('bob');
     let logoutRequests = 0;
+    let onboardingWrites = 0;
     t.mock.method(globalThis, 'fetch', async (url, options) => {
       const path = String(url);
       if (path.endsWith('/auth/refresh')) return refreshResponse.promise;
       if (path.endsWith('/auth/logout')) { logoutRequests++; return envelope({}); }
+      if (path.endsWith('/v2/onboarding/complete')) { onboardingWrites++; return envelope({ completed: true, viewer: { completed: true, user_id: 'alice', username: 'alice', full_name: 'Alice', date_of_birth: '2000-01-01', onboarding_completed: true } }); }
       assert.ok(path.endsWith('/v2/users/me'));
       const owner = new Headers(options?.headers).get('Authorization') === `Bearer ${bobToken}` ? 'bob' : 'alice';
       return envelope({ user_id: owner, username: owner, onboarding_completed: true });
@@ -343,6 +345,7 @@ test('logout timeout reports an unsafe marker failure without restoring a supers
     try {
       await act(async () => { app.session.resolve(aliceToken); app.fonts.resolve(); });
       assert.equal(app.auth.user?.user_id, 'alice');
+      const previousCompletion = app.auth.completeOnboarding;
       let refresh!: Promise<unknown>;
       await act(async () => { refresh = app.refresh().catch(error => error); });
       app.failMarkerWrites(true);
@@ -360,6 +363,11 @@ test('logout timeout reports an unsafe marker failure without restoring a supers
         assert.equal((result as Error).name, 'LogoutNotCompletedError');
         assert.equal(app.auth.user?.user_id, 'alice', 'unsafe logout must restore the viewer and report failure');
         assert.equal(app.storedToken, aliceToken);
+        const draft = { username: 'alice', full_name: 'Alice', date_of_birth: '2000-01-01', interests: ['react'] };
+        await assert.rejects(previousCompletion(draft), { name: 'SessionChangedError' });
+        assert.equal(onboardingWrites, 0, 'pre-logout callback remains fenced');
+        await act(async () => { await app.auth.completeOnboarding(draft); });
+        assert.equal(onboardingWrites, 1, 'the newly restored viewer can complete onboarding without another profile read');
       } else {
         assert.equal(app.auth.user, null, 'stale logout must not restore alice over the new account transition');
       }
@@ -380,9 +388,11 @@ test('late logout preparation reconciles credentials before restoring the curren
     const refreshResponse = deferred<Response>();
     const aliceToken = fixtureToken('alice');
     const bobToken = fixtureToken('bob');
+    let onboardingWrites = 0;
     t.mock.method(globalThis, 'fetch', async (url, options) => {
       const path = String(url);
       if (path.endsWith('/auth/refresh')) return refreshResponse.promise;
+      if (path.endsWith('/v2/onboarding/complete')) { onboardingWrites++; return envelope({ completed: true, viewer: { completed: true, user_id: 'alice', username: 'alice', full_name: 'Alice', date_of_birth: '2000-01-01', onboarding_completed: true } }); }
       assert.ok(path.endsWith('/v2/users/me'), 'no out-of-order logout request may start');
       const owner = new Headers(options?.headers).get('Authorization') === `Bearer ${bobToken}` ? 'bob' : 'alice';
       return envelope({ user_id: owner, username: owner, onboarding_completed: true });
@@ -391,6 +401,7 @@ test('late logout preparation reconciles credentials before restoring the curren
     await app.mount(() => t.mock.timers.tick(0));
     try {
       await act(async () => { app.session.resolve(aliceToken); app.fonts.resolve(); });
+      const previousCompletion = app.auth.completeOnboarding;
       let refresh!: Promise<unknown>;
       await act(async () => { refresh = app.refresh().catch(error => error); });
       app.holdMarkerWrites(marker.promise);
@@ -413,6 +424,11 @@ test('late logout preparation reconciles credentials before restoring the curren
       } else if (outcome === 'failed') {
         assert.equal(app.storedToken, aliceToken);
         assert.equal(app.auth.user?.user_id, 'alice', 'confirmed marker failure may restore only its current viewer');
+        const draft = { username: 'alice', full_name: 'Alice', date_of_birth: '2000-01-01', interests: ['react'] };
+        await assert.rejects(previousCompletion(draft), { name: 'SessionChangedError' });
+        assert.equal(onboardingWrites, 0, 'pre-logout callback remains fenced after deferred recovery');
+        await act(async () => { await app.auth.completeOnboarding(draft); });
+        assert.equal(onboardingWrites, 1, 'deferred restoration binds the fresh completion callback to its recovery generation');
       } else {
         assert.equal(app.auth.user, null, 'late preparation must not restore the superseded viewer');
       }
@@ -423,4 +439,99 @@ test('late logout preparation reconciles credentials before restoring the curren
       }
     } finally { t.mock.timers.reset(); await app.unmount(); }
   }
+});
+
+
+test('onboarding deadline fences the real apiV2 storage read immediately before fetch', async t => {
+  const app = startup({ realNetwork: true });
+  const token = fixtureToken('alice');
+  let writes = 0;
+  t.mock.method(globalThis, 'fetch', async (url, options) => {
+    const path = String(url);
+    assert.ok(path.endsWith('/v2/users/me') || path.endsWith('/v2/onboarding/complete'));
+    const viewer = { user_id: 'alice', username: 'alice', full_name: 'Alice', date_of_birth: '2000-01-01', onboarding_completed: false };
+    if (options?.method === 'PUT') { writes++; return envelope({ completed: true, viewer: { ...viewer, onboarding_completed: true } }); }
+    return envelope(viewer);
+  });
+  await app.mount();
+  try {
+    await act(async () => { app.session.resolve(token); app.fonts.resolve(); });
+    const lateRead = deferred<string | null>(); let reads = 0;
+    app.setTokenReadOverride(() => ++reads === 1 ? Promise.resolve(token) : lateRead.promise);
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    let outcome: any;
+    await act(async () => { void app.auth.completeOnboarding({ username: 'alice', full_name: 'Alice', date_of_birth: '2000-01-01', interests: ['react'] }).catch(error => { outcome = error; }); });
+    assert.equal(reads, 2, 'the real client performs an additional session-token read before fetch');
+    await act(async () => { t.mock.timers.tick(15_000); });
+    assert.equal(app.auth.onboardingSave.status, 'idle', 'a deadline before actual fetch is a safe no-write outcome');
+    assert.match(outcome?.message ?? '', /timed out/i);
+    app.setTokenReadOverride(() => Promise.resolve(token));
+    let retry: Promise<void> | undefined;
+    await act(async () => { retry = app.auth.completeOnboarding({ username: 'alice', full_name: 'Alice', date_of_birth: '2000-01-01', interests: ['react'] }); });
+    assert.equal(writes, 1, 'an unsent client preflight cannot retain the retirement lane after its deadline');
+    await act(async () => retry);
+    await act(async () => lateRead.resolve(token));
+    assert.equal(writes, 1, 'beforeSend must fence a late transport preparation continuation');
+  } finally { t.mock.timers.reset(); await app.unmount(); }
+});
+
+test('real apiV2 applies the onboarding send fence to exactly one 401 refresh retry', async t => {
+  for (const expired of [false, true]) {
+    const app = startup({ realNetwork: true });
+    const oldToken = fixtureToken('alice');
+    const rotatedToken = `synthetic.${Buffer.from(JSON.stringify({ userId: 'alice', rotated: true })).toString('base64url')}.signature`;
+    const rotation = deferred<Response>(); let writes = 0, refreshes = 0;
+    t.mock.method(globalThis, 'fetch', async (url, options) => {
+      const path = String(url);
+      if (path.endsWith('/auth/refresh')) { refreshes++; return rotation.promise; }
+      if (path.endsWith('/v2/onboarding/complete')) {
+        writes++;
+        if (writes === 1) return new Response(JSON.stringify({ success: false, error: 'expired' }), { status: 401 });
+        return envelope({ completed: true, viewer: { completed: true, user_id: 'alice', username: 'alice', full_name: 'Alice', date_of_birth: '2000-01-01', onboarding_completed: true } });
+      }
+      assert.ok(path.endsWith('/v2/users/me'));
+      return envelope({ user_id: 'alice', username: 'alice', onboarding_completed: false });
+    });
+    await app.mount();
+    try {
+      await act(async () => { app.session.resolve(oldToken); app.fonts.resolve(); });
+      t.mock.timers.enable({ apis: ['setTimeout'] });
+      let saving!: Promise<any>;
+      await act(async () => { saving = app.auth.completeOnboarding({ username: 'alice', full_name: 'Alice', date_of_birth: '2000-01-01', interests: ['react'] }).then(() => null, error => error); });
+      assert.equal(writes, 1); assert.equal(refreshes, 1);
+      if (expired) await act(async () => { t.mock.timers.tick(15_000); });
+      await act(async () => { rotation.resolve(envelope({ accessToken: rotatedToken, user: { id: 'alice' } })); });
+      const result = await saving;
+      assert.equal(refreshes, 1, 'a rejected send fence cannot trigger another refresh');
+      assert.equal(writes, expired ? 1 : 2, 'only an unexpired flight may perform the existing single 401 retry');
+      if (!expired) assert.equal(result, null);
+      else assert.equal(app.auth.onboardingSave.status, 'idle', 'the first 401 plus blocked retry is a definite no-write outcome');
+    } finally { t.mock.timers.reset(); await app.unmount(); }
+  }
+});
+
+test('same-turn failed logout restores a fresh onboarding lease without reviving a retained callback', async t => {
+  const app = startup({ realNetwork: true });
+  const token = fixtureToken('alice'); let writes = 0;
+  t.mock.method(console, 'error', () => undefined);
+  t.mock.method(globalThis, 'fetch', async (url) => {
+    const path = String(url);
+    if (path.endsWith('/auth/logout')) throw new TypeError('revocation unavailable');
+    if (path.endsWith('/v2/onboarding/complete')) { writes++; return envelope({ completed: true, viewer: { completed: true, user_id: 'alice', username: 'alice', full_name: 'Alice', date_of_birth: '2000-01-01', onboarding_completed: true } }); }
+    assert.ok(path.endsWith('/v2/users/me'));
+    return envelope({ user_id: 'alice', username: 'alice', onboarding_completed: false });
+  });
+  await app.mount();
+  try {
+    await act(async () => { app.session.resolve(token); app.fonts.resolve(); });
+    const oldCompletion = app.auth.completeOnboarding;
+    app.failMarkerWrites(true);
+    await act(async () => { await assert.rejects(app.auth.signOut(), { name: 'LogoutNotCompletedError' }); });
+    assert.equal(app.auth.user?.user_id, 'alice');
+    const draft = { username: 'alice', full_name: 'Alice', date_of_birth: '2000-01-01', interests: ['react'] };
+    await assert.rejects(oldCompletion(draft), { name: 'SessionChangedError' });
+    assert.equal(writes, 0);
+    await act(async () => app.auth.completeOnboarding(draft));
+    assert.equal(writes, 1);
+  } finally { await app.unmount(); }
 });

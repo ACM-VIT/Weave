@@ -39,7 +39,8 @@
     "ioredis": "^5.11.1",
     "jsonwebtoken": "^9.0.3",
     "marked": "18.0.6",
-    "postgres": "^3.4.9"
+    "postgres": "^3.4.9",
+    "sharp": "0.35.5"
   },
   "devDependencies": {
     "@types/cookie-parser": "^1.4.10",

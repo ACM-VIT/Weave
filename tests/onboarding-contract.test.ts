@@ -6,6 +6,7 @@ import { createRequire } from "node:module";
 import path from "node:path";
 import { build } from "esbuild";
 import { resolveOnboardingTaxonomy, type OnboardingTaxonomy } from "../src/utils/onboardingTaxonomy";
+import { loadSource } from "./support/startup-harness";
 
 describe("onboarding payload", () => {
   test('onboarding sends legacy topics and structured persona fields with valid slugs', () => {
@@ -38,6 +39,16 @@ describe("onboarding payload", () => {
       () => buildOnboardingPayload({ bio: 'x'.repeat(2001), interests: ['react'] }),
       /2000 characters/,
     );
+  });
+
+  test('combined structured selections accept 100 unique topics but reject 101 without truncation', async () => {
+    const { ONBOARDING_SKILLS, ONBOARDING_INTERESTS } = await import('../backend/contracts/onboardingTaxonomy');
+    const skills = ONBOARDING_SKILLS.map(entry => entry.id);
+    const interests = [...new Set(ONBOARDING_INTERESTS.flatMap(category => category.interests.map(entry => entry.id)))];
+    const selections = { skills, interests: interests.slice(0, 43), tech_stack: Array.from({ length: 50 }, (_, n) => `fixture-tech-${n}`) };
+    const payload = buildOnboardingPayload(selections);
+    assert.equal(new Set([...payload.skills, ...payload.interests, ...payload.tech_stack]).size, 100);
+    assert.throws(() => buildOnboardingPayload({ ...selections, interests: interests.slice(0, 44) }), /100 unique/);
   });
 });
 
@@ -85,5 +96,162 @@ describe("onboarding taxonomy", () => {
     }), /Ambiguous taxonomy/);
     assert.throws(() => resolveOnboardingTaxonomy({ tech_stack: [' '] }, taxonomy), /nonempty technology/);
     assert.throws(() => resolveOnboardingTaxonomy({ skills: Array(51).fill('data') }, taxonomy), /at most 50/);
+  });
+
+  test('rendered step3 updates the onboarding draft so Back and Continue retain selected interests', async () => {
+    const React = await import('react'); const { create } = await import('react-test-renderer');
+    (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
+    const onboarding = loadSource('src/store/OnboardingContext.tsx', {});
+    const save = { status: 'idle', message: null as string | null };
+    let checks = 0;
+    const retryArguments: unknown[][] = [];
+    const submitted: unknown[] = [];
+    const Step3 = loadSource('src/app/onboarding/step3.tsx', {
+      '@/components/keyboard/keyboard-layout': { KeyboardForm: 'KeyboardForm' },
+      'react-native': { View: 'View', Text: 'Text' },
+      '../../store/OnboardingContext': onboarding,
+      '../../store/AuthContext': { useAuth: () => ({ completeOnboarding: async (data: unknown) => { submitted.push(data); }, checkOnboardingStatus: async () => {},
+        retryOnboarding: async (...args: unknown[]) => { retryArguments.push(args); },
+        onboardingSave: save, reconcileOnboarding: async () => { checks++; } }) },
+      '../../utils/storage': { getItemAsync: async () => 'fixture' },
+      '../../api/onboarding': { setupOnboarding: async () => ({ completed: true }) },
+      ...Object.fromEntries(['ProgressBar', 'PrimaryButton', 'TechChip', 'LogoPlaceholder', 'StepHeader'].map(name => [
+        `@/components/onboarding/${name}`, { __esModule: true, default: name },
+      ])),
+      '@/constants/onboarding': { INTEREST_CATEGORIES: [{ id: 'web', title: 'Web', interests: [{ id: 'react', name: 'React' }] }] },
+    }).default;
+    let updateDraft!: (data: unknown) => void;
+    let draft: any, show!: (value: boolean) => void;
+    function Flow() {
+      const { data, updateData } = onboarding.useOnboarding(); draft = data; updateDraft = updateData;
+      const [visible, setVisible] = React.useState(true); show = setVisible;
+      React.useEffect(() => updateData({ skills: ['web'] }), [updateData]);
+      return visible ? React.createElement(Step3) : null;
+    }
+    let root!: ReturnType<typeof create>;
+    await React.act(async () => { root = create(React.createElement(onboarding.OnboardingProvider, null, React.createElement(Flow))); });
+    try {
+      await React.act(async () => root.root.findByType('TechChip').props.onPress());
+      await React.act(async () => show(false));
+      await React.act(async () => show(true));
+      assert.deepEqual(draft.interests, ['react']);
+      assert.equal(root.root.findByType('TechChip').props.selected, true);
+      await React.act(async () => root.root.findByType('TechChip').props.onPress());
+      assert.deepEqual(draft.interests, []);
+      const retained = ['react', 'vue', 'angular', 'svelte', 'nextjs'];
+      await React.act(async () => { updateDraft({ interests: retained }); show(false); });
+      save.status = 'unknown'; save.message = 'Your preferences may have saved. Check save status.';
+      await React.act(async () => show(true));
+      assert.equal(root.root.findByProps({ title: 'Finish' }).props.disabled, true, 'an uncertain write must not enable a duplicate Finish');
+      const check = root.root.findByProps({ title: 'Check save status' });
+      await React.act(async () => check.props.onPress());
+      assert.equal(checks, 1, 'the visible recovery action checks status rather than resubmitting');
+      assert.deepEqual(draft.interests, retained, 'unknown outcomes retain the selections');
+      assert.equal(root.root.findAllByProps({ title: 'Retry saved preferences' }).length, 0, 'an unknown pending save cannot expose a mutation retry');
+      save.status = 'retryable'; save.message = 'Retry the preferences from your previous save.';
+      const edited = ['css', 'html', 'ui', 'component', 'browser'];
+      await React.act(async () => updateDraft({ interests: edited }));
+      assert.equal(root.root.findByProps({ title: 'Finish' }).props.disabled, true, 'protected recovery cannot submit the newly edited draft');
+      await React.act(async () => root.root.findByProps({ title: 'Check save status' }).props.onPress());
+      assert.equal(checks, 2, 'a retryable save still permits a read-only recheck before replay');
+      await React.act(async () => root.root.findByProps({ title: 'Retry saved preferences' }).props.onPress());
+      assert.deepEqual(retryArguments, [[]], 'retry delegates the frozen save, never current draft fields');
+      assert.equal(submitted.length, 0);
+      assert.deepEqual(draft.interests, edited, 'retry does not silently replace the editable draft');
+    } finally { await React.act(async () => root.unmount()); }
+  });
+
+  test('replacing skill categories removes hidden interests before Finish can submit them', async () => {
+    const React = await import('react'); const { create } = await import('react-test-renderer');
+    const { ONBOARDING_INTERESTS } = await import('../backend/contracts/onboardingTaxonomy');
+    (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
+    const onboarding = loadSource('src/store/OnboardingContext.tsx', {});
+    const submitted: any[] = [];
+    const Step3 = loadSource('src/app/onboarding/step3.tsx', {
+      '@/components/keyboard/keyboard-layout': { KeyboardForm: 'KeyboardForm' },
+      'react-native': { View: 'View', Text: 'Text' },
+      '../../store/OnboardingContext': onboarding,
+      '../../store/AuthContext': { useAuth: () => ({
+        completeOnboarding: async (data: unknown) => { submitted.push(data); },
+        reconcileOnboarding: async () => {}, onboardingSave: { status: 'idle', message: null },
+      }) },
+      ...Object.fromEntries(['ProgressBar', 'PrimaryButton', 'TechChip', 'LogoPlaceholder', 'StepHeader'].map(name => [
+        `@/components/onboarding/${name}`, { __esModule: true, default: name },
+      ])),
+      '@/constants/onboarding': { INTEREST_CATEGORIES: ONBOARDING_INTERESTS },
+    }).default;
+    let draft: any, updateDraft!: (updates: any) => void, show!: (visible: boolean) => void;
+    function Flow() {
+      const { data, updateData } = onboarding.useOnboarding(); draft = data; updateDraft = updateData;
+      const [visible, setVisible] = React.useState(true); show = setVisible;
+      return visible ? React.createElement(Step3) : null;
+    }
+    let root!: ReturnType<typeof create>;
+    await React.act(async () => { root = create(React.createElement(onboarding.OnboardingProvider, null, React.createElement(Flow))); });
+    try {
+      await React.act(async () => updateDraft({ skills: ['web', 'backend'],
+        interests: ['react', 'vue', 'angular', 'svelte', 'nextjs', 'express'], bio: 'Keep my bio', tech_stack: ['TypeScript'] }));
+      assert.equal(root.root.findByProps({ title: 'Finish' }).props.disabled, false);
+      await React.act(async () => show(false));
+      // Step 1 commits its replacement categories while Step 3 is unmounted.
+      await React.act(async () => updateDraft({ skills: ['backend', 'data'] }));
+      await React.act(async () => show(true));
+      assert.deepEqual(draft.interests, ['express'], 'only choices from retained categories stay selected');
+      assert.equal(draft.bio, 'Keep my bio');
+      assert.deepEqual(draft.tech_stack, ['TypeScript']);
+      assert.equal(root.root.findAllByType('TechChip').some(chip => chip.props.title === 'react'), false);
+      assert.equal(root.root.findByProps({ title: 'Finish' }).props.disabled, true, 'hidden choices cannot satisfy the five-interest minimum');
+      await React.act(async () => root.root.findByProps({ title: 'Finish' }).props.onPress());
+      assert.equal(submitted.length, 0);
+      for (const title of ['django', 'flask', 'fastapi', 'spring']) {
+        await React.act(async () => root.root.findByProps({ title }).props.onPress());
+      }
+      await React.act(async () => root.root.findByProps({ title: 'Finish' }).props.onPress());
+      assert.deepEqual(submitted[0].interests, ['express', 'django', 'flask', 'fastapi', 'spring']);
+      await React.act(async () => updateDraft((previous: any) => ({ skills: [...previous.skills, 'web'] })));
+      assert.deepEqual(draft.interests, ['express', 'django', 'flask', 'fastapi', 'spring'], 'adding a category does not resurrect removed choices');
+      await React.act(async () => updateDraft({ skills: [] }));
+      assert.deepEqual(draft.interests, []);
+    } finally { await React.act(async () => root.unmount()); }
+  });
+
+  test('rendered skill and tech controls expose checked state and Space toggles only once', async t => {
+    const previousRaf = globalThis.requestAnimationFrame, previousCancel = globalThis.cancelAnimationFrame;
+    globalThis.requestAnimationFrame = (callback => setTimeout(() => callback(performance.now()), 1)) as any;
+    globalThis.cancelAnimationFrame = (handle => clearTimeout(handle)) as any;
+    t.after(() => { globalThis.requestAnimationFrame = previousRaf; globalThis.cancelAnimationFrame = previousCancel; });
+    const React = await import('react'); const { create } = await import('react-test-renderer');
+    const nativeRequire = createRequire(path.resolve('package.json'));
+    // Real RN Web Pressable/Animated host rendering; icon rendering is unrelated.
+    const web = nativeRequire('react-native-web');
+    (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
+    for (const name of ['SkillCard', 'TechChip']) {
+      const Control = loadSource(`src/components/onboarding/${name}.tsx`, {
+        'react-native': web, 'lucide-react-native': { Check: () => null },
+      }).default;
+      let root!: ReturnType<typeof create>, presses = 0;
+      function Selection() {
+        const [selected, setSelected] = React.useState(false);
+        return React.createElement(Control, { title: name, image: null, selected, onPress: () => { presses++; setSelected(value => !value); } });
+      }
+      await React.act(async () => { root = create(React.createElement(Selection)); });
+      try {
+        const host = () => root.root.findAllByType('div').find(node => node.props['aria-label'] === name)!;
+        assert.ok(host(), 'selection controls need a stable accessible name');
+        assert.equal(host().props.role, 'checkbox');
+        assert.equal(host().props['aria-checked'], false);
+        let prevented = false;
+        // DOM event delivery needs Chromium. Here dispatch the RNW host's actual
+        // key handler to protect Space support independently of that opt-in run.
+        const event = { key: ' ', repeat: false, preventDefault() { prevented = true; }, stopPropagation() {},
+          target: { getAttribute: (attribute: string) => attribute === 'role' ? 'checkbox' : null, tagName: 'DIV' } };
+        await React.act(async () => host().props.onKeyDown(event));
+        assert.equal(prevented, true);
+        assert.equal(presses, 1);
+        assert.equal(host().props['aria-checked'], true);
+        await React.act(async () => host().props.onKeyDown({ ...event, repeat: true }));
+        assert.equal(presses, 1, 'holding Space must not repeatedly toggle');
+      } finally { await React.act(async () => root.unmount()); }
+    }
   });
 });

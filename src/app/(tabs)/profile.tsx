@@ -1,3 +1,4 @@
+import { ProfilePhotoEditor } from '@/components/profile/ProfilePhotoEditor'
 import GitHubIcon from '@/assets/icons/github.svg';
 import { useReducedMotion } from 'react-native-reanimated';
 import { KeyboardForm } from '@/components/keyboard/keyboard-layout';
@@ -40,6 +41,7 @@ export default function ProfileScreen() {
   const isCompact = height < 750 || width < 360
   const reducedMotion = useReducedMotion()
   const [editVisible, setEditVisible] = useState(false)
+  const [photoVisible, setPhotoVisible] = useState(false)
   const [githubPreferencesVisible, setGithubPreferencesVisible] = useState(false)
   const [logoutVisible, setLogoutVisible] = useState(false)
   const [loggingOut, setLoggingOut] = useState(false)
@@ -131,7 +133,7 @@ export default function ProfileScreen() {
       <View className="w-full" style={{ maxWidth: isTablet ? 760 : 600, gap: isTablet ? 34 : 28 }}>
         <View className="w-full" style={{ gap: isTablet ? 34 : 28 }}>
           <View className="w-full" style={{ gap: isTablet ? 30 : 25 }}>
-            <ProfileHeader username={username} name={name} job={job} isTablet={isTablet} isCompact={isCompact} stats={stats} onEdit={openEditor} onLogout={() => { setLogoutError(""); setLogoutVisible(true) }} />
+            <ProfileHeader username={username} name={name} job={job} avatarUrl={user?.avatar_url} isTablet={isTablet} isCompact={isCompact} stats={stats} onEdit={openEditor} onChangePhoto={() => setPhotoVisible(true)} onLogout={() => { setLogoutError(""); setLogoutVisible(true) }} />
           </View>
 
           <View className="w-full" style={{ gap: isTablet ? 22 : 18 }}>
@@ -161,6 +163,8 @@ export default function ProfileScreen() {
         collections={sections.collections} pinned={pinnedRepositoriesQuery}
         openList={params => router.push(boardHref(params))}
       />
+
+      {photoVisible && user ? <ProfilePhotoEditor key={user.user_id} owner={user.user_id} onClose={() => setPhotoVisible(false)} /> : null}
 
       {user ? <GitHubPreferencesPopup visible={githubPreferencesVisible} userId={user.user_id}
         onClose={() => setGithubPreferencesVisible(false)} onSaved={checkOnboardingStatus} /> : null}

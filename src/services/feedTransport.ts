@@ -30,8 +30,10 @@ export async function requestFeedWithRetry<T>(
   signal?: AbortSignal,
   wait = waitForFeedRetry,
   retryUnavailable = true,
+  preparationRetryLimit = 2,
 ): Promise<T> {
   let attempt = 0;
+  let preparationRetries = 0;
   let requestBody = body;
   let inlineFallbackAttempted = false;
   for (;;) {
@@ -50,6 +52,10 @@ export async function requestFeedWithRetry<T>(
         inlineFallbackAttempted = true;
         requestBody = { ...body, readme_mode: 'inline' };
         continue;
+      }
+      if (failure.code === 'PERSONALIZED_FEED_UNAVAILABLE') {
+        if (!retryUnavailable || preparationRetries >= preparationRetryLimit) throw error;
+        preparationRetries++;
       }
       const retryable = failure.name !== 'AbortError' && failure.code !== 'SESSION_CHANGED'
         && (error instanceof TypeError || failure.status === 408 || failure.status === 409

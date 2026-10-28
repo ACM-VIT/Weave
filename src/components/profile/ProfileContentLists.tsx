@@ -1,5 +1,5 @@
 import React, { useMemo } from 'react';
-import { ActivityIndicator, FlatList, Pressable, Text, View } from 'react-native';
+import { FlatList, Pressable, Text, View } from 'react-native';
 import { FolderPlus } from 'lucide-react-native';
 import type { ListDto } from '../../models/list';
 import { BoardListCard } from './BoardListCard';
@@ -8,6 +8,7 @@ type SectionQuery<T> = {
   data?: T;
   isPending: boolean;
   isError: boolean;
+  isFetching?: boolean;
   refetch: () => unknown;
 };
 
@@ -80,13 +81,22 @@ export function ProfileContentLists(props: Props) {
       if (!query) return null;
       const label = row.section === 'pinned' ? 'pinned repositories' : 'Lists';
       content = <View style={{ minHeight: 70, alignItems: 'center', justifyContent: 'center', gap: 10, paddingVertical: 12 }}>
-        {query.isPending ? <>
-          <ActivityIndicator color="#63E08A" accessibilityLabel={`Loading ${label}`} />
-          <Text className="text-[#77767C] font-nata">Loading {label}…</Text>
-        </> : <>
+        {query.isPending ? <View accessible={true} accessibilityRole="progressbar" accessibilityLabel={`Loading ${label}`}
+          accessibilityState={{ busy: true }} style={{ width: '100%', gap: 10 }}>
+          {Array.from({ length: row.section === 'pinned' ? 1 : 2 }, (_, index) => <View key={index} accessible={false}
+            style={{ minHeight: compact ? 70 : 84, borderRadius: 18, backgroundColor: '#1D1D1F', borderWidth: 1,
+              borderColor: '#2F2F32', padding: 13, flexDirection: 'row', alignItems: 'center', gap: 12 }}>
+            <View style={{ width: 42, height: 42, borderRadius: 12, backgroundColor: '#29292C' }} />
+            <View style={{ flex: 1, gap: 9 }}>
+              <View style={{ width: '65%', height: 14, borderRadius: 4, backgroundColor: '#29292C' }} />
+              <View style={{ width: '40%', height: 10, borderRadius: 4, backgroundColor: '#29292C' }} />
+            </View>
+          </View>)}
+        </View> : <>
           <Text accessibilityLiveRegion="polite" className="text-[#FF6878] font-nata text-center">Unable to load your {label}.</Text>
-          <Pressable accessibilityRole="button" accessibilityLabel={`Retry ${label}`} onPress={() => void query.refetch()} className="rounded-[12px] bg-[#292929] px-5 py-3">
-            <Text className="text-white font-nataSemiBold">Retry</Text>
+          <Pressable accessibilityRole="button" accessibilityLabel={`Retry ${label}`} accessibilityState={{ busy: Boolean(query.isFetching), disabled: Boolean(query.isFetching) }}
+            disabled={query.isFetching} onPress={() => { if (!query.isFetching) void query.refetch(); }} className="rounded-[12px] bg-[#292929] px-5 py-3">
+            <Text className="text-white font-nataSemiBold">{query.isFetching ? 'Retrying…' : 'Retry'}</Text>
           </Pressable>
         </>}
       </View>;

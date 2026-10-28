@@ -1,9 +1,13 @@
-import test from "node:test";
-import { describe } from "node:test";
+import { readFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
+import { resolve } from 'node:path';
+import ts from 'typescript';
+import type { fetchExploreRepos } from '../src/api/explore';
+import test, { describe } from "node:test";
 import assert from "node:assert/strict";
 import { InfiniteQueryObserver, QueryClient } from "@tanstack/react-query";
 import { isSearchExpired, runSearchRequest, searchQueryOptions, SearchSessions, SearchRequestTiming, SEARCH_DEBOUNCE_MS } from "../src/api/search-query";
-import { mapExploreRepository, mapTrendingRepository } from "../src/api/explore-data";
+import { mapTrendingRepository } from "../src/api/explore-data";
 import { mapRepositoryDetail } from "../src/utils/repository-mapper";
 import { searchResultHref, SEARCH_GROUPS, type SearchPage } from "../src/models/search";
 import { mapCollectionList, mapLegacyBoardList } from "../src/models/list";
@@ -240,6 +244,83 @@ describe("search repository model", () => {
     assert.deepEqual(observer.getCurrentResult().data?.pages,['new']);
     unsubscribe();client.clear();
   });
+});
+
+
+function exploreTransport(send: (path: string, options: RequestInit, token: string) => Promise<unknown>) {
+  const filename = resolve('src/api/explore.ts');
+  const nativeRequire = createRequire(filename);
+  const module = { exports: {} as { fetchExploreRepos: typeof fetchExploreRepos } };
+  const javascript = ts.transpileModule(readFileSync(filename, 'utf8'), {
+    fileName: filename, compilerOptions: { module: ts.ModuleKind.CommonJS },
+  }).outputText;
+  new Function('require', 'module', 'exports', javascript)((name: string) => {
+    if (name === './client') return { apiV2: send };
+    if (name === '../utils/storage') return { getStorageItem: async () => 'fixture-viewer-token' };
+    return nativeRequire(name);
+  }, module, module.exports);
+  return module.exports.fetchExploreRepos;
+}
+
+test('Latest continues from the raw page when a malformed repository cannot render', async () => {
+  const paths: string[] = [];
+  const signal = new AbortController().signal;
+  const fetchExplore = exploreTransport(async (path, options, token) => {
+    paths.push(path);
+    assert.equal(options.signal, signal);
+    assert.equal(token, 'fixture-viewer-token');
+    const offset = new URL(path, 'https://fixture.invalid').searchParams.get('offset');
+    return { items: offset === '0'
+      ? Array.from({ length: 24 }, (_, index) => index === 7 ? {} : {
+        repo_id: `repo-${index}`, full_name: `fixture/repo-${index}`,
+      })
+      : [{ repo_id: 'repo-24', full_name: 'fixture/repo-24' }], limit: 24, offset: Number(offset) };
+  });
+  const first = await fetchExplore('Latest', '  private & query  ', 0, signal);
+  assert.equal(first.items.length, 23);
+  assert.deepEqual(first.items.slice(6, 9).map(repo => repo.id), ['repo-6', 'repo-8', 'repo-9']);
+  assert.equal(first.nextOffset, 24, 'normalization cannot shorten the raw offset page');
+  const second = await fetchExplore('Latest', '  private & query  ', first.nextOffset, signal);
+  assert.deepEqual(second.items.map(repo => repo.id), ['repo-24']);
+  assert.equal(second.nextOffset, undefined, 'a short raw page is exhausted');
+  assert.deepEqual(paths, [
+    '/repositories?limit=24&offset=0&q=private%20%26%20query',
+    '/repositories?limit=24&offset=24&q=private%20%26%20query',
+  ]);
+});
+
+test('Latest empty pages terminate and Trending keeps its ranked non-offset response', async () => {
+  const paths: string[] = [];
+  const fetchExplore = exploreTransport(async path => {
+    paths.push(path);
+    if (!path.startsWith('/repositories/trending')) return { items: [], limit: 24, offset: 24 };
+    return { items: Array.from({ length: 24 }, (_, position) => ({
+      repo_id: `trend-${position}`, full_name: `fixture/trend-${position}`, position,
+    })), period: 'weekly', available_periods: ['daily', 'weekly'], captured_at: '2026-10-24T00:00:00Z' };
+  });
+  const empty = await fetchExplore('Latest', '', 24);
+  assert.deepEqual(empty.items, []);
+  assert.equal(empty.nextOffset, undefined);
+  const trending = await fetchExplore('Trending', '', 0, undefined, 'weekly');
+  assert.equal(trending.items.length, 24);
+  assert.deepEqual(trending.items.slice(0, 3).map(repo => repo.trend?.rank), [1, 2, 3]);
+  assert.equal(trending.nextOffset, undefined);
+  assert.equal(trending.period, 'weekly');
+  assert.deepEqual(trending.availablePeriods, ['daily', 'weekly']);
+  assert.deepEqual(paths, ['/repositories?limit=24&offset=24', '/repositories/trending?period=weekly']);
+});
+
+test('canceling an Explore request preserves the transport AbortError', async () => {
+  const controller = new AbortController();
+  const abort = new DOMException('Explore request canceled', 'AbortError');
+  const fetchExplore = exploreTransport(async (_path, options) => new Promise((_resolve, reject) => {
+    assert.equal(options.signal, controller.signal);
+    options.signal!.addEventListener('abort', () => reject(abort), { once: true });
+  }));
+  const request = fetchExplore('Latest', '', 24, controller.signal);
+  await Promise.resolve();
+  controller.abort();
+  await assert.rejects(request, error => error === abort);
 });
 
 test('idle browse warmup preserves populated stale infinite pages and fetches only the missing tab',async t=>{

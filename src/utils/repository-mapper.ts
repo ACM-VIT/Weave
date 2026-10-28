@@ -182,7 +182,13 @@ export function mapRepositoryDetail(
   const hasReadme = typeof payload.readme_available === 'boolean' ? payload.readme_available
     : readmeFull ? true : undefined;
   const contentVersion = nullableCount(payload.content_version);
-  const contentHash = nullableText(payload.content_hash);
+  const readmeDigest = parseReadmeDigest(payload.readme_digest);
+  // Legacy detail responses return an inline body plus its current digest, but
+  // omit the standalone hash. Only a digest for this exact body version can
+  // supply that identity; unversioned feeds and stale digests cannot.
+  const contentHash = nullableText(payload.content_hash)
+    ?? (readmeFull && contentVersion !== null && readmeDigest?.content_version === contentVersion
+      ? readmeDigest.content_hash : null);
   const readmeSourcePath = nullableText(payload.readme_source_path);
   const readmeDefaultBranch = nullableText(payload.readme_default_branch);
   const readmeBaseUrl = nullableText(payload.readme_base_url);
@@ -203,7 +209,7 @@ export function mapRepositoryDetail(
     githubUrl,
     status: repositoryStatus(payload.status),
     description: normalizeOptionalRepositoryText(payload.description) ?? '',
-    readmeDigest: parseReadmeDigest(payload.readme_digest),
+    readmeDigest,
     summaryId: nullableText(payload.summary_id),
     readmeSummary: normalizeRepositoryCardSummary(
       normalizeOptionalRepositoryText(payload.summary)

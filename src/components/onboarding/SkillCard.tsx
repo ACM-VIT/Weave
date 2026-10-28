@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo } from "react";
-import { Text, TouchableOpacity, View, Animated } from "react-native";
+import { Text, Pressable, View, Animated, Platform } from "react-native";
 import { Check } from "lucide-react-native";
 
 type SkillCardProps = {
@@ -9,7 +9,7 @@ type SkillCardProps = {
   onPress?: () => void;
 };
 
-const AnimatedTouchableOpacity = Animated.createAnimatedComponent(TouchableOpacity);
+const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
 
 export default function SkillCard({
   title,
@@ -17,6 +17,17 @@ export default function SkillCard({
   selected = false,
   onPress,
 }: SkillCardProps) {
+  // RN Web's checkbox responder handles Enter, but not Space (unlike buttons).
+  // Keep the native press path and add only the missing web key behavior.
+  const keyboardProps = Platform.OS === 'web' ? {
+    onKeyDown: (event: React.KeyboardEvent) => {
+      if (event.key === ' ') {
+        event.preventDefault();
+        if (!event.repeat) onPress?.();
+      }
+    },
+  } : {};
+
   const scale = useMemo(() => new Animated.Value(1), []);
   const opacity = useMemo(() => new Animated.Value(0), []);
 
@@ -36,8 +47,12 @@ export default function SkillCard({
   }, [selected, scale, opacity]);
 
   return (
-    <AnimatedTouchableOpacity
-      activeOpacity={0.8}
+    <AnimatedPressable
+      accessibilityRole="checkbox"
+      accessibilityLabel={title}
+      accessibilityState={{ checked: selected }}
+      aria-checked={selected}
+      {...keyboardProps}
       onPress={onPress ?? (() => {})}
       style={{
         width: "48%",
@@ -106,6 +121,6 @@ export default function SkillCard({
       >
         {title}
       </Text>
-    </AnimatedTouchableOpacity>
+    </AnimatedPressable>
   );
 }

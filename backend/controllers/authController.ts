@@ -1,3 +1,4 @@
+import { oauthAvatarFromAuthUser } from '../services/oauthAvatarPolicy.js';
 import crypto from "crypto";
 import { and, eq, gt, sql } from "drizzle-orm";
 import type { CookieOptions, Request, Response } from "express";
@@ -278,7 +279,7 @@ export async function login(req: Request, res: Response): Promise<void> {
       githubIdentityFence: githubIdentity.fence,
       githubProviderIdentityId: githubIdentity.providerIdentityId,
       githubIdentityVerified: Boolean(githubIdentity.githubId && githubIdentity.githubHandle),
-      avatarUrl: typeof data.user.user_metadata?.avatar_url === "string" ? data.user.user_metadata.avatar_url : null,
+      avatarUrl: oauthAvatarFromAuthUser(data.user),
       onboardingCompleted: loginOnboardingCompleted(
         existingProductProfile?.onboardingCompleted,
       ),
@@ -614,7 +615,7 @@ export async function handleOAuthCallback(
       githubIdentityFence: githubIdentity.fence,
       githubProviderIdentityId: githubIdentity.providerIdentityId,
       githubIdentityVerified: Boolean(githubIdentity.githubId && githubIdentity.githubHandle),
-      avatarUrl: typeof data.user.user_metadata?.avatar_url === "string" ? data.user.user_metadata.avatar_url : null,
+      avatarUrl: oauthAvatarFromAuthUser(data.user, attempt.provider),
       // Existing accounts retain their durable completion state. New OAuth
       // signups finish only through the explicit onboarding flow.
       onboardingCompleted: initialOAuthOnboardingCompleted(

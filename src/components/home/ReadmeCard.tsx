@@ -1,6 +1,6 @@
 import { useRepositoryReadmeSummary } from '@/hooks/use-repository-readme-summary';
 import type { ReadmeDigest } from '@/models/readme-digest';
-import React, { useEffect, useMemo, useRef } from 'react';
+import React, { useMemo } from 'react';
 import {
   Animated,
   Easing,
@@ -14,7 +14,6 @@ import { BookOpen, ChevronRight } from 'lucide-react-native';
 import { useReducedMotion } from 'react-native-reanimated';
 
 import { REFERENCE_THEME } from '@/constants/theme';
-import { useTypewriterText } from '@/hooks/use-typewriter-text';
 import { extractReadmePreviewImage } from '@/utils/readme-images';
 import {
   prepareReadmePreview,
@@ -59,12 +58,7 @@ export default function ReadmeCard({
 }: ReadmeCardProps) {
   const reduceMotion = useReducedMotion();
   const summaryQuery = useRepositoryReadmeSummary(repository, isActive);
-  const entranceProgress = useMemo(() => new Animated.Value(0), []);
-  const summaryProgress = useMemo(() => new Animated.Value(0), []);
-  const skeletonOpacity = useMemo(() => new Animated.Value(1), []);
-  const shimmerProgress = useMemo(() => new Animated.Value(0), []);
   const readMoreScale = useMemo(() => new Animated.Value(1), []);
-  const hasAnimated = useRef(false);
   const { fontScale } = useWindowDimensions();
   const [previewHeight, setPreviewHeight] = React.useState(0);
   const previewLines = readmePreviewLineCount(previewHeight, compact ? 17 : 21, fontScale);
@@ -88,16 +82,6 @@ export default function ReadmeCard({
     : summaryQuery.data?.status==='failed' ? 'README summary unavailable.'
     : summaryQuery.data?.status==='pending' || summaryQuery.data?.status==='processing' ? 'Preparing README summary…'
       : summaryQuery.isLoading ? 'Loading README summary…' : preview.markdown;
-  const typedSummary = useTypewriterText(preview.source==='summary' ? preview.markdown : statusText, {
-    completionKey: `readme:${repository.id}:${preview.source}`,
-    delay: 140,
-    duration: 900,
-    enabled: isActive,
-    reducedMotion: reduceMotion,
-  });
-  const animatedSummary = typedSummary.isTyping
-    ? `${typedSummary.text}${typedSummary.cursorVisible ? ' ▍' : '  '}`
-    : typedSummary.text;
   const previewImage = useMemo(
     () => extractReadmePreviewImage(repository.readmeFull, {
       fullName: repository.fullName,
@@ -118,87 +102,6 @@ export default function ReadmeCard({
   );
   const showPreviewImage = preview.source === 'summary' && !compact && availableWidth >= 320 && Boolean(previewImage);
   const previewImageWidth = Math.min(112, Math.max(88, availableWidth * 0.3));
-  useEffect(() => {
-    if (!isActive || hasAnimated.current) return;
-
-    hasAnimated.current = true;
-    entranceProgress.stopAnimation();
-
-    if (reduceMotion) {
-      entranceProgress.setValue(1);
-      summaryProgress.setValue(1);
-      skeletonOpacity.setValue(0);
-      shimmerProgress.setValue(1);
-      return;
-    }
-
-    const animation = Animated.parallel([
-      Animated.timing(entranceProgress, {
-        toValue: 1,
-        duration: 260,
-        easing: Easing.out(Easing.cubic),
-        useNativeDriver: true,
-      }),
-      Animated.timing(shimmerProgress, {
-        toValue: 1,
-        duration: 320,
-        easing: Easing.inOut(Easing.cubic),
-        useNativeDriver: true,
-      }),
-      Animated.timing(summaryProgress, {
-        toValue: 1,
-        delay: 110,
-        duration: 240,
-        easing: Easing.out(Easing.cubic),
-        useNativeDriver: true,
-      }),
-      Animated.timing(skeletonOpacity, {
-        toValue: 0,
-        delay: 110,
-        duration: 200,
-        easing: Easing.out(Easing.quad),
-        useNativeDriver: true,
-      }),
-    ]);
-    animation.start();
-
-    return () => {
-      animation.stop();
-      entranceProgress.setValue(1);
-      summaryProgress.setValue(1);
-      skeletonOpacity.setValue(0);
-      shimmerProgress.setValue(1);
-    };
-  }, [
-    entranceProgress,
-    isActive,
-    reduceMotion,
-    shimmerProgress,
-    skeletonOpacity,
-    summaryProgress,
-  ]);
-
-  const animatedCardStyle = useMemo(() => ({
-    opacity: entranceProgress.interpolate({
-      inputRange: [0, 1],
-      outputRange: [0.78, 1],
-    }),
-    transform: [
-      {
-        translateY: entranceProgress.interpolate({
-          inputRange: [0, 1],
-          outputRange: [10, 0],
-        }),
-      },
-      {
-        scale: entranceProgress.interpolate({
-          inputRange: [0, 1],
-          outputRange: [0.985, 1],
-        }),
-      },
-    ],
-  }), [entranceProgress]);
-
   const animateReadMore = (toValue: number, duration: number) => {
     readMoreScale.stopAnimation();
     if (reduceMotion) {
@@ -214,11 +117,7 @@ export default function ReadmeCard({
   };
 
   return (
-    <Animated.View style={[
-      styles.card,
-      compact && styles.cardCompact,
-      animatedCardStyle,
-    ]}>
+    <View style={[styles.card, compact && styles.cardCompact]}>
       <View style={[styles.header, compact && styles.headerCompact]}>
         <View style={styles.headerLabel}>
           <BookOpen size={12} color={REFERENCE_THEME.accentLight} strokeWidth={2} />
@@ -235,15 +134,12 @@ export default function ReadmeCard({
           onLayout={(event) => setPreviewHeight(event.nativeEvent.layout.height)}
           style={[
             styles.markdownViewport,
-            preview.source === 'pending' && { flex: 0, minHeight: (compact ? 17 : 21) * fontScale * 2 },
           ]}
         >
-          <Animated.View
-            style={[styles.summaryRow, { opacity: summaryProgress }]}
-          >
+          <View style={styles.summaryRow}>
             <Text
               ellipsizeMode="tail"
-              numberOfLines={preview.source === 'pending' ? 2 : previewLines}
+              numberOfLines={preview.source === 'pending' ? Math.min(2, previewLines) : previewLines}
               selectable
               style={[
                 styles.summaryText,
@@ -251,7 +147,7 @@ export default function ReadmeCard({
                 showPreviewImage && styles.summaryTextWithImage,
               ]}
             >
-              {animatedSummary}
+              {preview.source === 'summary' ? preview.markdown : statusText}
             </Text>
             {showPreviewImage && previewImage ? (
               <SafeReadmeImage
@@ -262,29 +158,7 @@ export default function ReadmeCard({
                 url={previewImage.url}
               />
             ) : null}
-          </Animated.View>
-          <Animated.View
-            pointerEvents="none"
-            style={[styles.skeleton, { opacity: skeletonOpacity }]}
-          >
-            <View style={[styles.skeletonLine, compact && styles.skeletonLineCompact]} />
-            <View style={[styles.skeletonLine, styles.skeletonLineLong, compact && styles.skeletonLineCompact]} />
-            <View style={[styles.skeletonLine, styles.skeletonLineMedium, compact && styles.skeletonLineCompact]} />
-            {!compact ? <View style={[styles.skeletonLine, styles.skeletonLineShort]} /> : null}
-            <Animated.View
-              style={[
-                styles.shimmer,
-                {
-                  transform: [{
-                    translateX: shimmerProgress.interpolate({
-                      inputRange: [0, 1],
-                      outputRange: [-120, availableWidth],
-                    }),
-                  }],
-                },
-              ]}
-            />
-          </Animated.View>
+          </View>
         </View>
         {preview.source === 'summary' ? <AnimatedPressable
           accessibilityHint="Opens the complete README summary in a scrollable popup"
@@ -330,7 +204,7 @@ export default function ReadmeCard({
           </Pressable>
         ) : null}
       </View>
-    </Animated.View>
+    </View>
   );
 }
 
@@ -346,7 +220,8 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
   },
   cardUnavailable: {
-    flex: 0,
+    paddingTop: 4,
+    paddingBottom: 4,
   },
   cardCompact: {
     marginTop: 8,
@@ -416,43 +291,6 @@ const styles = StyleSheet.create({
   },
   summaryTextWithImage: {
     flex: 1,
-  },
-  skeleton: {
-    position: 'absolute',
-    top: 0,
-    right: 0,
-    bottom: 0,
-    left: 0,
-    overflow: 'hidden',
-    gap: 10,
-    paddingTop: 4,
-    backgroundColor: '#1C1C1E',
-  },
-  skeletonLine: {
-    width: '92%',
-    height: 12,
-    borderRadius: 6,
-    backgroundColor: 'rgba(235,235,245,0.10)',
-  },
-  skeletonLineCompact: {
-    height: 9,
-    borderRadius: 4.5,
-  },
-  skeletonLineLong: {
-    width: '100%',
-  },
-  skeletonLineMedium: {
-    width: '82%',
-  },
-  skeletonLineShort: {
-    width: '58%',
-  },
-  shimmer: {
-    position: 'absolute',
-    top: 0,
-    bottom: 0,
-    width: 72,
-    backgroundColor: 'rgba(255,255,255,0.075)',
   },
   readFull: {
     alignSelf: 'flex-start',

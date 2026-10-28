@@ -115,12 +115,18 @@ test('partial acknowledgement removes only confirmed event IDs', async () => {
       results: [{ event_id: initial[0].event_id, status: 'accepted' }],
     }),
   });
+  let pendingIds: string[] = [];
+  const stopPending = outbox.subscribePending(events => { pendingIds = events.map(event => event.event_id); });
 
   await assert.rejects(outbox.flush('token'), /only acknowledged part/);
   assert.deepEqual(
     stored.map((queued) => queued.event_id),
     [initial[1].event_id, initial[2].event_id],
   );
+  assert.deepEqual(pendingIds, [initial[1].event_id, initial[2].event_id], 'another event acknowledgement must not clear pending recovery');
+  stopPending();
+  outbox.subscribePending(events => { pendingIds = events.map(event => event.event_id); });
+  assert.deepEqual(pendingIds, [initial[1].event_id, initial[2].event_id], 'a later subscriber receives the remaining exact IDs');
 });
 
 test('a flush delivers its starting snapshot and retains events queued during delivery', async () => {

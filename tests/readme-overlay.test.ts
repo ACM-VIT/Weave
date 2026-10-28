@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
-import { resolve } from "node:path";
 import test from "node:test";
 import { act } from "react";
 import { repositoryDetailQueryKey, repositoryMetadataQueryKey, repositoryReadmeMetadataQueryKey, repositoryReadmeQueryKey } from "../src/models/repository";
 import { authSessionLifecycle } from "../src/api/session-lifecycle";
+import { mapRepositoryDetail } from "../src/utils/repository-mapper";
 import { decodeFeedPage } from "../src/api/feed-data";
 import { createFeedItemMapper } from "../src/utils/feed-items";
 import { repository, feed, waitForReadmeState } from "./support/feed-harness";
@@ -368,5 +368,43 @@ test('a pending README version refresh preserves a confirmed save for the same v
     await waitForReadmeState(()=>bodyAttempts===2);
     assert.equal(app.requests.filter(value=>value===`readme:${repoId}`).length,2);
     assert.equal(app.requests.filter(value=>value===`metadata:${repoId}`).length,1);
+  }finally{await app.unmount();}
+});
+
+
+test('legacy feed bodies without identity verify current metadata before showing summary images and video', async () => {
+  const body='![Architecture](https://cdn.example.com/diagram.png)\n<video src="https://cdn.example.com/demo.mp4"></video>';
+  const app=feed(['repo'],true,{ownerId:'viewer',repository:{contentVersion:null,contentHash:null,readmeFull:body}});
+  const digest={summary_id:'digest',content_version:1,content_hash:'fixture-content-hash',prompt_version:'v1',format_version:'readme-digest-json-v1',model_version:'model',source:'generated',generated_at:'2026-10-27T00:00:00Z',overview:'Complete summary.',capabilities:['Useful','Documented'],use_cases:['Use it'],considerations:[]};
+  assert.equal(mapRepositoryDetail({repo_id:'repo',full_name:'owner/repo',content_version:2,readme_md:body,readme_digest:digest})?.contentHash,null,'A stale digest cannot identify a newer body');
+  assert.equal(mapRepositoryDetail({repo_id:'repo',full_name:'owner/repo',readme_md:body,readme_digest:digest})?.contentHash,null,'An unversioned inline body stays unverified');
+  app.setMetadata(async()=>mapRepositoryDetail({repo_id:'repo',full_name:'owner/repo',content_version:1,readme_md:body,readme_digest:digest})!);
+  app.setReadme(async()=>{throw new Error('An older backend already returns its canonical body with metadata');});
+  await app.mount();
+  try {
+    await app.open(0,'onReadFullPress',digest);
+    await waitForReadmeState(()=>app.previewImages.length===1);
+    assert.deepEqual(app.requests,['metadata:repo']);
+    assert.deepEqual(app.previewImages,['https://cdn.example.com/diagram.png']);
+    assert.deepEqual(app.videoUrls,['https://cdn.example.com/demo.mp4']);
+    assert.ok(app.renderedReadmeHtml.includes('Complete summary.'));
+    assert.equal(app.readmePopupProps.mediaMessage,null);
+    await app.openImage();assert.equal(app.imagePopup.props.url,'https://cdn.example.com/diagram.png');await app.closeImage();
+    await app.openVideo();assert.equal(app.videoPopup.props.url,'https://cdn.example.com/demo.mp4');
+  }finally{await app.unmount();}
+});
+
+
+test('summary media shows Retry only after failure, never during initial loading',async()=>{
+  const app=feed(['repo'],true,{ownerId:'viewer',repository:{readmeFull:null}});
+  let fail!:(error:Error)=>void;
+  app.setReadme(()=>new Promise((_resolve,reject)=>{fail=reject;}));
+  await app.mount();
+  try {
+    await app.open(0,'onReadFullPress');
+    assert.equal(app.readmePopupProps.onRetry,undefined,'A pending initial request is not a failed request');
+    assert.equal(app.button('Retry loading README media'),undefined);
+    await act(async()=>{fail(new Error('Offline'));await new Promise(resolve=>setTimeout(resolve,0));});
+    await waitForReadmeState(()=>Boolean(app.button('Retry loading README media')));
   }finally{await app.unmount();}
 });
