@@ -14,6 +14,9 @@ type Props = {
   onEdit: () => void;
   onChangePhoto?: () => void;
   onLogout: () => void;
+  onGitHubPreferences?: () => void;
+  githubPreferencesVisible?: boolean;
+  githubIcon?: React.ReactNode;
 };
 
 function ProfileAvatar({ uri, letter, size, label, textSize }: { uri: string; letter: string; size: number; label: string; textSize: number }) {
@@ -25,17 +28,12 @@ function ProfileAvatar({ uri, letter, size, label, textSize }: { uri: string; le
   </View>;
 }
 
-export function ProfileHeader({ username, name, job, avatarUrl, isTablet, isCompact, stats, onEdit, onLogout, onChangePhoto }: Props) {
+export function ProfileHeader({ username, name, job, avatarUrl, isTablet, isCompact, stats, onEdit, onLogout, onChangePhoto, onGitHubPreferences, githubPreferencesVisible, githubIcon }: Props) {
   const avatarLetter = username.trim().charAt(0).toUpperCase() || name.trim().charAt(0).toUpperCase() || '?';
   const avatarSize = isTablet ? 96 : isCompact ? 68 : 80;
   const avatarUri = typeof avatarUrl === 'string' ? avatarUrl.trim() : '';
   return (
     <View style={styles.header}>
-        <View style={styles.actions}>
-          <Pressable accessibilityRole="button" accessibilityLabel="Log out" onPress={onLogout} style={styles.action}>
-            <LogOut size={22} strokeWidth={1.9} color="#97969C" />
-          </Pressable>
-        </View>
       <View style={styles.topRow}>
         <View style={{ alignItems: 'center' }}>
           <ProfileAvatar key={avatarUri} uri={avatarUri} letter={avatarLetter} size={avatarSize}
@@ -44,7 +42,19 @@ export function ProfileHeader({ username, name, job, avatarUrl, isTablet, isComp
             style={{ minHeight: 48, justifyContent: 'center', paddingHorizontal: 4 }}><Text style={{ color: '#63E08A', fontSize: 13 }}>Change photo</Text></Pressable> : null}
         </View>
         <View style={styles.identity}>
-          {name ? <Text selectable className="font-nataBold" style={styles.name}>{name}</Text> : null}
+          <View style={styles.identityHeading}>
+            <View style={{ flex: 1, minWidth: 0 }}>
+              {name ? <Text selectable className="font-nataBold" style={styles.name}>{name}</Text> : null}
+            </View>
+            {onGitHubPreferences ? <Pressable accessibilityRole="button" accessibilityLabel="GitHub activity preferences"
+              accessibilityHint="Opens GitHub activity and account settings" accessibilityState={{ expanded: githubPreferencesVisible }}
+              onPress={onGitHubPreferences} style={styles.action}>
+              <View style={styles.githubSquare}>{githubIcon}</View>
+            </Pressable> : null}
+            <Pressable accessibilityRole="button" accessibilityLabel="Log out" onPress={onLogout} style={styles.action}>
+              <LogOut size={22} strokeWidth={1.9} color="#97969C" />
+            </Pressable>
+          </View>
           {username ? <Text selectable numberOfLines={2} className="font-nata" style={styles.username}>@{username}</Text> : null}
         </View>
       </View>
@@ -71,12 +81,13 @@ const styles = StyleSheet.create({
   header: { width: '100%', gap: 18 },
   topRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 16 },
   avatar: { flexShrink: 0, borderRadius: 999, backgroundColor: '#9B4FE4', alignItems: 'center', justifyContent: 'center' },
-  actions: { flexDirection: 'row', alignSelf: 'flex-end', flexShrink: 0, gap: 4 },
-  action: { width: 48, height: 48, alignItems: 'center', justifyContent: 'center' },
+  action: { width: 48, height: 48, flexShrink: 0, alignItems: 'center', justifyContent: 'center' },
+  githubSquare: { width: 36, height: 36, borderRadius: 10, borderWidth: 1, borderColor: '#2F2F32', backgroundColor: '#63E08A18', alignItems: 'center', justifyContent: 'center' },
   edit: { minHeight: 48, paddingHorizontal: 16, paddingVertical: 12, borderRadius: 12, borderWidth: 1,
     borderColor: '#2F2F32', backgroundColor: '#1D1D1F', flexDirection: 'row', gap: 10, alignItems: 'center', justifyContent: 'center' },
   editLabel: { color: '#F7F7F8', fontSize: 15, lineHeight: 22, flexShrink: 1 },
   identity: { flex: 1, minWidth: 0, gap: 5 },
+  identityHeading: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   username: { color: '#8A898F', fontSize: 16, lineHeight: 22, flexShrink: 1 },
   name: { color: '#F7F7F8', fontSize: 22, lineHeight: 29 },
   bio: { color: '#8A898F', fontSize: 14, lineHeight: 21 },

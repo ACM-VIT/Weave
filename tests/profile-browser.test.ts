@@ -36,6 +36,7 @@ function profileLists() {
       if (name === 'react-native') return native;
       if (name === 'lucide-react-native') return { FolderPlus: 'FolderPlus', FolderOpen: 'FolderOpen', ChevronRight: 'ChevronRight', Pin: 'Pin' };
       if (name === './BoardListCard') return load('src/components/profile/BoardListCard.tsx');
+      if (name === '../explore/RepoCard') return {__esModule:true,default:'RepoCard'};
       if (name === '@/constants/theme') return load('src/constants/theme.ts');
       if (name.endsWith('.css')) return {};
       return nativeRequire(name);
@@ -44,6 +45,26 @@ function profileLists() {
   };
   return load('src/components/profile/ProfileContentLists.tsx').ProfileContentLists;
 }
+
+test('own profile repository and List sections render separately and pinned cards open their canonical repo',async()=>{
+  const Lists=profileLists();const opened:string[]=[];
+  const id='00000000-0000-4000-8000-000000000001';
+  const props={viewer:'viewer',header:React.createElement('View'),compact:true,horizontalPadding:20,maxWidth:600,paddingTop:20,paddingBottom:20,
+    collections:{data:[mapCollectionList({collection_id:'one',name:'My List',repo_count:2})],isPending:false,isError:false,refetch(){}},
+    pinned:{data:[{key:'pinned',repositoryId:id,name:'repo',owner:'owner',description:'Pinned repo',primaryLanguage:null,url:'https://github.com/owner/repo',pinnedAt:'2026-10-29T00:00:00Z'}],isPending:false,isError:false,refetch(){}},
+    openList(){},openRepository:(repo:any)=>opened.push(repo.id)};
+  let root!:ReturnType<typeof create>;
+  await act(async()=>{root=create(React.createElement(Lists,{...props,section:'Repositories'}));});
+  try {
+    const card=root.root.findByType('RepoCard');assert.equal(card.props.repo.id,id);assert.equal(card.props.showMetrics,false);
+    assert.equal(root.root.findAllByProps({testID:'profile-list-collection:one'}).length,0);
+    await act(async()=>card.props.onPress());assert.deepEqual(opened,[id]);
+    await act(async()=>root.update(React.createElement(Lists,{...props,section:'Lists'})));
+    assert.equal(root.root.findAllByType('RepoCard').length,0);
+    assert.equal(root.root.findAllByProps({testID:'profile-list-collection:one'}).length,1);
+    assert.equal(root.root.findAllByProps({testID:'profile-list-pinned'}).length,0,'Pinned is no longer mixed into Lists as a folder');
+  }finally{await act(async()=>root.unmount());}
+});
 
 test('rendered Lists keep ready content through pending, failed and retried independent sections', async () => {
   const Lists = profileLists();
