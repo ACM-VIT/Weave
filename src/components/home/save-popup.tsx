@@ -213,7 +213,25 @@ export function SavePopup({
   const pinDisabled = pinBusy || pinsQuery.data === undefined || pinsQuery.isError;
 
   const listsUnavailable = listsQuery.data === undefined;
-  const lists = useMemo(() => listsQuery.data ?? [], [listsQuery.data]);
+  const [listOrder, setListOrder] = useState(() => ({ scope: selectionScope, visible: isVisible, source: listsQuery.data, keys: listsQuery.data?.map(listMembershipKey) ?? [] }));
+  if (listOrder.scope !== selectionScope || listOrder.visible !== isVisible || listOrder.source !== listsQuery.data) {
+    const incoming = isVisible ? listsQuery.data?.map(listMembershipKey) ?? [] : [];
+    const available = new Set(incoming);
+    const retained = listOrder.scope === selectionScope && listOrder.visible && isVisible ? listOrder.keys.filter(key => available.has(key)) : [];
+    const known = new Set(retained);
+    setListOrder({ scope: selectionScope, visible: isVisible, source: listsQuery.data, keys: [...retained, ...incoming.filter(key => !known.has(key))] });
+  }
+  const lists = useMemo(() => {
+    const incoming = listsQuery.data ?? [];
+    if (listOrder.scope !== selectionScope || !listOrder.keys.length) return incoming;
+    const remaining = new Map(incoming.map(list => [listMembershipKey(list), list]));
+    const ordered: ListDto[] = [];
+    for (const key of listOrder.keys) {
+      const list = remaining.get(key);
+      if (list) { ordered.push(list); remaining.delete(key); }
+    }
+    return [...ordered, ...remaining.values()];
+  }, [listOrder, listsQuery.data, selectionScope]);
   const serverSelectedIds = useMemo(
     () => new Set(lists.filter((list) => list.selected).map(listMembershipKey)),
     [lists],

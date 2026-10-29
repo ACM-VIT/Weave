@@ -192,6 +192,7 @@ export function feed(ids: string[], reducedMotion = false, attribution?: { owner
     requests, events, client,
     setPinStorageFailure(value: boolean) { pinStorageFailure = value; },
     async pins(owner = attribution?.ownerId ?? 'viewer') { return loadSource('src/services/pinnedRepositoryStorage.ts').loadPinnedRepositories(owner); },
+    get saveListOrder() { return root.root.findAllByType('FlatList').find(node => node.props.numColumns === 2)!.props.data.map((list: any) => list.id); },
     async moveListWindow(index: number) { await act(async () => { moveSaveWindow(index); }); },
     async setViewable(value: boolean) { viewable = value; await act(async () => { root.update(renderRows()); }); },
     get swipe() {return root.root.findByType('GestureDetector').props;},

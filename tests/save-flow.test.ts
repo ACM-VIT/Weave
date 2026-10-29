@@ -12,6 +12,24 @@ import { repository, feed, waitForReadmeState } from "./support/feed-harness";
 import { SAVE_SWIPE_THRESHOLD, shouldOpenSavePicker } from "../src/components/home/save-swipe-gesture";
 
 describe("Membership and save sheet lifecycle", () => {
+  test('saving keeps List positions until the picker closes and reopens', async () => {
+    const app = feed(['00000000-0000-4000-8000-000000000001'], true);
+    let saved = false;
+    const a = { id: 'a', source: 'collection', name: 'A', selected: false, repositoryCount: 0 };
+    const b = { id: 'b', source: 'collection', name: 'B', selected: false, repositoryCount: 0 };
+    app.setSave(async (_repo, ids) => { saved = true; return { saved: true, selectedListIds: ids, saveStateChanged: true }; });
+    app.setListLoader(async () => saved ? [{ ...b, selected: true, repositoryCount: 1 }, a] : [a, b]);
+    await app.mount();
+    try {
+      await app.open(0, 'onSavePress');
+      assert.deepEqual(app.saveListOrder, ['a', 'b']);
+      await app.press('B, 0 repositories'); await app.press('Save repository to selected Lists');
+      await waitForReadmeState(() => app.button('B, 1 repositories')?.props.accessibilityState.checked === true);
+      assert.deepEqual(app.saveListOrder, ['a', 'b'], 'the refreshed recently-saved order must not move cards in an open sheet');
+      await app.requestClose(); await app.finishClose(); await app.open(0, 'onSavePress');
+      assert.deepEqual(app.saveListOrder, ['b', 'a'], 'the next opening adopts the refreshed server order');
+    } finally { await app.unmount(); }
+  });
   test('pinning persists independently of Lists, survives reopening and can be removed', async () => {
     const metadata = { owner: 'owner' };
     const app = feed(['repo'], true, { ownerId: 'viewer', repository: metadata });
