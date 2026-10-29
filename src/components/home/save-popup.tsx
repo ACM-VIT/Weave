@@ -21,6 +21,7 @@ import { BlurView } from 'expo-blur';
 import * as Haptics from 'expo-haptics';
 import {
   useMutation,
+  useIsMutating,
   useQuery,
   useQueryClient,
   type InfiniteData,
@@ -30,6 +31,7 @@ import {
   Check,
   CheckCircle2,
   FolderHeart,
+  Pin,
   Plus,
   Search,
   Sparkles,
@@ -38,7 +40,6 @@ import {
 
 import {
   createRepositoryList,
-  getRepositoryLists,
   listMembershipKey,
   repositoryListsQueryKey,
   syncRepositoryLists,
@@ -51,9 +52,11 @@ import type { FeedPage } from '@/api/feed';
 import type { RepositoryDetail } from '@/models/repository';
 import { REFERENCE_THEME } from '@/constants/theme';
 import { useModalScrollLock } from '@/hooks/use-modal-scroll-lock';
+import { repositoryListsQueryOptions } from '@/hooks/use-repository-lists';
 import { useAuth } from '@/store/AuthContext';
 import { feedQueryKey, patchFeedSaved } from '@/utils/feed-repository';
 import { listRepositoryQueryKey } from '@/services/accountQueryCache';
+import { loadPinnedRepositories, setRepositoryPinned } from '@/services/pinnedRepositoryStorage';
 import * as SecureStore from '@/utils/storage';
 
 export type SavePopupMutationState = { save: boolean; create: boolean; error: string | null };
@@ -69,6 +72,7 @@ type SavePopupProps = {
   onListMembershipsChanged?: (listIds: string[], saved: boolean) => void;
   repoId?: string;
   repoName?: string;
+  repository?: RepositoryDetail;
   serveId?: string | null;
   sessionId?: string | null;
   impressionEventId?: string | null;
@@ -126,6 +130,7 @@ export function SavePopup({
   onListMembershipsChanged,
   repoId,
   repoName,
+  repository,
   serveId,
   sessionId,
   impressionEventId,
@@ -149,8 +154,7 @@ export function SavePopup({
   const [search, setSearch] = useState('');
   const [localSelection, setLocalSelection] = useState(() => ({
     scope: selectionScope,
-    selectedIds: new Set<string>(),
-    hasChanges: false,
+    overrides: new Map<string, boolean>(),
   }));
   const [isCreating, setIsCreating] = useState(false);
   const [newListName, setNewListName] = useState('');
@@ -170,33 +174,80 @@ export function SavePopup({
   useModalScrollLock(isVisible);
 
   const listsQuery = useQuery({
-    queryKey: repositoryListsQueryKey(repoId, viewerUserId),
-    queryFn: async ({ signal }) => {
-      if (!repoId) throw new Error('Repository information is missing.');
-      const generation = authSessionLifecycle.currentGeneration();
-      const token = await SecureStore.getItemAsync('access_token');
-      authSessionLifecycle.assertCurrent(generation);
-      if (!token) throw new Error('Sign in to manage repository Lists.');
-      const lists = await getRepositoryLists(repoId, token, signal);
-      authSessionLifecycle.assertCurrent(generation);
-      return lists;
-    },
+    ...repositoryListsQueryOptions(repoId, viewerUserId),
     enabled: isVisible && Boolean(repoId && viewerUserId),
-    staleTime: 30_000,
     refetchOnMount: true,
     retry: 1,
     retryDelay: 500,
   });
 
-  const listsUnavailable = !listsQuery.isSuccess || listsQuery.isFetching;
-  const lists = useMemo(() => listsQuery.data ?? [], [listsQuery.data]);
+  const pinQueryKey = ['pinned-repositories', viewerUserId] as const;
+  const pinsQuery = useQuery({
+    queryKey: pinQueryKey,
+    enabled: isVisible && Boolean(viewerUserId && repository && repository.id === repoId),
+    queryFn: async () => {
+      authSessionLifecycle.assertCurrent(renderGeneration);
+      const pins = await loadPinnedRepositories(viewerUserId!);
+      authSessionLifecycle.assertCurrent(renderGeneration);
+      return pins;
+    },
+  });
+  const pinMutation = useMutation({
+    mutationKey: pinQueryKey,
+    mutationFn: async ({ pinned, generation }: { pinned: boolean; generation: number }) => {
+      authSessionLifecycle.assertCurrent(generation);
+      if (!viewerUserId || !repository || repository.id !== repoId) throw new Error('Repository information is missing.');
+      await queryClient.cancelQueries({ queryKey: pinQueryKey, exact: true });
+      authSessionLifecycle.assertCurrent(generation);
+      await setRepositoryPinned(viewerUserId, repository, pinned);
+      const pins = await loadPinnedRepositories(viewerUserId);
+      authSessionLifecycle.assertCurrent(generation);
+      return pins;
+    },
+    onSuccess: (pins, { generation }) => {
+      if (authSessionLifecycle.isCurrent(generation)) queryClient.setQueryData(pinQueryKey, pins);
+    },
+  });
+  const pinBusy = useIsMutating({ mutationKey: pinQueryKey, exact: true }) > 0;
+  const isPinned = pinsQuery.data?.some(pin => pin.repositoryId === repoId) ?? false;
+  const pinDisabled = pinBusy || pinsQuery.data === undefined || pinsQuery.isError;
+
+  const listsUnavailable = listsQuery.data === undefined;
+  const [listOrder, setListOrder] = useState(() => ({ scope: selectionScope, visible: isVisible, source: listsQuery.data, keys: listsQuery.data?.map(listMembershipKey) ?? [] }));
+  if (listOrder.scope !== selectionScope || listOrder.visible !== isVisible || listOrder.source !== listsQuery.data) {
+    const incoming = isVisible ? listsQuery.data?.map(listMembershipKey) ?? [] : [];
+    const available = new Set(incoming);
+    const retained = listOrder.scope === selectionScope && listOrder.visible && isVisible ? listOrder.keys.filter(key => available.has(key)) : [];
+    const known = new Set(retained);
+    setListOrder({ scope: selectionScope, visible: isVisible, source: listsQuery.data, keys: [...retained, ...incoming.filter(key => !known.has(key))] });
+  }
+  const lists = useMemo(() => {
+    const incoming = listsQuery.data ?? [];
+    if (listOrder.scope !== selectionScope || !listOrder.keys.length) return incoming;
+    const remaining = new Map(incoming.map(list => [listMembershipKey(list), list]));
+    const ordered: ListDto[] = [];
+    for (const key of listOrder.keys) {
+      const list = remaining.get(key);
+      if (list) { ordered.push(list); remaining.delete(key); }
+    }
+    return [...ordered, ...remaining.values()];
+  }, [listOrder, listsQuery.data, selectionScope]);
   const serverSelectedIds = useMemo(
     () => new Set(lists.filter((list) => list.selected).map(listMembershipKey)),
     [lists],
   );
-  const hasLocalChanges = localSelection.scope === selectionScope
-    && localSelection.hasChanges;
-  const selectedIds = hasLocalChanges ? localSelection.selectedIds : serverSelectedIds;
+  const selectedIds = useMemo(() => {
+    const selected = new Set(serverSelectedIds);
+    if (localSelection.scope === selectionScope) {
+      // Explicit checkbox edits survive refresh; untouched remote memberships
+      // follow the new complete baseline instead of a stale full-set snapshot.
+      for (const [id, checked] of localSelection.overrides) {
+        if (checked) selected.add(id);
+        else selected.delete(id);
+      }
+    }
+    return selected;
+  }, [localSelection, selectionScope, serverSelectedIds]);
   const filteredLists = useMemo(() => {
     const query = search.trim().toLocaleLowerCase();
     if (!query) return lists;
@@ -236,7 +287,7 @@ export function SavePopup({
       setLocalMessage(null);
       setIsCreating(false);
       setNewListName('');
-      setLocalSelection({ scope: selectionScope, selectedIds: new Set(), hasChanges: false });
+      setLocalSelection({ scope: selectionScope, overrides: new Map() });
       onClose();
     });
   }, [modalHeight, onClose, overlayOpacity, selectionScope, translateY, reducedMotion]);
@@ -285,7 +336,7 @@ export function SavePopup({
     },
     mutationFn: async (generation: number) => {
       authSessionLifecycle.assertCurrent(generation);
-      if (listsUnavailable) throw new Error('Load your Lists before creating a new one.');
+      if (listsUnavailable || listsQuery.isFetching || listsQuery.isError) throw new Error('Load your Lists before creating a new one.');
       const name = newListName.trim();
       if (!name) throw new Error('List name is required.');
       const token = await SecureStore.getItemAsync('access_token');
@@ -295,11 +346,10 @@ export function SavePopup({
     },
     onSuccess: async (list, generation) => {
       if (!authSessionLifecycle.isCurrent(generation)) return;
-      setLocalSelection({
+      setLocalSelection(current => ({
         scope: selectionScope,
-        selectedIds: new Set([...selectedIds, listMembershipKey(list)]),
-        hasChanges: true,
-      });
+        overrides: new Map(current.scope === selectionScope ? current.overrides : []).set(listMembershipKey(list), true),
+      }));
       setIsCreating(false);
       setNewListName('');
       setMessage({ type: 'success', text: `${list.name} created and selected.` });
@@ -435,8 +485,7 @@ export function SavePopup({
       void checkOnboardingStatus().catch(() => undefined);
       setLocalSelection({
         scope: selectionScope,
-        selectedIds: new Set(result.selectedListIds),
-        hasChanges: false,
+        overrides: new Map(),
       });
       if (mountedRef.current) closeTimer.current = setTimeout(closeAnimated, 900);
     },
@@ -449,19 +498,19 @@ export function SavePopup({
   const isCreatingList = createMutation.isPending || pending.create;
   const mutationBusy = isSaving || isCreatingList;
   const selectionBlocked = mutationBusy || listsUnavailable;
+  const creationBlocked = selectionBlocked || listsQuery.isFetching || listsQuery.isError;
 
   const toggleList = (listId: string) => {
     if (selectionBlocked) return;
     setMessage(null);
-    const next = new Set(selectedIds);
-    if (next.has(listId)) next.delete(listId);
-    else next.add(listId);
-    setLocalSelection({ scope: selectionScope, selectedIds: next, hasChanges: true });
+    const overrides = new Map(localSelection.scope === selectionScope ? localSelection.overrides : []);
+    overrides.set(listId, !selectedIds.has(listId));
+    setLocalSelection({ scope: selectionScope, overrides });
     void haptic();
   };
 
   const beginListCreation = () => {
-    if (selectionBlocked) return;
+    if (creationBlocked) return;
     setMessage(null);
     setIsCreating(true);
     void haptic();
@@ -553,6 +602,31 @@ export function SavePopup({
                     </Pressable>
                   ) : null}
                 </View>
+
+                {repository?.id === repoId && viewerUserId ? (
+                  <View style={styles.pinSection}>
+                    <Pressable
+                      accessibilityLabel="Pin to profile"
+                      accessibilityRole="checkbox"
+                      accessibilityState={{ checked: isPinned, disabled: pinDisabled, busy: pinBusy }}
+                      disabled={pinDisabled}
+                      onPress={() => { pinMutation.mutate({ pinned: !isPinned, generation: renderGeneration }); void haptic(); }}
+                      style={[styles.pinRow, { backgroundColor: isPinned ? `${palette.accent}16` : palette.elevated, borderColor: isPinned ? palette.accent : palette.border }]}
+                    >
+                      <Pin color={isPinned ? palette.accent : palette.secondary} size={18} />
+                      <Text style={[styles.pinLabel, { color: palette.text }]}>Pin to profile</Text>
+                      {pinBusy || pinsQuery.isPending ? <ActivityIndicator color={palette.accent} size="small" /> : (
+                        <View style={[styles.checkbox, { backgroundColor: isPinned ? palette.accent : 'transparent', borderColor: isPinned ? palette.accent : palette.tertiary }]}>
+                          {isPinned ? <Check color={palette.accentText} size={13} strokeWidth={3} /> : null}
+                        </View>
+                      )}
+                    </Pressable>
+                    {pinMutation.isError ? <Text accessibilityLiveRegion="polite" style={[styles.pinError, { color: palette.danger }]}>Could not update pin. Try again.</Text> : null}
+                    {pinsQuery.isError ? <Pressable accessibilityRole="button" accessibilityLabel="Retry loading pin" onPress={() => void pinsQuery.refetch()} style={styles.pinRetry}>
+                      <Text style={{ color: palette.accent }}>Could not load pin. Retry</Text>
+                    </Pressable> : null}
+                  </View>
+                ) : null}
 
                 {listsQuery.isError ? (
                   <View style={{ alignItems: 'center', gap: 12, paddingVertical: 16 }}>
@@ -654,7 +728,7 @@ export function SavePopup({
                     {
                       backgroundColor: palette.elevatedStrong,
                       borderColor: '#55555A',
-                      opacity: selectionBlocked ? 0.5 : 1,
+                      opacity: creationBlocked ? 0.5 : 1,
                     },
                   ]}
                 >
@@ -678,8 +752,8 @@ export function SavePopup({
                   <Pressable
                     accessibilityLabel="Create new List"
                     accessibilityRole="button"
-                    accessibilityState={{ disabled: selectionBlocked }}
-                    disabled={selectionBlocked}
+                    accessibilityState={{ disabled: creationBlocked }}
+                    disabled={creationBlocked}
                     onPress={beginListCreation}
                     style={StyleSheet.absoluteFill}
                   />
@@ -759,11 +833,11 @@ export function SavePopup({
                   </View>
                   <TextInput
                     accessibilityLabel="List name"
-                    editable={!selectionBlocked}
+                    editable={!creationBlocked}
                     ref={createInputRef}
                     maxLength={100}
                     onChangeText={(value) => { setNewListName(value); if (message) setMessage(null); }}
-                    onSubmitEditing={() => { if (newListName.trim() && !selectionBlocked) createMutation.mutate(renderGeneration); }}
+                    onSubmitEditing={() => { if (newListName.trim() && !creationBlocked) createMutation.mutate(renderGeneration); }}
                     placeholder="List name"
                     placeholderTextColor={palette.secondary}
                     returnKeyType="done"
@@ -775,13 +849,13 @@ export function SavePopup({
                   ) : null}
                   <Pressable cssInterop={false}
                     accessibilityRole="button"
-                    accessibilityState={{ disabled: !newListName.trim() || selectionBlocked }}
-                    disabled={!newListName.trim() || selectionBlocked}
-                    onPress={() => { if (newListName.trim() && !selectionBlocked) createMutation.mutate(renderGeneration); }}
+                    accessibilityState={{ disabled: !newListName.trim() || creationBlocked }}
+                    disabled={!newListName.trim() || creationBlocked}
+                    onPress={() => { if (newListName.trim() && !creationBlocked) createMutation.mutate(renderGeneration); }}
                     style={({ pressed }) => [
                       styles.createSubmit,
                       { backgroundColor: palette.saveAccent },
-                      (!newListName.trim() || selectionBlocked) && styles.disabled,
+                      (!newListName.trim() || creationBlocked) && styles.disabled,
                       pressed && styles.pressed,
                     ]}
                   >
@@ -811,6 +885,11 @@ const styles = StyleSheet.create({
   closeButton: { width: 36, height: 36, borderRadius: 18, alignItems: 'center', justifyContent: 'center' },
   search: { minHeight: 43, marginHorizontal: 14, borderWidth: 1, borderRadius: 13, paddingHorizontal: 12, flexDirection: 'row', alignItems: 'center', gap: 8 },
   searchInput: { flex: 1, minHeight: 41, fontFamily: 'NataSans-Regular', fontSize: 13 },
+  pinSection: { marginHorizontal: 14, marginTop: 12, gap: 6 },
+  pinRow: { minHeight: 48, borderRadius: 13, borderWidth: 1, paddingHorizontal: 12, flexDirection: 'row', alignItems: 'center', gap: 10 },
+  pinLabel: { flex: 1, fontFamily: 'NataSans-SemiBold', fontSize: 13.5 },
+  pinError: { fontFamily: 'NataSans-Regular', fontSize: 12, lineHeight: 16 },
+  pinRetry: { minHeight: 44, justifyContent: 'center' },
   collectionList: { padding: 14, gap: 9 },
   loadingList: { minHeight: 190, position: 'relative' },
   previewLoadingOverlay: { position: 'absolute', left: 0, top: 0, right: 0, bottom: 0, alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(29,29,31,0.34)' },
@@ -834,7 +913,7 @@ const styles = StyleSheet.create({
   centerState: { minHeight: 174, paddingHorizontal: 24, alignItems: 'center', justifyContent: 'center', gap: 8 },
   stateTitle: { fontFamily: 'NataSans-Bold', fontSize: 16, textAlign: 'center' },
   stateBody: { fontFamily: 'NataSans-Regular', fontSize: 12.5, lineHeight: 18, textAlign: 'center' },
-  footer: { flexShrink: 0, borderTopWidth: 1, paddingHorizontal: 14, paddingTop: 10, paddingBottom: 14, gap: 9 },
+  footer: { flexShrink: 0, marginTop: 8, borderTopWidth: 1, paddingHorizontal: 14, paddingTop: 10, paddingBottom: 14, gap: 9 },
   footerActions: { flexDirection: 'row', alignItems: 'center', gap: 10 },
   newButtonFrame: {
     flex: 1,

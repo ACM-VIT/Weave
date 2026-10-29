@@ -518,6 +518,42 @@ test('consuming navigation attribution preserves the live Home controller and pe
 });
 
 
+test('GitHub eligibility changes retire cached pages and historical pagination request identities', async () => {
+  const {loadSource} = await import('./support/startup-harness');
+  const {retireHomeFeedForGitHubChange} = await import('../src/utils/feed-repository');
+  const {SessionLifecycle} = await import('../src/api/session-lifecycle');
+  const token = `header.${Buffer.from(JSON.stringify({userId:'alice'})).toString('base64url')}.signature`;
+  const requests: string[] = [];
+  const source = loadSource('src/services/homeFeedQuery.ts', {
+    '../utils/storage': {getStorageItem:async()=>token},
+    '../api/session-lifecycle': {authSessionLifecycle:new SessionLifecycle()},
+    '../api/feed-sessions': {feedSessions:()=>({prepare:async(session:string)=>session})},
+    '../api/home-feed': {fetchHomeFeed:async (_token:string,_cursor:string,options:{requestId:string})=> {
+      requests.push(options.requestId);
+      if (requests.length === 1) throw new Error('response lost');
+      return page(['fresh']);
+    }},
+  });
+  const client = new QueryClient();
+  client.setQueryData(['feed','alice'], {pages:[page(['familiar'])],pageParams:[null]});
+  client.setQueryData(['feed','bob'], {pages:[page(['untouched'])],pageParams:[null]});
+  try {
+    const previous = source.homeFeedController(client,'alice');
+    await assert.rejects(previous.load(null), /response lost/);
+    await retireHomeFeedForGitHubChange(client,'alice',()=>true);
+    assert.equal(client.getQueryData(['feed','alice']), undefined);
+    assert.ok(client.getQueryData(['feed','bob']));
+    const fresh = source.homeFeedController(client,'alice');
+    assert.notStrictEqual(fresh,previous);
+    assert.equal((await fresh.load(null)).items[0].repo_id,'fresh');
+    assert.notEqual(requests[0],requests[1], 'retry must not replay a serve from before the GitHub change');
+    client.setQueryData(['feed','alice'], {pages:[page(['new-login'])],pageParams:[null]});
+    await retireHomeFeedForGitHubChange(client,'alice',()=>false);
+    assert.equal((client.getQueryData<any>(['feed','alice'])).pages[0].items[0].repo_id,'new-login');
+  } finally { source.releaseHomeFeedController(client); client.clear(); }
+});
+
+
 test('Home follows up preparation once with the same request and stops on persistent failure',async()=>{
  const {loadSource}=await import('./support/startup-harness');
  const error=Object.assign(new Error('Recommendations are still being prepared'),{status:503,code:'PERSONALIZED_FEED_UNAVAILABLE',retryAfter:'3'});

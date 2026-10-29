@@ -15,6 +15,7 @@ import type { ActivityInput } from '../../api/activity';
 import {useQueryClient} from '@tanstack/react-query';
 import {useAuth} from '@/store/AuthContext';
 import {authSessionLifecycle} from '@/api/session-lifecycle';
+import { usePrefetchRepositoryLists } from '@/hooks/use-repository-lists';
 import {createUuid} from '@/utils/uuid';
 import {type OriginalFeedImpression,feedAttribution,parseOriginalFeedImpression,rememberOriginalFeedImpression,rememberFeedNavigation} from '@/services/feedImpressionAttribution';
 import { reconcileFeedItemSavedState } from '@/utils/feed-repository';
@@ -103,6 +104,7 @@ export function RepositoryFeedItem({
   const generation=authSessionLifecycle.currentGeneration();
   const ownerId=user?.user_id;
   const {id:repoId,serveId,feedPosition,feedSessionId}=repository;
+  usePrefetchRepositoryLists(repoId, ownerId, isViewable && isAppActive);
   const attribution=React.useMemo(()=>({
     row:feedAttribution(ownerId,{id:repoId,serveId,feedPosition,feedSessionId} as RepositoryData),generation,
   }),[ownerId,repoId,serveId,feedPosition,feedSessionId,generation]);
@@ -284,6 +286,7 @@ export function RepositoryFeedItem({
         position={repository.feedPosition}
         repoId={repository.id}
         repoName={repository.name}
+        repository={repository}
         serveId={repository.serveId}
         sessionId={attribution.row?.sessionId}
         impressionEventId={attribution.row?repository.originalImpression?.eventId:undefined}

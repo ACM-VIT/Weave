@@ -200,13 +200,11 @@ export function OtherUserProfile({
               <View style={styles.identity}>
                 <View style={styles.handleRow}>
                   <Text
-                    adjustsFontSizeToFit
-                    minimumFontScale={0.7}
-                    numberOfLines={1}
+                    numberOfLines={2}
                     selectable
-                    style={[styles.handle, compact && styles.handleCompact]}
+                    style={[styles.displayName, compact && styles.displayNameCompact]}
                   >
-                    @{profile.username.replace(/^@/, '')}
+                    {profile.displayName.trim() || profile.username.replace(/^@/, '')}
                   </Text>
                   {!profile.isSelf ? (
                     <FollowButton
@@ -223,28 +221,18 @@ export function OtherUserProfile({
                     />
                   ) : null}
                 </View>
+                <Text numberOfLines={2} selectable style={[styles.handle, compact && styles.handleCompact]}>
+                  @{profile.username.replace(/^@/, '')}
+                </Text>
                 {profile.bio ? (
                   <Text
-                    adjustsFontSizeToFit
-                    minimumFontScale={0.75}
-                    numberOfLines={1}
+                    numberOfLines={2}
                     selectable
                     style={[styles.bio, compact && styles.bioCompact]}
                   >
                     {profile.bio}
                   </Text>
                 ) : null}
-                <Text
-                  numberOfLines={1}
-                  selectable
-                  style={[
-                    styles.displayName,
-                    !profile.bio && styles.displayNameWithoutBio,
-                    compact && styles.displayNameCompact,
-                  ]}
-                >
-                  {profile.displayName}
-                </Text>
               </View>
             </View>
 
@@ -293,6 +281,7 @@ export function OtherUserProfile({
               {(['Repositories', 'Lists'] as const).map((tab) => (
                 <Pressable
                   accessibilityRole="tab"
+                  aria-selected={activeTab === tab}
                   accessibilityState={{ selected: activeTab === tab }}
                   key={tab}
                   onPress={() => setActiveTab(tab)}
@@ -406,11 +395,10 @@ const styles = StyleSheet.create({
   avatarInitialCompact: { fontSize: 27, lineHeight: 33 },
   identity: { flex: 1, minWidth: 0, justifyContent: 'center' },
   handleRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
-  handle: { flex: 1, minWidth: 0, color: REFERENCE_THEME.text, fontFamily: 'NataSans-Bold', fontSize: 21, lineHeight: 27, letterSpacing: -0.35 },
-  handleCompact: { fontSize: 17, lineHeight: 22 },
-  displayName: { marginTop: 2, color: REFERENCE_THEME.textTertiary, fontFamily: 'NataSans-Regular', fontSize: 14, lineHeight: 18 },
-  displayNameWithoutBio: { marginTop: 6 },
-  displayNameCompact: { fontSize: 11, lineHeight: 15 },
+  handle: { marginTop: 4, color: REFERENCE_THEME.textSecondary, fontFamily: 'NataSans-Regular', fontSize: 15, lineHeight: 21 },
+  handleCompact: { fontSize: 14, lineHeight: 20 },
+  displayName: { flex: 1, minWidth: 0, color: REFERENCE_THEME.text, fontFamily: 'NataSans-Bold', fontSize: 22, lineHeight: 28 },
+  displayNameCompact: { fontSize: 20, lineHeight: 26 },
   bio: { marginTop: 5, color: REFERENCE_THEME.textSecondary, fontFamily: 'NataSans-Regular', fontSize: 15, lineHeight: 20 },
   bioCompact: { fontSize: 12, lineHeight: 16 },
   loadingRow: { minHeight: 22, marginTop: -10, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8 },

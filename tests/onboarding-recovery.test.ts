@@ -6,6 +6,8 @@ import test from 'node:test';
 import React, { act } from 'react';
 import { create } from 'react-test-renderer';
 import ts from 'typescript';
+import { QueryClient } from '@tanstack/react-query';
+import * as feedRepository from '../src/utils/feed-repository';
 import { startup, deferred, envelope, fixtureToken } from './support/startup-harness';
 import { ONBOARDING_INTERESTS } from '../backend/contracts/onboardingTaxonomy';
 
@@ -178,6 +180,133 @@ test('profile retirement already writing its marker prevents a later Finish from
  }finally{app.holdMarkerWrites(undefined);marker.resolve();await reading?.catch(()=>undefined);await finishing?.catch(()=>undefined);await app.unmount();}
 });
 
+test('the GitHub popup has only Revoke and Disconnect, then offers Reconnect after unlinking', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  let linked = true, active = true, reconnects = 0, pending = false;
+  const client = new QueryClient();
+  client.setQueryData(['feed', 'viewer'], { pages: ['old-familiar-card'] });
+  client.setQueryData(['feed', 'other'], { pages: ['other-account'] });
+  const api = { status: async () => ({ linked, active, provenance: {} }), revoke: async () => { active = false; } };
+  const native = { ...Object.fromEntries(['View','Text','Pressable','ActivityIndicator','Modal','ScrollView'].map(name=>[name,name])),
+    StyleSheet: { create: (value: unknown) => value, absoluteFill: {} }, useWindowDimensions: () => ({ height: 800 }) };
+  const theme = { APP_THEME: {}, REFERENCE_THEME: {}, Fonts: {}, Spacing: {} };
+  const mocks = { 'react-native': native, 'react-native-safe-area-context': { useSafeAreaInsets: () => ({top:0,bottom:0}) },
+    'react-native-reanimated': { useReducedMotion: () => true }, 'lucide-react-native': { X:'X' },
+    '@/assets/icons/github.svg': { __esModule: true, default: 'GitHubIcon' }, '../../constants/theme': theme,
+    '../../hooks/use-modal-scroll-lock': { useModalScrollLock() {} },
+    '../../api/githubImport': { githubImportApi: api }, '../../api/githubUnlink': { githubUnlinkApi: { status: async () => ({status:linked?(pending?'pending':'none'):'done'}) } },
+    '../../services/githubUnlink': { startGithubUnlink: async () => {pending=true;return {status:'pending'};} },
+    '../../hooks/useOAuth': { useOAuth: () => ({ signInWithProvider: async () => { linked=true;pending=false;reconnects++; }, isLoading:false,error:null }) },
+    '@tanstack/react-query': { useQueryClient: () => client },
+    '../../utils/feed-repository': feedRepository,
+  };
+  const panel=loadSource('src/components/profile/GitHubPreferencesPopup.tsx',mocks).GitHubPreferencesPopup;
+  let root!:ReturnType<typeof create>;
+  await act(async()=>{root=create(React.createElement(panel,{visible:true,userId:'viewer',onClose(){},onSaved:async()=>{}}));});
+  const buttons=()=>root.root.findAllByType('Pressable').filter(n=>!['Dismiss GitHub preferences','Close GitHub preferences'].includes(n.props.accessibilityLabel));
+  const press=async(label:string)=>act(async()=>{buttons().find(n=>n.props.accessibilityLabel===label)!.props.onPress();await new Promise(r=>setImmediate(r));});
+  try {
+    assert.deepEqual(buttons().map(n=>n.props.accessibilityLabel),['Revoke','Disconnect']);
+    await press('Revoke');assert.equal(buttons()[0].props.disabled,true);
+    assert.equal(client.getQueryData(['feed','viewer']), undefined);
+    assert.deepEqual(client.getQueryData(['feed','other']), { pages: ['other-account'] });
+    await press('Disconnect');
+    assert.equal(buttons()[1].props.disabled,true, 'pending disconnect reconciles automatically');
+    client.setQueryData(['feed','viewer'], { pages: ['loaded-while-disconnecting'] });
+    linked=false;active=false;
+    await act(async()=>{t.mock.timers.tick(2_001);await new Promise(r=>setImmediate(r));});
+    assert.deepEqual(buttons().map(n=>n.props.accessibilityLabel),['Revoke','Reconnect']);
+    assert.equal(client.getQueryData(['feed','viewer']),undefined);
+    await press('Reconnect');assert.equal(reconnects,1);assert.deepEqual(buttons().map(n=>n.props.accessibilityLabel),['Revoke','Disconnect']);
+    assert.equal(JSON.stringify(root.toJSON()).includes('GitHub authorization settings'),false);
+  }finally{await act(async()=>root.unmount());}
+});
+
+test('profile GitHub activity preview, acceptance and revocation keep the login connected', async () => {
+  const native = Object.fromEntries(['View', 'Text', 'Pressable', 'ActivityIndicator'].map(name => [name, name]));
+  const theme = { APP_THEME: {}, REFERENCE_THEME: {}, Fonts: {}, Spacing: { two: 8, three: 12 } };
+  const calls: string[] = [];
+  let refreshes = 0;
+  const client = new QueryClient();
+  client.setQueryData(['feed','viewer'], { pages: ['old-familiar-card'] });
+  const panel = loadSource('src/components/onboarding/GitHubImportPanel.tsx', {
+    '@tanstack/react-query': { useQueryClient: () => client },
+    '../../utils/feed-repository': feedRepository,
+    'react-native': native, '../../constants/theme': theme,
+    '../../api/githubImport': { githubImportApi: {
+      status: async () => ({ linked: true, active: false, provenance: {} }),
+      preview: async () => { calls.push('preview'); return { snapshot_id: 'preview', collected_at: new Date().toISOString(),
+        expires_at: new Date(Date.now() + 60_000).toISOString(), repository_count: 2, status: 'complete', suggestions: { skills: ['typescript'], interests: [], tech_stack: [] } }; },
+      accept: async () => { calls.push('accept'); }, revoke: async () => { calls.push('revoke'); },
+    } },
+  }).GitHubImportPanel;
+  let renderer!: ReturnType<typeof create>;
+  const press = (label: string) => act(async () => { renderer.root.findByProps({ accessibilityLabel: label }).props.onPress(); });
+  await act(async () => { renderer = create(React.createElement(panel, { userId: 'viewer', onSaved: async () => { refreshes++; } })); });
+  try {
+    await press('Preview public activity');
+    assert.ok(JSON.stringify(renderer.toJSON()).includes('typescript'));
+    await press('Add these preferences');
+    assert.equal(client.getQueryData(['feed','viewer']), undefined, 'accepted import retires familiar cached cards');
+    client.setQueryData(['feed','viewer'], { pages: ['cached-before-revoke'] });
+    assert.equal(renderer.root.findByProps({ accessibilityLabel: 'Revoke activity import' }).props.disabled, false);
+    await press('Revoke activity import');
+    assert.equal(client.getQueryData(['feed','viewer']), undefined);
+    assert.equal(renderer.root.findAllByProps({ accessibilityLabel: 'Revoke activity import' }).length, 0);
+    await press('Show import option');
+    assert.equal(renderer.root.findByProps({ accessibilityLabel: 'Preview public activity' }).props.disabled, false, 'revocation preserves the verified login');
+    assert.deepEqual(calls, ['preview', 'accept', 'revoke']); assert.equal(refreshes, 2);
+  } finally { await act(async () => renderer.unmount()); }
+});
+
+test('GitHub disconnect requires confirmation and automatically reconciles a pending result', async () => {
+  const native = Object.fromEntries(['View', 'Text', 'ScrollView', 'Pressable', 'ActivityIndicator'].map(name => [name, name]));
+  const theme = { APP_THEME: {}, REFERENCE_THEME: {}, Fonts: {}, Spacing: { two: 8, three: 12, four: 16 } };
+  let authorizationCalls = 0, pending = false, refreshes = 0;
+  const panel = loadSource('src/components/onboarding/GitHubUnlinkPanel.tsx', {
+    'react-native': native, 'react-native-safe-area-context': { useSafeAreaInsets: () => ({ top: 0 }) }, '../../constants/theme': theme,
+    '../../api/githubUnlink': { githubUnlinkApi: { status: async () => ({ status: pending ? 'done' : 'none' }) } },
+    '../../services/githubUnlink': { startGithubUnlink: async () => { authorizationCalls++; pending = true; return { status: 'pending', retryable: true }; } },
+  }).GitHubUnlinkPanel;
+  let renderer!: ReturnType<typeof create>;
+  const press = (label: string) => act(async () => { renderer.root.findByProps({ accessibilityLabel: label }).props.onPress(); });
+  await act(async () => { renderer = create(React.createElement(panel, { userId: 'viewer', linked: true, onSaved: async () => { refreshes++; } })); });
+  try {
+    await press('Disconnect GitHub login'); assert.equal(authorizationCalls, 0);
+    await press('Keep GitHub login'); assert.equal(authorizationCalls, 0);
+    await press('Disconnect GitHub login'); await press('Reauthenticate and disconnect GitHub');
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 2_150)); });
+    assert.ok(JSON.stringify(renderer.toJSON()).includes('GitHub login disconnected.'));
+    assert.equal(renderer.root.findAllByProps({ accessibilityLabel: 'Check disconnect status' }).length, 0);
+    assert.equal(authorizationCalls, 1); assert.equal(refreshes, 2);
+    await act(async () => renderer.update(React.createElement(panel, { userId: 'other', linked: false, onSaved: async () => undefined })));
+    assert.equal(renderer.root.findAllByProps({ accessibilityLabel: 'Disconnect GitHub login' }).length, 0);
+  } finally { await act(async () => renderer.unmount()); }
+});
+
+test('automatic disconnect verification stops after bounded retries and cancels on close', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const native = Object.fromEntries(['View', 'Text', 'ScrollView', 'Pressable', 'ActivityIndicator'].map(name => [name, name]));
+  let checks = 0;
+  const panel = loadSource('src/components/onboarding/GitHubUnlinkPanel.tsx', {
+    'react-native': native, 'react-native-safe-area-context': { useSafeAreaInsets: () => ({ top: 0 }) },
+    '../../constants/theme': { APP_THEME: {}, REFERENCE_THEME: {}, Fonts: {}, Spacing: {} },
+    '../../api/githubUnlink': { githubUnlinkApi: { status: async () => { checks++; return { status: 'pending', retryable: false }; } } },
+    '../../services/githubUnlink': { startGithubUnlink: async () => null },
+  }).GitHubUnlinkPanel;
+  let renderer!: ReturnType<typeof create>;
+  await act(async () => { renderer = create(React.createElement(panel, { userId: 'viewer', onSaved: async () => undefined })); });
+  try {
+    for (let i = 0; i < 6; i++) await act(async () => t.mock.timers.tick(2_001));
+    assert.equal(checks, 6, 'one initial read and five automatic checks');
+    assert.ok(JSON.stringify(renderer.toJSON()).includes('Verification is still pending.'));
+    await act(async () => t.mock.timers.tick(60_000)); assert.equal(checks, 6, 'pending work must not poll indefinitely');
+    await act(async () => renderer.update(React.createElement(panel, { userId: 'other', onSaved: async () => undefined })));
+    assert.equal(checks, 7);
+  } finally { await act(async () => renderer.unmount()); }
+  await act(async () => t.mock.timers.tick(60_000)); assert.equal(checks, 7, 'closing the panel cancels its scheduled check');
+});
+
 for (const manualMode of [false, true]) {
 test(`mounted onboarding recovery preserves drafts and refreshes controls (manualMode=${manualMode})`, async () => {
   (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
@@ -189,6 +318,8 @@ test(`mounted onboarding recovery preserves drafts and refreshes controls (manua
   const auth = { useAuth: () => ({ user: { user_id: 'viewer' }, checkOnboardingStatus: async () => { refreshes++; } }) };
   const onboarding = loadSource('src/store/OnboardingContext.tsx', {});
   const importPanel = loadSource('src/components/onboarding/GitHubImportPanel.tsx', {
+    '@tanstack/react-query': { useQueryClient: () => new QueryClient() },
+    '../../utils/feed-repository': feedRepository,
     'react-native': native, '../../constants/theme': theme,
     '../../api/githubImport': { githubImportApi: { status: async () => { reads++; return { linked, active: false, provenance: {} }; } } },
   });
@@ -232,8 +363,8 @@ test(`mounted onboarding recovery preserves drafts and refreshes controls (manua
     }
     const before = reads;
     linked = false;
-    const check = renderer.root.findByProps({ accessibilityLabel: 'Check disconnect status' });
-    await act(async () => { check.props.onPress(); });
+    assert.equal(renderer.root.findAllByProps({ accessibilityLabel: 'Check disconnect status' }).length, 0);
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 2_150)); });
     if (!manualMode) assert.ok(reads > before, 'the mounted import panel must reload after recovery refresh');
     else {
       assert.deepEqual(renderer.root.findAllByType('SkillCard' as any).map(card => card.props.selected), [true, true],

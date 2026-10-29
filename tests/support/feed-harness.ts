@@ -18,6 +18,7 @@ export function repository(id: string): RepositoryData {
   return {
     contentVersion:1,contentHash:'fixture-content-hash',hasReadme:true,
     id, name: id, fullName: `owner/${id}`, owner: 'owner', description: '', readmeSummary: 'Summary.', readmeFull: '# README',
+    languages: [], primaryLanguage: null,
     serveId: id, feedPosition: 3, githubUrl: `https://github.com/owner/${id}`,
     stats: { stars: 0, views: 0, openIssues: 0, forks: 0, comments: 0, likes: 0, dislikes: 0, saves: 0 },
   } as RepositoryData;
@@ -35,9 +36,20 @@ export function feed(ids: string[], reducedMotion = false, attribution?: { owner
   let saveRepository: (...args: any[]) => Promise<any> = async () => { throw new Error('Unexpected save'); };
   let createCollection: () => Promise<any> = async () => { throw new Error('Unexpected create'); };
   let saveCollections: any[] = [];
-  let loadLists = async () => saveCollections;
+  let loadLists: (signal?: AbortSignal) => Promise<any[]> = async () => saveCollections;
   let openExternal: () => Promise<void> = async () => undefined;
   let shareHeight=800;
+  const pinFiles = new Map<string, string>();
+  let pinStorageFailure = false;
+  class PinFile {
+    key: string;
+    constructor(_directory: unknown, name: string) { this.key = name; }
+    get exists() { return pinFiles.has(this.key); }
+    create() { pinFiles.set(this.key, ''); }
+    write(value: string) { if (pinStorageFailure) throw new Error('Storage unavailable'); pinFiles.set(this.key, value); }
+    async text() { return pinFiles.get(this.key) ?? null; }
+    async move(destination: PinFile) { pinFiles.set(destination.key, pinFiles.get(this.key)!); pinFiles.delete(this.key); }
+  }
 
   let loadMetadata: (id:string)=>Promise<any> = async(id)=>({...repository(id),readmeFull:null});
   let loadReadme: () => Promise<any> = async () => ({ ...repository('canonical'), readmeFull: '# Canonical fetched README' });
@@ -75,7 +87,7 @@ export function feed(ids: string[], reducedMotion = false, attribution?: { owner
 
   };
   const auth = { useAuth: () => ({ user: { user_id: attribution?.ownerId ?? 'viewer', username: 'viewer' }, checkOnboardingStatus: async () => undefined }) };
-  const storage = { getItemAsync: async () => 'token', getStorageItem: async () => 'token' };
+  const storage = { getItemAsync: async () => 'token', getStorageItem: async (key: string) => key.startsWith('weave.pinned-repositories.') ? null : 'token' };
   function pan() {
     const config: Record<string, any> = {};
     const gesture = new Proxy({ config }, {get: (target, key) => key === 'config' ? target.config : (...args: any[]) => {
@@ -107,6 +119,7 @@ export function feed(ids: string[], reducedMotion = false, attribution?: { owner
     '../follow-button': {FollowButton: () => null},
     '@/components/keyboard/keyboard-layout': {KeyboardSurface: 'KeyboardSurface'},
     'expo-blur': { BlurView: 'BlurView' },
+    'expo-file-system': { File: PinFile, Paths: { document: 'documents' } },
     'expo-haptics': { selectionAsync: async () => undefined, notificationAsync: async () => undefined, NotificationFeedbackType: { Success: 'success' } },
     'expo-linking': {createURL: (path: string) => `ghsocial://${path}`},
     'expo-clipboard': { setStringAsync: async () => undefined },
@@ -120,7 +133,7 @@ export function feed(ids: string[], reducedMotion = false, attribution?: { owner
     '@/hooks/use-modal-scroll-lock': { useModalScrollLock: () => undefined },
     '@/api/lists': {
       ...createRequire(resolve('src/api/lists.ts'))('../models/list'),
-      getRepositoryLists: async (id: string) => { requests.push(`save:${id}`); return loadLists(); },
+      getRepositoryLists: async (id: string, _token: string, signal?: AbortSignal) => { requests.push(`save:${id}`); return loadLists(signal); },
       createRepositoryList: () => createCollection(),
       syncRepositoryLists: (...args: any[]) => saveRepository(...args),
     },
@@ -177,6 +190,9 @@ export function feed(ids: string[], reducedMotion = false, attribution?: { owner
   );
   return {
     requests, events, client,
+    setPinStorageFailure(value: boolean) { pinStorageFailure = value; },
+    async pins(owner = attribution?.ownerId ?? 'viewer') { return loadSource('src/services/pinnedRepositoryStorage.ts').loadPinnedRepositories(owner); },
+    get saveListOrder() { return root.root.findAllByType('FlatList').find(node => node.props.numColumns === 2)!.props.data.map((list: any) => list.id); },
     async moveListWindow(index: number) { await act(async () => { moveSaveWindow(index); }); },
     async setViewable(value: boolean) { viewable = value; await act(async () => { root.update(renderRows()); }); },
     get swipe() {return root.root.findByType('GestureDetector').props;},
@@ -193,7 +209,6 @@ export function feed(ids: string[], reducedMotion = false, attribution?: { owner
     },
     setExternalOpen(value: () => Promise<void>) {openExternal=value;},
     get failureModalVisible() {return root.root.findAllByType('Modal').some(node => node.props.visible);},
-    async setViewable(value: boolean) {viewable=value; await act(async () => root.update(renderRows()));},
     async pressScreen(label: string) {await act(async () => {
       root.root.findAllByType('Pressable').find(node => node.props.accessibilityLabel === label)!.props.onPress();
       await new Promise(resolve => setImmediate(resolve));
@@ -210,6 +225,14 @@ export function feed(ids: string[], reducedMotion = false, attribution?: { owner
     get imagePopup() {return root.root.findAllByType('ReadmeImagePopup')[0];},
     get previewImages() {return root.root.findAllByType('SafeReadmeImage').map(node=>node.props.url);},
     async openImage() {await act(async()=>{root.root.findAllByType('Pressable').find(node=>node.props.accessibilityLabel?.startsWith('Enlarge README image:'))!.props.onPress();});},
+    async pressMarkdownImage(url:string,alt:string) {
+      const renderer=root.root.findByType('RenderHtml').props.renderers.img;
+      let image!:ReturnType<typeof create>;let stopped=false;
+      await act(async()=>{image=create(React.createElement(renderer,{tnode:{attributes:{src:url,alt}}}));});
+      try {await act(async()=>image.root.findByType('Pressable').props.onPress({stopPropagation(){stopped=true;}}));}
+      finally {await act(async()=>image.unmount());}
+      return stopped;
+    },
     async closeImage() {await act(async()=>{this.imagePopup.props.onClose();});},
     get videoPopup() {return root.root.findAllByType('ReadmeVideoPopup')[0];},
     async openVideo() {await act(async () => {root.root.findAllByType('ReadmeVideo')[0].props.onPress();});},
@@ -231,7 +254,7 @@ export function feed(ids: string[], reducedMotion = false, attribution?: { owner
       });
     },
     setPost(value: () => Promise<any>) { postComment = value; },
-    setListLoader(value: () => Promise<any[]>) {loadLists = value;},
+    setListLoader(value: (signal?: AbortSignal) => Promise<any[]>) {loadLists = value;},
     setSave(value: (...args: any[]) => Promise<any>) {
       saveRepository = value;
       saveCollections = [{ id: 'list', source: 'collection', name: 'List', repositoryCount: 0, selected: true }];

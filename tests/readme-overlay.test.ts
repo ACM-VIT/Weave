@@ -233,6 +233,24 @@ test('summary image tap opens a separate viewer and returns to the retained dige
   }finally{await app.unmount();}
 });
 
+test('full README inline images open the same zoom viewer without following their surrounding link',async()=>{
+  const app=feed(['repo'],true,{ownerId:'viewer',repository:{readmeFull:null}});
+  const url='https://cdn.example.com/diagram.png';
+  app.setReadme(async()=>({...repository('repo'),readmeFull:`# Original README\n[![Architecture](${url})](https://github.com/org/project)`}));
+  await app.mount();
+  try {
+    await app.open(0,'onOpenReadme');
+    await waitForReadmeState(()=>app.renderedReadmeHtml.includes(url));
+    assert.equal(app.imagePopup,undefined);
+    assert.equal(await app.pressMarkdownImage(url,'Architecture'),true,'image taps stop outer link navigation');
+    assert.equal(app.imagePopup.props.url,url);
+    assert.equal(app.imagePopup.props.alt,'Architecture');
+    await app.closeImage();
+    assert.equal(app.imagePopup,undefined);
+    assert.ok(app.renderedReadmeHtml.includes('Original README'),'closing the image retains the full README underneath');
+  }finally{await app.unmount();}
+});
+
 
 test('passive visibility requires a full second for impressions and three seconds for neutral dwell', async t => {
   t.mock.timers.enable({apis:['setTimeout','Date']});

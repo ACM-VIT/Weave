@@ -116,7 +116,7 @@ const ConnectionRow = memo(function ConnectionRow({
   const avatarSize = compact ? 44 : 48;
   const identity = connectionIdentity(person);
   const normalizedUsername = person.username.replace(/^@/, '');
-  const secondaryName = person.full_name?.trim() || `@${normalizedUsername}`;
+  const displayName = person.full_name?.trim() || normalizedUsername;
   const openProfile = useCallback(() => {
     router.push({
       pathname: '/user/[username]',
@@ -179,11 +179,11 @@ const ConnectionRow = memo(function ConnectionRow({
         onPress={openProfile}
         style={({ pressed }) => [styles.personLink, pressed && styles.pressed]}
       >
-        <Text numberOfLines={1} style={[styles.displayName, compact && styles.displayNameCompact]}>
-          {normalizedUsername}
+        <Text numberOfLines={2} style={[styles.displayName, compact && styles.displayNameCompact]}>
+          {displayName}
         </Text>
-        <Text numberOfLines={1} style={styles.username}>
-          {secondaryName}
+        <Text numberOfLines={2} style={styles.username}>
+          @{normalizedUsername}
         </Text>
       </Pressable>
 
