@@ -179,7 +179,7 @@ export function ConnectionSheet({
                   </Text>
                 ) : null}
               </View>
-              <Pressable
+              <Pressable cssInterop={false}
                 accessibilityLabel={`Close ${title.toLocaleLowerCase()}`}
                 accessibilityRole="button"
                 hitSlop={14}

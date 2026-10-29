@@ -128,7 +128,7 @@ function ActionButton({
   const colour = active ? activeColor : REFERENCE_THEME.text;
   const renderedIconSize = dense ? Math.min(iconSize, 22) : iconSize;
   return (
-    <Pressable
+    <Pressable cssInterop={false}
       accessibilityLabel={accessibilityLabel}
       accessibilityRole="button"
       onPress={onPress}
@@ -320,7 +320,7 @@ export function RepositoryScreen({
                   style={StyleSheet.absoluteFill}
                 />
               </View>
-              <Pressable
+              <Pressable cssInterop={false}
                 accessibilityLabel={`View ${repository.owner}'s profile`}
                 accessibilityRole="link"
                 hitSlop={6}
@@ -347,7 +347,7 @@ export function RepositoryScreen({
               ) : null}
             </View>
 
-            <Pressable
+            <Pressable cssInterop={false}
               accessibilityHint="Opens the repository detail inside Weave"
               accessibilityLabel={`View ${repository.name} repository details`}
               accessibilityRole="link"

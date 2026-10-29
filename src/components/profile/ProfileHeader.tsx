@@ -51,14 +51,14 @@ export function ProfileHeader({ username, name, job, avatarUrl, isTablet, isComp
       {job ? <Text numberOfLines={4} className="font-nata" style={styles.bio}>{job}</Text> : null}
       <View style={styles.stats}>
         {stats.map(stat => (
-          <Pressable key={stat.label} accessibilityRole="button" accessibilityLabel={`${stat.value} ${stat.label}`} onPress={stat.onPress}
+          <Pressable cssInterop={false} key={stat.label} accessibilityRole="button" accessibilityLabel={`${stat.value} ${stat.label}`} onPress={stat.onPress}
             style={({ pressed }) => [styles.stat, { backgroundColor: pressed ? '#171717' : 'transparent' }]}>
             <Text className="font-nataBold" style={styles.statValue}>{stat.value}</Text>
             <Text className="font-nata" style={styles.statLabel}>{stat.label}</Text>
           </Pressable>
         ))}
       </View>
-      <Pressable accessibilityRole="button" accessibilityLabel="Edit profile" onPress={onEdit}
+      <Pressable cssInterop={false} accessibilityRole="button" accessibilityLabel="Edit profile" onPress={onEdit}
         style={({ pressed }) => [styles.edit, pressed && { opacity: 0.75 }]}>
         <SquarePen size={22} strokeWidth={1.9} color="#F7F7F8" />
         <Text className="font-nataSemiBold" style={styles.editLabel}>Edit Profile</Text>

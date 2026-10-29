@@ -25,7 +25,7 @@ function SearchRow({ item, onOpen }: { item: SearchItem; onOpen: (item: SearchIt
   if (item.type === 'repository') return <TrendingRepoCard repo={item.data} onPress={open} />;
   const title = item.type === 'person' ? item.data.display_name || item.data.username : item.data.name;
   const subtitle = item.type === 'person' ? `@${item.data.username}${item.data.bio ? ` · ${item.data.bio}` : ''}` : `${item.data.repositoryCount} repositories${item.data.description ? ` · ${item.data.description}` : ''}`;
-  return <Pressable accessibilityRole="button" accessibilityLabel={`Open ${item.type === 'person' ? 'profile' : 'List'} ${title}`} onPress={open}
+  return <Pressable cssInterop={false} accessibilityRole="button" accessibilityLabel={`Open ${item.type === 'person' ? 'profile' : 'List'} ${title}`} onPress={open}
     style={({ pressed }) => ({ padding: 16, gap: 5, borderRadius: 16, backgroundColor: '#1C1C1E', opacity: pressed ? 0.7 : 1 })}>
     <Text style={{ color: '#63E6A9', fontSize: 11, fontWeight: '700' }}>{item.type === 'person' ? 'PERSON' : 'LIST'}</Text>
     <Text numberOfLines={1} style={{ color: '#FFFFFF', fontSize: 16, fontWeight: '600' }}>{title}</Text>

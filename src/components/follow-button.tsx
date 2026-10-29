@@ -162,7 +162,7 @@ export function FollowButton({
   };
 
   return (
-    <Pressable
+    <Pressable cssInterop={false}
       accessibilityHint={accessibilityHint}
       accessibilityLabel={
         !targetAvailable

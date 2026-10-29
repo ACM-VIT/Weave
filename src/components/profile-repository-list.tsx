@@ -129,7 +129,7 @@ export function ProfileRepositoryList({
           value={search}
         />
         {search ? (
-          <Pressable accessibilityLabel="Clear search" hitSlop={14} accessibilityRole="button" onPress={() => { setSearch(''); searchInputRef.current?.focus(); }} style={({ pressed }) => [styles.clearButton, pressed && styles.pressed]}>
+          <Pressable cssInterop={false} accessibilityLabel="Clear search" hitSlop={14} accessibilityRole="button" onPress={() => { setSearch(''); searchInputRef.current?.focus(); }} style={({ pressed }) => [styles.clearButton, pressed && styles.pressed]}>
             <X color={REFERENCE_THEME.textSecondary} size={13} strokeWidth={2.4} />
           </Pressable>
         ) : null}
@@ -192,7 +192,7 @@ export function ProfileRepositoryList({
                 </View>
               </View>
             </View>
-            <Pressable
+            <Pressable cssInterop={false}
               accessibilityHint="Opens this repository in Weave"
               accessibilityLabel={`Open ${item.fullName}`}
               accessibilityRole="link"
@@ -218,7 +218,7 @@ function StateView({ loading, message, onRetry, title }: { loading?: boolean; me
       {loading ? <ActivityIndicator color={REFERENCE_THEME.accent} size="small" /> : <View style={styles.stateIcon}><FolderGit2 color={REFERENCE_THEME.textTertiary} size={29} strokeWidth={1.5} /></View>}
       <Text style={styles.stateTitle}>{title}</Text>
       {message ? <Text style={styles.stateMessage}>{message}</Text> : null}
-      {onRetry ? <Pressable onPress={onRetry} style={({ pressed }) => [styles.retryButton, pressed && styles.pressed]}><RotateCcw color={REFERENCE_THEME.accent} size={14} /><Text style={styles.retryText}>Try again</Text></Pressable> : null}
+      {onRetry ? <Pressable cssInterop={false} onPress={onRetry} style={({ pressed }) => [styles.retryButton, pressed && styles.pressed]}><RotateCcw color={REFERENCE_THEME.accent} size={14} /><Text style={styles.retryText}>Try again</Text></Pressable> : null}
     </View>
   );
 }

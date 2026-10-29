@@ -7,7 +7,7 @@ import { startGithubUnlink } from '../../services/githubUnlink';
 
 type Props = { recoveryOnly?: boolean; userId: string; onSaved: () => Promise<unknown>; authorize?: typeof startGithubUnlink; api?: typeof githubUnlinkApi };
 function UnlinkAction({ label, onPress, disabled, destructive = false }: { label: string; onPress: () => void; disabled: boolean; destructive?: boolean }) {
-  return <Pressable accessibilityRole="button" accessibilityLabel={label} accessibilityState={{ disabled }} disabled={disabled}
+  return <Pressable cssInterop={false} accessibilityRole="button" accessibilityLabel={label} accessibilityState={{ disabled }} disabled={disabled}
     onPress={onPress} style={({ pressed }) => ({ minHeight: 48, justifyContent: 'center', alignItems: 'center', padding: Spacing.three, borderRadius: 12, borderWidth: 1, borderColor: destructive ? REFERENCE_THEME.danger : REFERENCE_THEME.border, backgroundColor: destructive ? REFERENCE_THEME.danger : REFERENCE_THEME.surfaceElevated, opacity: disabled ? 0.5 : pressed ? 0.7 : 1 })}>
     <Text style={{ color: destructive ? REFERENCE_THEME.text : REFERENCE_THEME.textStrong, fontFamily: Fonts.sans, fontSize: 15, textAlign: 'center' }}>{label}</Text>
   </Pressable>;

@@ -149,7 +149,7 @@ export function OtherUserProfile({
             },
           ]}
         >
-          <Pressable
+          <Pressable cssInterop={false}
             accessibilityLabel="Go back"
             accessibilityRole="button"
             hitSlop={12}
@@ -272,7 +272,7 @@ export function OtherUserProfile({
                 );
 
                 return stat.onPress ? (
-                  <Pressable
+                  <Pressable cssInterop={false}
                     accessibilityLabel={`View ${stat.label.toLocaleLowerCase()}`}
                     accessibilityRole="button"
                     key={stat.label}
@@ -342,7 +342,7 @@ export function OtherUserProfile({
                     <Text style={styles.sectionTitle}>Pinned Repositories</Text>
                   </View>
                   {hasMorePinned ? (
-                    <Pressable
+                    <Pressable cssInterop={false}
                       accessibilityRole="button"
                       onPress={() => setShowAllPinned((current) => !current)}
                       style={({ pressed }) => [styles.viewAllButton, pressed && styles.pressed]}

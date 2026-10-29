@@ -440,3 +440,25 @@ test('Explore never restores a prior account navigation offset into the next acc
     assert.equal(app.offset,0);
   } finally {await app.close();}
 });
+
+test('Android interop retains Trending podium borders, background and row layout', async () => {
+  const {nativeStyleRuntime} = await import('./support/native-style-runtime');
+  const {loadSource} = await import('./support/startup-harness');
+  const runtime=nativeStyleRuntime();
+  const Card=loadSource('src/components/explore/TrendingRepoCard.tsx',{
+    'react-native':runtime.native,'react/jsx-runtime':runtime.jsx,
+  }).default;
+  const repo=mapTrendingRepository({repo_id:'repo',name:'repo',owner:'owner',full_name:'owner/repo',
+    url:'https://github.com/owner/repo',position:0,score:1,features:{}},'daily',null)!;
+  let root!:ReturnType<typeof create>;
+  await React.act(async () => {root=create(React.createElement(Card,{repo}));});
+  try {
+    const style=root.root.findByType('Pressable').props.style;
+    const resolved=typeof style === 'function' ? style({pressed:false}) : style;
+    assert.equal(resolved.borderWidth,1);
+    assert.equal(resolved.borderColor,'#FFD60A');
+    assert.equal(resolved.backgroundColor,'#1C1C1E');
+    assert.equal(resolved.flexDirection,'row');
+    assert.equal(resolved.padding,18);
+  } finally {await React.act(async () => root.unmount());}
+});

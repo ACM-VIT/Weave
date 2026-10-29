@@ -85,7 +85,7 @@ export default function LikedRepositoriesScreen() {
             </Text>
           </>}
         </View>}
-        renderItem={({ item }) => <Pressable
+        renderItem={({ item }) => <Pressable cssInterop={false}
           accessibilityRole="link"
           accessibilityLabel={`Open ${item.fullName}`}
           onPress={() => openRepository(item)}

@@ -141,7 +141,7 @@ const ConnectionRow = memo(function ConnectionRow({
 
   return (
     <View style={[styles.row, compact && styles.rowCompact]}>
-      <Pressable
+      <Pressable cssInterop={false}
         accessibilityLabel={`Open ${person.username}'s profile photo`}
         accessibilityRole="button"
         onPress={openProfile}
@@ -173,7 +173,7 @@ const ConnectionRow = memo(function ConnectionRow({
         )}
       </Pressable>
 
-      <Pressable
+      <Pressable cssInterop={false}
         accessibilityLabel={`Open ${person.username}'s profile`}
         accessibilityRole="button"
         onPress={openProfile}
@@ -231,7 +231,7 @@ function StateView({
       <Text style={styles.stateTitle}>{title}</Text>
       {message ? <Text style={styles.stateMessage}>{message}</Text> : null}
       {onRetry ? (
-        <Pressable
+        <Pressable cssInterop={false}
           accessibilityRole="button"
           onPress={onRetry}
           style={({ pressed }) => [styles.retryButton, pressed && styles.pressed]}
@@ -453,7 +453,7 @@ export function ConnectionList({
           value={search}
         />
         {search ? (
-          <Pressable
+          <Pressable cssInterop={false}
             accessibilityLabel="Clear search"
             hitSlop={14}
             accessibilityRole="button" onPress={() => { setSearch(''); searchInputRef.current?.focus(); }}

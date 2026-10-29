@@ -448,7 +448,7 @@ export function CommentSheet({
         <View style={styles.stateContainer}>
           <Text style={styles.stateTitle}>Comments could not load</Text>
           <Text style={styles.stateText}>Check your connection and try again.</Text>
-          <Pressable
+          <Pressable cssInterop={false}
             accessibilityRole="button"
             onPress={() => commentsQuery.refetch()}
             style={({ pressed }) => [styles.retryButton, pressed && styles.pressed]}
@@ -512,7 +512,7 @@ export function CommentSheet({
                 <Text style={styles.title}>Comments</Text>
                 <Text style={styles.count}>{displayedCount}</Text>
               </View>
-              <Pressable
+              <Pressable cssInterop={false}
                 accessibilityLabel="Close comments"
                 accessibilityRole="button"
                 hitSlop={14}
@@ -584,7 +584,7 @@ export function CommentSheet({
                   style={styles.input}
                   value={draft}
                 />
-                <Pressable
+                <Pressable cssInterop={false}
                   accessibilityLabel="Send comment"
                   accessibilityRole="button"
                   disabled={composerDisabled}

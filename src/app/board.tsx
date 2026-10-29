@@ -106,7 +106,7 @@ export default function BoardScreen() {
             },
           ]}
         >
-          <Pressable
+          <Pressable cssInterop={false}
             accessibilityLabel="Go back to profile"
             accessibilityRole="button"
             hitSlop={12}
@@ -157,7 +157,7 @@ export default function BoardScreen() {
                   </View>
                   <Text selectable style={styles.stateTitle}>This list could not be opened.</Text>
                   <Text selectable style={styles.stateMessage}>Return to your profile and choose the list again.</Text>
-                  <Pressable onPress={goBack} style={({ pressed }) => [styles.secondaryButton, pressed && styles.pressed]}>
+                  <Pressable cssInterop={false} onPress={goBack} style={({ pressed }) => [styles.secondaryButton, pressed && styles.pressed]}>
                     <Text style={styles.secondaryButtonLabel}>Back to profile</Text>
                   </Pressable>
                 </>
@@ -177,7 +177,7 @@ export default function BoardScreen() {
                       ? repositoriesQuery.error.message
                       : 'Please check your connection and try again.'}
                   </Text>
-                  <Pressable
+                  <Pressable cssInterop={false}
                     accessibilityRole="button"
                     onPress={() => void repositoriesQuery.refetch()}
                     style={({ pressed }) => [styles.retryButton, pressed && styles.pressed]}
