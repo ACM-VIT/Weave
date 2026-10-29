@@ -6,6 +6,7 @@ import {
   ActivityIndicator,
   Animated,
   Easing,
+  FlatList,
   Keyboard,
   Modal,
   Pressable,
@@ -377,8 +378,8 @@ export function SavePopup({
           : 'Removed from Lists.',
       });
       if (repoId) {
-        queryClient.setQueryData<RepositoryDetail>(
-          repositoryDetailQueryKey(repoId, viewerUserId),
+        queryClient.setQueriesData<RepositoryDetail>(
+          {queryKey:repositoryDetailQueryKey(repoId, viewerUserId)},
           (current) => current ? {
             ...current,
             selectedListIds: result.selectedListIds,
@@ -505,124 +506,134 @@ export function SavePopup({
             ]}
           >
             <View style={{ flexShrink: 1, minHeight: 0 }} accessibilityElementsHidden={isCreating} importantForAccessibility={isCreating ? "no-hide-descendants" : "auto"}>
-            <ScrollView style={{ flexGrow: 0, flexShrink: 1, minHeight: 0 }} keyboardDismissMode="on-drag" keyboardShouldPersistTaps="handled">
-            <View style={styles.header}>
-              <View style={styles.headerText}>
-                <Text style={[styles.title, { color: palette.text }]}>Save repository</Text>
-                <Text numberOfLines={1} style={[styles.subtitle, { color: palette.secondary }]}>
-                  {repoName ? `Add ${repoName} to one or more Lists` : 'Choose one or more Lists'}
-                </Text>
-              </View>
-              <Pressable accessibilityLabel="Close" accessibilityRole="button" hitSlop={14} onPress={closeAnimated} style={[styles.closeButton, { backgroundColor: palette.elevated }]}>
-                <X color={palette.secondary} size={18} />
-              </Pressable>
-            </View>
-
-            <View style={[styles.search, { backgroundColor: palette.elevated, borderColor: palette.border }]}>
-              <Search color={palette.tertiary} size={19} />
-              <TextInput
-                ref={searchInputRef}
-                accessibilityLabel="Search Lists"
-                onChangeText={setSearch}
-                placeholder="Search Lists"
-                placeholderTextColor={palette.secondary}
-                style={[styles.searchInput, { color: palette.text }]}
-                value={search}
-              />
-              {search ? (
-                <Pressable accessibilityLabel="Clear search" accessibilityRole="button" hitSlop={14} onPress={() => { setSearch(''); searchInputRef.current?.focus(); }}>
-                  <X color={palette.tertiary} size={17} />
-                </Pressable>
-              ) : null}
-            </View>
-
-            {listsQuery.isError ? (
-              <View style={{ alignItems: 'center', gap: 12, paddingVertical: 16 }}>
-                <Text accessibilityLiveRegion="polite" style={{ color: palette.danger, textAlign: 'center' }}>
-                  Could not load all your Lists. Retry before saving.
-                </Text>
-                <Pressable
-                  accessibilityRole="button"
-                  accessibilityLabel="Retry loading Lists"
-                  accessibilityState={{ disabled: listsQuery.isFetching }}
-                  disabled={listsQuery.isFetching}
-                  onPress={() => void listsQuery.refetch()}
-                  style={{ minHeight: 44, paddingHorizontal: 20, justifyContent: 'center', borderRadius: 12, backgroundColor: palette.elevated }}
-                >
-                  <Text style={{ color: palette.text }}>Retry</Text>
-                </Pressable>
-              </View>
-            ) : null}
-            <View style={styles.collectionList}>
-              {listsQuery.isLoading && lists.length === 0 ? (
-                <ListLayoutPreview loading />
-              ) : listsQuery.isError && lists.length === 0 ? null : filteredLists.length ? (
-                <>
-                  <View style={styles.collectionGrid}>
-                    {filteredLists.map((list) => {
-                      const membershipId = listMembershipKey(list);
-                      const selected = selectedIds.has(membershipId);
-                      const accent = list.color || palette.accent;
-                      return (
-                        <View
-                          key={membershipId}
-                          style={[
-                            styles.collectionCard,
-                            {
-                              backgroundColor: selected ? `${accent}16` : palette.elevated,
-                              borderColor: selected ? accent : palette.border,
-                            },
-                          ]}
-                        >
-                          <View pointerEvents="none" style={styles.collectionCardContent}>
-                            <View style={styles.collectionTopRow}>
-                              <View style={[styles.collectionIcon, { backgroundColor: `${accent}20` }]}>
-                                {list.icon ? (
-                                  <Text style={styles.emoji}>{list.icon}</Text>
-                                ) : (
-                                  <FolderHeart color={accent} size={18} />
-                                )}
-                              </View>
-                              <Animated.View style={[
-                                styles.checkbox,
-                                { backgroundColor: selected ? accent : 'transparent', borderColor: selected ? accent : palette.tertiary },
-                              ]}>
-                                {selected ? <Check color="#101510" size={13} strokeWidth={3} /> : null}
-                              </Animated.View>
-                            </View>
-                            <View style={styles.collectionCopy}>
-                              <Text numberOfLines={1} style={[styles.collectionName, { color: palette.text }]}>{list.name}</Text>
-                              <Text numberOfLines={1} style={[styles.collectionMeta, { color: palette.secondary }]}>
-                                {list.repositoryCount} {list.repositoryCount === 1 ? 'repository' : 'repositories'}
-                              </Text>
-                            </View>
-                          </View>
-                          <Pressable
-                            accessibilityLabel={`${list.name}, ${list.repositoryCount} repositories`}
-                            accessibilityRole="checkbox"
-                            accessibilityState={{ checked: selected, disabled: selectionBlocked }}
-                            disabled={selectionBlocked}
-                            onPress={() => toggleList(membershipId)}
-                            style={StyleSheet.absoluteFill}
-                          />
-                        </View>
-                      );
-                    })}
+            <FlatList
+              style={{ flexGrow: 0, flexShrink: 1, minHeight: 0 }}
+              data={filteredLists}
+              keyExtractor={listMembershipKey}
+              numColumns={2}
+              initialNumToRender={4}
+              maxToRenderPerBatch={4}
+              windowSize={3}
+              extraData={selectedIds}
+              columnWrapperStyle={styles.collectionRow}
+              contentContainerStyle={{ paddingBottom: filteredLists.length ? 14 : 0 }}
+              keyboardDismissMode="on-drag"
+              keyboardShouldPersistTaps="handled"
+              ListHeaderComponent={<>
+                <View style={styles.header}>
+                  <View style={styles.headerText}>
+                    <Text style={[styles.title, { color: palette.text }]}>Save repository</Text>
+                    <Text numberOfLines={1} style={[styles.subtitle, { color: palette.secondary }]}>
+                      {repoName ? `Add ${repoName} to one or more Lists` : 'Choose one or more Lists'}
+                    </Text>
                   </View>
-                </>
-              ) : (
-                <View style={styles.centerState}>
-                  <Sparkles color={palette.accent} size={30} />
-                  <Text style={[styles.stateTitle, { color: palette.text }]}>
-                    {search ? 'No matching Lists' : 'Create your first List'}
-                  </Text>
-                  <Text style={[styles.stateBody, { color: palette.secondary }]}>
-                    {search ? 'Try another search term.' : 'Organize repositories by project, topic, or inspiration.'}
-                  </Text>
+                  <Pressable accessibilityLabel="Close" accessibilityRole="button" hitSlop={14} onPress={closeAnimated} style={[styles.closeButton, { backgroundColor: palette.elevated }]}>
+                    <X color={palette.secondary} size={18} />
+                  </Pressable>
                 </View>
-              )}
-            </View>
-            </ScrollView>
+
+                <View style={[styles.search, { backgroundColor: palette.elevated, borderColor: palette.border }]}>
+                  <Search color={palette.tertiary} size={19} />
+                  <TextInput
+                    ref={searchInputRef}
+                    accessibilityLabel="Search Lists"
+                    onChangeText={setSearch}
+                    placeholder="Search Lists"
+                    placeholderTextColor={palette.secondary}
+                    style={[styles.searchInput, { color: palette.text }]}
+                    value={search}
+                  />
+                  {search ? (
+                    <Pressable accessibilityLabel="Clear search" accessibilityRole="button" hitSlop={14} onPress={() => { setSearch(''); searchInputRef.current?.focus(); }}>
+                      <X color={palette.tertiary} size={17} />
+                    </Pressable>
+                  ) : null}
+                </View>
+
+                {listsQuery.isError ? (
+                  <View style={{ alignItems: 'center', gap: 12, paddingVertical: 16 }}>
+                    <Text accessibilityLiveRegion="polite" style={{ color: palette.danger, textAlign: 'center' }}>
+                      Could not load all your Lists. Retry before saving.
+                    </Text>
+                    <Pressable
+                      accessibilityRole="button"
+                      accessibilityLabel="Retry loading Lists"
+                      accessibilityState={{ disabled: listsQuery.isFetching }}
+                      disabled={listsQuery.isFetching}
+                      onPress={() => void listsQuery.refetch()}
+                      style={{ minHeight: 44, paddingHorizontal: 20, justifyContent: 'center', borderRadius: 12, backgroundColor: palette.elevated }}
+                    >
+                      <Text style={{ color: palette.text }}>Retry</Text>
+                    </Pressable>
+                  </View>
+                ) : null}
+              </>}
+              renderItem={({ item: list }) => {
+                const membershipId = listMembershipKey(list);
+                const selected = selectedIds.has(membershipId);
+                const accent = list.color || palette.accent;
+                return (
+                  <View
+                    style={[
+                      styles.collectionCard,
+                      {
+                        backgroundColor: selected ? `${accent}16` : palette.elevated,
+                        borderColor: selected ? accent : palette.border,
+                      },
+                    ]}
+                  >
+                    <View pointerEvents="none" style={styles.collectionCardContent}>
+                      <View style={styles.collectionTopRow}>
+                        <View style={[styles.collectionIcon, { backgroundColor: `${accent}20` }]}>
+                          {list.icon ? (
+                            <Text style={styles.emoji}>{list.icon}</Text>
+                          ) : (
+                            <FolderHeart color={accent} size={18} />
+                          )}
+                        </View>
+                        <Animated.View style={[
+                          styles.checkbox,
+                          { backgroundColor: selected ? accent : 'transparent', borderColor: selected ? accent : palette.tertiary },
+                        ]}>
+                          {selected ? <Check color="#101510" size={13} strokeWidth={3} /> : null}
+                        </Animated.View>
+                      </View>
+                      <View style={styles.collectionCopy}>
+                        <Text numberOfLines={1} style={[styles.collectionName, { color: palette.text }]}>{list.name}</Text>
+                        <Text numberOfLines={1} style={[styles.collectionMeta, { color: palette.secondary }]}>
+                          {list.repositoryCount} {list.repositoryCount === 1 ? 'repository' : 'repositories'}
+                        </Text>
+                      </View>
+                    </View>
+                    <Pressable
+                      accessibilityLabel={`${list.name}, ${list.repositoryCount} repositories`}
+                      accessibilityRole="checkbox"
+                      accessibilityState={{ checked: selected, disabled: selectionBlocked }}
+                      disabled={selectionBlocked}
+                      onPress={() => toggleList(membershipId)}
+                      style={StyleSheet.absoluteFill}
+                    />
+                  </View>
+                );
+              }}
+              ListEmptyComponent={
+                <View style={styles.collectionList}>
+                  {listsQuery.isLoading && lists.length === 0 ? (
+                    <ListLayoutPreview loading />
+                  ) : listsQuery.isError && lists.length === 0 ? null : (
+                    <View style={styles.centerState}>
+                      <Sparkles color={palette.accent} size={30} />
+                      <Text style={[styles.stateTitle, { color: palette.text }]}>
+                        {search ? 'No matching Lists' : 'Create your first List'}
+                      </Text>
+                      <Text style={[styles.stateBody, { color: palette.secondary }]}>
+                        {search ? 'Try another search term.' : 'Organize repositories by project, topic, or inspiration.'}
+                      </Text>
+                    </View>
+                  )}
+                </View>
+              }
+            />
 
             <View style={[styles.footer, { borderTopColor: palette.border, backgroundColor: palette.background }]}>
               {message ? (
@@ -806,7 +817,7 @@ const styles = StyleSheet.create({
   skeletonCheck: { width: 20, height: 20, borderWidth: 1.4, borderRadius: 7 },
   skeletonLine: { width: '72%', height: 9, borderRadius: 5 },
   skeletonLineShort: { width: '48%', height: 7, borderRadius: 4 },
-  collectionGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: COLLECTION_GRID_GAP },
+  collectionRow: { paddingHorizontal: 14, marginTop: COLLECTION_GRID_GAP, columnGap: COLLECTION_GRID_GAP },
   collectionCard: { flexBasis: '45%', maxWidth: '49%', minHeight: 92, flexGrow: 1, flexShrink: 0, borderWidth: 1.2, borderRadius: 16, overflow: 'hidden', boxShadow: '0 4px 14px rgba(0,0,0,0.18)' },
   collectionCardContent: { flex: 1, padding: 10, gap: 7 },
   collectionTopRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },

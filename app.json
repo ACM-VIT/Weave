@@ -57,7 +57,15 @@
       "@sentry/react-native",
       "expo-web-browser",
       "expo-image",
-      "expo-video"
+      "expo-video",
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Choose a photo for your Weave profile.",
+          "cameraPermission": false,
+          "microphonePermission": false
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": true,

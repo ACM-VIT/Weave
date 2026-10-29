@@ -249,3 +249,21 @@ test('leaving a public recovery route cannot reveal a protected route before sta
     assert.equal(app.navigationMounts - app.navigationUnmounts, 1);
   } finally { await app.unmount(); }
 });
+
+
+test('restored auth prefetches Home before fonts and the mounted query joins the same pagination work', async () => {
+  const app=startup({segments:['(tabs)']});
+  const feed=deferred<any>();app.setFeedRequest(feed.promise);
+  await app.mount();
+  try {
+    const token=`header.${Buffer.from(JSON.stringify({userId:'alice'})).toString('base64url')}.signature`;
+    await act(async()=>{app.session.resolve(token);});
+    assert.equal(app.navigationMounts,0,'Fonts still gate navigation');
+    assert.equal(app.events.filter(event=>event==='feed:prefetch').length,1);
+    const joined=app.feedClient.fetchInfiniteQuery(app.homeFeedOptions('alice'));
+    await act(async()=>{feed.resolve({items:[],nextCursor:null,feedVersion:'1'});await joined;});
+    assert.equal(app.events.filter(event=>event==='feed:prefetch').length,1,'Navigation must not issue another first-page request');
+    app.feedClient.clear();
+    assert.equal(app.feedClient.getQueryData(['feed','alice']),undefined);
+  } finally {await app.unmount();app.feedClient?.clear();}
+});

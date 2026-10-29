@@ -2,13 +2,12 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { resolve } from "node:path";
-import test from "node:test";
 import React, { act } from "react";
 import { create } from "react-test-renderer";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import ts from "typescript";
 import { type RepositoryData } from "../../src/data/repositories";
-import { repositoryDetailQueryKey } from "../../src/models/repository";
+import { repositoryDetailQueryKey, repositoryMetadataQueryKey, repositoryReadmeQueryKey } from "../../src/models/repository";
 import { authSessionLifecycle } from "../../src/api/session-lifecycle";
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
@@ -17,15 +16,14 @@ import { authSessionLifecycle } from "../../src/api/session-lifecycle";
 
 export function repository(id: string): RepositoryData {
   return {
+    contentVersion:1,contentHash:'fixture-content-hash',hasReadme:true,
     id, name: id, fullName: `owner/${id}`, owner: 'owner', description: '', readmeSummary: 'Summary.', readmeFull: '# README',
     serveId: id, feedPosition: 3, githubUrl: `https://github.com/owner/${id}`,
     stats: { stars: 0, views: 0, openIssues: 0, forks: 0, comments: 0, likes: 0, dislikes: 0, saves: 0 },
   } as RepositoryData;
 }
 
-export // Keep the real row, all four overlays, React state and QueryClient observers.
-// Replace only native rendering/animation and external I/O boundaries.
-function feed(ids: string[], reducedMotion = false, attribution?: { ownerId: string; repository: Partial<RepositoryData>; boundary?: React.ReactNode; platform?: string; viewable?: boolean }) {
+export function feed(ids: string[], reducedMotion = false, attribution?: { ownerId: string; repository: Partial<RepositoryData>; boundary?: React.ReactNode; platform?: string; viewable?: boolean; actualScreen?: boolean }) {
   const client = new QueryClient({ defaultOptions: {
     queries: { retry: false, gcTime: Infinity }, mutations: { retry: false },
   } });
@@ -40,6 +38,8 @@ function feed(ids: string[], reducedMotion = false, attribution?: { ownerId: str
   let loadLists = async () => saveCollections;
   let openExternal: () => Promise<void> = async () => undefined;
   let shareHeight=800;
+
+  let loadMetadata: (id:string)=>Promise<any> = async(id)=>({...repository(id),readmeFull:null});
   let loadReadme: () => Promise<any> = async () => ({ ...repository('canonical'), readmeFull: '# Canonical fetched README' });
   let root: ReturnType<typeof create>;
   const animation = () => ({
@@ -51,16 +51,28 @@ function feed(ids: string[], reducedMotion = false, attribution?: { ownerId: str
     stopAnimation() {}
     interpolate() { return 0; }
   }
+  let moveSaveWindow: (index: number) => void = () => { throw new Error('Save grid is not mounted'); };
   const native = {
     AppState: { currentState: 'active', addEventListener: () => ({ remove() {} }) },
     Platform: { OS: attribution?.platform ?? 'ios', select: (value: any) => value.ios ?? value.default },
     StyleSheet: { create: (value: unknown) => value, absoluteFill: {}, hairlineWidth: 1 },
-    Animated: { Value, View: 'AnimatedView', timing: animation, parallel: animation, sequence: animation, delay: animation },
+    Animated: { Value, View: 'AnimatedView', createAnimatedComponent: (component: unknown) => component,
+      timing: animation, parallel: animation, sequence: animation, delay: animation },
     Easing: { bezier: () => 0, in: () => 0, out: () => 0, cubic: 0, quad: 0 },
     useWindowDimensions: () => ({ height: shareHeight, width: 400 }),
     Keyboard: { dismiss() {} }, Linking: { openURL: () => openExternal() },
     Share: { share: async () => ({ action: 'sharedAction' }) },
     ...Object.fromEntries(['ActivityIndicator', 'FlatList', 'Image', 'KeyboardAvoidingView', 'Modal', 'Pressable', 'ScrollView', 'Text', 'TextInput', 'View'].map(name => [name, name])),
+    FlatList: (props: any) => {
+      const [first, setFirst] = React.useState(0);
+      moveSaveWindow = setFirst;
+      return props.numColumns === 2 ? React.createElement('FlatList', props,
+        props.ListHeaderComponent,
+        props.data.length ? props.data.slice(first, first + props.initialNumToRender * props.numColumns).map((item: any, index: number) =>
+          React.createElement(React.Fragment, {key: props.keyExtractor(item)}, props.renderItem({item, index:first+index}))) : props.ListEmptyComponent,
+      ) : React.createElement('FlatList', props);
+    },
+
   };
   const auth = { useAuth: () => ({ user: { user_id: attribution?.ownerId ?? 'viewer', username: 'viewer' }, checkOnboardingStatus: async () => undefined }) };
   const storage = { getItemAsync: async () => 'token', getStorageItem: async () => 'token' };
@@ -89,7 +101,10 @@ function feed(ids: string[], reducedMotion = false, attribution?: { ownerId: str
     './ReadmeVideoPopup': {ReadmeVideoPopup: 'ReadmeVideoPopup'},
     './ReadmeVideo': {ReadmeVideo: 'ReadmeVideo'},
     './SafeReadmeImage': {SafeReadmeImage: 'SafeReadmeImage', SafeReadmeImageRenderer: 'SafeReadmeImageRenderer'},
-    './DescriptionCard': {SaveSwipeGestureContext: React.createContext(null)},
+    './DescriptionCard': {__esModule: true, default: () => null, SaveSwipeGestureContext: React.createContext(null)},
+    './ReadmeCard': {__esModule: true, default: () => null},
+    './RecommendationReason': {RecommendationReason: () => null},
+    '../follow-button': {FollowButton: () => null},
     '@/components/keyboard/keyboard-layout': {KeyboardSurface: 'KeyboardSurface'},
     'expo-blur': { BlurView: 'BlurView' },
     'expo-haptics': { selectionAsync: async () => undefined, notificationAsync: async () => undefined, NotificationFeedbackType: { Success: 'success' } },
@@ -109,7 +124,9 @@ function feed(ids: string[], reducedMotion = false, attribution?: { ownerId: str
       createRepositoryList: () => createCollection(),
       syncRepositoryLists: (...args: any[]) => saveRepository(...args),
     },
-    '@/api/repositories': { repositoryDetailQueryKey, fetchRepositoryDetail: async (id: string) => { requests.push(`readme:${id}`); return loadReadme(); } },
+    '@/api/repositories': { repositoryDetailQueryKey, repositoryMetadataQueryKey, repositoryReadmeQueryKey,
+      fetchRepositoryMetadata:async(id:string)=>{requests.push(`metadata:${id}`);return loadMetadata(id);},
+      fetchRepositoryReadme: async (id: string) => { requests.push(`readme:${id}`); return loadReadme(); } },
     '@/api/repository-actions': {
       getSaveCollections: async (id: string) => { requests.push(`save:${id}`); return saveCollections; },
       getRepositoryShareDetails: async (id: string) => { requests.push(`share:${id}`); return {}; },
@@ -123,6 +140,7 @@ function feed(ids: string[], reducedMotion = false, attribution?: { ownerId: str
     },
     './RepositoryScreen': { RepositoryScreen: (props: any) => React.createElement('RepositoryScreen', props) },
   };
+  if (attribution?.actualScreen) delete mocks['./RepositoryScreen'];
   const loaded = new Map<string, any>();
   function loadSource(path: string): any {
     const filename = resolve(path);
@@ -136,7 +154,7 @@ function feed(ids: string[], reducedMotion = false, attribution?: { ownerId: str
     const boundary = (specifier: string) => {
       if (specifier in mocks) return mocks[specifier];
       if (specifier.startsWith('@/')) return loadSource(`src/${specifier.slice(2)}.ts`);
-      if (/^\.\/(CommentSheet|ReadmePopup|FeedReadmePopup|save-popup|share-repository-sheet)$/.test(specifier)) {
+      if (/^\.\/(CommentSheet|ReadmePopup|FeedReadmePopup|save-popup|share-repository-sheet|RepositoryScreen)$/.test(specifier)) {
         return loadSource(`src/components/home/${specifier.slice(2)}.tsx`);
       }
       return nativeRequire(specifier);
@@ -152,12 +170,15 @@ function feed(ids: string[], reducedMotion = false, attribution?: { ownerId: str
     loadSource('src/components/home/CommentSheet.tsx').CommentSheet,
     loadSource('src/components/home/ReadmePopup.tsx').ReadmePopup,
   ];
+  let viewable = attribution?.viewable ?? false;
   const renderRows = () => React.createElement(QueryClientProvider, { client },
-    ids.map(id => React.createElement(Row, { key: id, isViewable: attribution?.viewable ?? false, repository: { ...repository(id), ...attribution?.repository }, boundary: attribution?.boundary, pageWidth: 400, pageHeight: 800,
+    ids.map(id => React.createElement(Row, { key: id, isViewable: viewable, repository: { ...repository(id), ...attribution?.repository }, boundary: attribution?.boundary, pageWidth: 400, pageHeight: 800,
       onQueueActivity: (event: unknown) => events.push(event) })),
   );
   return {
     requests, events, client,
+    async moveListWindow(index: number) { await act(async () => { moveSaveWindow(index); }); },
+    async setViewable(value: boolean) { viewable = value; await act(async () => { root.update(renderRows()); }); },
     get swipe() {return root.root.findByType('GestureDetector').props;},
     get saveRevealed() {return root.root.findAllByType('Pressable').some(node => node.props.accessibilityLabel === 'Close Save actions');},
     async swipeRight(x = 100, y = 0, success = true) {
@@ -171,7 +192,14 @@ function feed(ids: string[], reducedMotion = false, attribution?: { ownerId: str
       });
     },
     setExternalOpen(value: () => Promise<void>) {openExternal=value;},
+    get failureModalVisible() {return root.root.findAllByType('Modal').some(node => node.props.visible);},
+    async setViewable(value: boolean) {viewable=value; await act(async () => root.update(renderRows()));},
+    async pressScreen(label: string) {await act(async () => {
+      root.root.findAllByType('Pressable').find(node => node.props.accessibilityLabel === label)!.props.onPress();
+      await new Promise(resolve => setImmediate(resolve));
+    });},
     setHeight(value:number) {shareHeight=value;},
+    setMetadata(value:(id:string)=>Promise<any>) {loadMetadata=value;},
     setReadme(value: () => Promise<any>) {loadReadme=value;},
     get readmePopupProps() {return root.root.findAllByType(overlayTypes[3])[0]?.props;},
     get screenHeight() {return root.root.findByType('RepositoryScreen').props.pageHeight;},
@@ -224,10 +252,21 @@ function feed(ids: string[], reducedMotion = false, attribution?: { ownerId: str
       )); });
       await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)); });
     },
+    async readmeCardImages(cardRepository: RepositoryData) {
+      const Card = loadSource('src/components/home/ReadmeCard.tsx').default;
+      let cardRoot: ReturnType<typeof create>;
+      await act(async () => { cardRoot = create(React.createElement(QueryClientProvider, { client },
+        React.createElement(Card, { repository: cardRepository, availableWidth: 400, isActive: false,
+          onReadFullPress: () => undefined, onOpenReadme: () => undefined }),
+      )); });
+      const images = cardRoot!.root.findAllByType('SafeReadmeImage').map(node => node.props.url);
+      await act(async () => { cardRoot!.unmount(); });
+      return images;
+    },
     async mount() { await act(async () => { root = create(renderRows()); }); },
     async rerender() { await act(async () => { root.update(renderRows()); }); },
-    async open(index: number, action: string) {
-      await act(async () => { root.root.findAllByType('RepositoryScreen')[index].props[action](); });
+    async open(index: number, action: string, value?: unknown) {
+      await act(async () => { root.root.findAllByType('RepositoryScreen')[index].props[action](value); });
       await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)); });
     },
     async requestClose() {
@@ -237,6 +276,9 @@ function feed(ids: string[], reducedMotion = false, attribution?: { ownerId: str
       await act(async () => { closeAnimations.splice(0).forEach(callback => callback({ finished })); });
     },
     async type(text: string) { await act(async () => { this.input.props.onChangeText(text); }); },
+    async searchLists(text: string) { await act(async () => {
+      root.root.findAllByType('TextInput').find(node => node.props.accessibilityLabel === 'Search Lists')!.props.onChangeText(text);
+    }); },
     async submit() { await act(async () => { this.input.props.onSubmitEditing(); await new Promise(resolve => setTimeout(resolve, 0)); }); },
     async createCollection(name: string) {
       await this.press('Create new List');

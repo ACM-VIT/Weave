@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import {randomInt} from 'node:crypto';
 import {execFileSync,spawn} from 'node:child_process';
 import {readFile} from 'node:fs/promises';
 import path from 'node:path';
@@ -9,7 +10,7 @@ import {MlV2Client} from '../../services/mlService.js';
 import {buildMlRepositorySource} from '../../services/mlRepositoryPayloadService.js';
 const mlRoot=process.env.WEAVE_ML_CONTRACT_ROOT;
 
-test('pinned real Python HTTP preserves observed lineage from canonical Node index projection', {skip:!mlRoot,timeout:45000},async t=>{
+test('pinned Python HTTP preserves canonical lineage and sourced language composition', {skip:!mlRoot,timeout:45000},async t=>{
   assert.ok(mlRoot&&path.isAbsolute(mlRoot));
   const release=JSON.parse(await readFile(new URL('../../contracts/ml-contract-release.json',import.meta.url),'utf8'));
   assert.equal(execFileSync('git',['rev-parse','HEAD'],{cwd:mlRoot,encoding:'utf8'}).trim(),release.revision);
@@ -51,6 +52,27 @@ test('pinned real Python HTTP preserves observed lineage from canonical Node ind
     assert.equal((result.response_body as {embedding_version:string}).embedding_version,`contract-embedding-v2-${variant}`,
       'each valid variant must traverse the real registered route and payload builder');
   }
+  if(process.env.RUN_DATABASE_INTEGRATION==='1'){
+    const {assertDisposableDatabase}=await import('../database/disposableDatabase.js');assertDisposableDatabase();
+    const [{sqlClient:sql},{PostgresRepositoryPersistence}]=await Promise.all([import('../../db/index.js'),import('../../adapters/postgresRepositoryPersistence.js')]);
+    const githubId=String(randomInt(5_000_000_000,6_000_000_000)),ownerId=String(randomInt(6_000_000_000,7_000_000_000));
+    const owner='language-pair-fixture-'+ownerId;let id:string|undefined;
+    try {
+      const [stored]=await new PostgresRepositoryPersistence().bulkUpsert([{github_id:githubId,owner_github_id:ownerId,owner,name:'repository',full_name:owner+'/repository',
+        url:'https://github.com/'+owner+'/repository',description:'Sourced composition survives canonical ingestion and durable storage. The authenticated provider preserves its exact observed metadata.',
+        primary_language:'Rust',languages:['Python','Rust'],language_breakdown:[{name:'Python',color:'#3572A5',size:300,percentage:30},{name:'Rust',color:null,size:200,percentage:20}],
+        language_total_size:1000,language_breakdown_complete:false,observed_at:'2026-10-27T00:00:00Z'}]);
+      id=stored.repo_id;
+      const [outbox]=await sql`SELECT payload FROM telemetry.ml_outbox WHERE aggregate_id=${id}::uuid AND job_type='repo_index'`;
+      const result=await client.deliverRepositoryIndex(outbox.payload);
+      assert.equal(result.accepted,true,result.detail);
+      assert.equal((result.response_body as {embedding_version:string}).embedding_version,'contract-embedding-v2-languages',
+        'Exact SQL/outbox language bytes must traverse the real provider parser and vector-payload builder');
+    }finally{
+      if(id){await sql`DELETE FROM telemetry.ml_outbox WHERE aggregate_id=${id}::uuid`;await sql`DELETE FROM app.repos WHERE repo_id=${id}::uuid`;}
+      await sql`DELETE FROM app.social_profiles WHERE provider='github' AND provider_subject=${ownerId}`;await sql.end({timeout:1});
+    }
+  }else t.diagnostic('SQL/outbox language roundtrip requires RUN_DATABASE_INTEGRATION=1.');
   const post=(source:unknown,secret='local-lineage-contract-secret')=>fetch(`${origin}/api/v2/repositories/embed`,{
     method:'POST',headers:{'content-type':'application/json','x-internal-secret':secret},
     body:JSON.stringify({schema_version:2,...job,repository:source}),

@@ -110,3 +110,14 @@ test('real current preferences reject old dislikes beyond 500 history without af
     } finally {await sql.end({timeout:1});}
   }
 });
+
+
+test('candidate session UUID case aliases normalize without bypassing the served-row fence',async()=>{
+  const {loadCandidateEligibility}=await import('../../services/feedExposureEligibility.js');
+  const session='abcdef01-abcd-4abc-8abc-abcdef012345';
+  const result=await loadCandidateEligibility({query:async(_sql,parameters)=>{
+    assert.equal(parameters[3],session);
+    return [{repo_id:a,summary_id:null,preference_eligible:true,exposure_eligible:false,session_served:true}];
+  }},user,[a],7,session.toUpperCase());
+  assert.deepEqual(result.servedIds,[a]);assert.deepEqual(result.exposureIds,[]);
+});

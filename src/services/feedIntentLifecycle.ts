@@ -9,10 +9,12 @@ export interface FeedIntentDependencies{
  assertCurrent:()=>void;
 }
 type Entry={sessionId:string;epoch:string;status:'active'|'retired';pending:FeedSessionControl[]};
+type Inspection={sessionId:string;result:FeedSessionResult|null};
 /** Source controls are persisted before I/O; uncertain results retry the same UUID. */
 export class FeedIntentLifecycle{
  private entries:Entry[]=[];private loaded=false;private legacy=false;private flight:Promise<unknown>=Promise.resolve();
  private verified=new Set<string>();
+ private persistedValue:string|undefined;
  constructor(private readonly ownerId:string,private readonly deps:FeedIntentDependencies){}
  private serial<T>(operation:()=>Promise<T>):Promise<T>{const next=this.flight.catch(()=>{}).then(operation);this.flight=next;return next;}
  private async load(){
@@ -25,8 +27,29 @@ export class FeedIntentLifecycle{
       ||entry.pending.some(control=>control.session_id!==entry.sessionId||typeof control.request_id!=='string'||!['begin','reset','end'].includes(control.kind)))throw new Error('Saved feed session needs recovery.');
    }this.entries=value.entries;
   }this.loaded=true;
+  // Absence is an empty queue; only successful reads/writes establish this baseline.
+  this.persistedValue=this.snapshot();
  }
- private async persist(){this.deps.assertCurrent();await this.deps.write(JSON.stringify({schema:1,ownerId:this.ownerId,entries:this.entries}));this.deps.assertCurrent();}
+ private snapshot(){return JSON.stringify({schema:1,ownerId:this.ownerId,entries:this.entries});}
+ private async persist(){
+  this.deps.assertCurrent();const value=this.snapshot();if(value===this.persistedValue)return;
+  await this.deps.write(value);this.deps.assertCurrent();this.persistedValue=value;
+ }
+ private async inspect(sessionId:string){
+  const result=await this.deps.inspect(sessionId);this.deps.assertCurrent();
+  if(result?.mode==='ordered'&&result.session.session_id!==sessionId)throw new Error('Feed session response does not match.');
+  return result;
+ }
+ private async initialize(sessionId:string):Promise<Inspection|undefined>{
+  let inspection:Inspection|undefined;
+  if(!this.loaded){
+   inspection={sessionId,result:await this.inspect(sessionId)};
+   if(inspection.result?.mode==='legacy'){this.legacy=true;return inspection;}
+  }
+  await this.load();const hadPending=this.entries.some(entry=>entry.pending.length>0);await this.drain();
+  // Controls may change the inspected epoch/status. Never reuse a pre-drain result.
+  return hadPending?undefined:inspection;
+ }
  private async drain(){
   await this.persist();
   for(const entry of this.entries){
@@ -61,36 +84,37 @@ export class FeedIntentLifecycle{
   }
   this.entries=this.entries.filter(entry=>entry.status!=='retired'||entry.pending.length>0);await this.persist();
  }
- async prepare(requestedSessionId:string):Promise<string>{
-  const sessionId=await this.serial(async()=>{
-   if(this.legacy)return requestedSessionId;
-   if(!this.loaded){const result=await this.deps.inspect(requestedSessionId);this.deps.assertCurrent();if(result?.mode==='legacy'){this.legacy=true;return requestedSessionId;}}
-   await this.load();await this.drain();
-   const active=this.entries.find(entry=>entry.sessionId===requestedSessionId&&entry.status==='active')??this.entries.find(entry=>entry.status==='active');
-   if(active){
-    const current=await this.deps.inspect(active.sessionId);this.deps.assertCurrent();
-    if(current?.mode==='legacy'){this.legacy=true;return requestedSessionId;}
-    if(current?.mode==='ordered'&&current.session.status==='active'){
-     active.epoch=current.session.epoch;await this.persist();return active.sessionId;
-    }
-    active.status='retired';this.entries=this.entries.filter(entry=>entry!==active);await this.persist();return createUuid();
+ prepare(requestedSessionId:string):Promise<string>{return this.serial(async()=>{
+  this.deps.assertCurrent();if(this.legacy)return requestedSessionId;
+  const initial=await this.initialize(requestedSessionId);if(this.legacy)return requestedSessionId;
+  const inspect=(id:string)=>initial?.sessionId===id?Promise.resolve(initial.result):this.inspect(id);
+  const active=this.entries.find(entry=>entry.sessionId===requestedSessionId&&entry.status==='active')??this.entries.find(entry=>entry.status==='active');
+  let sessionId=requestedSessionId,inspection:FeedSessionResult|null|undefined;
+  if(active){
+   inspection=await inspect(active.sessionId);
+   if(inspection?.mode==='legacy'){this.legacy=true;return requestedSessionId;}
+   if(inspection?.mode==='ordered'&&inspection.session.status==='active'){
+    sessionId=active.sessionId;active.epoch=inspection.session.epoch;await this.persist();
+   }else{
+    this.entries=this.entries.filter(entry=>entry!==active);await this.persist();
+    sessionId=createUuid();inspection=undefined;
    }
-   const remote=await this.deps.inspect(requestedSessionId);this.deps.assertCurrent();
-   return remote?.mode==='ordered'&&remote.session.status==='retired'?createUuid():requestedSessionId;
-  });
-  await this.ensure(sessionId);return sessionId;
- }
- ensure(sessionId:string):Promise<boolean>{return this.serial(async()=>{
+  }else{
+   inspection=await inspect(requestedSessionId);
+   if(inspection?.mode==='ordered'&&inspection.session.status==='retired'){sessionId=createUuid();inspection=undefined;}
+  }
+  await this.ensureEntry(sessionId,inspection);return sessionId;
+ });}
+ private async ensureEntry(sessionId:string,inspection?:FeedSessionResult|null):Promise<boolean>{
   if(this.legacy)return false;
-  if(!this.loaded){const initial=await this.deps.inspect(sessionId);this.deps.assertCurrent();if(initial?.mode==='legacy'){this.legacy=true;return false;}}
-  await this.load();await this.drain();if(this.legacy)return false;
   let entry=this.entries.find(entry=>entry.sessionId===sessionId);
-  if(!this.verified.has(sessionId)){
-   const result=await this.deps.inspect(sessionId);this.deps.assertCurrent();
+  if(inspection!==undefined||!this.verified.has(sessionId)){
+   const result=inspection===undefined?await this.inspect(sessionId):inspection;
    if(result?.mode==='legacy'){this.legacy=true;return false;}
    if(result?.mode==='ordered'){
     if(result.session.session_id!==sessionId||result.session.status==='retired')throw new Error('This browsing session ended. Refresh Home to start again.');
     if(!entry){entry={sessionId,epoch:result.session.epoch,status:'active',pending:[]};this.entries.push(entry);}else entry.epoch=result.session.epoch;
+    await this.persist();
    }
    this.verified.add(sessionId);
   }
@@ -100,6 +124,10 @@ export class FeedIntentLifecycle{
    this.entries.push(entry);await this.persist();await this.drain();
   }
   return !this.legacy;
+ }
+ ensure(sessionId:string):Promise<boolean>{return this.serial(async()=>{
+  this.deps.assertCurrent();if(this.legacy)return false;
+  const inspection=await this.initialize(sessionId);return this.ensureEntry(sessionId,inspection?.result);
  });}
  reset(sessionId:string):Promise<boolean>{return this.serial(async()=>{
   if(this.legacy)return false;

@@ -1,11 +1,13 @@
+import { useRepositoryReadme } from '@/hooks/use-repository-readme';
+import { repositoryPreview } from '@/services/repositoryPreview';
 import { useRepositoryReadmeSummary } from '@/hooks/use-repository-readme-summary';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {authSessionLifecycle} from '@/api/session-lifecycle';
 import {takeFeedNavigation,type FeedNavigationAttribution} from '@/services/feedImpressionAttribution';
 import {
   ActivityIndicator,
-  Alert,
   Linking,
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -30,8 +32,9 @@ import {
 } from 'lucide-react-native';
 
 import {
-  fetchRepositoryDetail,
+  fetchRepositoryMetadata,
   repositoryDetailQueryKey,
+  repositoryMetadataQueryKey,
 } from '@/api/repositories';
 import { ReadmePopup } from '@/components/home/ReadmePopup';
 import { SavePopup } from '@/components/home/save-popup';
@@ -43,6 +46,7 @@ import { useAuth } from '@/store/AuthContext';
 import { formatCompactCount } from '@/utils/format-count';
 import { prepareReadmePreview, prepareReadmeSummaryDocument } from '@/utils/readme';
 import { getStorageItem } from '@/utils/storage';
+import { openRepositoryOnGitHub } from '@/services/repositoryGithubOpen';
 
 type ActionProps = {
   accessibilityLabel: string;
@@ -116,24 +120,53 @@ export function RepositoryDetailScreen({ repositoryId,navigationToken }: { repos
   },[navigationToken,queryClient,renderGeneration,repositoryId,viewerUserId]);
   const attribution=origin&&origin.ownerId===viewerUserId&&origin.repoId===repositoryId&&origin.generation===renderGeneration?origin:null;
 
+  const membershipScope = `${viewerUserId ?? ''}:${repositoryId}:${renderGeneration}`;
+  const currentMembershipScope = useRef(membershipScope);
+  useLayoutEffect(() => { currentMembershipScope.current = membershipScope; }, [membershipScope]);
+  const [confirmedMembership, setConfirmedMembership] = useState<{scope: string; listIds: string[]; saved: boolean} | null>(null);
+  const confirmedMembershipRef = useRef(confirmedMembership);
+
   const [saveVisible, setSaveVisible] = useState(false);
   const [shareVisible, setShareVisible] = useState(false);
   const [readmeVisible, setReadmeVisible] = useState(false);
   const [summaryVisible, setSummaryVisible] = useState(false);
+  const [githubOpenFailedFor, setGithubOpenFailedFor] = useState<string | null>(null);
 
-  const repositoryQuery = useQuery({
-    queryKey: repositoryDetailQueryKey(repositoryId, viewerUserId),
+  const repositoryQuery = useQuery<RepositoryDetail>({
+    queryKey: repositoryMetadataQueryKey(repositoryId, viewerUserId),
     enabled: Boolean(repositoryId && viewerUserId),
     queryFn: async ({ signal }) => {
+      authSessionLifecycle.assertCurrent(renderGeneration);
+      const confirmationAtStart = confirmedMembershipRef.current;
       const token = await getStorageItem('access_token');
       if (!token) throw new Error('Your session has expired. Please sign in again.');
-      return fetchRepositoryDetail(repositoryId, token, signal);
+      authSessionLifecycle.assertCurrent(renderGeneration);
+      const detail = await fetchRepositoryMetadata(repositoryId, token, signal);
+      authSessionLifecycle.assertCurrent(renderGeneration);
+      const confirmed = confirmedMembershipRef.current;
+      // A request begun before a confirmed mutation can return its old snapshot.
+      // Keep the complete response, but retain the newer membership confirmation.
+      return confirmed && confirmed !== confirmationAtStart && confirmed.scope === membershipScope
+        ? {...detail, selectedListIds: confirmed.listIds, viewerSaved: confirmed.saved}
+        : detail;
     },
     staleTime: 60_000,
+    retry: (failures, error) => ![401,403,404,410].includes((error as {status?:number}).status ?? 0) && failures < 1,
+    placeholderData: () => repositoryPreview(queryClient, viewerUserId, repositoryId),
   });
 
-  const repository = repositoryQuery.data;
+  const terminalDetailError = repositoryQuery.isError && [401,403,404,410].includes((repositoryQuery.error as {status?:number})?.status ?? 0);
+  const preview = terminalDetailError ? undefined : repositoryPreview(queryClient, viewerUserId, repositoryId);
+  const partialDetail = repositoryQuery.isPlaceholderData || Boolean(!repositoryQuery.data && preview);
+  const detail = terminalDetailError ? undefined : repositoryQuery.data ?? preview;
+  const repository = useMemo(() => detail && partialDetail && confirmedMembership?.scope === membershipScope
+    ? {...detail, selectedListIds: confirmedMembership.listIds, viewerSaved: confirmedMembership.saved}
+    : detail, [confirmedMembership, detail, membershipScope, partialDetail]);
   const summaryQuery = useRepositoryReadmeSummary(repository);
+  const readmeQuery = useRepositoryReadme(repository,readmeVisible || summaryVisible);
+  const document = readmeQuery.data ?? (readmeQuery.terminalError && repository ? {...repository,readmeFull:null} : repository);
+  const matchingMedia = document?.contentVersion === (summaryQuery.digest?.content_version ?? repository?.contentVersion)
+    && (!summaryQuery.digest?.content_hash || document?.contentHash === summaryQuery.digest.content_hash);
   const contentWidth = Math.min(Math.max(width - 32, 0), 720);
   const preparedSummary = prepareReadmePreview({
     digest:summaryQuery.digest,summary:repository?.readmeSummary,description:repository?.description,
@@ -146,11 +179,11 @@ export function RepositoryDetailScreen({ repositoryId,navigationToken }: { repos
   const languages = useMemo(() => repository?.languages ?? [], [repository?.languages]);
 
   const readmeSource = useMemo(() => ({
-    fullName: repository?.fullName ?? '', githubUrl: repository?.githubUrl ?? '',
-    readmeBaseUrl: repository?.readmeBaseUrl, readmeDefaultBranch: repository?.readmeDefaultBranch,
-    readmeSourcePath: repository?.readmeSourcePath,
-  }), [repository?.fullName, repository?.githubUrl, repository?.readmeBaseUrl,
-    repository?.readmeDefaultBranch, repository?.readmeSourcePath]);
+    fullName: document?.fullName ?? '', githubUrl: document?.githubUrl ?? '',
+    readmeBaseUrl: document?.readmeBaseUrl, readmeDefaultBranch: document?.readmeDefaultBranch,
+    readmeSourcePath: document?.readmeSourcePath,
+  }), [document?.fullName, document?.githubUrl, document?.readmeBaseUrl,
+    document?.readmeDefaultBranch, document?.readmeSourcePath]);
 
   const queueActivity = useCallback(async (action: 'share' | 'github_open') => {
     if (!viewerUserId || !repository || !authSessionLifecycle.isCurrent(renderGeneration)) return;
@@ -161,22 +194,28 @@ export function RepositoryDetailScreen({ repositoryId,navigationToken }: { repos
   }, [attribution,renderGeneration,repository, viewerUserId]);
 
   const handleListMembershipsChanged = useCallback((listIds: string[], saved: boolean) => {
-    queryClient.setQueryData<RepositoryDetail>(
-      repositoryDetailQueryKey(repositoryId, viewerUserId),
+    if (!viewerUserId || currentMembershipScope.current !== membershipScope || !authSessionLifecycle.isCurrent(renderGeneration)) return;
+    const confirmed = {scope: membershipScope, listIds: [...listIds], saved};
+    confirmedMembershipRef.current = confirmed;
+    setConfirmedMembership(confirmed);
+    queryClient.setQueriesData<RepositoryDetail>(
+      {queryKey:repositoryDetailQueryKey(repositoryId, viewerUserId)},
       (current) => current
         ? { ...current, selectedListIds: listIds, viewerSaved: saved }
         : current,
     );
-  }, [queryClient, repositoryId, viewerUserId]);
+  }, [membershipScope, queryClient, renderGeneration, repositoryId, viewerUserId]);
 
   const openGithub = useCallback(async () => {
     if (!repository) return;
-    try {
-      await Linking.openURL(repository.githubUrl);
-      await queueActivity('github_open').catch(() => undefined);
-    } catch {
-      Alert.alert('Unable to open GitHub', 'Please try again in a moment.');
-    }
+    setGithubOpenFailedFor(null);
+    const opened = await openRepositoryOnGitHub(repository.id, repository.githubUrl, {
+      open: (url) => Linking.openURL(url),
+      platform: Platform.OS,
+      browser: Platform.OS === 'web' && typeof window !== 'undefined' ? window : undefined,
+      onOpened: () => queueActivity('github_open'),
+    });
+    if (!opened) setGithubOpenFailedFor(repository.id);
   }, [queueActivity, repository]);
 
   if (!repositoryId) {
@@ -190,7 +229,7 @@ export function RepositoryDetailScreen({ repositoryId,navigationToken }: { repos
     );
   }
 
-  if (isAuthLoading || repositoryQuery.isLoading) {
+  if (isAuthLoading || (repositoryQuery.isLoading && !repository)) {
     return (
       <View style={[styles.stateScreen, { paddingTop: insets.top }]}>
         <ActivityIndicator color={REFERENCE_THEME.accent} size="large" />
@@ -347,17 +386,19 @@ export function RepositoryDetailScreen({ repositoryId,navigationToken }: { repos
             </Text>
           </View>
           <Text style={styles.sectionBody}>
-            {repository.readmeFull
+            {partialDetail
+              ? repositoryQuery.isError ? 'The complete README could not be loaded.' : 'Loading the complete README…'
+              : repository.hasReadme || repository.readmeFull
               ? 'Open the complete repository document without leaving Weave.'
               : 'No README is available for this repository.'}
           </Text>
           <Pressable
             accessibilityRole="button"
-            disabled={!repository.readmeFull}
+            disabled={!repository.hasReadme && !repository.readmeFull && !partialDetail}
             onPress={() => setReadmeVisible(true)}
             style={({ pressed }) => [
               styles.readmeButton,
-              !repository.readmeFull && styles.disabled,
+              !repository.hasReadme && !repository.readmeFull && !partialDetail && styles.disabled,
               pressed && styles.pressed,
             ]}
           >
@@ -375,6 +416,9 @@ export function RepositoryDetailScreen({ repositoryId,navigationToken }: { repos
           <ExternalLink color={REFERENCE_THEME.text} size={18} />
           <Text style={styles.githubButtonLabel}>Open on GitHub</Text>
         </Pressable>
+        {githubOpenFailedFor === repository.id ? (
+          <Text accessibilityRole="alert" style={styles.sectionBody}>Unable to open GitHub. Please try again.</Text>
+        ) : null}
       </ScrollView>
 
       <SavePopup
@@ -399,12 +443,16 @@ export function RepositoryDetailScreen({ repositoryId,navigationToken }: { repos
       {summaryVisible ? <ReadmePopup
         isVisible contentKind="summary" onClose={() => setSummaryVisible(false)}
         readmeText={prepareReadmeSummaryDocument({ ...repository, readmeDigest: summaryQuery.digest })}
-        readmeSource={readmeSource} mediaMarkdown={repository.readmeFull}
+        readmeSource={readmeSource} mediaMarkdown={matchingMedia ? document?.readmeFull : null}
+        mediaMessage={!matchingMedia ? 'Repository updated. Reopen its detail for the current summary.' : !document?.readmeFull && readmeQuery.isError ? 'Could not load README media.' : null}
         title={repository.name}
       /> : null}
       {readmeVisible ? <ReadmePopup
         isVisible onClose={() => setReadmeVisible(false)}
-        readmeText={repository.readmeFull} readmeSource={readmeSource} title={repository.name}
+        readmeText={document?.readmeFull ?? null} readmeSource={readmeSource} title={repository.name}
+        loading={readmeQuery.isPending}
+        errorMessage={readmeQuery.error instanceof Error ? readmeQuery.error.message : undefined}
+        onRetry={() => void readmeQuery.refetch()}
       /> : null}
     </View>
   );

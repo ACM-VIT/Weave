@@ -1,3 +1,4 @@
+import { rememberRepositoryPreview } from '@/services/repositoryPreview';
 import {
   ActivityIndicator,
   FlatList,
@@ -7,7 +8,7 @@ import {
   View,
   useWindowDimensions,
 } from 'react-native';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { ArrowLeft, CircleAlert, FolderOpen, Pin } from 'lucide-react-native';
 import { router, useLocalSearchParams } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -40,6 +41,7 @@ export default function BoardScreen() {
   const insets = useSafeAreaInsets();
   const { width } = useWindowDimensions();
   const { user } = useAuth();
+  const queryClient = useQueryClient();
   const params = useLocalSearchParams<BoardRouteParams>();
   const boardId = firstParam(params.boardId);
   const collectionId = firstParam(params.collectionId);
@@ -80,6 +82,8 @@ export default function BoardScreen() {
   };
 
   const openRepository = (repositoryId: string) => {
+    const repository = repositories.find(item => item.id === repositoryId);
+    if (repository) rememberRepositoryPreview(queryClient, user?.user_id, repository);
     router.push(repositoryHref(repositoryId));
   };
 

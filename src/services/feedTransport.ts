@@ -3,6 +3,7 @@ export type FeedRequest = {
   session_id: string;
   limit: number;
   cursor: string | null;
+  readme_mode?: 'inline' | 'deferred';
 };
 
 export function assertFeedRequestActive(signal?: AbortSignal) {
@@ -29,16 +30,33 @@ export async function requestFeedWithRetry<T>(
   signal?: AbortSignal,
   wait = waitForFeedRetry,
   retryUnavailable = true,
+  preparationRetryLimit = 2,
 ): Promise<T> {
-  for (let attempt = 0; ; attempt++) {
+  let attempt = 0;
+  let preparationRetries = 0;
+  let requestBody = body;
+  let inlineFallbackAttempted = false;
+  for (;;) {
     assertFeedRequestActive(signal);
     try {
-      const result = await send(body, signal);
+      const result = await send(requestBody, signal);
       assertFeedRequestActive(signal);
       return result;
     } catch (error) {
       assertFeedRequestActive(signal);
       const failure = error as { status?: number; name?: string; code?: string; retryAfter?: string | null };
+      const preCommitReadmeRejection = failure.name !== 'AbortError' && failure.code !== 'SESSION_CHANGED'
+        && ((failure.status === 409 && failure.code === 'FEED_README_MEDIA_UNAVAILABLE')
+          || (failure.status === 400 && failure.code === 'INVALID_FEED_README_MODE'));
+      if (!inlineFallbackAttempted && body.readme_mode === 'deferred' && preCommitReadmeRejection) {
+        inlineFallbackAttempted = true;
+        requestBody = { ...body, readme_mode: 'inline' };
+        continue;
+      }
+      if (failure.code === 'PERSONALIZED_FEED_UNAVAILABLE') {
+        if (!retryUnavailable || preparationRetries >= preparationRetryLimit) throw error;
+        preparationRetries++;
+      }
       const retryable = failure.name !== 'AbortError' && failure.code !== 'SESSION_CHANGED'
         && (error instanceof TypeError || failure.status === 408 || failure.status === 409
           || failure.status === 425 || failure.status === 429 || (failure.status ?? 0) >= 500);
@@ -50,6 +68,7 @@ export async function requestFeedWithRetry<T>(
         : Number.isFinite(retryAt) ? Math.max(0, retryAt - Date.now())
           : failure.status === 409 ? 1000 : 500 * 2 ** attempt;
       await wait(delay, signal);
+      attempt++;
     }
   }
 }

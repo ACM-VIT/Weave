@@ -1,7 +1,8 @@
 import test from "node:test";
 import { describe } from "node:test";
 import assert from "node:assert/strict";
-import { extractReadmePreviewImage, renderReadmeMarkdown, resolveReadmeImageUrl, type ReadmeImageContext } from "../src/utils/readme-images";
+import { deriveReadmeMediaManifest, isCurrentReadmeMediaManifest } from "../backend/services/readmeMediaManifest";
+import { extractReadmePreviewImage, extractReadmeSummaryImages, renderReadmeMarkdown, resolveReadmeImageUrl, type ReadmeImageContext } from "../src/utils/readme-images";
 import { extractReadmeVideos } from "../src/utils/readme-videos";
 import { readmePopupBlocks } from "../src/utils/readme-popup-content";
 
@@ -104,6 +105,94 @@ describe("readme images", () => {
       {alt:'Demo',url:'https://raw.githubusercontent.com/ACM-VIT/weave/refs/heads/main/docs/demo.gif'},
     ]);
   });
+
+  test('deferred feed media manifest matches the existing full README preview extractors', async () => {
+    const markdown = [
+      '![build status](https://img.shields.io/badge/build-passing-green)',
+      '![logo](./images/logo.png)',
+      '![App screenshot](./images/screenshot.png)',
+      '<video src="./demo.mp4"></video>',
+      '[Attachment](https://github.com/user-attachments/assets/1234-abcd)',
+      '```md\n![Example](https://cdn.example.com/fake.png)\n```',
+    ].join('\n');
+    const manifest = deriveReadmeMediaManifest({
+      markdown,
+      context: {
+        fullName: context.fullName!, githubUrl: context.githubUrl!,
+        sourcePath: context.readmeSourcePath!, defaultBranch: context.readmeDefaultBranch!,
+        baseUrl: context.readmeBaseUrl!,
+      },
+      contentVersion: 7,
+      contentHash: 'canonical-hash-7',
+    });
+
+    assert.equal(manifest.content_version, 7);
+    assert.equal(manifest.content_hash, 'canonical-hash-7');
+    assert.equal(manifest.readme_available, true);
+    assert.deepEqual(manifest.poster, extractReadmePreviewImage(markdown, context));
+    const { extractReadmeSummaryImages } = await import('../src/utils/readme-images');
+    assert.deepEqual(manifest.images, extractReadmeSummaryImages(markdown, context));
+    assert.deepEqual(manifest.videos, extractReadmeVideos(markdown, context));
+  });
+
+  test('malformed README image syntax avoids repeated suffix scans in backend and legacy extractors', () => {
+    const malformedMarkdown = '!['.repeat(50_000);
+    const malformedHtml = '<img src="'.repeat(10_000);
+    const started = performance.now();
+
+    assert.equal(extractReadmePreviewImage(malformedMarkdown, context), null);
+    const markdownManifest = deriveReadmeMediaManifest({
+      markdown: malformedMarkdown,
+      context: { fullName: context.fullName!, githubUrl: context.githubUrl!,
+        sourcePath: null, defaultBranch: null, baseUrl: null },
+      contentVersion: 7, contentHash: 'malformed-markdown-v7',
+    });
+    assert.equal(markdownManifest.poster, null);
+
+    assert.deepEqual(extractReadmeSummaryImages(malformedHtml, context), []);
+    const htmlManifest = deriveReadmeMediaManifest({
+      markdown: malformedHtml,
+      context: { fullName: context.fullName!, githubUrl: context.githubUrl!,
+        sourcePath: null, defaultBranch: null, baseUrl: null },
+      contentVersion: 7, contentHash: 'malformed-html-v7',
+    });
+    assert.equal(htmlManifest.poster, null);
+    assert.ok(performance.now() - started < 1_500,
+      'accepted-size malformed media input should remain bounded during both API derivation and client extraction');
+  });
+
+  test('unrepresentable media keeps its complete legacy preview and cannot enter a deferred feed', () => {
+    const cases = [
+      { alt: 'a'.repeat(10_001), url: 'https://cdn.example.com/screenshot.png' },
+      { alt: 'Large image URL', url: `https://cdn.example.com/${'x'.repeat(2_050)}.png` },
+    ];
+    for (const [index, media] of cases.entries()) {
+      const markdown = `![${media.alt}](${media.url})`;
+      const manifest = deriveReadmeMediaManifest({
+        markdown,
+        context: {
+          fullName: context.fullName!, githubUrl: context.githubUrl!,
+          sourcePath: context.readmeSourcePath!, defaultBranch: context.readmeDefaultBranch!,
+          baseUrl: context.readmeBaseUrl!,
+        },
+        contentVersion: 7,
+        contentHash: 'canonical-hash-7',
+      });
+
+      assert.equal(manifest.representation, 'inline_only', `case ${index} cannot be projected safely`);
+      assert.deepEqual(extractReadmePreviewImage(markdown, context), media, `case ${index} keeps the complete card image`);
+      assert.deepEqual(extractReadmeSummaryImages(markdown, context), [media], `case ${index} keeps the complete popup image`);
+    }
+
+    const valid = deriveReadmeMediaManifest({ markdown: '![Preview](https://cdn.example.com/preview.png)',
+      context: { fullName: context.fullName!, githubUrl: context.githubUrl!, sourcePath: null,
+        defaultBranch: null, baseUrl: null }, contentVersion: 7, contentHash: 'canonical-hash-7' });
+    assert.equal(valid.representation, 'deferred');
+    assert.equal(isCurrentReadmeMediaManifest({ ...valid, images: [...valid.images, ...valid.images, ...valid.images, ...valid.images] },
+      7, 'canonical-hash-7'), false, 'over-count manifests are rejected even if a row is marked current');
+    assert.equal(isCurrentReadmeMediaManifest({ ...valid, poster: { alt: 'Preview', url: 'https://localhost/private.png' } },
+      7, 'canonical-hash-7'), false, 'unsafe URLs cannot enter a deferred feed projection');
+  });
 });
 
 describe("readme videos", () => {
@@ -202,4 +291,39 @@ describe("readme popup content", () => {
     assert.deepEqual(blocks.map(block=>block.kind),['html','image','html','video','html']);
     assert.equal(blocks.filter(block=>block.kind==='html').map(block=>block.content).join(''),html);
   });
+});
+
+
+test('GitHub file-page images resolve to image bytes without rewriting attachments or other hosts', () => {
+  assert.equal(resolveReadmeImageUrl('https://github.com/g3n/g3nd/blob/master/data/images/g3n_logo.png',{}),
+    'https://raw.githubusercontent.com/g3n/g3nd/master/data/images/g3n_logo.png');
+  assert.equal(resolveReadmeImageUrl('https://github.com/org/repo/blob/feature/demo/docs/image%20one.png?raw=true',{}),
+    'https://raw.githubusercontent.com/org/repo/feature/demo/docs/image%20one.png');
+  for(const url of ['https://github.com/user-attachments/assets/image.png','https://cdn.example.com/org/repo/blob/main/image.png'])
+    assert.equal(resolveReadmeImageUrl(url,{}),url);
+});
+
+
+test('a recycled README image recovers after its failed URL changes', async () => {
+  const React=await import('react');const {act}=React;const {create}=await import('react-test-renderer');
+  const {loadSource}=await import('./support/startup-harness');
+  const images=await import('../src/utils/readme-images');
+  (globalThis as any).IS_REACT_ACT_ENVIRONMENT=true;
+  const {SafeReadmeImage}=loadSource('src/components/home/SafeReadmeImage.tsx',{
+    'react-native':{ActivityIndicator:'ActivityIndicator',Text:'Text',View:'View',StyleSheet:{create:(v:unknown)=>v,absoluteFill:{}}},
+    'expo-image':{Image:'Image'},'react-native-render-html':{useContentWidth:()=>320},
+    '@/utils/readme-images':images,'@/constants/theme':{REFERENCE_THEME:{}},
+  });
+  let root!:ReturnType<typeof create>;
+  const render=(url:string)=>React.createElement(SafeReadmeImage,{url,alt:'Banner',maximumWidth:320});
+  await act(async()=>{root=create(render('https://cdn.example.com/missing.png'));});
+  try {
+    await act(async()=>root.root.findByType('Image').props.onError());
+    assert.ok(root.root.findAllByType('Text').some(node=>node.children.includes('Image unavailable: Banner')));
+    await act(async()=>root.update(render('https://github.com/g3n/g3nd/blob/master/data/images/g3n_logo.png')));
+    const image=root.root.findByType('Image');
+    assert.equal(image.props.source.uri,'https://raw.githubusercontent.com/g3n/g3nd/master/data/images/g3n_logo.png');
+    await act(async()=>image.props.onLoad({source:{width:400,height:200}}));
+    assert.equal(root.root.findAllByType('ActivityIndicator').length,0);
+  }finally{await act(async()=>root.unmount());}
 });

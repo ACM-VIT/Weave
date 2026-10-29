@@ -4,22 +4,25 @@ import { Image, type ImageLoadEventData } from 'expo-image';
 import type { CustomBlockRenderer } from 'react-native-render-html';
 import { useContentWidth } from 'react-native-render-html';
 
+import { normalizeGithubReadmeImageUrl } from '@/utils/readme-images';
 import { REFERENCE_THEME } from '@/constants/theme';
 
 const MAX_IMAGE_HEIGHT = 360;
 const DEFAULT_ASPECT_RATIO = 16 / 9;
 
-export function SafeReadmeImage({
+type SafeReadmeImageProps = {alt:string;compact?:boolean;maximumWidth:number;url:string};
+
+export function SafeReadmeImage(props: SafeReadmeImageProps) {
+  const url=normalizeGithubReadmeImageUrl(props.url);
+  return <ReadmeImageSource key={url} {...props} url={url}/>;
+}
+
+function ReadmeImageSource({
   alt,
   compact = false,
   maximumWidth,
   url,
-}: {
-  alt: string;
-  compact?: boolean;
-  maximumWidth: number;
-  url: string;
-}) {
+}: SafeReadmeImageProps) {
   const [aspectRatio, setAspectRatio] = useState(DEFAULT_ASPECT_RATIO);
   const [failed, setFailed] = useState(false);
   const [loading, setLoading] = useState(true);
