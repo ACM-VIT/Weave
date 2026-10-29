@@ -160,7 +160,7 @@ export function normalizeGithubReadmeImageUrl(value: string): string {
     if (url.protocol==='https:' && url.hostname==='github.com' && !url.username && !url.password
       && parts.length>=5 && (parts[2]==='blob' || parts[2]==='raw')
       && /\.(?:png|jpe?g|gif|webp|svg|avif|bmp|ico|tiff?)$/i.test(url.pathname)) {
-      return `https://raw.githubusercontent.com/${parts.slice(0,2).join('/')}/${parts.slice(3).join('/')}`;
+      return `https://raw.githubusercontent.com/${parts.slice(0,2).join('/')}/${parts.slice(3).join('/')}${url.hash}`;
     }
   } catch { /* The resolver still rejects invalid or unsafe sources. */ }
   return value;
