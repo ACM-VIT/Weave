@@ -1,6 +1,7 @@
+import { projectRepositoryLanguages } from './repositoryLanguages.js';
 import type { TransactionSql } from 'postgres';
 import { readmeSummaryProjection } from './readmeSummaryService.js';
-import type { RepositoryDetailV2, RepositoryStatus } from '../contracts/repository.v2.js';
+import type { RepositoryDetailV2, RepositoryReadmeV2, RepositoryStatus } from '../contracts/repository.v2.js';
 import { sqlClient } from '../db/index.js';
 
 function optionalString(value: unknown): string | null {
@@ -70,7 +71,7 @@ export function mapRepositoryDetailRow(row: Record<string, unknown>): Repository
     readme_default_branch: optionalString(row.readme_default_branch),
     readme_base_url: optionalString(row.readme_base_url),
     primary_language: optionalString(row.primary_language),
-    languages: stringArray(row.languages),
+    ...projectRepositoryLanguages(row),
     topics: stringArray(row.topics),
 
     star_count: count(row.star_count),
@@ -103,6 +104,7 @@ export async function getRepositoryDetails(
   includeReadme = true,
   filters: { languages: string[]; topics: string[] } = { languages: [], topics: [] },
   sql: typeof sqlClient | TransactionSql = sqlClient,
+  includeReadmeMetadata = false,
 ): Promise<RepositoryDetailV2[]> {
   if (!repositoryIds.length) return [];
   const rows = await sql`
@@ -110,9 +112,10 @@ export async function getRepositoryDetails(
       repo.repo_id,repo.github_id,repo.full_name,repo.owner,repo.owner_github_id,
       repo.name,repo.url,repo.status,repo.created_at,repo.updated_at,
       ${sql.unsafe(readmeSummaryProjection('repo','content'))},
-      content.description,CASE WHEN ${includeReadme} THEN content.readme ELSE NULL END AS readme_md,to_jsonb(content)->>'readme_source_path' AS readme_source_path,
-      to_jsonb(content)->>'readme_default_branch' AS readme_default_branch,to_jsonb(content)->>'readme_base_url' AS readme_base_url,content.primary_language,
-      COALESCE(content.languages,'[]'::jsonb) AS languages,
+      content.description,${includeReadme ? sql`content.readme` : sql`NULL::text`} AS readme_md,
+      content.readme IS NOT NULL AS readme_available,content.content_hash,content.readme_source_path AS readme_source_path,
+      content.readme_default_branch AS readme_default_branch,content.readme_base_url AS readme_base_url,content.primary_language,
+      COALESCE(content.languages,'[]'::jsonb) AS languages,content.language_breakdown,content.language_total_size::float8 AS language_total_size,content.language_breakdown_complete,to_char(content.language_observed_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS language_observed_at,
       content.content_version,content.updated_at AS content_updated_at,content.source_updated_at,
       summary.summary_id,summary.summary,summary.highlights AS summary_highlights,
       summary.prompt_version AS summary_prompt_version,
@@ -214,9 +217,41 @@ export async function getRepositoryDetails(
       AND (${filters.topics.length === 0} OR EXISTS (SELECT 1 FROM app.repo_topics rt JOIN app.topics t USING(topic_id)
         WHERE rt.repo_id=repo.repo_id AND t.slug=ANY(${filters.topics}::text[])))
   `;
-  return rows.map(mapRepositoryDetailRow);
+  return rows.map(row => ({
+    ...mapRepositoryDetailRow(row),
+    ...(includeReadmeMetadata ? {
+      readme_available: row.readme_available === true,
+      content_hash: optionalString(row.content_hash),
+    } : {}),
+  }));
 }
 
-export async function getRepositoryDetail(viewerUserId: string, repositoryId: string): Promise<RepositoryDetailV2 | null> {
-  return (await getRepositoryDetails(viewerUserId, [repositoryId]))[0] ?? null;
+export async function getRepositoryDetail(
+  viewerUserId: string, repositoryId: string, projection: 'full' | 'metadata' = 'full',
+): Promise<RepositoryDetailV2 | null> {
+  return (await getRepositoryDetails(viewerUserId, [repositoryId], projection === 'full',
+    undefined, sqlClient, projection === 'metadata'))[0] ?? null;
+}
+
+export async function getRepositoryReadme(
+  repositoryId: string, contentVersion: number,
+): Promise<RepositoryReadmeV2 | null> {
+  // Check identity and select the body in one SQL snapshot. A stale request
+  // never transfers a newer document, even internally from SQL to the API.
+  const [row] = await sqlClient`
+    SELECT repo.repo_id,repo.full_name,repo.url,content.content_version,content.content_hash,
+      content.readme IS NOT NULL AS readme_available,
+      CASE WHEN content.content_version=${contentVersion} THEN content.readme ELSE NULL END AS readme_md,
+      content.readme_source_path,content.readme_default_branch,content.readme_base_url
+    FROM app.repos repo LEFT JOIN app.repo_content content USING(repo_id)
+    WHERE repo.repo_id=${repositoryId}::uuid AND repo.status='active'
+  `;
+  if (!row) return null;
+  return {
+    repo_id: String(row.repo_id), full_name: String(row.full_name), url: String(row.url),
+    content_version: row.content_version == null ? null : Number(row.content_version),
+    content_hash: optionalString(row.content_hash), readme_available: row.readme_available === true,
+    readme_md: optionalString(row.readme_md), readme_source_path: optionalString(row.readme_source_path),
+    readme_default_branch: optionalString(row.readme_default_branch), readme_base_url: optionalString(row.readme_base_url),
+  };
 }

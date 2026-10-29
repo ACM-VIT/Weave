@@ -1,8 +1,9 @@
 import React, { useEffect, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { View, Text } from 'react-native';
+import { View } from 'react-native';
 import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query';
 import { ProfileContentLists } from '../../../src/components/profile/ProfileContentLists';
+import { ProfileHeader } from '../../../src/components/profile/ProfileHeader';
 import { ProfileRepositoryList } from '../../../src/components/profile-repository-list';
 import { profileSectionQueries } from '../../../src/api/profile-section-queries';
 import { mapLegacyBoardList } from '../../../src/models/list';
@@ -14,13 +15,20 @@ let release!: (value: []) => void;
 const heldCollections = new Promise<[]>(resolve => { release = resolve; });
 const loaders = { boards: async () => boards, collections: () => heldCollections };
 const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+const photo = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII=';
+const actions: string[] = [];
 function Fixture() {
     const [sheet, setSheet] = useState(false);
+    const [avatar, setAvatar] = useState(photo);
     useEffect(() => { (window as any).showRepositorySheet = setSheet; }, []);
+    useEffect(() => { (window as any).setProfilePhoto = setAvatar; }, []);
     const options = profileSectionQueries('fixture-viewer', loaders);
     const boardQuery = useQuery(options.boards), collectionQuery = useQuery(options.collections);
-    return <><button onClick={() => setSheet(current => !current)}>Fixture: toggle saved repositories</button><View style={{ height: 600, width: '100%', maxWidth: 390, backgroundColor: '#000' }}>
-   <View style={{ flex: 1, display: sheet ? 'none' : 'flex' }}><ProfileContentLists viewer="fixture-viewer" header={<View style={{ height: 100 }}><Text>Profile Lists</Text></View>} compact horizontalPadding={24} maxWidth={600} paddingTop={10} paddingBottom={20} boards={boardQuery} collections={collectionQuery} pinned={{ data: [], isPending: false, isError: false, refetch: () => { } }} openList={() => { }}/></View>
+    return <><button onClick={() => setSheet(current => !current)}>Fixture: toggle saved repositories</button><View style={{ height: 600, width: '100%', maxWidth: 820, backgroundColor: '#000' }}>
+   <View style={{ flex: 1, display: sheet ? 'none' : 'flex' }}><ProfileContentLists viewer="fixture-viewer" header={<View testID="profile-header-fixture"><ProfileHeader
+       username="krishang-zinzuwadia-05782-long-username" name="Krishang Zinzuwadia" job="Building open source projects with multiple teams."
+       avatarUrl={avatar} isCompact isTablet={false} stats={['likes given', 'saved', 'followers', 'following'].map(label => ({ label, value: '10.2K', onPress: () => actions.push(label) }))}
+       onEdit={() => actions.push('edit')} onLogout={() => actions.push('logout')} /></View>} compact horizontalPadding={24} maxWidth={760} paddingTop={10} paddingBottom={20} boards={boardQuery} collections={collectionQuery} pinned={{ data: [], isPending: false, isError: false, refetch: () => { } }} openList={() => { }}/></View>
    <View style={{ flex: 1, display: sheet ? 'flex' : 'none' }}><ProfileRepositoryList active={sheet} type="saved" userId="fixture-viewer" onRepositoryPress={(href) => (window as any).repositoryNavigations.push(href)}/></View>
  </View></>;
 }
@@ -40,6 +48,31 @@ async function run() {
     await until(() => !!document.querySelector('[data-testid="profile-list-legacy-board:0"]'));
     const firstReadyMs = performance.now() - started;
     const boardRows = list().querySelectorAll('[data-testid^="profile-list-legacy-board:"]').length;
+    const header = document.querySelector('[data-testid="profile-header-fixture"]') as HTMLElement;
+    await until(() => !!header.querySelector('img')?.complete && Boolean(header.querySelector('img')?.naturalWidth));
+    (window as any).setProfilePhoto('/missing-avatar.png');
+    await until(() => !header.querySelector('img') && header.innerText.includes('K'));
+    (window as any).setProfilePhoto(photo);
+    await until(() => Boolean(header.querySelector('img')?.naturalWidth));
+    const textScale = Number(new URLSearchParams(location.search).get('textScale') ?? '1');
+    if (textScale > 1) {
+        // Browser text-enlargement stress, not proof of native fontScale behavior.
+        for (const node of header.querySelectorAll<HTMLElement>('[dir="auto"]')) {
+            const computed = getComputedStyle(node);
+            node.style.fontSize = `${parseFloat(computed.fontSize) * textScale}px`;
+            node.style.lineHeight = `${parseFloat(computed.lineHeight) * textScale}px`;
+        }
+        await wait(100);
+    }
+    const edit = header.querySelector('[aria-label="Edit profile"]') as HTMLElement;
+    const lastStat = header.querySelector('[aria-label="10.2K following"]') as HTMLElement;
+    assert(edit.innerText === 'Edit Profile', 'Edit Profile is visibly labeled');
+    assert(edit.getBoundingClientRect().top >= lastStat.getBoundingClientRect().bottom, 'Edit Profile is below the stats row');
+    assert(edit.getBoundingClientRect().height >= 48, 'Edit Profile retains its touch target');
+    assert(header.scrollWidth <= header.clientWidth + 1, 'Profile identity spills outside the available width');
+    edit.click();
+    assert(actions.join(',') === 'edit', 'Edit Profile does not invoke a neighboring stat or logout');
+    assert(!!list().querySelector('[role="progressbar"][aria-label="Loading Lists"]'), 'Slow collections retain a loading placeholder alongside ready Lists');
     assert(boardRows < 150, `Expected bounded Lists rows, got ${boardRows}`);
     assert((window as any).repositoryRequests.length === 0, 'Hidden stats sheet fetched eagerly');
     assert(queryClient.getQueryState(['profile-content', 'fixture-viewer', 'collections'])?.status === 'pending', 'Lists waited for a slow collection');

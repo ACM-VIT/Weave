@@ -69,6 +69,7 @@ export function RepositoryFeedItem({
   const [isReadmeVisible, setIsReadmeVisible] = useState(false);
   const [isOriginalReadmeVisible, setIsOriginalReadmeVisible] = useState(false);
   const [expandedSummary, setExpandedSummary] = useState<string | null>(null);
+  const [summaryIdentity,setSummaryIdentity] = useState<{version:number | null;hash:string | null}>({version:null,hash:null});
   const [isCommentsVisible, setIsCommentsVisible] = useState(false);
   // Keep only lightweight composer state while the expensive sheet is unmounted.
   const [commentComposer, setCommentComposer] = useState<CommentComposerState>({ draft: '', error: null, pending: false });
@@ -97,8 +98,6 @@ export function RepositoryFeedItem({
   const visibleStartTime = useRef<number | null>(null);
   const impressionTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const impressionSentRef = useRef(false);
-  const overlaysOpen = isSaveVisible || isShareVisible || isReadmeVisible || isOriginalReadmeVisible || isCommentsVisible;
-  const measurementActive = isViewable && isAppActive && !overlaysOpen;
   const {user}=useAuth();
   const queryClient=useQueryClient();
   const generation=authSessionLifecycle.currentGeneration();
@@ -107,6 +106,8 @@ export function RepositoryFeedItem({
   const attribution=React.useMemo(()=>({
     row:feedAttribution(ownerId,{id:repoId,serveId,feedPosition,feedSessionId} as RepositoryData),generation,
   }),[ownerId,repoId,serveId,feedPosition,feedSessionId,generation]);
+  const overlaysOpen = isSaveVisible || isShareVisible || isReadmeVisible || isOriginalReadmeVisible || isCommentsVisible;
+  const measurementActive = isViewable && isAppActive && !overlaysOpen;
   const attributionState=useRef(new WeakMap<object,{original:OriginalFeedImpression|null;deliver:typeof onQueueActivity}>());
   // A row keeps its clock across optimistic callbacks; an old cleanup retains
   // its own owner/row lease and callback rather than reading a replacement row.
@@ -257,6 +258,7 @@ export function RepositoryFeedItem({
               }}
               onReadFullPress={(digest) => {
                 setExpandedSummary(prepareReadmeSummaryDocument({ ...repository, readmeDigest: digest }));
+                setSummaryIdentity({version:digest?.content_version ?? repository.contentVersion,hash:digest?.content_hash ?? repository.contentHash ?? null});
                 queueRepositoryActivity(
                   { repo_id: repository.id, action: FEEDBACK_ACTIONS.readmeOpen },
                   true
@@ -316,7 +318,7 @@ export function RepositoryFeedItem({
       {isOriginalReadmeVisible ? <FeedReadmePopup repository={repository} onClose={() => setIsOriginalReadmeVisible(false)} /> : null}
       {isReadmeVisible ? (
         <FeedReadmePopup repository={repository} onClose={() => setIsReadmeVisible(false)}
-          summaryText={expandedSummary} />
+          summaryText={expandedSummary} summaryVersion={summaryIdentity.version} summaryHash={summaryIdentity.hash} />
       ) : null}
     </View>
   );

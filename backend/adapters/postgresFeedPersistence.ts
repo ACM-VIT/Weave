@@ -1,3 +1,4 @@
+import { projectRepositoryLanguages } from '../services/repositoryLanguages.js';
 import { unfamiliarRepositorySql, canonicalGithubIdSql } from '../services/familiarRepositoryEligibility.js';
 import { lockModelLane } from '../services/modelOperationService.js';
 import { lockedSession } from '../services/feedIntentSessionService.js';
@@ -6,6 +7,7 @@ import { FeedProvenanceUnavailableError, FeedProvenanceDependencyError } from '.
 import { loadSocialNeighborhoodRows } from '../services/socialNeighborhoodProjection.js';
 import { projectSocialCandidates, type SocialCandidateProjection } from '../services/socialCandidateProjection.js';
 import { readmeSummaryProjection } from '../services/readmeSummaryService.js';
+import { isCurrentReadmeMediaManifest } from '../services/readmeMediaManifest.js';
 import type {
   CreateServeInput,
   RepositoryProjection,
@@ -13,7 +15,7 @@ import type {
   StoredServeItem,
 } from '../contracts/feed.v2.js';
 import { loadNegativePreferenceEligibleIds } from '../services/negativePreferenceEligibility.js';
-import { loadRecentExposureEligibleIds } from '../services/feedExposureEligibility.js';
+import { loadCandidateEligibility, loadRecentExposureEligibleIds } from '../services/feedExposureEligibility.js';
 import { feedRecentExposureDays } from '../config/feedExposure.js';
 import { FeedExposureChangedError, FeedServeOverlapError, FeedPreferenceChangedError, MAX_FEED_SERVE_LOOKUP_BATCH } from '../ports/feedPersistencePort.js';
 import type {
@@ -23,7 +25,7 @@ import { isValidUuid } from '../utils/validators.js';
 import { sqlClient } from '../db/index.js';
 import { buildMlOnboardingJob, hasMlEmbeddingContext } from '../services/mlOnboardingService.js';
 
-function projection(row: Record<string, unknown>): RepositoryProjection {
+function projection(row: Record<string, unknown>, readmeMode: 'inline' | 'deferred' = 'inline'): RepositoryProjection {
   return {
     repo_id: String(row.repo_id),
     full_name: String(row.full_name),
@@ -34,7 +36,7 @@ function projection(row: Record<string, unknown>): RepositoryProjection {
     owner_bio: row.owner_bio == null ? null : String(row.owner_bio),
     description: row.description == null ? null : String(row.description),
     primary_language: row.primary_language == null ? null : String(row.primary_language),
-    languages: Array.isArray(row.languages) ? row.languages.map(String) : [],
+    ...projectRepositoryLanguages(row),
     topics: Array.isArray(row.topics) ? row.topics.map(String) : [],
     star_count: Number(row.star_count ?? 0),
     fork_count: Number(row.fork_count ?? 0),
@@ -51,7 +53,11 @@ function projection(row: Record<string, unknown>): RepositoryProjection {
     summary_source: row.summary_source === 'generated' || row.summary_source === 'description_fallback'
       ? row.summary_source : null,
     readme_digest: (row.readme_digest ?? null) as RepositoryProjection['readme_digest'],
-    readme_md: row.readme == null ? null : String(row.readme),
+    ...(readmeMode === 'inline' ? { readme_md: row.readme == null ? null : String(row.readme) } : {}),
+    content_version: row.content_version == null ? null : Number(row.content_version),
+    content_hash: row.content_hash == null ? null : String(row.content_hash),
+    readme_available: typeof row.readme_available === 'boolean' ? row.readme_available : false,
+    readme_media_manifest: (row.readme_media_manifest ?? null) as RepositoryProjection['readme_media_manifest'],
     readme_source_path: row.readme_source_path == null ? null : String(row.readme_source_path),
     readme_default_branch: row.readme_default_branch == null ? null : String(row.readme_default_branch),
     readme_base_url: row.readme_base_url == null ? null : String(row.readme_base_url),
@@ -64,8 +70,36 @@ function projection(row: Record<string, unknown>): RepositoryProjection {
   };
 }
 
+/** Embed trusted parameterized SQL using the driver's tagged bindings.
+ * unsafe($1, values) must remain a root query: it does not renumber nested placeholders.
+ */
+function boundSql(text: string, parameters: readonly (string|string[])[]) {
+  const strings: string[] = []; const values: (string|string[])[] = [];
+  let offset = 0;
+  for (const match of text.matchAll(/\$(\d+)/g)) {
+    strings.push(text.slice(offset,match.index));
+    const value = parameters[Number(match[1])-1];
+    if (value === undefined) throw new Error('Missing internal SQL binding.');
+    values.push(value); offset = match.index! + match[0].length;
+  }
+  strings.push(text.slice(offset));
+  return sqlClient(Object.assign(strings,{raw:[...strings]}) as TemplateStringsArray,...values);
+}
+
 export class PostgresFeedPersistence implements FeedPersistencePort, FeedReconciliationPersistencePort {
   private readonly recentExposureDays = feedRecentExposureDays();
+
+  async listCandidateEligibility(userId: string, repoIds: string[], sessionId?: string,
+    readmeMode: 'inline' | 'deferred' = 'inline') {
+    const repositories: RepositoryProjection[] = [];
+    const result = await loadCandidateEligibility({ query: async (text, parameters) => {
+      if (!sessionId) return [...await sqlClient.unsafe(text, [...parameters])];
+      const rows = await this.activeRepositoryRows(repoIds,userId,{text,parameters},readmeMode);
+      repositories.push(...rows.map(row=>projection(row,readmeMode)));
+      return [...rows];
+    } }, userId, repoIds, this.recentExposureDays, sessionId);
+    return {...result, ...(sessionId ? {repositories} : {})};
+  }
 
   async listExposureEligibleRepositoryIds(userId: string, repoIds: string[]): Promise<string[]> {
     return loadRecentExposureEligibleIds({
@@ -90,8 +124,7 @@ export class PostgresFeedPersistence implements FeedPersistencePort, FeedReconci
     `;
   }
 
-  async getGenerationContext(userId: string) {
-    await this.getFeedVersion(userId);
+  async getGenerationContext(userId: string): Promise<import('../ports/feedPersistencePort.js').FeedGenerationContext | null> {
     const rows = await sqlClient`
       SELECT state.feed_version,u.profile_version,state.model_policy_sha256,
         COALESCE(job.profile_version=u.profile_version,false) AS delivered
@@ -99,6 +132,12 @@ export class PostgresFeedPersistence implements FeedPersistencePort, FeedReconci
       LEFT JOIN telemetry.feed_prewarm_jobs job USING(user_id)
       WHERE u.user_id=${userId}::uuid AND u.status='active'
     `;
+    if (!rows.length) {
+      const [user] = await sqlClient`SELECT 1 FROM app.users WHERE user_id=${userId}::uuid AND status='active'`;
+      if (!user) return null;
+      await this.getFeedVersion(userId);
+      return this.getGenerationContext(userId);
+    }
     return rows[0] ? { feedVersion: BigInt(rows[0].feed_version),
       profileVersion: BigInt(rows[0].profile_version), delivered: rows[0].delivered === true,
       ...(rows[0].model_policy_sha256?{modelPolicySha256:String(rows[0].model_policy_sha256)}:{}) } : null;
@@ -428,6 +467,10 @@ export class PostgresFeedPersistence implements FeedPersistencePort, FeedReconci
   }
 
   async getServeByRequest(userId: string, feedRequestId: string): Promise<StoredServe | null> {
+    return this.readServeByRequest(userId, feedRequestId, 1);
+  }
+
+  private async readServeByRequest(userId: string, feedRequestId: string, bodyRaceRetries: number): Promise<StoredServe | null> {
     const serves = await sqlClient`
       SELECT * FROM telemetry.feed_serves
       WHERE user_id = ${userId}::uuid AND feed_request_id = ${feedRequestId}::uuid
@@ -435,6 +478,14 @@ export class PostgresFeedPersistence implements FeedPersistencePort, FeedReconci
     `;
     if (serves.length === 0) return null;
     const serve = serves[0];
+    const readmeMode: 'inline' | 'deferred' = serve.readme_mode === 'deferred' ? 'deferred' : 'inline';
+    const readmeProjection = readmeMode === 'deferred'
+      ? sqlClient`NULL::text AS readme`
+      : sqlClient`content.readme AS readme`;
+    const readmeAvailability = readmeMode === 'deferred'
+      ? sqlClient`CASE WHEN jsonb_typeof(content.readme_media_manifest->'readme_available')='boolean'
+          THEN (content.readme_media_manifest->>'readme_available')::boolean ELSE false END AS readme_available`
+      : sqlClient`content.readme IS NOT NULL AS readme_available`;
     const rows = await sqlClient`
       SELECT item.serve_id,item.position,item.repo_id,item.score,item.source,item.model_version,
              provenance.exposure_id,provenance.generation_id,provenance.record_digest,provenance.capture_status,
@@ -442,8 +493,10 @@ export class PostgresFeedPersistence implements FeedPersistencePort, FeedReconci
              COALESCE(exact_summary.summary_id,current_summary.summary_id) AS summary_id,
              ${sqlClient.unsafe(readmeSummaryProjection('repo','content'))},
              repo.full_name, repo.updated_at, content.description, content.primary_language,
-             content.languages, content.readme,to_jsonb(content)->>'readme_source_path' AS readme_source_path,
-             to_jsonb(content)->>'readme_default_branch' AS readme_default_branch,to_jsonb(content)->>'readme_base_url' AS readme_base_url,
+             content.languages,content.language_breakdown,content.language_total_size::float8 AS language_total_size,content.language_breakdown_complete,to_char(content.language_observed_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS language_observed_at,
+             ${readmeProjection},${readmeAvailability},content.content_version,content.content_hash,
+             content.readme_media_manifest,content.readme_source_path AS readme_source_path,
+             content.readme_default_branch AS readme_default_branch,content.readme_base_url AS readme_base_url,
              COALESCE(topic_values.topics, '[]'::jsonb) AS topics,
              stats.star_count, stats.fork_count, stats.open_issues_count,
              engagement.likes_count, engagement.comments_count, engagement.views_count,
@@ -526,18 +579,59 @@ export class PostgresFeedPersistence implements FeedPersistencePort, FeedReconci
     const items: StoredServeItem[] = rows.map((row) => ({
       position: Number(row.position), repo_id: String(row.repo_id), score: Number(row.score ?? 0),
       source: String(row.source), model_version: row.model_version == null ? '' : String(row.model_version),
-      summary_id: row.summary_id == null ? null : String(row.summary_id), repository: projection(row),
+      summary_id: row.summary_id == null ? null : String(row.summary_id), repository: projection(row,readmeMode),
       ...(row.exposure_id == null ? {} : {exposure_id:String(row.exposure_id)}),
       ...(row.generation_id == null ? {} : {generation_id:String(row.generation_id)}),
       ...(row.legacy_generation_hint == null ? {} : {legacy_generation_hint:String(row.legacy_generation_hint)}),
       ...(row.capture_status !== 'captured' ? {} : {scoring_reference:{generation_id:String(row.generation_id),
         repo_id:String(row.repo_id),record_digest:String(row.record_digest)}}),
     }));
+    if (readmeMode === 'deferred') {
+      const fallbackByRepoId = new Map(items.flatMap(item => {
+        const repository = item.repository;
+        if (repository.content_version == null || repository.content_hash == null
+          || isCurrentReadmeMediaManifest(repository.readme_media_manifest,
+            repository.content_version, repository.content_hash)) return [];
+        return [[item.repo_id, {
+          repo_id: item.repo_id,
+          content_version: repository.content_version,
+          content_hash: repository.content_hash,
+        }] as const];
+      }));
+      if (fallbackByRepoId.size > 0) {
+        const expected = JSON.stringify([...fallbackByRepoId.values()]);
+        const bodies = await sqlClient`
+          WITH expected AS (
+            SELECT repo_id,content_version,content_hash
+            FROM jsonb_to_recordset(${expected}::jsonb) AS row(repo_id uuid,content_version integer,content_hash text)
+          )
+          SELECT content.repo_id,content.readme
+          FROM expected JOIN app.repo_content content ON content.repo_id=expected.repo_id
+            AND content.content_version=expected.content_version AND content.content_hash=expected.content_hash
+        `;
+        if (bodies.length !== fallbackByRepoId.size) {
+          if (bodyRaceRetries > 0) return this.readServeByRequest(userId, feedRequestId, bodyRaceRetries - 1);
+          throw new Error('Canonical README changed during deferred feed replay hydration.');
+        }
+        const bodyByRepoId = new Map(bodies.map(row => [String(row.repo_id), row.readme == null ? null : String(row.readme)]));
+        for (const item of items) {
+          if (!fallbackByRepoId.has(item.repo_id)) continue;
+          const readme = bodyByRepoId.get(item.repo_id) ?? null;
+          item.repository = {
+            ...item.repository,
+            readme_md: readme,
+            readme_available: readme !== null,
+            readme_media_manifest: null,
+          };
+        }
+      }
+    }
     return {
       serve_id: String(serve.serve_id), feed_request_id: String(serve.feed_request_id), user_id: String(serve.user_id),
       session_id: String(serve.session_id), feed_version: BigInt(serve.feed_version),
       generation_id: serve.generation_id == null ? null : String(serve.generation_id),
-      source: serve.source as StoredServe['source'], model_version: serve.model_version == null ? null : String(serve.model_version),
+      source: serve.source as StoredServe['source'], readme_mode: readmeMode,
+      model_version: serve.model_version == null ? null : String(serve.model_version),
       next_cursor: serve.next_cursor == null ? null : String(serve.next_cursor),
       items, created_at: new Date(serve.created_at as string).toISOString(),
     };
@@ -564,9 +658,20 @@ export class PostgresFeedPersistence implements FeedPersistencePort, FeedReconci
       // Match activity/profile lock order: user, then feed state. Current
       // reactions and new serves serialize; session duplicate fencing is separate.
       await tx`SELECT user_id FROM app.users WHERE user_id=${input.user_id}::uuid FOR KEY SHARE`;
-      await tx`INSERT INTO app.user_feed_state(user_id) VALUES(${input.user_id}::uuid) ON CONFLICT DO NOTHING`;
-      await tx`SELECT user_id FROM app.user_feed_state WHERE user_id=${input.user_id}::uuid FOR UPDATE`;
-      const lane=await lockModelLane(tx,input.user_id);
+      let [state] = await tx`SELECT user_id,model_policy_sha256,model_policy_limits,model_initialized,feedback_version,feed_version
+        FROM app.user_feed_state WHERE user_id=${input.user_id}::uuid FOR UPDATE`;
+      if (!state) {
+        await tx`INSERT INTO app.user_feed_state(user_id) VALUES(${input.user_id}::uuid) ON CONFLICT DO NOTHING`;
+        [state] = await tx`SELECT user_id,model_policy_sha256,model_policy_limits,model_initialized,feedback_version,feed_version
+          FROM app.user_feed_state WHERE user_id=${input.user_id}::uuid FOR UPDATE`;
+      }
+      if (state && BigInt(state.feed_version) !== input.feed_version) {
+        // A concurrent successful replay remains authoritative even after a version change.
+        const [existing] = await tx`SELECT serve_id FROM telemetry.feed_serves
+          WHERE user_id=${input.user_id}::uuid AND feed_request_id=${input.feed_request_id}::uuid`;
+        if (!existing) throw new FeedPreferenceChangedError();
+      }
+      const lane=await lockModelLane(tx,input.user_id,state);
       if(lane){
         const scope=input.intent_scope;
         if(!scope||!lane.initialized||scope.userId!==input.user_id||scope.sessionId!==input.session_id||scope.policySha256!==lane.policySha256)throw new ModelOperationError('MODEL_SESSION_PENDING',409);
@@ -590,11 +695,12 @@ export class PostgresFeedPersistence implements FeedPersistencePort, FeedReconci
         'feed-serve:' || ${input.user_id}::uuid::text || ':' || ${input.session_id}::uuid::text,0))`;
       const headers = await tx`
         INSERT INTO telemetry.feed_serves (
-          feed_request_id,user_id,session_id,feed_version,generation_id,source,model_version,next_cursor,
+          feed_request_id,user_id,session_id,feed_version,generation_id,source,readme_mode,model_version,next_cursor,
           intent_epoch,intent_epoch_started_ms,intent_epoch_witness_sha256,intent_policy_sha256
         ) SELECT
           ${input.feed_request_id}::uuid,${input.user_id}::uuid,${input.session_id}::uuid,
-          ${input.feed_version.toString()}::bigint,${input.generation_id}::uuid,${input.source},${input.model_version},${input.next_cursor},
+          ${input.feed_version.toString()}::bigint,${input.generation_id}::uuid,${input.source},${input.readme_mode ?? 'inline'},
+          ${input.model_version},${input.next_cursor},
           ${input.intent_scope?.epoch??null}::bigint,${input.intent_scope?.epochStartedMs??null}::bigint,
           ${input.intent_scope?.witnessSha256??null},${input.intent_scope?.policySha256??null}
         WHERE ${input.source !== 'personalized'} OR NOT EXISTS (
@@ -608,35 +714,34 @@ export class PostgresFeedPersistence implements FeedPersistencePort, FeedReconci
       `;
       if (!headers.length) return null;
       const header = headers[0];
-      const eligible = new Set(await loadNegativePreferenceEligibleIds({
+      const eligibility = await loadCandidateEligibility({
         query: async (text, parameters) => [...await tx.unsafe(text, [...parameters])],
-      }, input.user_id, input.items.map(item => item.repo_id)));
+      }, input.user_id, input.items.map(item => item.repo_id), this.recentExposureDays);
+      const eligible = new Set(eligibility.preferenceIds);
       if (input.items.some(item => !eligible.has(item.repo_id))) throw new FeedPreferenceChangedError();
-      // The existing per-user feed-state lock serializes this check with every
-      // fresh serve, including other sessions. Same-request replay exits above.
-      const unexposed = new Set(await loadRecentExposureEligibleIds({
-        query: async (text, parameters) => [...await tx.unsafe(text, [...parameters])],
-      }, input.user_id, input.items.map(item => item.repo_id), this.recentExposureDays));
+      const unexposed = new Set(eligibility.exposureIds);
       if (input.items.some(item => !unexposed.has(item.repo_id))) throw new FeedExposureChangedError();
       let provenance: Array<Record<string, unknown>> = [];
       if (input.items.length) {
-        const items = input.items.map(item => ({ position: item.position,repo_id: item.repo_id,score: item.score,
-          source: item.source,model_version: item.model_version,summary_id: item.summary_id }));
-        await tx`
-          INSERT INTO telemetry.feed_serve_items (serve_id,position,repo_id,score,source,model_version,summary_id)
-          SELECT ${String(header.serve_id)}::uuid,position,repo_id,score,source,model_version,summary_id
-          FROM jsonb_to_recordset(${JSON.stringify(items)}::jsonb) AS item(
-            position integer,repo_id uuid,score double precision,source text,model_version text,summary_id uuid
-          )
-        `;
-        const attribution = input.items.map(item => ({position:item.position,repo_id:item.repo_id,
-          generation_id:item.generation_id ?? null,legacy_generation_hint:item.legacy_generation_hint ?? null,record_digest:item.scoring_reference?.record_digest ?? null,
+        const items = input.items.map(item => ({position:item.position,repo_id:item.repo_id,score:item.score,
+          source:item.source,model_version:item.model_version,summary_id:item.summary_id,
+          generation_id:item.generation_id ?? null,legacy_generation_hint:item.legacy_generation_hint ?? null,
+          record_digest:item.scoring_reference?.record_digest ?? null,
           capture_status:item.scoring_reference ? 'captured' : 'not_captured'}));
         provenance = [...await tx`
+          WITH input AS MATERIALIZED (
+            SELECT * FROM jsonb_to_recordset(${JSON.stringify(items)}::jsonb) AS item(
+              position smallint,repo_id uuid,score double precision,source text,model_version text,summary_id uuid,
+              generation_id uuid,legacy_generation_hint uuid,record_digest text,capture_status text)
+          ), inserted_items AS (
+            INSERT INTO telemetry.feed_serve_items(serve_id,position,repo_id,score,source,model_version,summary_id)
+            SELECT ${String(header.serve_id)}::uuid,position,repo_id,score,source,model_version,summary_id FROM input
+            RETURNING position,repo_id
+          )
           INSERT INTO telemetry.feed_item_provenance(serve_id,position,user_id,repo_id,generation_id,legacy_generation_hint,record_digest,capture_status)
-          SELECT ${String(header.serve_id)}::uuid,position,${input.user_id}::uuid,repo_id,generation_id,legacy_generation_hint,record_digest,capture_status
-          FROM jsonb_to_recordset(${JSON.stringify(attribution)}::jsonb) AS item(
-            position smallint,repo_id uuid,generation_id uuid,legacy_generation_hint uuid,record_digest text,capture_status text)
+          SELECT ${String(header.serve_id)}::uuid,input.position,${input.user_id}::uuid,input.repo_id,input.generation_id,
+            input.legacy_generation_hint,input.record_digest,input.capture_status
+          FROM input JOIN inserted_items USING(position,repo_id)
           RETURNING position,exposure_id
         `];
       }
@@ -659,7 +764,8 @@ export class PostgresFeedPersistence implements FeedPersistencePort, FeedReconci
     // Creation uses the canonical projections already hydrated for this serve.
     // Replays/conflicts read current mutable product fields from storage.
     return {
-      ...input,serve_id: String(created.serve_id),created_at: new Date(created.created_at as string).toISOString(),
+      ...input,readme_mode: input.readme_mode ?? 'inline',serve_id: String(created.serve_id),
+      created_at: new Date(created.created_at as string).toISOString(),
       items: [...input.items].sort((a,b) => a.position-b.position).map(item => ({
         position: item.position,repo_id: item.repo_id,score: item.score,source: item.source,
         model_version: item.model_version,summary_id: item.summary_id,repository: item.repository,
@@ -688,13 +794,32 @@ export class PostgresFeedPersistence implements FeedPersistencePort, FeedReconci
     }));
   }
 
-  async listActiveRepositories(repoIds: string[], viewerUserId?: string): Promise<RepositoryProjection[]> {
+  async listActiveRepositories(repoIds: string[], viewerUserId?: string,
+    readmeMode: 'inline' | 'deferred' = 'inline'): Promise<RepositoryProjection[]> {
+    return (await this.activeRepositoryRows(repoIds,viewerUserId,undefined,readmeMode))
+      .map(row=>projection(row,readmeMode));
+  }
+
+  private async activeRepositoryRows(repoIds: string[], viewerUserId?: string,
+    eligibility?: {text: string; parameters: readonly (string|string[])[]},
+    readmeMode: 'inline' | 'deferred' = 'inline') {
     if (repoIds.length === 0) return [];
+    const readmeProjection = readmeMode === 'deferred'
+      ? sqlClient`NULL::text AS readme`
+      : sqlClient`content.readme AS readme`;
+    const readmeAvailability = readmeMode === 'deferred'
+      ? sqlClient`CASE WHEN jsonb_typeof(content.readme_media_manifest->'readme_available')='boolean'
+          THEN (content.readme_media_manifest->>'readme_available')::boolean ELSE false END AS readme_available`
+      : sqlClient`content.readme IS NOT NULL AS readme_available`;
     const rows = await sqlClient`
-      SELECT ${sqlClient.unsafe(readmeSummaryProjection('repo','content'))},
+      ${eligibility ? sqlClient`WITH eligibility AS (${boundSql(eligibility.text,eligibility.parameters)})` : sqlClient.unsafe('')}
+      SELECT ${eligibility ? sqlClient.unsafe('eligibility.preference_eligible,eligibility.exposure_eligible,eligibility.session_served,') : sqlClient.unsafe('')}
+        ${sqlClient.unsafe(readmeSummaryProjection('repo','content'))},
              repo.repo_id, repo.full_name, repo.status, repo.updated_at, content.description,
-             content.primary_language,content.languages,content.readme,to_jsonb(content)->>'readme_source_path' AS readme_source_path,
-             to_jsonb(content)->>'readme_default_branch' AS readme_default_branch,to_jsonb(content)->>'readme_base_url' AS readme_base_url,
+             content.primary_language,content.languages,content.language_breakdown,content.language_total_size::float8 AS language_total_size,content.language_breakdown_complete,to_char(content.language_observed_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS language_observed_at,
+             ${readmeProjection},${readmeAvailability},content.content_version,content.content_hash,
+             content.readme_media_manifest,content.readme_source_path AS readme_source_path,
+             content.readme_default_branch AS readme_default_branch,content.readme_base_url AS readme_base_url,
              COALESCE(topic_values.topics, '[]'::jsonb) AS topics,
              COALESCE(stats.star_count, 0) AS star_count, COALESCE(stats.fork_count, 0) AS fork_count, COALESCE(stats.open_issues_count, 0) AS open_issues_count,
              COALESCE(engagement.likes_count, 0) AS likes_count, COALESCE(engagement.comments_count, 0) AS comments_count, COALESCE(engagement.views_count, 0) AS views_count,
@@ -713,6 +838,7 @@ export class PostgresFeedPersistence implements FeedPersistencePort, FeedReconci
                ELSE external_follow.profile_id IS NOT NULL
              END AS viewer_follows_owner
       FROM app.repos repo
+      ${eligibility ? sqlClient.unsafe('JOIN eligibility ON eligibility.repo_id=repo.repo_id') : sqlClient.unsafe('')}
       LEFT JOIN LATERAL (
         SELECT profile.profile_id,profile.claimed_by_user_id
         FROM app.social_profiles profile
@@ -755,13 +881,14 @@ export class PostgresFeedPersistence implements FeedPersistencePort, FeedReconci
       LEFT JOIN app.saves saved ON saved.repo_id=repo.repo_id AND saved.user_id=${viewerUserId ?? null}::uuid
       WHERE repo.repo_id = ANY(${repoIds}::uuid[]) AND repo.status='active'
     `;
-    return rows.map((row) => projection(row));
+    return rows;
   }
 
   async getTrendingFallback(
     limit: number,
     excludeRepoIds: string[],
     viewerUserId?: string,
+    readmeMode: 'inline' | 'deferred' = 'inline',
   ): Promise<RepositoryProjection[]> {
     const rows = await sqlClient`
       SELECT item.repo_id FROM app.trending_snapshot_items item
@@ -789,7 +916,7 @@ export class PostgresFeedPersistence implements FeedPersistencePort, FeedReconci
       ORDER BY snapshot.activated_at DESC, item.position ASC LIMIT ${limit}
     `;
     const ids = rows.map((row) => String(row.repo_id));
-    const projections = await this.listActiveRepositories(ids, viewerUserId);
+    const projections = await this.listActiveRepositories(ids, viewerUserId, readmeMode);
     const byId = new Map(projections.map((repo) => [repo.repo_id, repo]));
     return ids.flatMap((id) => byId.has(id) ? [byId.get(id)!] : []);
   }

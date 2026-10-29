@@ -3,8 +3,10 @@ import crypto from 'node:crypto';
 import test from 'node:test';
 import { sqlClient } from '../../db/index.js';
 import { PostgresFeedPersistence } from '../../adapters/postgresFeedPersistence.js';
-import { FeedExposureChangedError, FeedServeOverlapError } from '../../ports/feedPersistencePort.js';
+import { FeedExposureChangedError, FeedPreferenceChangedError, FeedServeOverlapError } from '../../ports/feedPersistencePort.js';
 import type { CreateServeInput, RepositoryProjection } from '../../contracts/feed.v2.js';
+import { deriveReadmeMediaManifest } from '../../services/readmeMediaManifest.js';
+import { runReadmeMediaBackfill } from '../../scripts/backfill-readme-media.js';
 import { assertDisposableDatabase } from './disposableDatabase.js';
 function ordinaryFeedVersion(value: string | number): number {
   assert.equal(typeof value, 'number', 'This fixture implements only ordinary recommendation responses');
@@ -40,7 +42,12 @@ async function fixture(count = 3) {
 integration('new serves use one item insert for 1, 24 and 50 cards without follow-up hydration',async()=>{
   const persistence = new PostgresFeedPersistence();
   for (const count of [1,24,50]) {
-    const f = await fixture(count); const queries:string[]=[]; const previous=sqlClient.options.debug;
+    const f = await fixture(count);
+    await sqlClient`INSERT INTO app.repo_content(repo_id,content_hash,content_version,readme)
+      SELECT repo_id,'feed-identity-'||repo_id::text,7,'# Canonical README'
+      FROM unnest(${f.repos}::uuid[]) AS input(repo_id)`;
+    await persistence.getFeedVersion(f.user); // Normal requests initialize state before reserving cards.
+    const queries:string[]=[]; const previous=sqlClient.options.debug;
     sqlClient.options.debug=(_connection,query)=>{queries.push(query);};
     const start=performance.now(); let created;
     try {created=await persistence.createServe(f.input);} finally {sqlClient.options.debug=previous;}
@@ -50,12 +57,11 @@ integration('new serves use one item insert for 1, 24 and 50 cards without follo
     assert.equal(queries.filter(query=>query.includes('recent AS MATERIALIZED')).length,1);
     // Bounded preference/exposure reads and the session fence serialize delivery.
 
-    assert.equal(queries.filter(query=>/SELECT user_id FROM app.user_feed_state[\s\S]*FOR UPDATE/i.test(query)).length,1);
-    assert.equal(queries.filter(query=>/SELECT model_policy_sha256[\s\S]*FOR UPDATE/i.test(query)).length,1);
+    assert.equal(queries.filter(query=>/SELECT user_id,model_policy_sha256[\s\S]*FROM app.user_feed_state[\s\S]*FOR UPDATE/i.test(query)).length,1);
+    assert.equal(queries.filter(query=>/SELECT model_policy_sha256[\s\S]*FOR UPDATE/i.test(query)).length,0, 'Reuse the already locked feed row');
     assert.equal(queries.filter(query=>/negative\.reaction='dislike'/i.test(query)).length,1);
-    // The existing model-lane lock and the new exposure read each add one
-    // bounded statement to the earlier ten-statement ordinary serve path.
-    assert.ok(queries.length<=12,`new serve took ${queries.length} statements`);
+    // One locked state row, one eligibility snapshot and one atomic item/provenance insert.
+    assert.ok(queries.length<=8,`new serve took ${queries.length} statements`);
     assert.equal(created.items.length,count);
     assert.deepEqual(created.items.map(item=>item.repo_id),f.repos);
     assert.equal(created.created_at,new Date(created.created_at).toISOString());
@@ -63,7 +69,81 @@ integration('new serves use one item insert for 1, 24 and 50 cards without follo
     assert.equal(replay?.serve_id,created.serve_id);
     assert.deepEqual(replay?.items.map(item=>[item.repo_id,item.position,item.score,item.summary_id,item.repository.viewer_saved]),
       created.items.map(item=>[item.repo_id,item.position,item.score,item.summary_id,item.repository.viewer_saved]));
+    assert.equal(replay?.items[0].repository.content_version,7);
+    assert.equal(replay?.items[0].repository.content_hash,`feed-identity-${f.repos[0]}`);
+    assert.equal(replay?.items[0].repository.readme_available,true);
   }
+});
+
+integration('deferred feed projection omits canonical bytes and replays its version-bound manifest',async()=>{
+  const f=await fixture(1); const persistence=new PostgresFeedPersistence();
+  const canonical='  # Canonical fixture\r\n\r\n![Screen](https://cdn.example.com/screen.png)\n[Demo](https://cdn.example.com/demo.mp4)\r\n';
+  const contentHash='deferred-fixture-hash-v7';
+  const manifest=deriveReadmeMediaManifest({markdown:canonical,contentVersion:7,contentHash,
+    context:{fullName:`fixture/${f.repos[0]}`,githubUrl:`https://github.com/fixture/${f.repos[0]}`,
+      sourcePath:null,defaultBranch:null,baseUrl:null}});
+  assert.equal(manifest.representation,'deferred');
+  await sqlClient`INSERT INTO app.repo_content(repo_id,content_hash,content_version,readme,readme_media_manifest)
+    VALUES(${f.repos[0]}::uuid,${contentHash},7,${canonical},${JSON.stringify(manifest)}::jsonb)`;
+  await persistence.getFeedVersion(f.user);
+
+  const deferred=(await persistence.listActiveRepositories(f.repos,f.user,'deferred'))[0];
+  const inline=(await persistence.listActiveRepositories(f.repos,f.user,'inline'))[0];
+  assert.equal(Object.hasOwn(deferred,'readme_md'),false,'deferred SQL does not project canonical README bytes');
+  assert.equal(inline.readme_md,canonical,'legacy SQL retains exact canonical README bytes');
+  assert.deepEqual(deferred.readme_media_manifest,manifest);
+  assert.equal(deferred.content_version,7);
+  assert.equal(deferred.content_hash,contentHash);
+  assert.equal(deferred.readme_available,true);
+
+  const fresh=await persistence.createServe({...f.input,readme_mode:'deferred',items:[{
+    ...f.input.items[0],repository:deferred,
+  }]});
+  assert.equal(fresh.readme_mode,'deferred');
+  assert.equal(Object.hasOwn(fresh.items[0].repository,'readme_md'),false);
+  const replay=await persistence.getServeByRequest(f.user,f.input.feed_request_id);
+  assert.equal(replay?.readme_mode,'deferred');
+  assert.equal(Object.hasOwn(replay!.items[0].repository,'readme_md'),false,'replay SQL stays on the deferred projection');
+  assert.equal(replay?.items[0].repository.readme_available,true);
+  assert.equal(replay?.items[0].repository.content_version,7);
+  assert.equal(replay?.items[0].repository.content_hash,contentHash);
+  assert.deepEqual(replay?.items[0].repository.readme_media_manifest,manifest);
+});
+
+integration('README media backfill advances past a skipped low UUID and retries it on the next pass',async()=>{
+  const f=await fixture(26); const lowRepo=`00000000-0000-4000-8000-${crypto.randomUUID().slice(-12)}`;
+  const lowName=`backfill/low-${lowRepo.slice(-12)}`;
+  const baseline=await runReadmeMediaBackfill(sqlClient,false);
+  await sqlClient`INSERT INTO app.repos(repo_id,github_id,full_name,owner,name,url,status)
+    VALUES(${lowRepo}::uuid,${crypto.randomInt(1_000_000_000_000,1_000_001_000_000)},${lowName},'backfill',${lowName.split('/')[1]},${`https://github.com/${lowName}`},'active')`;
+  const repos=[lowRepo,...f.repos];
+  await sqlClient`INSERT INTO app.repo_content(repo_id,content_hash,content_version,readme)
+    SELECT repo_id,'backfill-fixture-'||repo_id::text,7,'# Backfill fixture'
+    FROM unnest(${repos}::uuid[]) AS input(repo_id)`;
+
+  let release!:()=>void; let acquired!:()=>void;
+  const locked=new Promise<void>(resolve=>{acquired=resolve;});
+  const hold=new Promise<void>(resolve=>{release=resolve;});
+  const owner=sqlClient.begin(async tx=>{
+    await tx`SELECT repo_id FROM app.repo_content WHERE repo_id=${lowRepo}::uuid FOR UPDATE`;
+    acquired(); await hold;
+  });
+  await locked;
+  let released=false;
+  const database={
+    unsafe:sqlClient.unsafe.bind(sqlClient),
+    async begin(work:(tx:any)=>Promise<unknown>){
+      const result=await sqlClient.begin(work);
+      if(!released){released=true;release();}
+      return result;
+    },
+  } as unknown as typeof sqlClient;
+  let result;
+  try { result=await runReadmeMediaBackfill(database,true); }
+  finally { release(); await owner; }
+  assert.equal(result.before,baseline.before+repos.length);
+  assert.equal(result.written,result.before,'all available rows and the released low UUID are updated');
+  assert.equal(result.remaining,0,'a later forward pass revisits the row skipped while its lock was held');
 });
 
 integration('concurrent duplicate writes return one durable serve and keep exact position order',async()=>{
@@ -300,4 +380,45 @@ integration('legacy recovery retains an unverified header hint without guessing 
   const replay=await persistence.getServeByRequest(f.user,recovered.feed_request_id);
   assert.deepEqual(replay?.items.map(item=>item.legacy_generation_hint),[generationA,generationA]);
   assert.equal(Number((await sqlClient`SELECT count(*) FROM telemetry.feed_item_provenance WHERE serve_id=${recovered.serve_id}::uuid AND capture_status='captured'`)[0].count),0);
+});
+
+integration('batched canonical eligibility matches separate preference and exposure reads for each viewer', async () => {
+  const f = await fixture();
+  const persistence = new PostgresFeedPersistence();
+  try {
+    await sqlClient`INSERT INTO app.reactions(user_id,repo_id,reaction) VALUES(${f.user}::uuid,${f.repos[0]!}::uuid,'dislike')`;
+    const subset: string[] = [f.repos[1]!];
+    await persistence.createServe({...f.input, items:f.input.items.filter(item=>subset.includes(item.repo_id))});
+    const queries:string[]=[]; const previous=sqlClient.options.debug;
+    let result;
+    sqlClient.options.debug=(_connection,query)=>queries.push(query);
+    try { result=await persistence.listCandidateEligibility(f.user,f.repos); }
+    finally { sqlClient.options.debug=previous; }
+    assert.equal(queries.length,1,'Identity, preferences and recent exposures use one round trip');
+    assert.deepEqual(result.identities.map(row=>row.repo_id).sort(), [...f.repos].sort());
+    assert.deepEqual(result.preferenceIds, await persistence.listPreferenceEligibleRepositoryIds(f.user,f.repos));
+    assert.deepEqual(result.exposureIds, await persistence.listExposureEligibleRepositoryIds(f.user,f.repos));
+    assert.ok(!result.preferenceIds.includes(f.repos[0]!));
+    assert.ok(!result.exposureIds.includes(f.repos[1]!));
+    const serving=await persistence.listCandidateEligibility(f.user,f.repos,f.session);
+    const aliased=await persistence.listCandidateEligibility(f.user,f.repos,f.session.toUpperCase());
+    assert.deepEqual(aliased,serving,'Public UUID case aliases preserve candidate and same-session delivery fences');
+    assert.deepEqual(serving.servedIds,[f.repos[1]!]);
+    assert.deepEqual(serving.repositories?.map(repo=>repo.repo_id).sort(),[...f.repos].sort());
+    const {FeedIntentScopeService}=await import('../../services/feedIntentScopeService.js');
+    const scopes=new FeedIntentScopeService({} as never);
+    const admission=await scopes.admit(f.user,f.session,f.input.feed_request_id);
+    assert.equal(admission.hasReplay,true);
+    assert.equal(admission.feedVersion,1n);
+    assert.equal(admission.snapshot,null);
+    await sqlClient`UPDATE app.user_feed_state SET feed_version=2 WHERE user_id=${f.user}::uuid`;
+    await assert.rejects(persistence.createServe({...f.input,feed_request_id:crypto.randomUUID(),
+      items:f.input.items.filter(item=>item.repo_id===f.repos[2])}),FeedPreferenceChangedError);
+    assert.equal((await persistence.createServe({...f.input,items:f.input.items.filter(item=>subset.includes(item.repo_id))})).items.length,1,
+      'A historical same-request replay survives a newer feed version');
+  } finally {
+    await sqlClient`DELETE FROM app.users WHERE user_id=${f.user}::uuid`;
+    await sqlClient`DELETE FROM auth.users WHERE id=${f.user}::uuid`;
+    await sqlClient`DELETE FROM app.repos WHERE repo_id=ANY(${f.repos}::uuid[])`;
+  }
 });

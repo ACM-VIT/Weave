@@ -36,6 +36,8 @@ type RefreshResponse = {
 
 type ApiV2RequestPolicy = {
   allowRefresh?: boolean;
+  // Optional caller-owned lease/deadline check at the actual initial/retry send.
+  beforeSend?: () => void;
 };
 
 let sessionExpiredHandler: (() => void) | null = null;
@@ -160,6 +162,7 @@ async function sendV2Request(
   options: RequestInit,
   token?: string | null,
   generation = authSessionLifecycle.currentGeneration(),
+  beforeSend?: () => void,
 ): Promise<TokenResponse<Response>> {
   const headers = new Headers(options.headers);
   headers.set('Accept', 'application/json');
@@ -168,6 +171,10 @@ async function sendV2Request(
   }
   if (token) headers.set('Authorization', `Bearer ${token}`);
 
+  if (beforeSend) {
+    authSessionLifecycle.assertCurrent(generation);
+    beforeSend();
+  }
   const response = await fetch(`${API_URL}/v2${path}`, {
     ...options,
     credentials: 'include',
@@ -182,11 +189,12 @@ async function requestV2(
   options: RequestInit,
   token?: string | null,
   allowRefresh = true,
+  beforeSend?: () => void,
 ): Promise<TokenResponse<Response>> {
   const generation = authSessionLifecycle.currentGeneration();
   const requestToken = await resolveRequestToken(token, generation);
   authSessionLifecycle.assertCurrent(generation);
-  const result = await sendV2Request(path, options, requestToken, generation);
+  const result = await sendV2Request(path, options, requestToken, generation, beforeSend);
   authSessionLifecycle.assertCurrent(generation);
 
   return retryUnauthorizedResponse({
@@ -194,7 +202,7 @@ async function requestV2(
     allowRefresh,
     getAccessToken: () => getStorageItem('access_token'),
     refreshAccessToken,
-    retry: (retryToken) => sendV2Request(path, options, retryToken, generation),
+    retry: (retryToken) => sendV2Request(path, options, retryToken, generation, beforeSend),
     assertSessionCurrent: (requestGeneration) => {
       authSessionLifecycle.assertCurrent(requestGeneration);
     },
@@ -207,7 +215,7 @@ export async function apiV2<T>(
   token?: string | null,
   policy: ApiV2RequestPolicy = {},
 ): Promise<T> {
-  const result = await requestV2(path, options, token, policy.allowRefresh ?? true);
+  const result = await requestV2(path, options, token, policy.allowRefresh ?? true, policy.beforeSend);
   const { response } = result;
   const payload = await readJson(response) as ApiEnvelope<T> | null;
   authSessionLifecycle.assertCurrent(result.generation);

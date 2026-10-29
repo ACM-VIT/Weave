@@ -74,7 +74,7 @@ integration('registered onboarding batches topic writes and skips unchanged prof
         WHERE user_id=${userId}::uuid`;
       const before = await frontier(), started = performance.now();
       for (let index=0;index<20;index++) {
-        const result = await patch(index%2 ? {username:` ${username} `,full_name:' Tarun ',date_of_birth:'2005-01-01',bio:null,avatar_url:null} : {});
+        const result = await patch(index%2 ? {username:` ${username} `,full_name:' Tarun ',date_of_birth:'2005-01-01',bio:null} : {});
         assert.equal(result.status,200,JSON.stringify(result.body));
         assert.deepEqual(Object.keys(result.body.data).sort(),['user_id','username','full_name','date_of_birth','bio','github_handle','avatar_url',
           'interests','skills','tech_stack','profile_version','updated_at'].sort());
@@ -95,15 +95,15 @@ integration('registered onboarding batches topic writes and skips unchanged prof
       assert.equal(BigInt(afterEdit[key]),BigInt(beforeEdit[key])+1n,`${key} advances for a real edit`);
     }
     t.diagnostic(JSON.stringify({changedSaves:1,milliseconds:Math.round((performance.now()-editStarted)*100)/100,deliveries:1}));
-    const nullable = await patch({full_name:null,avatar_url:'https://example.invalid/avatar.png'});
+    const nullable = await patch({full_name:null});
     assert.equal(nullable.status,200);assert.equal(nullable.body.data.full_name,null);assert.equal(nullable.body.data.bio,'New bio');
     assert.deepEqual((await patch({full_name:null})).body.data,nullable.body.data,'an explicit already-null value is unchanged');
     const empty = await patch({full_name:''});
     assert.equal(empty.status,200);assert.equal(empty.body.data.full_name,'');
     assert.equal(BigInt(String(empty.body.data.profile_version)),BigInt(String(nullable.body.data.profile_version))+1n,'null and empty text remain distinct');
-    const cleared = await patch({avatar_url:null});
-    assert.equal(cleared.status,200);assert.equal(cleared.body.data.avatar_url,null);
-    assert.deepEqual((await patch({avatar_url:null})).body.data,cleared.body.data);
+    const cleared = await patch({bio:null});
+    assert.equal(cleared.status,200);assert.equal(cleared.body.data.bio,null);
+    assert.deepEqual((await patch({bio:null})).body.data,cleared.body.data);
     const beforeCase=await frontier();
     const caseEdit=await patch({username:username.toUpperCase()});
     assert.equal(caseEdit.status,200);assert.equal(caseEdit.body.data.username,username.toUpperCase(),'citext storage still preserves display case');
@@ -112,7 +112,7 @@ integration('registered onboarding batches topic writes and skips unchanged prof
     assert.deepEqual((await patch({username:username.toUpperCase()})).body.data,caseEdit.body.data,'an identical display-case retry is a no-op');
     assert.equal((await patch({username})).body.data.username,username);
     const beforeInvalid = await frontier();
-    for (const body of [{date_of_birth:null},{date_of_birth:'2005-02-30'},{username:null},{full_name:'x'.repeat(101)},{unknown:true}]) {
+    for (const body of [{date_of_birth:null},{date_of_birth:'2005-02-30'},{username:null},{full_name:'x'.repeat(101)},{unknown:true},{avatar_url:null},{avatar_url:'https://fixture.invalid/unsafe.svg'}]) {
       assert.equal((await patch(body)).status,400,'no-op detection cannot bypass existing validation');
     }
     assert.deepEqual(await frontier(),beforeInvalid);
@@ -132,13 +132,13 @@ integration('registered onboarding batches topic writes and skips unchanged prof
       };
       const before = await frontier();
       pending.push(patch({full_name:'Concurrent name'}));await waitForBlocked(1);
-      pending.push(patch({avatar_url:'https://example.invalid/concurrent.png'}));await waitForBlocked(2);
+      pending.push(patch({bio:'Concurrent bio'}));await waitForBlocked(2);
       await gate`ROLLBACK`;locked=false;
       const results=await Promise.all(pending);results.forEach(result=>assert.equal(result.status,200));
       const after=await frontier();
       for (const key of ['profile_version','feed_version','model_operation_version','jobs']) assert.equal(BigInt(after[key]),BigInt(before[key])+2n);
       const latest=(await patch({})).body.data;
-      assert.equal(latest.full_name,'Concurrent name');assert.equal(latest.avatar_url,'https://example.invalid/concurrent.png');
+      assert.equal(latest.full_name,'Concurrent name');assert.equal(latest.bio,'Concurrent bio');
       const sameBefore=await frontier();
       await gate`BEGIN`;locked=true;
       await gate`SELECT user_id FROM app.users WHERE user_id=${userId}::uuid FOR UPDATE`;
@@ -224,7 +224,7 @@ integration('registered onboarding batches topic writes and skips unchanged prof
     }
     const atomicId = crypto.randomUUID(); completionUsers.push(atomicId);
     await sqlClient`INSERT INTO auth.users(id) VALUES(${atomicId}::uuid)`;
-    await sqlClient`INSERT INTO app.users(user_id,username,status) VALUES(${atomicId}::uuid,${'pending_'+atomicId.replaceAll('-','')},'active')`;
+    await sqlClient`INSERT INTO app.users(user_id,username,status,avatar_url) VALUES(${atomicId}::uuid,${'pending_'+atomicId.replaceAll('-','')},'active','https://fixture.invalid/saved-avatar.webp')`;
     await sqlClient`INSERT INTO app.user_stats(user_id) VALUES(${atomicId}::uuid)`;
     await sqlClient`INSERT INTO app.user_feed_state(user_id) VALUES(${atomicId}::uuid)`;
     const atomicToken = jwt.sign({ userId: atomicId }, process.env.JWT_SECRET!, { expiresIn: '5m' });
@@ -233,13 +233,17 @@ integration('registered onboarding batches topic writes and skips unchanged prof
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     });
     const slug = 'atomic-' + atomicId.slice(0,8); generatedTopics.add(slug);
-    const identity = { username: 'complete_'+atomicId.replaceAll('-',''), full_name: ' Atomic User ', date_of_birth: '2005-01-01', avatar_url: null };
+    const identity = { username: 'complete_'+atomicId.replaceAll('-',''), full_name: ' Atomic User ', date_of_birth: '2005-01-01' };
     const completion = { profile: identity, bio: ' Rust ', skills: [slug], interests: [], tech_stack: [] };
     const snapshot = async () => (await call('/users/me')).json() as Promise<{data:Record<string,unknown>}>;
     const beforeAtomic = (await snapshot()).data;
-    for (const profile of [{...identity, date_of_birth:'2005-02-30'},{...identity,full_name:''},{...identity,avatar_url:12},
+    for (const profile of [{...identity, date_of_birth:'2005-02-30'},{...identity,full_name:''},{...identity,avatar_url:12},{...identity,avatar_url:null},{...identity,avatar_url:'https://fixture.invalid/unsafe.svg'},
       {...identity,username:'bad space'},{...identity,user_id:peerId}]) {
       assert.equal((await call('/onboarding/complete','PUT',{...completion,profile})).status,400);
+    }
+    for (const avatar_url of [null, 'https://fixture.invalid/unsafe.svg']) {
+      assert.equal((await call('/onboarding/complete','PUT',{...completion,avatar_url})).status,400);
+      assert.equal((await call('/onboarding','PUT',{skills:[slug],avatar_url})).status,400);
     }
     assert.equal((await call('/onboarding/complete','PUT',{...completion,profile:{...identity,username:'import_'+peerId.replaceAll('-','')}})).status,409);
     assert.deepEqual((await snapshot()).data,beforeAtomic,'validation/username conflicts leave identity and completion untouched');
@@ -261,13 +265,50 @@ integration('registered onboarding batches topic writes and skips unchanged prof
       const result=(await response.json() as {data:{completed:boolean;viewer:Record<string,unknown>}}).data;
       assert.equal(result.completed,true);assert.deepEqual(result.viewer,(await snapshot()).data,'the transaction returns the same authoritative viewer projection as GET');
       assert.equal(result.viewer.onboarding_completed,true);assert.equal(result.viewer.full_name,'Atomic User');assert.equal(result.viewer.bio,'Rust');
+      assert.equal(result.viewer.avatar_url,'https://fixture.invalid/saved-avatar.webp','atomic completion preserves the server-managed avatar');
       assert.equal(BigInt(String(result.viewer.profile_version)),BigInt(String(before.profile_version))+1n);
       assert.equal(BigInt(String(result.viewer.feed_version)),BigInt(String(before.feed_version))+1n);
       const deliveries=await sqlClient`SELECT job_type,payload,operation_json FROM telemetry.ml_outbox WHERE aggregate_id=${atomicId}::uuid ORDER BY created_at`;
       assert.equal(deliveries.length,ordered?2:1,'one atomic finish produces one delivery');
       const deliveredProfile=ordered?JSON.parse(deliveries.at(-1)!.operation_json).operation.original_profile_context:deliveries[0].payload.profile;
       assert.equal(deliveredProfile.full_name,'Atomic User');assert.deepEqual(deliveredProfile.skills,[slug]);
+      assert.equal(deliveredProfile.avatar_url,'https://fixture.invalid/saved-avatar.webp');
     }
+    // Both requests wait behind the same real row lock, then compete using
+    // the original CAS version. Delayed original work and explicit replay can
+    // produce only one profile/feed transition and one durable delivery.
+    const beforeConditional = (await snapshot()).data;
+    const deliveriesBeforeConditional = (await sqlClient`SELECT 1 FROM telemetry.ml_outbox WHERE aggregate_id=${atomicId}::uuid`).length;
+    let releaseConditional!: () => void;
+    let lockedConditional!: () => void;
+    const rowLocked = new Promise<void>(resolve => { lockedConditional = resolve; });
+    const releaseRow = new Promise<void>(resolve => { releaseConditional = resolve; });
+    const holdingRow = sqlClient.begin(async tx => {
+      await tx`SELECT user_id FROM app.users WHERE user_id=${atomicId}::uuid FOR UPDATE`;
+      lockedConditional(); await releaseRow;
+    });
+    await rowLocked;
+    const conditionalBody = { ...completion, profile: { ...identity, expected_version: String(beforeConditional.profile_version) } };
+    const competing = Promise.all([call('/onboarding/complete','PUT',conditionalBody), call('/onboarding/complete','PUT',conditionalBody)]);
+    await new Promise(resolve => setTimeout(resolve, 50));
+    releaseConditional(); await holdingRow;
+    const conditionalResponses = await competing;
+    assert.deepEqual(conditionalResponses.map(response => response.status).sort(), [200, 412]);
+    const afterConditional = (await snapshot()).data;
+    assert.equal(BigInt(String(afterConditional.profile_version)), BigInt(String(beforeConditional.profile_version)) + 1n);
+    assert.equal(BigInt(String(afterConditional.feed_version)), BigInt(String(beforeConditional.feed_version)) + 1n);
+    assert.equal((await sqlClient`SELECT 1 FROM telemetry.ml_outbox WHERE aggregate_id=${atomicId}::uuid`).length, deliveriesBeforeConditional + 1);
+    assert.equal((await call('/onboarding/complete','PUT',conditionalBody)).status, 412);
+    assert.deepEqual((await snapshot()).data, afterConditional, 'late old CAS replay cannot change any saved profile fields');
+    const beforePreferences=(await snapshot()).data;
+    const preferences=await call('/onboarding','PUT',{interests:[slug,slug],skills:[slug],tech_stack:[slug]});
+    assert.equal(preferences.status,200);
+    const afterPreferences=(await snapshot()).data;
+    assert.equal(afterPreferences.username,beforePreferences.username,'preference-only callers retain completed identity');
+    assert.equal(afterPreferences.bio,beforePreferences.bio,'omitted legacy bio is preserved');
+    assert.equal(afterPreferences.avatar_url,beforePreferences.avatar_url,'preference-only completion cannot clear a saved photo');
+    assert.deepEqual(afterPreferences.topics,[slug],'duplicate selections produce one association');
+    assert.equal(BigInt(String(afterPreferences.profile_version)),BigInt(String(beforePreferences.profile_version))+1n);
   } finally {
     server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve()));
     await sqlClient.unsafe(`DROP TRIGGER IF EXISTS ${completionFault} ON telemetry.ml_outbox`);

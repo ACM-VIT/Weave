@@ -1,3 +1,4 @@
+import { homeFeedQueryOptions } from '@/services/homeFeedQuery';
 import { KeyboardProvider } from 'react-native-keyboard-controller';
 import '@/global.css';
 import { useEffect, useRef, useState } from 'react';
@@ -83,6 +84,12 @@ function RootLayoutNav({ fontsReady }: { fontsReady: boolean }) {
       }
     }
   }, [user, isReady, pathname, segments, router, inAuthGroup, inPublicRoute, unlinkCallback]);
+
+  useEffect(() => {
+    if (isLoading || startupError || !user?.user_id || user.onboarding_completed !== true || unlinkCallback) return;
+    // The mounted Home screen joins this exact query and pagination controller.
+    void queryClient.prefetchInfiniteQuery(homeFeedQueryOptions(queryClient, user.user_id));
+  }, [isLoading, startupError, queryClient, user?.user_id, user?.onboarding_completed, unlinkCallback]);
 
   useEffect(() => {
     if (!splashHidden.current && fontsReady && (startupComplete || startupError || publicRouteReady)) {

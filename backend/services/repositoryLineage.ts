@@ -1,3 +1,5 @@
+import { isDeepStrictEqual } from 'node:util';
+import { LANGUAGE_OBSERVATION_FIELDS, hasLanguageObservation, type RepositoryLanguageObservation } from './repositoryLanguages.js';
 /** Observed GitHub ancestry only; mutable names never establish a fork family. */
 export interface RepositoryLineage {
   is_fork?: boolean | null;
@@ -54,4 +56,27 @@ export function mergeRepositoryLineage(incoming: RepositoryLineage, stored: Repo
     }
   }
   return selected(incoming);
+}
+
+export { observation as repositoryObservationMicros };
+
+/** Rich observations have their own clock; name-only and older inputs cannot erase them. */
+export function mergeRepositoryLanguageObservation(
+  incoming: RepositoryLanguageObservation & {observed_at: string},
+  stored: RepositoryLanguageObservation & {language_observed_at?: string | null},
+): RepositoryLanguageObservation & {language_observed_at: string | null} {
+  const selected = (value: RepositoryLanguageObservation, time: string | null) => ({
+    ...Object.fromEntries(LANGUAGE_OBSERVATION_FIELDS.map(key => [key,value[key] ?? null])), language_observed_at:time,
+  });
+  if (!hasLanguageObservation(incoming)) return selected(stored,stored.language_observed_at ?? null);
+  const next = observation(incoming.observed_at);
+  if (stored.language_observed_at != null) {
+    const difference = next - observation(stored.language_observed_at);
+    if (difference < 0n) return selected(stored,stored.language_observed_at);
+    if (difference === 0n) {
+      if (!isDeepStrictEqual(selected(incoming,null), selected(stored,null))) throw new Error('Conflicting language observations share a timestamp.');
+      return selected(stored,stored.language_observed_at);
+    }
+  }
+  return selected(incoming,incoming.observed_at);
 }

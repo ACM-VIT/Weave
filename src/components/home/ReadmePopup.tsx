@@ -43,6 +43,8 @@ interface ReadmePopupProps {
   readmeText: string | null;
   mediaMessage?: string | null;
   mediaMarkdown?: string | null;
+  mediaImages?: { alt: string; url: string }[];
+  mediaVideos?: string[];
   contentKind?: 'readme' | 'summary';
   loading?: boolean;
   errorMessage?: string | null;
@@ -184,6 +186,8 @@ function VisibleReadmePopup({
   contentKind = 'readme',
   mediaMarkdown,
   mediaMessage,
+  mediaImages,
+  mediaVideos,
   readmeSource,
   loading = false,
   errorMessage = null,
@@ -199,10 +203,11 @@ function VisibleReadmePopup({
   const content = useMemo(() => contentKind === 'summary'
     ? readmeText || README_SUMMARY_PENDING
     : prepareReadmeForDisplay(readmeText), [contentKind, readmeText]);
-  const videos = useMemo(() => extractReadmeVideos(mediaMarkdown ?? (contentKind === 'readme' ? readmeText : null), readmeSource),
-    [mediaMarkdown, contentKind, readmeText, readmeSource]);
-  const images = useMemo(() => contentKind === 'summary' ? extractReadmeSummaryImages(mediaMarkdown,readmeSource) : [],
-    [contentKind,mediaMarkdown,readmeSource]);
+  const videos = useMemo(() => mediaVideos ?? extractReadmeVideos(mediaMarkdown ?? (contentKind === 'readme' ? readmeText : null), readmeSource),
+    [mediaMarkdown, mediaVideos, contentKind, readmeText, readmeSource]);
+  const images = useMemo(() => contentKind === 'summary'
+    ? mediaImages ?? extractReadmeSummaryImages(mediaMarkdown, readmeSource) : [],
+    [contentKind, mediaImages, mediaMarkdown, readmeSource]);
   const markdownHtml = useMemo(
     () => renderReadmeMarkdown(content, readmeSource),
     [content, readmeSource],
@@ -419,8 +424,8 @@ function VisibleReadmePopup({
               />)}
               {mediaMessage ? <View>
                 <Text style={{ color: REFERENCE_THEME.textSecondary }}>{mediaMessage}</Text>
-                {onRetry ? <Pressable accessibilityRole="button" onPress={onRetry} style={styles.retryButton}>
-                  <Text style={styles.headerText}>Retry loading videos</Text>
+                {onRetry ? <Pressable accessibilityRole="button" accessibilityLabel="Retry loading README media" onPress={onRetry} style={styles.retryButton}>
+                  <Text style={styles.headerText}>Retry loading images and videos</Text>
                 </Pressable> : null}
               </View> : null}
             </Animated.View>

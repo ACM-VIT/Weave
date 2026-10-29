@@ -3,7 +3,6 @@ import React from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import {
   Pressable,
-  Linking,
   ScrollView,
   StyleSheet,
   Text,
@@ -13,14 +12,12 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
-  Bookmark,
   ChevronRight,
   CircleAlert,
   Eye,
-  ExternalLink,
   GitFork,
   MessageCircle,
-  Share as ShareIcon,
+  Forward as ShareIcon,
   Star,
   ThumbsDown,
   ThumbsUp,
@@ -38,7 +35,6 @@ import DescriptionCard from './DescriptionCard';
 import ReadmeCard from './ReadmeCard';
 import type { FeedbackAction } from '../../api/activity';
 import { FEEDBACK_ACTIONS } from '../../constants/feedbackActions';
-import { RecommendationReason } from './RecommendationReason';
 import { FollowButton } from '../follow-button';
 
 type QueueActivity = (
@@ -164,11 +160,9 @@ export function RepositoryScreen({
   pageHeight,
   repository,
   isActive,
-  isSaved,
   commentCount,
   onReadFullPress,
   onOpenReadme,
-  onSavePress,
   onSharePress,
   onCommentPress,
   onOwnerPress,
@@ -226,18 +220,20 @@ export function RepositoryScreen({
     : compact
       ? Math.max(96, insets.top + 62)
       : Math.max(116, insets.top + 70);
-  const actionRailBottom = Math.max(insets.bottom, 10) + 8;
+  const actionRailBottom = Math.max(insets.bottom, 10) + 56;
   const outerGutter = veryNarrow ? 10 : 14;
-  const bodyLeft = outerGutter;
-  const bodyRight = veryNarrow ? 52 : compact ? 58 : 64;
+  const bodyLeft = outerGutter + insets.left;
+  const outerRight = outerGutter + insets.right;
+  const bodyRight = (veryNarrow ? 52 : compact ? 58 : 64) + insets.right;
   const bodyBottom = veryShort ? 14 : compact ? 18 : 22;
+  const bodyGap = veryShort ? 3 : compact ? 5 : 14;
+  const availableStackWidth = Math.max(pageWidth - bodyLeft - outerRight, 1);
   const availableCardWidth = Math.max(pageWidth - bodyLeft - bodyRight, 1);
   const bodyStyle: StyleProp<ViewStyle> = {
     paddingTop: bodyTop,
-    paddingRight: bodyRight,
-    paddingBottom: bodyBottom,
+    paddingRight: outerRight,
     paddingLeft: bodyLeft,
-    gap: veryShort ? 3 : compact ? 5 : 14,
+    gap: bodyGap,
   };
 
   const toggleLike = () => {
@@ -283,222 +279,207 @@ export function RepositoryScreen({
     });
   };
 
-  const openGithubRepository = async () => {
-    const url = repository.githubUrl;
-    try {
-      await Linking.openURL(url);
-      onQueueActivity?.({ repo_id: repository.id, action: FEEDBACK_ACTIONS.githubOpen }, true);
-    } catch {
-      // Do not train on an open that the operating system rejected.
-    }
-  };
   return (
     <View style={[styles.screen, { width: pageWidth, height: pageHeight }]}>
       <View style={[styles.body, bodyStyle]}>
         <DescriptionCard
-          availableWidth={availableCardWidth}
+          availableWidth={availableStackWidth}
           repository={repository}
           compact={compact}
         />
-        <ReadmeCard
-          availableWidth={availableCardWidth}
-          isActive={isActive}
-          repository={repository}
-          onReadFullPress={onReadFullPress}
-          onOpenReadme={onOpenReadme}
-          compact={compact}
-        />
+        <View style={[
+          styles.contentAndActions,
+          { paddingRight: bodyRight - outerRight, paddingBottom: bodyBottom, gap: bodyGap },
+        ]}>
+          <ReadmeCard
+            availableWidth={availableCardWidth}
+            isActive={isActive}
+            repository={repository}
+            onReadFullPress={onReadFullPress}
+            onOpenReadme={onOpenReadme}
+            compact={compact}
+          />
 
-        <View style={[styles.repoDetails, compact && styles.repoDetailsCompact]}>
-          <RecommendationReason source={repository.recommendationSource} />
-          <View style={[styles.ownerRow, compact && styles.ownerRowCompact]}>
-            <View
-              style={[
-                styles.avatar,
-                compact && styles.avatarCompact,
-                { backgroundColor: avatarColor },
-              ]}
-            >
-              <Text pointerEvents="none" style={styles.avatarText}>
-                {getInitials(repository.owner)}
-              </Text>
+          <View style={[styles.repoDetails, compact && styles.repoDetailsCompact]}>
+            <View style={[styles.ownerRow, compact && styles.ownerRowCompact]}>
+              <View
+                style={[
+                  styles.avatar,
+                  compact && styles.avatarCompact,
+                  { backgroundColor: avatarColor },
+                ]}
+              >
+                <Text pointerEvents="none" style={styles.avatarText}>
+                  {getInitials(repository.owner)}
+                </Text>
+                <Pressable
+                  accessibilityLabel={`View ${repository.owner}'s profile`}
+                  accessibilityRole="link"
+                  hitSlop={6}
+                  onPress={onOwnerPress}
+                  style={StyleSheet.absoluteFill}
+                />
+              </View>
               <Pressable
                 accessibilityLabel={`View ${repository.owner}'s profile`}
                 accessibilityRole="link"
                 hitSlop={6}
                 onPress={onOwnerPress}
-                style={StyleSheet.absoluteFill}
-              />
+                style={({ pressed }) => [styles.ownerHandleButton, pressed && styles.ownerPressed]}
+              >
+                <Text style={styles.ownerHandle} numberOfLines={1}>{repository.owner}</Text>
+              </Pressable>
+              {!isViewerOwner ? (
+                <FollowButton
+                  compact
+                  identityKey={repository.owner}
+                  isFollowing={repository.viewerFollowsOwner === true}
+                  neutral
+                  onFollowingChange={handleOwnerFollowingChange}
+                  onFollowingCommitted={(following) => onQueueActivity?.({
+                    repo_id: repository.id,
+                    action: following ? FEEDBACK_ACTIONS.follow : FEEDBACK_ACTIONS.unfollow,
+                  }, true)}
+                  stateKnown={ownerFollowStateKnown}
+                  targetProfileId={repository.ownerProfileId}
+                  targetUserId={repository.ownerUserId}
+                />
+              ) : null}
             </View>
+
             <Pressable
-              accessibilityLabel={`View ${repository.owner}'s profile`}
+              accessibilityHint="Opens the repository detail inside Weave"
+              accessibilityLabel={`View ${repository.name} repository details`}
               accessibilityRole="link"
-              hitSlop={6}
-              onPress={onOwnerPress}
-              style={({ pressed }) => [styles.ownerHandleButton, pressed && styles.ownerPressed]}
+              disabled={!onRepositoryPress}
+              onPress={onRepositoryPress}
+              style={({ pressed }) => [
+                styles.repoTitleButton,
+                styles.repoTitleSpacing,
+                compact && styles.repoTitleSpacingCompact,
+                pressed && styles.ownerPressed,
+              ]}
             >
-              <Text style={styles.ownerHandle} numberOfLines={1}>{repository.owner}</Text>
-            </Pressable>
-            {!isViewerOwner ? (
-              <FollowButton
-                compact={compact}
-                identityKey={repository.owner}
-                isFollowing={repository.viewerFollowsOwner === true}
-                neutral
-                onFollowingChange={handleOwnerFollowingChange}
-                onFollowingCommitted={(following) => onQueueActivity?.({
-                  repo_id: repository.id,
-                  action: following ? FEEDBACK_ACTIONS.follow : FEEDBACK_ACTIONS.unfollow,
-                }, true)}
-                stateKnown={ownerFollowStateKnown}
-                targetProfileId={repository.ownerProfileId}
-                targetUserId={repository.ownerUserId}
-              />
-            ) : null}
-          </View>
-
-          <Pressable
-            accessibilityHint="Opens the repository detail inside Weave"
-            accessibilityLabel={`View ${repository.name} repository details`}
-            accessibilityRole="link"
-            disabled={!onRepositoryPress}
-            onPress={onRepositoryPress}
-            style={({ pressed }) => [
-              styles.repoTitleButton,
-              styles.repoTitleSpacing,
-              compact && styles.repoTitleSpacingCompact,
-              pressed && styles.ownerPressed,
-            ]}
-          >
-            <Text
-              style={[styles.repoTitle, compact && styles.repoTitleCompact]}
-              numberOfLines={2}
-            >
-              {repository.name}
-            </Text>
-            {onRepositoryPress ? (
-              <ChevronRight
-                color={REFERENCE_THEME.textSecondary}
-                size={compact ? 17 : 19}
-                strokeWidth={2}
-              />
-            ) : null}
-          </Pressable>
-          <ScrollView
-            style={[
-              styles.descriptionScroller,
-              compact && styles.descriptionScrollerCompact,
-            ]}
-            nestedScrollEnabled
-            directionalLockEnabled
-            bounces={false}
-            overScrollMode="never"
-            showsVerticalScrollIndicator
-          >
-            <Text style={[styles.description, compact && styles.descriptionCompact]}>
-              {repository.description}
-            </Text>
-          </ScrollView>
-
-          <View style={styles.repoStats}>
-            <View
-              accessible
-              accessibilityLabel={`${formatCount(repository.stats.stars)} GitHub stars`}
-              accessibilityRole="text"
-              style={styles.statButton}
-            >
-              <Star
-                size={17}
-                color={REFERENCE_THEME.text}
-                fill="none"
-                strokeWidth={1.9}
-              />
-              <Text style={styles.statText}>
-                {formatCount(repository.stats.stars)}
+              <Text
+                style={[styles.repoTitle, compact && styles.repoTitleCompact]}
+                numberOfLines={2}
+              >
+                {repository.name}
               </Text>
-            </View>
-            <View
-              accessible
-              accessibilityLabel={`${formatCount(repository.stats.forks)} GitHub forks`}
-              accessibilityRole="text"
-              style={styles.statButton}
+              {onRepositoryPress ? (
+                <ChevronRight
+                  color={REFERENCE_THEME.textSecondary}
+                  size={compact ? 17 : 19}
+                  strokeWidth={2}
+                  style={styles.repoTitleChevron}
+                />
+              ) : null}
+            </Pressable>
+            <ScrollView
+              style={[
+                styles.descriptionScroller,
+                compact && styles.descriptionScrollerCompact,
+              ]}
+              nestedScrollEnabled
+              directionalLockEnabled
+              bounces={false}
+              overScrollMode="never"
+              showsVerticalScrollIndicator={false}
             >
-              <GitFork size={16} color={REFERENCE_THEME.text} strokeWidth={1.9} />
-              <Text style={styles.statText}>{formatCount(repository.stats.forks)}</Text>
-            </View>
-            <View accessibilityLabel={`${formatCount(repository.stats.views)} views`} style={styles.statButton}>
-              <Eye size={16} color={REFERENCE_THEME.text} strokeWidth={1.9} />
-              <Text style={styles.statText}>{formatCount(repository.stats.views)}</Text>
-            </View>
-            <View accessibilityLabel={`${formatCount(repository.stats.openIssues)} open issues`} style={styles.statButton}>
-              <CircleAlert size={16} color={REFERENCE_THEME.text} strokeWidth={1.9} />
-              <Text style={styles.statText}>{formatCount(repository.stats.openIssues)}</Text>
+              <Text style={[styles.description, compact && styles.descriptionCompact]}>
+                {repository.description}
+              </Text>
+            </ScrollView>
+
+            <View style={styles.repoStats}>
+              <View
+                accessible
+                accessibilityLabel={`${formatCount(repository.stats.stars)} GitHub stars`}
+                accessibilityRole="text"
+                style={styles.statButton}
+              >
+                <Star
+                  size={17}
+                  color={REFERENCE_THEME.text}
+                  fill="none"
+                  strokeWidth={1.9}
+                />
+                <Text style={styles.statText}>
+                  {formatCount(repository.stats.stars)}
+                </Text>
+              </View>
+              <View
+                accessible
+                accessibilityLabel={`${formatCount(repository.stats.forks)} GitHub forks`}
+                accessibilityRole="text"
+                style={styles.statButton}
+              >
+                <GitFork size={16} color={REFERENCE_THEME.text} strokeWidth={1.9} />
+                <Text style={styles.statText}>{formatCount(repository.stats.forks)}</Text>
+              </View>
+              <View accessibilityLabel={`${formatCount(repository.stats.views)} views`} style={styles.statButton}>
+                <Eye size={16} color={REFERENCE_THEME.text} strokeWidth={1.9} />
+                <Text style={styles.statText}>{formatCount(repository.stats.views)}</Text>
+              </View>
+              <View accessibilityLabel={`${formatCount(repository.stats.openIssues)} open issues`} style={styles.statButton}>
+                <CircleAlert size={16} color={REFERENCE_THEME.text} strokeWidth={1.9} />
+                <Text style={styles.statText}>{formatCount(repository.stats.openIssues)}</Text>
+              </View>
             </View>
           </View>
+
+          <ScrollView
+            bounces={false}
+            directionalLockEnabled
+            nestedScrollEnabled
+            overScrollMode="never"
+            showsVerticalScrollIndicator={false}
+            contentContainerStyle={[
+              styles.actionRailContent,
+              { gap: veryShort ? 6 : compact ? 12 : 19 },
+            ]}
+            style={[
+              styles.actionRail,
+              {
+                bottom: actionRailBottom,
+                width: veryShort ? 34 : 40,
+              },
+            ]}
+          >
+            <ActionButton
+              accessibilityLabel={liked ? 'Unlike repository' : 'Like repository'}
+              active={liked}
+              count={formatCount(String(likeCount))}
+              dense={veryShort}
+              icon={ThumbsUp}
+              onPress={toggleLike}
+            />
+            <ActionButton
+              accessibilityLabel={disliked ? 'Undo not interested' : 'Not interested in this repository'}
+              active={disliked}
+              activeColor={REFERENCE_THEME.danger}
+              dense={veryShort}
+              icon={ThumbsDown}
+              onPress={toggleDislike}
+            />
+            <ActionButton
+              accessibilityLabel="Open comments"
+              count={formatCount(String(visibleCommentCount))}
+              dense={veryShort}
+              icon={MessageCircle}
+              onPress={onCommentPress}
+            />
+            <ActionButton
+              accessibilityLabel="Share repository"
+              dense={veryShort}
+              icon={ShareIcon}
+              iconSize={28}
+              label="Share"
+              onPress={onSharePress}
+            />
+          </ScrollView>
         </View>
       </View>
-
-      <View
-        style={[
-          styles.actionRail,
-          compact && styles.actionRailCompact,
-          {
-            bottom: actionRailBottom,
-            gap: veryShort ? 6 : compact ? 12 : 19,
-            right: outerGutter,
-          },
-        ]}
-      >
-        <ActionButton
-          accessibilityLabel={liked ? 'Unlike repository' : 'Like repository'}
-          active={liked}
-          count={formatCount(String(likeCount))}
-          dense={veryShort}
-          icon={ThumbsUp}
-          onPress={toggleLike}
-        />
-        <ActionButton
-          accessibilityLabel={disliked ? 'Undo not interested' : 'Not interested in this repository'}
-          active={disliked}
-          activeColor={REFERENCE_THEME.danger}
-          dense={veryShort}
-          icon={ThumbsDown}
-          onPress={toggleDislike}
-        />
-        <ActionButton
-          accessibilityLabel="Open comments"
-          count={formatCount(String(visibleCommentCount))}
-          dense={veryShort}
-          icon={MessageCircle}
-          onPress={onCommentPress}
-        />
-        <ActionButton
-          accessibilityLabel="Save repository"
-          active={isSaved}
-          dense={veryShort}
-          icon={Bookmark}
-          iconSize={26}
-          label="Save"
-          onPress={onSavePress}
-        />
-        <ActionButton
-          accessibilityLabel="Open repository on GitHub"
-          dense={veryShort}
-          icon={ExternalLink}
-          iconSize={26}
-          label="Open on GitHub"
-          onPress={openGithubRepository}
-        />
-        <ActionButton
-          accessibilityLabel="Share repository"
-          dense={veryShort}
-          icon={ShareIcon}
-          iconSize={28}
-          label="Share"
-          onPress={onSharePress}
-        />
-      </View>
-
     </View>
   );
 }
@@ -516,6 +497,10 @@ const styles = StyleSheet.create({
     right: 0,
     bottom: 0,
     flexDirection: 'column',
+  },
+  contentAndActions: {
+    flex: 1,
+    minHeight: 0,
   },
   ownerRow: {
     flexDirection: 'row',
@@ -537,6 +522,7 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   repoTitleButton: {
+    minWidth: 0,
     alignItems: 'center',
     alignSelf: 'flex-start',
     flexDirection: 'row',
@@ -578,7 +564,12 @@ const styles = StyleSheet.create({
     opacity: 0.65,
     transform: [{ scale: 0.97 }],
   },
+  repoTitleChevron: {
+    flexShrink: 0,
+  },
   repoTitle: {
+    minWidth: 0,
+    flexShrink: 1,
     color: REFERENCE_THEME.text,
     fontFamily: 'NataSans-Bold',
     fontSize: 25,
@@ -635,14 +626,15 @@ const styles = StyleSheet.create({
   },
   actionRail: {
     position: 'absolute',
-    right: 14,
+    top: 0,
+    right: 0,
     zIndex: 5,
-    alignItems: 'center',
-    gap: 19,
   },
-  actionRailCompact: {
-    right: 10,
-    gap: 12,
+  actionRailContent: {
+    flexGrow: 1,
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+    paddingTop: 8,
   },
   actionButton: {
     minWidth: 40,

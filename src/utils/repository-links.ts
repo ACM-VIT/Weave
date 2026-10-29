@@ -14,6 +14,21 @@ export type RepositoryShareContent = {
   url: string;
 };
 
+/** Only repository destinations on the HTTPS GitHub origin are external actions. */
+export function normalizeGitHubRepositoryUrl(value: string | null | undefined): string | null {
+  if (!value?.trim()) return null;
+  try {
+    const url = new URL(value.trim());
+    if (url.protocol !== 'https:' || url.hostname !== 'github.com'
+      || url.port || url.username || url.password) return null;
+    const [owner, repository] = url.pathname.split('/').slice(1);
+    if (!/^[a-z\d-]+$/i.test(owner ?? '') || !/^[a-z\d_.-]+$/i.test(repository ?? '')) return null;
+    return url.href;
+  } catch {
+    return null;
+  }
+}
+
 function repositoryId(value: string): string {
   const normalized = value.trim();
   if (!normalized) throw new Error('Repository ID is required.');

@@ -86,8 +86,15 @@ test('completion preserves username errors and retries safely through an older s
   await act(async()=>{await assert.rejects(app.auth.finishOnboarding(finishData),/username is already taken/);});
   assert.equal(requests.length-before,1);assert.equal(app.auth.user?.onboarding_completed,false);
   status=503;before=requests.length;
-  await act(async()=>{await assert.rejects(app.auth.finishOnboarding(finishData),/Completion unavailable/);});
+  await act(async()=>{await assert.rejects(app.auth.finishOnboarding(finishData),/may have saved/);});
   assert.equal(requests.length-before,1,'transient errors cannot trigger a second write path');
+  assert.equal(app.auth.onboardingSave.status,'unknown');
+  await act(async()=>{await assert.rejects(app.auth.finishOnboarding(finishData),/may have saved/);});
+  assert.equal(requests.length-before,1,'an ambiguous 503 cannot permit a duplicate send');
+  completed=true;
+  await act(async()=>{await app.auth.reconcileOnboarding();});
+  assert.equal(app.auth.onboardingSave.status,'idle','a current-owner authoritative read clears the settled uncertainty');
+  assert.equal(app.auth.user?.onboarding_completed,true);
   status=404;before=requests.length;
   await act(async()=>{await app.auth.finishOnboarding(finishData);});
   assert.deepEqual(requests.slice(before),['PUT /api/v2/onboarding/complete','PATCH /api/v2/users/me','PUT /api/v2/onboarding','GET /api/v2/users/me']);

@@ -1,3 +1,4 @@
+import type { RepositoryLanguageObservation } from '../services/repositoryLanguages.js';
 import type { ReadmeSummaryArtifact } from './readmeSummary.v2.js';
 export type RepositoryViewerReaction = 'like' | 'dislike' | null;
 
@@ -11,7 +12,8 @@ export type RepositoryStatus = 'active' | 'archived' | 'deleted' | 'blocked';
  * fields. `selected_list_ids` contains source-qualified product List IDs backed
  * by the existing collection and legacy Board membership tables.
  */
-export interface RepositoryDetailV2 {
+export interface RepositoryDetailV2 extends RepositoryLanguageObservation {
+  language_observed_at?: string | null;
   repo_id: string;
   github_id: string;
   full_name: string;
@@ -43,6 +45,9 @@ export interface RepositoryDetailV2 {
   /** Compatibility alias for clients predating the `readme_md` field. */
   readme: string | null;
   readme_md: string | null;
+  /** Present on the opt-in metadata projection; null body aliases are deferred. */
+  readme_available?: boolean;
+  content_hash?: string | null;
   readme_source_path: string | null;
   readme_default_branch: string | null;
   readme_base_url: string | null;
@@ -69,4 +74,18 @@ export interface RepositoryDetailV2 {
   viewer_reaction: RepositoryViewerReaction;
   viewer_saved: boolean;
   selected_list_ids: string[];
+}
+
+/** Canonical README at one content identity, without viewer membership state. */
+export interface RepositoryReadmeV2 {
+  repo_id: string;
+  content_version: number | null;
+  content_hash: string | null;
+  full_name: string;
+  url: string;
+  readme_available: boolean;
+  readme_md: string | null;
+  readme_source_path: string | null;
+  readme_default_branch: string | null;
+  readme_base_url: string | null;
 }

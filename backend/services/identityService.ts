@@ -105,7 +105,7 @@ export async function ensureIdentityProfile(profile: IdentityProfile): Promise<v
         date_of_birth=COALESCE(EXCLUDED.date_of_birth,app.users.date_of_birth),
         bio=CASE WHEN EXISTS(SELECT 1 FROM app.user_feed_state WHERE user_id=app.users.user_id AND model_policy_sha256 IS NOT NULL)
           THEN app.users.bio ELSE COALESCE(EXCLUDED.bio,app.users.bio) END,
-        avatar_url=COALESCE(EXCLUDED.avatar_url,app.users.avatar_url),
+        avatar_url=COALESCE(NULLIF(btrim(app.users.avatar_url),''),EXCLUDED.avatar_url),
         -- Identity provisioning may insert the initial state, but it must not
         -- mutate a durable onboarding decision on conflict. Only onboarding or
         -- the GitHub persona sync is allowed to complete an existing profile.
