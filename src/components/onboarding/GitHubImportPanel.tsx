@@ -1,4 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
+import { retireHomeFeedForGitHubChange } from '../../utils/feed-repository';
 import { ActivityIndicator, Pressable, Text, View } from 'react-native';
 import { APP_THEME, Fonts, REFERENCE_THEME, Spacing } from '../../constants/theme';
 import { githubImportApi, type GitHubImportApi, type GitHubImportPreview, type GitHubImportStatus, type ImportIdentityDraft } from '../../api/githubImport';
@@ -12,6 +14,7 @@ export function GitHubImportPanel(props: Props) {
   return <GitHubImportPanelBody key={props.userId} {...props} />;
 }
 function GitHubImportPanelBody({ userId, identityDraft, onSaved, onManual, onLinkedChange, api = githubImportApi }: Props) {
+  const client = useQueryClient();
   const [state, setState] = useState<State>(() => ({ ...empty(userId), busy: 'Loading preferences' }));
   const alive = useRef(false);
   const sequence = useRef(0);
@@ -56,6 +59,8 @@ function GitHubImportPanelBody({ userId, identityDraft, onSaved, onManual, onLin
     await api.accept(current.preview.snapshot_id, signal, userId);
     if (!isCurrent()) return;
     update(userId, { preview: null, status: { linked: true, active: true, provenance: { collected_at: current.preview.collected_at } }, refreshNeeded: true });
+    await retireHomeFeedForGitHubChange(client, userId, isCurrent);
+    if (!isCurrent()) return;
     await onSaved();
     if (isCurrent()) update(userId, { refreshNeeded: false });
   });
@@ -63,6 +68,8 @@ function GitHubImportPanelBody({ userId, identityDraft, onSaved, onManual, onLin
     await api.revoke(signal, userId);
     if (!isCurrent()) return;
     update(userId, { preview: null, status: { linked: current.status?.linked ?? true, active: false, provenance: {} }, declined: true, refreshNeeded: true, cleanupNeeded: false });
+    await retireHomeFeedForGitHubChange(client, userId, isCurrent);
+    if (!isCurrent()) return;
     await onSaved();
     if (isCurrent()) update(userId, { refreshNeeded: false });
   });
@@ -77,6 +84,8 @@ function GitHubImportPanelBody({ userId, identityDraft, onSaved, onManual, onLin
     if (!isCurrent()) return;
     update(userId, { cleanupNeeded: false, refreshNeeded: true,
       status: { linked: current.status?.linked ?? true, active: false, provenance: {} } });
+    await retireHomeFeedForGitHubChange(client, userId, isCurrent);
+    if (!isCurrent()) return;
     await onSaved();
     if (isCurrent()) update(userId, { refreshNeeded: false });
     continueManual(isCurrent, true);
@@ -103,6 +112,8 @@ function GitHubImportPanelBody({ userId, identityDraft, onSaved, onManual, onLin
     {current.error ? <Text accessibilityRole="alert" style={{ fontFamily: Fonts.sans, color: REFERENCE_THEME.danger, fontSize: 14, lineHeight: 21 }}>{current.error}</Text> : null}
     {current.cleanupNeeded ? <ImportButton label="Retry closing preview" onPress={() => void closePreview()} disabled={Boolean(current.busy)} /> : null}
     {current.refreshNeeded && !current.cleanupNeeded ? <ImportButton label="Retry account refresh" onPress={() => void run('Refreshing account', async (_signal, isCurrent) => {
+      await retireHomeFeedForGitHubChange(client, userId, isCurrent);
+      if (!isCurrent()) return;
       await onSaved(); if (isCurrent()) update(userId, { refreshNeeded: false }); continueManual(isCurrent);
     })} disabled={Boolean(current.busy)} /> : null}
     {current.status?.active ? <>

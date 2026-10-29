@@ -6,6 +6,8 @@ import test from 'node:test';
 import React, { act } from 'react';
 import { create } from 'react-test-renderer';
 import ts from 'typescript';
+import { QueryClient } from '@tanstack/react-query';
+import * as feedRepository from '../src/utils/feed-repository';
 import { startup, deferred, envelope, fixtureToken } from './support/startup-harness';
 import { ONBOARDING_INTERESTS } from '../backend/contracts/onboardingTaxonomy';
 
@@ -178,12 +180,58 @@ test('profile retirement already writing its marker prevents a later Finish from
  }finally{app.holdMarkerWrites(undefined);marker.resolve();await reading?.catch(()=>undefined);await finishing?.catch(()=>undefined);await app.unmount();}
 });
 
+test('the GitHub popup has only Revoke and Disconnect, then offers Reconnect after unlinking', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  let linked = true, active = true, reconnects = 0, pending = false;
+  const client = new QueryClient();
+  client.setQueryData(['feed', 'viewer'], { pages: ['old-familiar-card'] });
+  client.setQueryData(['feed', 'other'], { pages: ['other-account'] });
+  const api = { status: async () => ({ linked, active, provenance: {} }), revoke: async () => { active = false; } };
+  const native = { ...Object.fromEntries(['View','Text','Pressable','ActivityIndicator','Modal','ScrollView'].map(name=>[name,name])),
+    StyleSheet: { create: (value: unknown) => value, absoluteFill: {} }, useWindowDimensions: () => ({ height: 800 }) };
+  const theme = { APP_THEME: {}, REFERENCE_THEME: {}, Fonts: {}, Spacing: {} };
+  const mocks = { 'react-native': native, 'react-native-safe-area-context': { useSafeAreaInsets: () => ({top:0,bottom:0}) },
+    'react-native-reanimated': { useReducedMotion: () => true }, 'lucide-react-native': { X:'X' },
+    '@/assets/icons/github.svg': { __esModule: true, default: 'GitHubIcon' }, '../../constants/theme': theme,
+    '../../hooks/use-modal-scroll-lock': { useModalScrollLock() {} },
+    '../../api/githubImport': { githubImportApi: api }, '../../api/githubUnlink': { githubUnlinkApi: { status: async () => ({status:linked?(pending?'pending':'none'):'done'}) } },
+    '../../services/githubUnlink': { startGithubUnlink: async () => {pending=true;return {status:'pending'};} },
+    '../../hooks/useOAuth': { useOAuth: () => ({ signInWithProvider: async () => { linked=true;pending=false;reconnects++; }, isLoading:false,error:null }) },
+    '@tanstack/react-query': { useQueryClient: () => client },
+    '../../utils/feed-repository': feedRepository,
+  };
+  const panel=loadSource('src/components/profile/GitHubPreferencesPopup.tsx',mocks).GitHubPreferencesPopup;
+  let root!:ReturnType<typeof create>;
+  await act(async()=>{root=create(React.createElement(panel,{visible:true,userId:'viewer',onClose(){},onSaved:async()=>{}}));});
+  const buttons=()=>root.root.findAllByType('Pressable').filter(n=>!['Dismiss GitHub preferences','Close GitHub preferences'].includes(n.props.accessibilityLabel));
+  const press=async(label:string)=>act(async()=>{buttons().find(n=>n.props.accessibilityLabel===label)!.props.onPress();await new Promise(r=>setImmediate(r));});
+  try {
+    assert.deepEqual(buttons().map(n=>n.props.accessibilityLabel),['Revoke','Disconnect']);
+    await press('Revoke');assert.equal(buttons()[0].props.disabled,true);
+    assert.equal(client.getQueryData(['feed','viewer']), undefined);
+    assert.deepEqual(client.getQueryData(['feed','other']), { pages: ['other-account'] });
+    await press('Disconnect');
+    assert.equal(buttons()[1].props.disabled,true, 'pending disconnect reconciles automatically');
+    client.setQueryData(['feed','viewer'], { pages: ['loaded-while-disconnecting'] });
+    linked=false;active=false;
+    await act(async()=>{t.mock.timers.tick(2_001);await new Promise(r=>setImmediate(r));});
+    assert.deepEqual(buttons().map(n=>n.props.accessibilityLabel),['Revoke','Reconnect']);
+    assert.equal(client.getQueryData(['feed','viewer']),undefined);
+    await press('Reconnect');assert.equal(reconnects,1);assert.deepEqual(buttons().map(n=>n.props.accessibilityLabel),['Revoke','Disconnect']);
+    assert.equal(JSON.stringify(root.toJSON()).includes('GitHub authorization settings'),false);
+  }finally{await act(async()=>root.unmount());}
+});
+
 test('profile GitHub activity preview, acceptance and revocation keep the login connected', async () => {
   const native = Object.fromEntries(['View', 'Text', 'Pressable', 'ActivityIndicator'].map(name => [name, name]));
   const theme = { APP_THEME: {}, REFERENCE_THEME: {}, Fonts: {}, Spacing: { two: 8, three: 12 } };
   const calls: string[] = [];
   let refreshes = 0;
+  const client = new QueryClient();
+  client.setQueryData(['feed','viewer'], { pages: ['old-familiar-card'] });
   const panel = loadSource('src/components/onboarding/GitHubImportPanel.tsx', {
+    '@tanstack/react-query': { useQueryClient: () => client },
+    '../../utils/feed-repository': feedRepository,
     'react-native': native, '../../constants/theme': theme,
     '../../api/githubImport': { githubImportApi: {
       status: async () => ({ linked: true, active: false, provenance: {} }),
@@ -199,8 +247,11 @@ test('profile GitHub activity preview, acceptance and revocation keep the login 
     await press('Preview public activity');
     assert.ok(JSON.stringify(renderer.toJSON()).includes('typescript'));
     await press('Add these preferences');
+    assert.equal(client.getQueryData(['feed','viewer']), undefined, 'accepted import retires familiar cached cards');
+    client.setQueryData(['feed','viewer'], { pages: ['cached-before-revoke'] });
     assert.equal(renderer.root.findByProps({ accessibilityLabel: 'Revoke activity import' }).props.disabled, false);
     await press('Revoke activity import');
+    assert.equal(client.getQueryData(['feed','viewer']), undefined);
     assert.equal(renderer.root.findAllByProps({ accessibilityLabel: 'Revoke activity import' }).length, 0);
     await press('Show import option');
     assert.equal(renderer.root.findByProps({ accessibilityLabel: 'Preview public activity' }).props.disabled, false, 'revocation preserves the verified login');
@@ -267,6 +318,8 @@ test(`mounted onboarding recovery preserves drafts and refreshes controls (manua
   const auth = { useAuth: () => ({ user: { user_id: 'viewer' }, checkOnboardingStatus: async () => { refreshes++; } }) };
   const onboarding = loadSource('src/store/OnboardingContext.tsx', {});
   const importPanel = loadSource('src/components/onboarding/GitHubImportPanel.tsx', {
+    '@tanstack/react-query': { useQueryClient: () => new QueryClient() },
+    '../../utils/feed-repository': feedRepository,
     'react-native': native, '../../constants/theme': theme,
     '../../api/githubImport': { githubImportApi: { status: async () => { reads++; return { linked, active: false, provenance: {} }; } } },
   });
