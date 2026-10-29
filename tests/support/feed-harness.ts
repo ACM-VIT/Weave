@@ -193,7 +193,6 @@ export function feed(ids: string[], reducedMotion = false, attribution?: { owner
     },
     setExternalOpen(value: () => Promise<void>) {openExternal=value;},
     get failureModalVisible() {return root.root.findAllByType('Modal').some(node => node.props.visible);},
-    async setViewable(value: boolean) {viewable=value; await act(async () => root.update(renderRows()));},
     async pressScreen(label: string) {await act(async () => {
       root.root.findAllByType('Pressable').find(node => node.props.accessibilityLabel === label)!.props.onPress();
       await new Promise(resolve => setImmediate(resolve));
@@ -210,6 +209,14 @@ export function feed(ids: string[], reducedMotion = false, attribution?: { owner
     get imagePopup() {return root.root.findAllByType('ReadmeImagePopup')[0];},
     get previewImages() {return root.root.findAllByType('SafeReadmeImage').map(node=>node.props.url);},
     async openImage() {await act(async()=>{root.root.findAllByType('Pressable').find(node=>node.props.accessibilityLabel?.startsWith('Enlarge README image:'))!.props.onPress();});},
+    async pressMarkdownImage(url:string,alt:string) {
+      const renderer=root.root.findByType('RenderHtml').props.renderers.img;
+      let image!:ReturnType<typeof create>;let stopped=false;
+      await act(async()=>{image=create(React.createElement(renderer,{tnode:{attributes:{src:url,alt}}}));});
+      try {await act(async()=>image.root.findByType('Pressable').props.onPress({stopPropagation(){stopped=true;}}));}
+      finally {await act(async()=>image.unmount());}
+      return stopped;
+    },
     async closeImage() {await act(async()=>{this.imagePopup.props.onClose();});},
     get videoPopup() {return root.root.findAllByType('ReadmeVideoPopup')[0];},
     async openVideo() {await act(async () => {root.root.findAllByType('ReadmeVideo')[0].props.onPress();});},
