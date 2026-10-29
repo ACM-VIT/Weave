@@ -19,11 +19,12 @@ test('README card remains visible without a digest and Tech Stack retains safe i
     import{QueryClient,QueryClientProvider}from'@tanstack/react-query';
     const client=new QueryClient();
     const params=new URLSearchParams(location.search);
-    window.fixture={status:'pending',error:false,compact:false,opens:0,summaries:0,retries:0,shares:0,insets:{top:0,bottom:0,left:Number(params.get('left')||0),right:Number(params.get('right')||0)}};
+    window.fixture={status:'pending',error:false,compact:false,active:true,opens:0,summaries:0,retries:0,shares:0,insets:{top:0,bottom:0,left:Number(params.get('left')||0),right:Number(params.get('right')||0)}};
     function Fixture(){const[revision,update]=useState(0);window.fixture.refresh=()=>update(x=>x+1);useLayoutEffect(()=>{document.getElementById('card-frame').dataset.revision=String(revision);},[revision]);
       const repository={id:'repo',name:'Books',fullName:'Tarun/Books',description:'Unverified description fallback',readmeSummary:'Unverified description fallback',summarySource:'description_fallback',readmeFull:'# Raw README sentinel',githubUrl:'https://github.com/Tarun/Books',readmeSourcePath:'README.md',readmeDefaultBranch:'main',readmeBaseUrl:null,owner:'Tarun',stats:{stars:12,views:1,forks:0,likes:0,dislikes:0,comments:0,saves:0},languages:params.has('stack')?['React','TypeScript','PostgreSQL','Docker','Rust']:[],topics:[]};
+      if(params.has('preview'))Object.assign(repository,{summarySource:'generated',readmeSummary:'Forward CloudWatch logs with NR_LAMBDA_LOG_GROUP_PREFIX and configure an AWS Serverless application for infrastructure integrations.',readmeFull:'![Community Project header](https://github.com/newrelic/open-source-office/raw/master/examples/categories/images/Community_Project.png)'});
       const actions={onReadFullPress:()=>window.fixture.summaries++,onOpenReadme:()=>window.fixture.opens++};
-      return params.has('parent')?<RepositoryScreen repository={repository} pageWidth={innerWidth} pageHeight={innerHeight-(64+12)} {...actions} onSavePress={()=>{}} onSharePress={()=>window.fixture.shares++} onCommentPress={()=>{}}/>:<ReadmeCard repository={repository} availableWidth={innerWidth-40} compact={window.fixture.compact} {...actions}/>;}
+      return params.has('parent')?<RepositoryScreen repository={repository} pageWidth={innerWidth} pageHeight={innerHeight-(64+12)} {...actions} onSavePress={()=>{}} onSharePress={()=>window.fixture.shares++} onCommentPress={()=>{}}/>:<ReadmeCard repository={repository} availableWidth={innerWidth-40} compact={window.fixture.compact} isActive={window.fixture.active} {...actions}/>;}
 
     createRoot(document.getElementById('card-frame')).render(<QueryClientProvider client={client}><Fixture/></QueryClientProvider>);
   `}, outfile:path.join(directory,'bundle.js'),bundle:true,platform:'browser',format:'iife',jsx:'automatic',resolveExtensions:['.web.tsx','.tsx','.web.ts','.ts','.web.js','.js','.json'],loader:{'.js':'jsx','.css':'empty'},
@@ -31,11 +32,12 @@ test('README card remains visible without a digest and Tech Stack retains safe i
     plugins:[{name:'summary-transport-and-motion',setup(builder){
       builder.onResolve({filter:/store\/AuthContext$|^react-native-safe-area-context$|\/follow-button$|^react-native-gesture-handler$|\/TechStackIcon$/},args=>({path:args.path,namespace:'parent-boundary'}));
       builder.onLoad({filter:/.*/,namespace:'parent-boundary'},args=>({contents:args.path.includes('AuthContext')?"export const useAuth=()=>({user:{user_id:'viewer'}});":args.path==='react-native-safe-area-context'?"export const useSafeAreaInsets=()=>window.fixture.insets;":args.path.includes('follow-button')?"export const FollowButton=()=>null;":args.path==='react-native-gesture-handler'?"const chain=new Proxy({},{get:()=>()=>chain});export const Gesture={Native:()=>chain};export const GestureDetector=({children})=>children;":"export const TechStackIcon=()=>null;"}));
-      builder.onResolve({filter:/use-repository-readme-summary$|use-typewriter-text$|^react-native-reanimated$|SafeReadmeImage$/},args=>({path:args.path,namespace:'fixture'}));
+      builder.onResolve({filter:/use-repository-readme-summary$|use-typewriter-text$|^react-native-reanimated$|^expo-image$/},args=>({path:args.path,namespace:'fixture'}));
       builder.onLoad({filter:/.*/,namespace:'fixture'},args=>({contents:args.path.includes('use-repository-readme-summary')?
         "export const useRepositoryReadmeSummary=()=>({digest:null,data:{status:window.fixture.status},isError:window.fixture.error,isLoading:window.fixture.status==='loading',refetch:()=>window.fixture.retries++});":
         args.path.includes('use-typewriter-text')?"export const useTypewriterText=text=>({text,isTyping:false});":
-        args.path==='react-native-reanimated'?"export const useReducedMotion=()=>true;":"export const SafeReadmeImage=()=>null;"}));
+        args.path==='react-native-reanimated'?"export const useReducedMotion=()=>true;":
+        `import React from'react';import{View}from'react-native';export function Image({source,style,onLoad,loading,priority}){return React.createElement(View,{style},React.createElement('img',{'data-source':source.uri,loading,fetchPriority:priority,src:'data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" width="160" height="90"/%3E',style:{width:'100%',height:'100%'},onLoad:()=>onLoad({source:{width:160,height:90}})}));}`,resolveDir:process.cwd()}));
     }}]});
   if(process.env.RUN_README_CARD_BROWSER!=='1'){
     await rm(directory,{recursive:true,force:true});
@@ -94,6 +96,17 @@ test('README card remains visible without a digest and Tech Stack retains safe i
   };
 
   await send('Page.enable');
+  for(const width of [360,412]){
+    await send('Emulation.setDeviceMetricsOverride',{width,height:915,deviceScaleFactor:1,mobile:true});
+    await send('Page.navigate',{url:`http://127.0.0.1:${address.port}/?preview=1`});
+    await until(`Boolean(document.querySelector('[aria-label="Community Project header"] img'))`);
+    const preview=await evaluate(`(()=>{const image=document.querySelector('[aria-label="Community Project header"]'),r=image.getBoundingClientRect(),row=image.parentElement.getBoundingClientRect(),img=image.querySelector('img');return{left:r.left,right:r.right,rowLeft:row.left,rowRight:row.right,loading:img.loading,source:img.dataset.source};})()`);
+    assert.ok(preview.left>=preview.rowLeft&&preview.right<=preview.rowRight+1,`the entire preview must fit inside its clipped row: ${JSON.stringify(preview)}`);
+    assert.equal(preview.loading,'eager',`the active feed preview starts loading immediately: ${JSON.stringify(preview)}`);
+    assert.equal(preview.source,'https://raw.githubusercontent.com/newrelic/open-source-office/master/examples/categories/images/Community_Project.png');
+    await evaluate('window.fixture.active=false;window.fixture.refresh()');
+    await until(`document.querySelector('[aria-label="Community Project header"] img').loading==='lazy'`);
+  }
   for(const [width,height]of[[412,915],[1280,900]]){
     await send('Emulation.setDeviceMetricsOverride',{width,height,deviceScaleFactor:1,mobile:width<500});
     await send('Page.navigate',{url:`http://127.0.0.1:${address.port}`});

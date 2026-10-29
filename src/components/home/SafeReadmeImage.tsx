@@ -10,7 +10,7 @@ import { REFERENCE_THEME } from '@/constants/theme';
 const MAX_IMAGE_HEIGHT = 360;
 const DEFAULT_ASPECT_RATIO = 16 / 9;
 
-type SafeReadmeImageProps = {alt:string;compact?:boolean;maximumWidth:number;url:string;priority?:'low'|'normal'|'high'};
+type SafeReadmeImageProps = {alt:string;compact?:boolean;maximumWidth:number;url:string;priority?:'low'|'normal'|'high';loading?:'lazy'|'eager'};
 
 export function SafeReadmeImage(props: SafeReadmeImageProps) {
   const url=normalizeGithubReadmeImageUrl(props.url);
@@ -23,6 +23,7 @@ function ReadmeImageSource({
   maximumWidth,
   url,
   priority = 'high',
+  loading: loadingPolicy = 'lazy',
 }: SafeReadmeImageProps) {
   const [aspectRatio, setAspectRatio] = useState(DEFAULT_ASPECT_RATIO);
   const [failed, setFailed] = useState(false);
@@ -57,6 +58,7 @@ function ReadmeImageSource({
       <Image
         cachePolicy="memory-disk"
         priority={priority}
+        loading={loadingPolicy}
         contentFit="contain"
         onError={() => {
           setFailed(true);

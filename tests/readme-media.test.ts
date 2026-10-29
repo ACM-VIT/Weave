@@ -295,6 +295,10 @@ describe("readme popup content", () => {
 
 
 test('GitHub file-page images resolve to image bytes without rewriting attachments or other hosts', () => {
+  assert.equal(resolveReadmeImageUrl('https://github.com/newrelic/open-source-office/raw/master/examples/categories/images/Community_Project.png',{}),
+    'https://raw.githubusercontent.com/newrelic/open-source-office/master/examples/categories/images/Community_Project.png');
+  assert.equal(resolveReadmeImageUrl('https://github.com/org/repo/raw/main/sprite.svg#svgView(viewBox(0,0,32,32))',{}),
+    'https://raw.githubusercontent.com/org/repo/main/sprite.svg#svgView(viewBox(0,0,32,32))');
   assert.equal(resolveReadmeImageUrl('https://github.com/g3n/g3nd/blob/master/data/images/g3n_logo.png',{}),
     'https://raw.githubusercontent.com/g3n/g3nd/master/data/images/g3n_logo.png');
   assert.equal(resolveReadmeImageUrl('https://github.com/org/repo/blob/feature/demo/docs/image%20one.png?raw=true',{}),

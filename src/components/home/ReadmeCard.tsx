@@ -154,6 +154,7 @@ export default function ReadmeCard({
                 alt={previewImage.alt}
                 compact
                 key={previewImage.url}
+                loading={isActive ? 'eager' : 'lazy'}
                 maximumWidth={previewImageWidth}
                 priority={isActive ? 'high' : 'low'}
                 url={previewImage.url}
@@ -292,6 +293,7 @@ const styles = StyleSheet.create({
   },
   summaryTextWithImage: {
     flex: 1,
+    minWidth: 0,
   },
   readFull: {
     alignSelf: 'flex-start',
