@@ -773,7 +773,7 @@ export function SavePopup({
                   {message?.type === 'error' ? (
                     <Text accessibilityLiveRegion="polite" selectable style={[styles.createError, { color: palette.danger }]}>{message.text}</Text>
                   ) : null}
-                  <Pressable
+                  <Pressable cssInterop={false}
                     accessibilityRole="button"
                     accessibilityState={{ disabled: !newListName.trim() || selectionBlocked }}
                     disabled={!newListName.trim() || selectionBlocked}

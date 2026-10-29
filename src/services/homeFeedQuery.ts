@@ -1,3 +1,4 @@
+import { throwIfAborted } from '../utils/abort-signal';
 import { infiniteQueryOptions, type InfiniteData, type QueryClient } from '@tanstack/react-query';
 import { feedSessions } from '../api/feed-sessions';
 import { fetchHomeFeed } from '../api/home-feed';
@@ -19,7 +20,7 @@ export function homeFeedController(client: QueryClient, viewer: string) {
   const controller = new FeedPaginationController(async (cursor, signal, requestId, sessionId, initialPage) => {
     const assertCurrent = () => {
       authSessionLifecycle.assertCurrent(generation);
-      signal?.throwIfAborted();
+      throwIfAborted(signal);
     };
     assertCurrent();
     const token = await getStorageItem('access_token');

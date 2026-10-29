@@ -137,7 +137,7 @@ export default function ProfileScreen() {
           </View>
 
           <View className="w-full" style={{ gap: isTablet ? 22 : 18 }}>
-            <Pressable accessibilityRole="button" accessibilityLabel="GitHub activity preferences" accessibilityHint="Opens GitHub activity and account settings" accessibilityState={{ expanded: githubPreferencesVisible }}
+            <Pressable cssInterop={false} accessibilityRole="button" accessibilityLabel="GitHub activity preferences" accessibilityHint="Opens GitHub activity and account settings" accessibilityState={{ expanded: githubPreferencesVisible }}
               onPress={() => setGithubPreferencesVisible(true)} style={({ pressed }) => ({ minHeight: 72, flexDirection: 'row', alignItems: 'center', gap: 12, padding: 14, borderRadius: 17, borderWidth: 1, borderColor: REFERENCE_THEME.border, backgroundColor: pressed ? REFERENCE_THEME.surfaceElevated : REFERENCE_THEME.surface })}>
               <View style={{ width: 40, height: 40, borderRadius: 12, alignItems: 'center', justifyContent: 'center', backgroundColor: '#63E08A18' }}><GitHubIcon width={22} height={22} fill={APP_THEME.primary} /></View>
               <View style={{ flex: 1, minWidth: 0, gap: 4 }}>

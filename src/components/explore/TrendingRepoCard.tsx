@@ -9,7 +9,7 @@ function TrendingRepoCard({ repo, rank, onPress }: { repo: RepositoryDetail; ran
   const podium = position !== undefined && position <= 3;
   const accent = position === 1 ? '#FFD60A' : position === 2 ? '#D6DBE5' : '#DFA477';
   const velocity = repo.trend?.features.trend_velocity;
-  return <Pressable accessibilityRole="button" accessibilityLabel={`${position ? `Rank ${position}, ` : ''}${repo.fullName}`} onPress={onPress}
+  return <Pressable cssInterop={false} accessibilityRole="button" accessibilityLabel={`${position ? `Rank ${position}, ` : ''}${repo.fullName}`} onPress={onPress}
     style={({ pressed }) => ({ padding: podium ? 18 : 14, borderRadius: 16, backgroundColor: '#1C1C1E',
       borderWidth: 1, borderColor: podium ? accent : '#3A3A3C', opacity: pressed ? 0.75 : 1,
       flexDirection: 'row', alignItems: 'flex-start', gap: 12 })}>

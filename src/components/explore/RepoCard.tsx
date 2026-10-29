@@ -80,7 +80,7 @@ export default function RepoCard({
   const cardSummary = repo.readmeSummary || repo.description || README_SUMMARY_PENDING;
   if (variant === 'profile') {
     return (
-      <Pressable
+      <Pressable cssInterop={false}
         accessibilityHint="Opens this repository"
         accessibilityLabel={`Open ${repo.name} by ${repo.owner}`}
         accessibilityRole="link"

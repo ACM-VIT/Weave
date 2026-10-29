@@ -64,7 +64,7 @@ function DetailAction({
   onPress,
 }: ActionProps) {
   return (
-    <Pressable
+    <Pressable cssInterop={false}
       accessibilityLabel={accessibilityLabel}
       accessibilityRole="button"
       onPress={onPress}
@@ -266,7 +266,7 @@ export function RepositoryDetailScreen({ repositoryId,navigationToken }: { repos
   return (
     <View style={styles.screen}>
       <View style={[styles.header, { paddingTop: Math.max(insets.top, 12) }]}>
-        <Pressable
+        <Pressable cssInterop={false}
           accessibilityLabel="Back"
           accessibilityRole="button"
           hitSlop={10}
@@ -392,7 +392,7 @@ export function RepositoryDetailScreen({ repositoryId,navigationToken }: { repos
               ? 'Open the complete repository document without leaving Weave.'
               : 'No README is available for this repository.'}
           </Text>
-          <Pressable
+          <Pressable cssInterop={false}
             accessibilityRole="button"
             disabled={!repository.hasReadme && !repository.readmeFull && !partialDetail}
             onPress={() => setReadmeVisible(true)}
@@ -406,7 +406,7 @@ export function RepositoryDetailScreen({ repositoryId,navigationToken }: { repos
           </Pressable>
         </View>
 
-        <Pressable
+        <Pressable cssInterop={false}
           accessibilityHint="Leaves Weave and opens GitHub"
           accessibilityLabel={`Open ${repository.fullName} on GitHub`}
           accessibilityRole="link"

@@ -31,7 +31,7 @@ export default function ConnectionListScreen({ type }: { type: ConnectionType })
         ]}
       >
         <View style={styles.header}>
-          <Pressable
+          <Pressable cssInterop={false}
             accessibilityLabel="Go back"
             accessibilityRole="button"
             hitSlop={12}

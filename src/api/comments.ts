@@ -1,3 +1,4 @@
+import { throwIfAborted } from '../utils/abort-signal';
 import { apiV2 } from './client';
 import { getStorageItem } from '../utils/storage';
 
@@ -71,7 +72,7 @@ export async function getCommentAuthor(
 
 export async function getCommentsKeysetPage(repoId: string, cursor: string | null, signal?: AbortSignal) {
   const token = await getStorageItem('access_token');
-  signal?.throwIfAborted();
+  throwIfAborted(signal);
   if (!token) throw new Error('Your session has expired.');
   return requestCommentsKeysetPage(repoId, cursor, path => apiV2<unknown>(path, { signal }, token));
 }

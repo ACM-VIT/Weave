@@ -89,3 +89,30 @@ test('Change photo is a separate accessible action and does not invoke Edit Prof
  await act(async()=>change.props.onPress());assert.equal(changed,1);assert.equal(edited,0);
  }finally{await act(async()=>root.unmount());}
 });
+
+test('Android interop preserves Profile stat widths and Edit Profile button styling', async () => {
+  const {nativeStyleRuntime} = await import('./support/native-style-runtime');
+  const runtime = nativeStyleRuntime();
+  const {loadSource} = await import('./support/startup-harness');
+  const {ProfileHeader:Header} = loadSource('src/components/profile/ProfileHeader.tsx', {
+    'react-native':runtime.native,
+    'react/jsx-runtime':runtime.jsx,
+    'lucide-react-native':{LogOut:'LogOut',SquarePen:'SquarePen'},
+  });
+  let root!:ReturnType<typeof create>;
+  await act(async () => {root=create(React.createElement(Header,{
+    username:'tarunram',name:'Tarun',job:'',isCompact:false,isTablet:false,onEdit(){},onLogout(){},
+    stats:['likes given','saved','followers','following'].map(label => ({label,value:'3',onPress(){}})),
+  }));});
+  try {
+    const buttons=root.root.findAllByType('Pressable');
+    const styleOf=(label:string) => {
+      const style=buttons.find(node => node.props.accessibilityLabel === label)!.props.style;
+      return Object.assign({},...[typeof style === 'function' ? style({pressed:false}) : style].flat());
+    };
+    assert.equal(styleOf('3 saved').flex,1,'stats must each occupy an equal share of the row');
+    assert.equal(styleOf('Edit profile').borderWidth,1);
+    assert.equal(styleOf('Edit profile').flexDirection,'row');
+    assert.equal(styleOf('Edit profile').minHeight,48);
+  } finally {await act(async () => root.unmount());}
+});

@@ -82,10 +82,13 @@ describe("search", () => {
     assert.deepEqual(SEARCH_GROUPS.map(group => group.id), ['all', 'repositories', 'people', 'lists']);
   });
 
-  test('cancellation prevents a superseded debounce from reaching transport', async () => {
-    const controller = new AbortController();
+  test('React Native signals allow search and cancel a superseded debounce before transport', async () => {
+    const { AbortController: NativeAbortController } = await import('abort-controller');
+    const controller = new NativeAbortController();
+    const signal = controller.signal as AbortSignal;
+    assert.deepEqual(await runSearchRequest(signal, 0, async () => page()), page());
     let called = false;
-    const request = runSearchRequest(controller.signal, 300, async () => { called = true; return page(); });
+    const request = runSearchRequest(signal, 300, async () => { called = true; return page(); });
     controller.abort();
     await assert.rejects(request);
     assert.equal(called, false);
@@ -436,4 +439,26 @@ test('Explore never restores a prior account navigation offset into the next acc
     await app.scroll(0);await app.owner('viewer-b');await app.focus(true);await app.frame();await app.layout();await app.frame();
     assert.equal(app.offset,0);
   } finally {await app.close();}
+});
+
+test('Android interop retains Trending podium borders, background and row layout', async () => {
+  const {nativeStyleRuntime} = await import('./support/native-style-runtime');
+  const {loadSource} = await import('./support/startup-harness');
+  const runtime=nativeStyleRuntime();
+  const Card=loadSource('src/components/explore/TrendingRepoCard.tsx',{
+    'react-native':runtime.native,'react/jsx-runtime':runtime.jsx,
+  }).default;
+  const repo=mapTrendingRepository({repo_id:'repo',name:'repo',owner:'owner',full_name:'owner/repo',
+    url:'https://github.com/owner/repo',position:0,score:1,features:{}},'daily',null)!;
+  let root!:ReturnType<typeof create>;
+  await React.act(async () => {root=create(React.createElement(Card,{repo}));});
+  try {
+    const style=root.root.findByType('Pressable').props.style;
+    const resolved=typeof style === 'function' ? style({pressed:false}) : style;
+    assert.equal(resolved.borderWidth,1);
+    assert.equal(resolved.borderColor,'#FFD60A');
+    assert.equal(resolved.backgroundColor,'#1C1C1E');
+    assert.equal(resolved.flexDirection,'row');
+    assert.equal(resolved.padding,18);
+  } finally {await React.act(async () => root.unmount());}
 });

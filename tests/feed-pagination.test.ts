@@ -533,3 +533,35 @@ test('Home follows up preparation once with the same request and stops on persis
   assert.deepEqual(bodies,[request,request]);assert.deepEqual(waits,[3000]);
  }
 });
+
+
+test('Home loads with React Native AbortSignal and cancels before sending after token storage', async () => {
+  const { AbortController: NativeAbortController } = await import('abort-controller');
+  const { loadSource } = await import('./support/startup-harness');
+  const { SessionLifecycle } = await import('../src/api/session-lifecycle');
+  const lifecycle = new SessionLifecycle();
+  const token = `header.${Buffer.from(JSON.stringify({userId:'alice'})).toString('base64url')}.signature`;
+  let cancelDuringRead = false;
+  let signalController = new NativeAbortController();
+  let sends = 0;
+  const source = loadSource('src/services/homeFeedQuery.ts', {
+    '../utils/storage': {getStorageItem: async () => {
+      if (cancelDuringRead) signalController.abort();
+      return token;
+    }},
+    '../api/session-lifecycle': {authSessionLifecycle:lifecycle},
+    '../api/feed-sessions': {feedSessions: () => ({prepare: async (session:string) => session})},
+    '../api/home-feed': {fetchHomeFeed: async () => {sends++; return page(['android-repo'], '1', null);}},
+  });
+  const client = new QueryClient();
+  try {
+    const result = await source.homeFeedController(client, 'alice').load(null, signalController.signal as AbortSignal);
+    assert.equal(result.items[0].repo_id, 'android-repo');
+    assert.equal(sends, 1);
+    source.releaseHomeFeedController(client);
+    cancelDuringRead = true;
+    signalController = new NativeAbortController();
+    await assert.rejects(source.homeFeedController(client, 'alice').load(null, signalController.signal as AbortSignal), {name:'AbortError'});
+    assert.equal(sends, 1, 'cancelled storage completion must never send another request');
+  } finally {source.releaseHomeFeedController(client); client.clear();}
+});

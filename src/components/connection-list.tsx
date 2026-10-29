@@ -1,3 +1,4 @@
+import { throwIfAborted } from '../utils/abort-signal';
 import { retryKeysetQuery } from '@/services/keysetQueryRecovery';
 import React, { memo, useCallback, useMemo, useRef, useState } from 'react';
 import {
@@ -67,7 +68,7 @@ async function loadConnections(
 ): Promise<ConnectionKeysetPage> {
   const token = await getStorageItem('access_token');
   if (!token) throw new Error('Your session has expired. Please sign in again.');
-  signal?.throwIfAborted();
+  throwIfAborted(signal);
   return getUserConnectionsPage(userId, type, token, {
     limit: CONNECTION_PAGE_SIZE,
     cursor: cursor ?? undefined,
@@ -140,7 +141,7 @@ const ConnectionRow = memo(function ConnectionRow({
 
   return (
     <View style={[styles.row, compact && styles.rowCompact]}>
-      <Pressable
+      <Pressable cssInterop={false}
         accessibilityLabel={`Open ${person.username}'s profile photo`}
         accessibilityRole="button"
         onPress={openProfile}
@@ -172,7 +173,7 @@ const ConnectionRow = memo(function ConnectionRow({
         )}
       </Pressable>
 
-      <Pressable
+      <Pressable cssInterop={false}
         accessibilityLabel={`Open ${person.username}'s profile`}
         accessibilityRole="button"
         onPress={openProfile}
@@ -230,7 +231,7 @@ function StateView({
       <Text style={styles.stateTitle}>{title}</Text>
       {message ? <Text style={styles.stateMessage}>{message}</Text> : null}
       {onRetry ? (
-        <Pressable
+        <Pressable cssInterop={false}
           accessibilityRole="button"
           onPress={onRetry}
           style={({ pressed }) => [styles.retryButton, pressed && styles.pressed]}
@@ -452,7 +453,7 @@ export function ConnectionList({
           value={search}
         />
         {search ? (
-          <Pressable
+          <Pressable cssInterop={false}
             accessibilityLabel="Clear search"
             hitSlop={14}
             accessibilityRole="button" onPress={() => { setSearch(''); searchInputRef.current?.focus(); }}

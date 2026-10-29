@@ -131,7 +131,7 @@ function GitHubImportPanelBody({ userId, identityDraft, onSaved, onManual, api =
 }
 
 function ImportButton({ label, onPress, primary = false, disabled = false }: { label: string; onPress: () => unknown; primary?: boolean; disabled?: boolean }) {
-  return <Pressable accessibilityRole="button" accessibilityLabel={label} accessibilityState={{ disabled }}
+  return <Pressable cssInterop={false} accessibilityRole="button" accessibilityLabel={label} accessibilityState={{ disabled }}
       disabled={disabled} onPress={onPress} style={({ pressed }) => ({ minHeight: 48, justifyContent: 'center', alignItems: 'center',
         padding: Spacing.three, borderRadius: 12, borderWidth: 1, borderColor: primary ? APP_THEME.primary : REFERENCE_THEME.border, opacity: disabled ? 0.45 : pressed ? 0.7 : 1,
         backgroundColor: primary ? APP_THEME.primary : REFERENCE_THEME.surfaceElevated })}>

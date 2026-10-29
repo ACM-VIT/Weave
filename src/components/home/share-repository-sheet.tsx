@@ -324,7 +324,7 @@ export function ShareRepositorySheet({
                     <ActivityIndicator color={palette.accent} size="small" />
                   </View>
                 ) : linkFailed ? (
-                  <Pressable
+                  <Pressable cssInterop={false}
                     accessibilityLabel="Retry loading repository details"
                     accessibilityRole="button"
                     onPress={() => repositoryQuery.refetch()}
@@ -340,7 +340,7 @@ export function ShareRepositorySheet({
               </View>
 
               <View style={styles.primaryActions}>
-                <Pressable
+                <Pressable cssInterop={false}
                   accessibilityLabel="Share Weave repository link"
                   accessibilityRole="button"
                   accessibilityState={{ disabled: shareUnavailable }}
@@ -359,7 +359,7 @@ export function ShareRepositorySheet({
                   <Text style={[styles.primaryActionText, { color: palette.accentText }]}>Share</Text>
                 </Pressable>
 
-                <Pressable
+                <Pressable cssInterop={false}
                   accessibilityLabel="Copy Weave repository link"
                   accessibilityRole="button"
                   accessibilityState={{ disabled: !weaveUrl }}
@@ -379,7 +379,7 @@ export function ShareRepositorySheet({
                 </Pressable>
               </View>
 
-              <Pressable
+              <Pressable cssInterop={false}
                 accessibilityHint="Leaves Weave and opens the repository on github.com"
                 accessibilityLabel="Open on GitHub"
                 accessibilityRole="link"

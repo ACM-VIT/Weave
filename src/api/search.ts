@@ -1,3 +1,4 @@
+import { throwIfAborted } from '../utils/abort-signal';
 import { apiV2 } from './client';
 import { getStorageItem } from '../utils/storage';
 import { mapRepositoryDetail } from '../utils/repository-mapper';
@@ -6,7 +7,7 @@ import type { SearchGroup, SearchItem, SearchPage } from '../models/search';
 
 export async function fetchSearch(query: string, group: SearchGroup, searchId: string, cursor: string | null, signal: AbortSignal): Promise<SearchPage> {
   const token = await getStorageItem('access_token');
-  signal.throwIfAborted();
+  throwIfAborted(signal);
   if (!token) throw new Error('Sign in to search.');
   const response = await apiV2<SearchPage>('/search', { signal, method: 'POST', body: JSON.stringify({
     schema_version: 2, search_id: searchId, query, group, limit: 24, cursor,

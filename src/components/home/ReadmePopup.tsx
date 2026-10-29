@@ -361,7 +361,7 @@ function VisibleReadmePopup({
               <BookOpen size={14} color={REFERENCE_THEME.accentLight} strokeWidth={2} />
               <Text style={styles.headerText}>{contentKind === 'summary' ? 'README SUMMARY' : 'README'}</Text>
             </View>
-            <Pressable
+            <Pressable cssInterop={false}
               accessibilityLabel={contentKind === 'summary' ? 'Close README summary' : 'Close README'}
               accessibilityRole="button"
               onPress={closeAnimated}

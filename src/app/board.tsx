@@ -1,3 +1,4 @@
+import { throwIfAborted } from '../utils/abort-signal';
 import { rememberRepositoryPreview } from '@/services/repositoryPreview';
 import {
   ActivityIndicator,
@@ -62,11 +63,11 @@ export default function BoardScreen() {
       if (isPinnedCollection) {
         const items = (await loadPinnedRepositories(user!.user_id)).map(mapPinnedRepository)
           .filter((repository) => repository !== null);
-        authSessionLifecycle.assertCurrent(generation); signal.throwIfAborted();
+        authSessionLifecycle.assertCurrent(generation); throwIfAborted(signal);
         return {items, has_more:false, next_cursor:null};
       }
       const token = await getStorageItem('access_token');
-      authSessionLifecycle.assertCurrent(generation); signal.throwIfAborted();
+      authSessionLifecycle.assertCurrent(generation); throwIfAborted(signal);
       if (!token) throw new Error('Your session has expired. Please log in again.');
       const page = await (isRepositoryCollection
         ? getCollectionRepositoriesPage(collectionId, token, {limit:25,cursor:cursor ?? undefined}, signal)
@@ -105,7 +106,7 @@ export default function BoardScreen() {
             },
           ]}
         >
-          <Pressable
+          <Pressable cssInterop={false}
             accessibilityLabel="Go back to profile"
             accessibilityRole="button"
             hitSlop={12}
@@ -156,7 +157,7 @@ export default function BoardScreen() {
                   </View>
                   <Text selectable style={styles.stateTitle}>This list could not be opened.</Text>
                   <Text selectable style={styles.stateMessage}>Return to your profile and choose the list again.</Text>
-                  <Pressable onPress={goBack} style={({ pressed }) => [styles.secondaryButton, pressed && styles.pressed]}>
+                  <Pressable cssInterop={false} onPress={goBack} style={({ pressed }) => [styles.secondaryButton, pressed && styles.pressed]}>
                     <Text style={styles.secondaryButtonLabel}>Back to profile</Text>
                   </Pressable>
                 </>
@@ -176,7 +177,7 @@ export default function BoardScreen() {
                       ? repositoriesQuery.error.message
                       : 'Please check your connection and try again.'}
                   </Text>
-                  <Pressable
+                  <Pressable cssInterop={false}
                     accessibilityRole="button"
                     onPress={() => void repositoriesQuery.refetch()}
                     style={({ pressed }) => [styles.retryButton, pressed && styles.pressed]}
