@@ -166,13 +166,17 @@ test('global exposure reset retains old serves and pending actions while excludi
     const replay=await after.getServeByRequest(viewer,request);
     assert.equal(replay?.serve_id,serve);
     assert.equal(replay?.items[0]?.repo_id,repo,'reset preserves exact historical delivery for replay and attribution');
+    const {processInteractionBatchV2}=await import('../../services/activityV2Service.js');
+    assert.equal((await processInteractionBatchV2(viewer,[{schema_version:2,event_id:randomUUID(),session_id:session,serve_id:serve,
+      repo_id:repo,position:0,event_type:'impression',dwell_ms:null,client_occurred_at:new Date(Date.now()-3600000).toISOString(),context:{}}])).accepted,1);
+    assert.deepEqual(await after.listExcludedRepositoryIds(viewer,session,500),[], 'late pre-reset impressions must not restore viewing exclusions');
+    assert.deepEqual((await after.listCandidateEligibility(viewer,[repo],session)).exposureIds,[repo]);
     const [repository]=await after.listActiveRepositories([repo],viewer);
     await after.createServe({feed_request_id:randomUUID(),user_id:viewer,session_id:session,feed_version:1n,generation_id:null,
       source:'personalized',model_version:'test',next_cursor:null,
       items:[{repo_id:repo,position:0,score:1,source:'semantic',model_version:'test',summary_id:null,repository:repository!}]});
     assert.deepEqual((await loadCandidateEligibility(reader,viewer,[repo],7,session)).exposureIds,[]);
     assert.deepEqual(await after.listServedRepositoryIds(viewer,session,[repo]),[repo]);
-    const {processInteractionBatchV2}=await import('../../services/activityV2Service.js');
     assert.equal((await processInteractionBatchV2(viewer,[{schema_version:2,event_id:randomUUID(),session_id:session,serve_id:serve,
       repo_id:repo,position:0,event_type:'like',dwell_ms:null,client_occurred_at:new Date().toISOString(),context:{}}])).accepted,1,
       'pending action on a pre-reset delivery must still be accepted');

@@ -15,6 +15,10 @@ recent AS MATERIALIZED (
   SELECT engagement.repo_id FROM telemetry.interaction_events engagement
   WHERE engagement.user_id=$2::uuid AND engagement.repo_id=ANY($1::uuid[])
     AND engagement.server_received_at>=greatest(now()-($3::integer * interval '1 second'),$4::timestamptz)
+    AND (engagement.serve_id IS NULL OR EXISTS (
+      SELECT 1 FROM telemetry.feed_serves origin WHERE origin.serve_id=engagement.serve_id
+        AND origin.user_id=engagement.user_id AND origin.created_at>=$4::timestamptz
+    ))
 )
 SELECT requested.repo_id FROM requested
 WHERE NOT EXISTS(SELECT 1 FROM recent WHERE recent.repo_id=requested.repo_id)

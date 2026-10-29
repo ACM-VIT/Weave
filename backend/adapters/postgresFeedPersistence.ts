@@ -245,9 +245,13 @@ export class PostgresFeedPersistence implements FeedPersistencePort, FeedReconci
             OR serve.created_at>=now()-(${this.recentExposureDays * 86400}::integer * interval '1 second'))
         UNION ALL
         SELECT repo_id,server_received_at AS observed_at,1 AS priority
-        FROM telemetry.interaction_events WHERE user_id=${userId}::uuid
-          AND server_received_at>=${this.exposureResetAt}::timestamptz
-          AND server_received_at>=now()-(${this.recentExposureDays * 86400}::integer * interval '1 second')
+        FROM telemetry.interaction_events event WHERE event.user_id=${userId}::uuid
+          AND event.server_received_at>=${this.exposureResetAt}::timestamptz
+          AND event.server_received_at>=now()-(${this.recentExposureDays * 86400}::integer * interval '1 second')
+          AND (event.serve_id IS NULL OR EXISTS (
+            SELECT 1 FROM telemetry.feed_serves origin WHERE origin.serve_id=event.serve_id
+              AND origin.user_id=event.user_id AND origin.created_at>=${this.exposureResetAt}::timestamptz
+          ))
       )
       SELECT repo_id FROM exposures GROUP BY repo_id
       ORDER BY min(priority),max(observed_at) DESC,repo_id LIMIT ${boundedLimit}
@@ -349,6 +353,10 @@ export class PostgresFeedPersistence implements FeedPersistencePort, FeedReconci
             WHERE recent_event.user_id=${userId}::uuid AND recent_event.repo_id=item.repo_id
               AND recent_event.server_received_at>=${this.exposureResetAt}::timestamptz
             AND recent_event.server_received_at>=now()-(${this.recentExposureDays * 86400}::integer * interval '1 second')
+              AND (recent_event.serve_id IS NULL OR EXISTS (
+                SELECT 1 FROM telemetry.feed_serves origin WHERE origin.serve_id=recent_event.serve_id
+                  AND origin.user_id=recent_event.user_id AND origin.created_at>=${this.exposureResetAt}::timestamptz
+              ))
           )
       )
       SELECT repo_id,score,source,model_version,summary_id,generation_id,record_digest,capture_status,legacy_generation_hint
@@ -922,6 +930,10 @@ export class PostgresFeedPersistence implements FeedPersistencePort, FeedReconci
           WHERE recent_event.user_id=${viewerUserId ?? null}::uuid AND recent_event.repo_id=item.repo_id
             AND recent_event.server_received_at>=${this.exposureResetAt}::timestamptz
             AND recent_event.server_received_at>=now()-(${this.recentExposureDays * 86400}::integer * interval '1 second')
+              AND (recent_event.serve_id IS NULL OR EXISTS (
+                SELECT 1 FROM telemetry.feed_serves origin WHERE origin.serve_id=recent_event.serve_id
+                  AND origin.user_id=recent_event.user_id AND origin.created_at>=${this.exposureResetAt}::timestamptz
+              ))
         )
       ORDER BY snapshot.activated_at DESC, item.position ASC LIMIT ${limit}
     `;

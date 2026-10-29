@@ -8,7 +8,12 @@ export function feedRecentExposureDays(raw = process.env.FEED_RECENT_EXPOSURE_DA
   return days;
 }
 
-/** Operator-triggered global history reset; durable telemetry remains unchanged. */
+/** Operator-triggered global history reset; durable telemetry remains unchanged.
+ * UTC ISO format: YYYY-MM-DDTHH:mm:ss[.SSS]Z, never a future time; unset means epoch.
+ * Stop API/feed preparation, advance affected users' feed_version, and restart all
+ * API/worker replicas with the same fixed cutoff to abandon old queue exclusions.
+ * Keep that cutoff unchanged afterward; new deliveries are still deduplicated.
+ */
 export function feedExposureResetAt(raw = process.env.FEED_EXPOSURE_RESET_AT): string {
   if (raw === undefined || raw === '') return '1970-01-01T00:00:00.000Z';
   const value = Date.parse(raw);
