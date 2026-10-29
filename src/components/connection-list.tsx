@@ -1,3 +1,4 @@
+import { throwIfAborted } from '../utils/abort-signal';
 import { retryKeysetQuery } from '@/services/keysetQueryRecovery';
 import React, { memo, useCallback, useMemo, useRef, useState } from 'react';
 import {
@@ -67,7 +68,7 @@ async function loadConnections(
 ): Promise<ConnectionKeysetPage> {
   const token = await getStorageItem('access_token');
   if (!token) throw new Error('Your session has expired. Please sign in again.');
-  signal?.throwIfAborted();
+  throwIfAborted(signal);
   return getUserConnectionsPage(userId, type, token, {
     limit: CONNECTION_PAGE_SIZE,
     cursor: cursor ?? undefined,

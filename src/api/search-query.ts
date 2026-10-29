@@ -1,17 +1,18 @@
+import { throwIfAborted } from '../utils/abort-signal';
 import type { SearchGroup, SearchPage } from '../models/search';
 import { infiniteQueryOptions } from '@tanstack/react-query';
 
 /** Abort both the debounce timer and transport when the observer is superseded. */
 export async function runSearchRequest<T>(signal: AbortSignal, delay: number, send: (signal: AbortSignal) => Promise<T>): Promise<T> {
-  signal.throwIfAborted();
+  throwIfAborted(signal);
   if (delay) await new Promise<void>((resolve,reject) => {
     const abort = () => { clearTimeout(timer); reject(signal.reason ?? new Error('Search cancelled')); };
     const timer = setTimeout(() => { signal.removeEventListener('abort',abort); resolve(); },delay);
     signal.addEventListener('abort',abort,{ once: true });
   });
-  signal.throwIfAborted();
+  throwIfAborted(signal);
   const result = await send(signal);
-  signal.throwIfAborted();
+  throwIfAborted(signal);
   return result;
 }
 export const MIN_SEARCH_LENGTH = 2;

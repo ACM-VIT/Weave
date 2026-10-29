@@ -1,3 +1,4 @@
+import { throwIfAborted } from '../utils/abort-signal';
 import { retryKeysetQuery } from '@/services/keysetQueryRecovery';
 import { useMemo, useRef, useState } from 'react';
 import {
@@ -37,7 +38,7 @@ async function loadRepositories(
   signal?: AbortSignal,
 ): Promise<ProfileRepositoryPage> {
   const token = await getStorageItem('access_token');
-  signal?.throwIfAborted();
+  throwIfAborted(signal);
   if (!token) throw new Error('Your session has expired. Please sign in again.');
   return requestProfileRepositoryPage(type, userId, cursor,
     path => apiV2<unknown>(path, { signal }, token));

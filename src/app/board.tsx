@@ -1,3 +1,4 @@
+import { throwIfAborted } from '../utils/abort-signal';
 import { rememberRepositoryPreview } from '@/services/repositoryPreview';
 import {
   ActivityIndicator,
@@ -62,11 +63,11 @@ export default function BoardScreen() {
       if (isPinnedCollection) {
         const items = (await loadPinnedRepositories(user!.user_id)).map(mapPinnedRepository)
           .filter((repository) => repository !== null);
-        authSessionLifecycle.assertCurrent(generation); signal.throwIfAborted();
+        authSessionLifecycle.assertCurrent(generation); throwIfAborted(signal);
         return {items, has_more:false, next_cursor:null};
       }
       const token = await getStorageItem('access_token');
-      authSessionLifecycle.assertCurrent(generation); signal.throwIfAborted();
+      authSessionLifecycle.assertCurrent(generation); throwIfAborted(signal);
       if (!token) throw new Error('Your session has expired. Please log in again.');
       const page = await (isRepositoryCollection
         ? getCollectionRepositoriesPage(collectionId, token, {limit:25,cursor:cursor ?? undefined}, signal)

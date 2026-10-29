@@ -1,3 +1,4 @@
+import { throwIfAborted } from '../../utils/abort-signal';
 import { useBrowsePrefetch } from '@/hooks/use-browse-prefetch';
 import { homeFeedController, homeFeedQueryOptions } from '@/services/homeFeedQuery';
 import { rememberRepositoryPreview } from '@/services/repositoryPreview';
@@ -349,7 +350,7 @@ export default function HomeScreen() {
     const request = new AbortController();
     const generation = authSessionLifecycle.currentGeneration();
     const assertCurrent = () => {
-      request.signal.throwIfAborted();
+      throwIfAborted(request.signal);
       authSessionLifecycle.assertCurrent(generation);
     };
     refreshRequest.current = request;

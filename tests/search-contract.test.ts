@@ -82,10 +82,13 @@ describe("search", () => {
     assert.deepEqual(SEARCH_GROUPS.map(group => group.id), ['all', 'repositories', 'people', 'lists']);
   });
 
-  test('cancellation prevents a superseded debounce from reaching transport', async () => {
-    const controller = new AbortController();
+  test('React Native signals allow search and cancel a superseded debounce before transport', async () => {
+    const { AbortController: NativeAbortController } = await import('abort-controller');
+    const controller = new NativeAbortController();
+    const signal = controller.signal as AbortSignal;
+    assert.deepEqual(await runSearchRequest(signal, 0, async () => page()), page());
     let called = false;
-    const request = runSearchRequest(controller.signal, 300, async () => { called = true; return page(); });
+    const request = runSearchRequest(signal, 300, async () => { called = true; return page(); });
     controller.abort();
     await assert.rejects(request);
     assert.equal(called, false);
