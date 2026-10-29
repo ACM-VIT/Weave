@@ -211,7 +211,7 @@ export default function BoardScreen() {
               onPress={() => void (repositoriesQuery.isError ? retryKeysetQuery(repositoriesQuery)
                 : repositoriesQuery.fetchNextPage({cancelRefetch:false}))}
               style={styles.retryButton}>
-              {repositoriesQuery.isFetching ? <ActivityIndicator color="#63E08A" />
+              {repositoriesQuery.isFetching ? <ActivityIndicator color={styles.retryButtonLabel.color} />
                 : <Text style={styles.retryButtonLabel}>{repositoriesQuery.isError ? 'Try again' : 'Load more'}</Text>}
             </Pressable>
           ) : null}
