@@ -30,22 +30,20 @@ function ProfileAvatar({ uri, letter, size, label, textSize }: { uri: string; le
 
 export function ProfileHeader({ username, name, job, avatarUrl, isTablet, isCompact, stats, onEdit, onLogout, onChangePhoto, onGitHubPreferences, githubPreferencesVisible, githubIcon }: Props) {
   const avatarLetter = username.trim().charAt(0).toUpperCase() || name.trim().charAt(0).toUpperCase() || '?';
-  const avatarSize = isTablet ? 96 : isCompact ? 68 : 80;
+  const avatarSize = isTablet ? 80 : isCompact ? 56 : 64;
   const avatarUri = typeof avatarUrl === 'string' ? avatarUrl.trim() : '';
+  const avatar = <ProfileAvatar key={avatarUri} uri={avatarUri} letter={avatarLetter} size={avatarSize}
+    textSize={isTablet ? 32 : 26} label={`${name || username || 'Your'} profile photo`} />;
   return (
     <View style={styles.header}>
       <View style={styles.topRow}>
-        <View style={{ alignItems: 'center' }}>
-          <ProfileAvatar key={avatarUri} uri={avatarUri} letter={avatarLetter} size={avatarSize}
-            textSize={isTablet ? 38 : 32} label={`${name || username || 'Your'} profile photo`} />
-          {onChangePhoto ? <Pressable accessibilityRole="button" accessibilityLabel="Change profile photo" onPress={onChangePhoto}
-            style={{ minHeight: 48, justifyContent: 'center', paddingHorizontal: 4 }}><Text style={{ color: '#63E08A', fontSize: 13 }}>Change photo</Text></Pressable> : null}
-        </View>
+        {onChangePhoto ? <Pressable accessibilityRole="button" accessibilityLabel="Change profile photo"
+          onPress={onChangePhoto} style={{ flexShrink: 0, minWidth: 48, minHeight: 48 }}>{avatar}</Pressable> : avatar}
         <View style={styles.identity}>
-          <View style={styles.identityHeading}>
-            <View style={{ flex: 1, minWidth: 0 }}>
-              {name ? <Text selectable className="font-nataBold" style={styles.name}>{name}</Text> : null}
-            </View>
+          {name ? <Text selectable numberOfLines={2} className="font-nataBold" style={styles.name}>{name}</Text> : null}
+          {username ? <Text selectable numberOfLines={2} className="font-nata" style={styles.username}>@{username}</Text> : null}
+        </View>
+        <View style={styles.actions}>
             {onGitHubPreferences ? <Pressable accessibilityRole="button" accessibilityLabel="GitHub activity preferences"
               accessibilityHint="Opens GitHub activity and account settings" accessibilityState={{ expanded: githubPreferencesVisible }}
               onPress={onGitHubPreferences} style={styles.action}>
@@ -54,8 +52,6 @@ export function ProfileHeader({ username, name, job, avatarUrl, isTablet, isComp
             <Pressable accessibilityRole="button" accessibilityLabel="Log out" onPress={onLogout} style={styles.action}>
               <LogOut size={22} strokeWidth={1.9} color="#97969C" />
             </Pressable>
-          </View>
-          {username ? <Text selectable numberOfLines={2} className="font-nata" style={styles.username}>@{username}</Text> : null}
         </View>
       </View>
       {job ? <Text numberOfLines={4} className="font-nata" style={styles.bio}>{job}</Text> : null}
@@ -79,7 +75,7 @@ export function ProfileHeader({ username, name, job, avatarUrl, isTablet, isComp
 
 const styles = StyleSheet.create({
   header: { width: '100%', gap: 18 },
-  topRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 16 },
+  topRow: { flexDirection: 'row', alignItems: 'center', gap: 12 },
   avatar: { flexShrink: 0, borderRadius: 999, backgroundColor: '#9B4FE4', alignItems: 'center', justifyContent: 'center' },
   action: { width: 48, height: 48, flexShrink: 0, alignItems: 'center', justifyContent: 'center' },
   githubSquare: { width: 36, height: 36, borderRadius: 10, borderWidth: 1, borderColor: '#2F2F32', backgroundColor: '#63E08A18', alignItems: 'center', justifyContent: 'center' },
@@ -87,9 +83,9 @@ const styles = StyleSheet.create({
     borderColor: '#2F2F32', backgroundColor: '#1D1D1F', flexDirection: 'row', gap: 10, alignItems: 'center', justifyContent: 'center' },
   editLabel: { color: '#F7F7F8', fontSize: 15, lineHeight: 22, flexShrink: 1 },
   identity: { flex: 1, minWidth: 0, gap: 5 },
-  identityHeading: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  actions: { flexDirection: 'row', alignItems: 'center', flexShrink: 0 },
   username: { color: '#8A898F', fontSize: 16, lineHeight: 22, flexShrink: 1 },
-  name: { color: '#F7F7F8', fontSize: 22, lineHeight: 29 },
+  name: { color: '#F7F7F8', fontSize: 20, lineHeight: 26 },
   bio: { color: '#8A898F', fontSize: 14, lineHeight: 21 },
   stats: { width: '100%', flexDirection: 'row', alignItems: 'stretch' },
   stat: { flex: 1, minWidth: 0, minHeight: 70, paddingVertical: 10, paddingHorizontal: 2, alignItems: 'center', justifyContent: 'flex-start', gap: 4, borderRadius: 10 },

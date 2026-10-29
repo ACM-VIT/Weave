@@ -34,6 +34,7 @@ test('long profile identity remains readable and every header action retains its
     username, name: 'Krishang Zinzuwadia', job: 'Building open source projects with multiple teams.', isCompact: true, isTablet: false,
     onEdit: () => actions.push('edit'), onLogout: () => actions.push('logout'),
     onGitHubPreferences: () => actions.push('github'), githubPreferencesVisible: false, githubIcon: React.createElement('GitHubIcon'),
+    onChangePhoto: () => actions.push('photo'),
     stats: ['likes given', 'saved', 'followers', 'following'].map(label => ({label, value: '10.2K', onPress: () => actions.push(label)})),
   }));});
   try {
@@ -46,18 +47,18 @@ test('long profile identity remains readable and every header action retains its
     assert.ok(nameText.props.style.fontSize > text.props.style.fontSize, 'display name is the primary identity');
     assert.ok(texts.indexOf(nameText) < texts.indexOf(text), 'the name precedes the secondary handle');
     const buttons = root.root.findAllByType('Pressable');
-    assert.equal(buttons.length, 7);
+    assert.equal(buttons.length, 8);
     const edit = buttons.find(button => button.props.accessibilityLabel === 'Edit profile')!;
     const logout = buttons.find(button => button.props.accessibilityLabel === 'Log out')!;
     const github = buttons.find(button => button.props.accessibilityLabel === 'GitHub activity preferences')!;
     assert.equal(github.findAllByType('GitHubIcon').length,1);
     assert.equal(github.parent, logout.parent);
     assert.ok(buttons.indexOf(github) < buttons.indexOf(logout), 'the compact GitHub action is immediately before logout');
-    assert.ok(logout.parent!.findAllByType('Text').includes(nameText), 'logout shares the identity row instead of reserving an empty row above it');
+    assert.equal(texts.some(node => node.props.children === 'Change photo'), false, 'the avatar itself opens photo editing without a caption');
     assert.ok(edit.findAllByType('Text').some(node => node.props.children === 'Edit Profile'), 'Edit Profile must be visibly labeled, not an unexplained icon');
     assert.ok(texts.indexOf(edit.findByType('Text')) > texts.findIndex(node => node.props.children === 'following'), 'Edit Profile follows the complete stats row');
     for (const button of buttons) await act(async () => {button.props.onPress();});
-    assert.deepEqual(actions, ['github', 'logout', 'likes given', 'saved', 'followers', 'following', 'edit']);
+    assert.deepEqual(actions, ['photo', 'github', 'logout', 'likes given', 'saved', 'followers', 'following', 'edit']);
   } finally {await act(async () => root.unmount());}
 });
 
