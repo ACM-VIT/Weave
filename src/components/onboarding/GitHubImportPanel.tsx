@@ -7,19 +7,18 @@ type State = { owner: string; status: GitHubImportStatus | null; preview: GitHub
   busy: string | null; error: string; declined: boolean; refreshNeeded: boolean; cleanupNeeded: boolean };
 const empty = (owner: string): State => ({ owner, status: null, preview: null, busy: null, error: '', declined: false, refreshNeeded: false, cleanupNeeded: false });
 
-type Props = { userId: string; identityDraft?: ImportIdentityDraft; onSaved: () => Promise<unknown>; onManual?: () => void; api?: GitHubImportApi };
+type Props = { userId: string; identityDraft?: ImportIdentityDraft; onSaved: () => Promise<unknown>; onManual?: () => void; onLinkedChange?: (linked: boolean) => void; api?: GitHubImportApi };
 export function GitHubImportPanel(props: Props) {
   return <GitHubImportPanelBody key={props.userId} {...props} />;
 }
-function GitHubImportPanelBody({ userId, identityDraft, onSaved, onManual, api = githubImportApi }: {
-  userId: string; identityDraft?: ImportIdentityDraft; onSaved: () => Promise<unknown>; onManual?: () => void; api?: GitHubImportApi;
-}) {
+function GitHubImportPanelBody({ userId, identityDraft, onSaved, onManual, onLinkedChange, api = githubImportApi }: Props) {
   const [state, setState] = useState<State>(() => ({ ...empty(userId), busy: 'Loading preferences' }));
   const alive = useRef(false);
   const sequence = useRef(0);
   const request = useRef<AbortController | null>(null);
   const manualAfterCleanup = useRef(false);
   const current = state;
+  useEffect(() => { if (state.status) onLinkedChange?.(state.status.linked); }, [onLinkedChange, state.status]);
   const update = (_actor: string, values: Partial<State>) => { if (alive.current) setState(previous => ({ ...previous, ...values })); };
 
   useEffect(() => {

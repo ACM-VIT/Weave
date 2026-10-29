@@ -17,6 +17,7 @@ export function GitHubPreferencesPopup(props: Props) {
 
 function PopupBody({ userId, onClose, onSaved }: Props) {
   const [importRevision, setImportRevision] = useState(0);
+  const [githubLinked, setGithubLinked] = useState<boolean | undefined>(undefined);
   const { height } = useWindowDimensions();
   const insets = useSafeAreaInsets();
   const reducedMotion = useReducedMotion();
@@ -39,10 +40,10 @@ function PopupBody({ userId, onClose, onSaved }: Props) {
           </View>
           <ScrollView accessibilityLabel="GitHub preference settings" keyboardShouldPersistTaps="handled" style={styles.scroll} contentContainerStyle={styles.content}>
             <View style={styles.section}>
-              <GitHubImportPanel key={importRevision} userId={userId} onSaved={onSaved} />
+              <GitHubImportPanel key={importRevision} userId={userId} onSaved={onSaved} onLinkedChange={setGithubLinked} />
             </View>
             <View style={styles.section}>
-              <GitHubUnlinkPanel userId={userId} onSaved={async () => {
+              <GitHubUnlinkPanel userId={userId} linked={githubLinked} onSaved={async () => {
                 await onSaved();
                 setImportRevision(revision => revision + 1);
               }} />
