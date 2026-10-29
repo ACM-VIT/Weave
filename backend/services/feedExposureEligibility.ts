@@ -1,3 +1,4 @@
+import { feedExposureResetAt } from '../config/feedExposure.js';
 import { NEGATIVE_PREFERENCE_ELIGIBILITY_SQL, type NegativePreferenceReader } from './negativePreferenceEligibility.js';
 
 /** Exact candidate check; bounded ML exclusion hints are not a delivery fence. */
@@ -8,12 +9,16 @@ recent AS MATERIALIZED (
   SELECT item.repo_id FROM telemetry.feed_serves serve
   JOIN telemetry.feed_serve_items item ON item.serve_id=serve.serve_id
   WHERE serve.user_id=$2::uuid
-    AND serve.created_at>=now()-($3::integer * interval '1 second')
+    AND serve.created_at>=greatest(now()-($3::integer * interval '1 second'),$4::timestamptz)
     AND item.repo_id=ANY($1::uuid[])
   UNION
   SELECT engagement.repo_id FROM telemetry.interaction_events engagement
   WHERE engagement.user_id=$2::uuid AND engagement.repo_id=ANY($1::uuid[])
-    AND engagement.server_received_at>=now()-($3::integer * interval '1 second')
+    AND engagement.server_received_at>=greatest(now()-($3::integer * interval '1 second'),$4::timestamptz)
+    AND (engagement.serve_id IS NULL OR EXISTS (
+      SELECT 1 FROM telemetry.feed_serves origin WHERE origin.serve_id=engagement.serve_id
+        AND origin.user_id=engagement.user_id AND origin.created_at>=$4::timestamptz
+    ))
 )
 SELECT requested.repo_id FROM requested
 WHERE NOT EXISTS(SELECT 1 FROM recent WHERE recent.repo_id=requested.repo_id)
@@ -28,7 +33,7 @@ export async function loadRecentExposureEligibleIds(
   if (!Number.isInteger(days) || days < 1 || days > 365) throw new Error('Invalid recent exposure window.');
   const requested = [...new Set(repoIds)].sort();
   if (!requested.length) return [];
-  const rows = await reader.query(RECENT_EXPOSURE_ELIGIBILITY_SQL, [requested, userId, String(days * 86400)]);
+  const rows = await reader.query(RECENT_EXPOSURE_ELIGIBILITY_SQL, [requested, userId, String(days * 86400), feedExposureResetAt()]);
   const allowed = new Set<string>();
   for (const row of rows) {
     if (typeof row.repo_id !== 'string' || !requested.includes(row.repo_id) || allowed.has(row.repo_id)) {
@@ -58,7 +63,8 @@ export async function loadCandidateEligibility(
       EXISTS(SELECT 1 FROM preference WHERE preference.repo_id=repo.repo_id) AS preference_eligible,
       EXISTS(SELECT 1 FROM exposure WHERE exposure.repo_id=repo.repo_id) AS exposure_eligible,
       EXISTS(SELECT 1 FROM telemetry.feed_serves served JOIN telemetry.feed_serve_items item USING(serve_id)
-        WHERE served.user_id=$2::uuid AND served.session_id=NULLIF($4,'')::uuid AND item.repo_id=repo.repo_id) AS session_served
+        WHERE served.user_id=$2::uuid AND served.session_id=NULLIF($5,'')::uuid AND item.repo_id=repo.repo_id
+          AND served.created_at>=$4::timestamptz) AS session_served
     FROM app.repos repo LEFT JOIN app.repo_content content USING(repo_id)
     LEFT JOIN LATERAL (
       SELECT card.summary_id FROM app.repo_card_summaries card
@@ -67,7 +73,7 @@ export async function loadCandidateEligibility(
       ORDER BY card.created_at DESC LIMIT 1
     ) summary ON true
     WHERE repo.repo_id=ANY($1::uuid[]) AND repo.status='active' ORDER BY repo.repo_id`,
-    [requested, userId, String(days * 86400), canonicalSessionId ?? '']);
+    [requested, userId, String(days * 86400), feedExposureResetAt(), canonicalSessionId ?? '']);
   const seen = new Set<string>();
   for (const row of rows) {
     if (typeof row.repo_id !== 'string' || !requested.includes(row.repo_id) || seen.has(row.repo_id)
