@@ -30,13 +30,15 @@ export default function ResetPasswordScreen() {
   const [message, setMessage] = useState('');
   const [isComplete, setIsComplete] = useState(false);
   const [handoffError, setHandoffError] = useState('');
-  const [error, setError] = useState(
-    () => params.error_description ?? webHash?.get('error_description') ?? '',
-  );
+  const [error, setError] = useState('');
+  const [invalidSession, setInvalidSession] = useState(() => Boolean(
+    params.error_description || webHash?.get('error_description'),
+  ));
+  const hasRecoverySession = Boolean(accessToken && refreshToken) && !invalidSession;
 
   const passwordError = passwordPolicyError(password);
   const validPassword = passwordError === null;
-  const isValid = Boolean(accessToken && refreshToken) && validPassword && password === confirmation;
+  const isValid = hasRecoverySession && validPassword && password === confirmation;
 
   useEffect(() => {
     isActive.current = true;
@@ -85,7 +87,11 @@ export default function ResetPasswordScreen() {
       void returnToApp();
     } catch (caught) {
       if (!isActive.current) return;
-      setError(caught instanceof Error ? caught.message : 'Unable to reset your password.');
+      if ((caught as {code?: string})?.code === 'PASSWORD_RESET_SESSION_INVALID') {
+        setInvalidSession(true);
+        setAccessToken(''); setRefreshToken(''); setPassword(''); setConfirmation('');
+        setError('');
+      } else setError(caught instanceof Error ? caught.message : 'Unable to reset your password.');
     } finally {
       if (isActive.current) setIsLoading(false);
     }
@@ -102,11 +108,18 @@ export default function ResetPasswordScreen() {
           </Text>
           <PrimaryButton label="Open Weave" onPress={() => void returnToApp()} />
           {handoffError ? <Text accessibilityRole="alert" className="text-[#FF6878] text-[13px] font-nata mt-4">{handoffError}</Text> : null}
+        </> : !hasRecoverySession ? <>
+          <Text accessibilityRole="alert" className="text-[#FF6878] text-[14px] leading-6 font-nata mt-3 mb-6">
+            This reset link is invalid or expired.
+          </Text>
+          <PrimaryButton label="Request a new reset link" onPress={() => {
+            isActive.current = false;
+            router.replace('/(auth)/forgot-password');
+          }} />
         </> : <>
           <Text className="text-[#8A898F] text-[14px] leading-6 font-nata mt-3 mb-8">
             {PASSWORD_REQUIREMENTS} Avoid reusing a password from another service.
           </Text>
-          {(!accessToken || !refreshToken) && !isComplete ? <Text className="text-[#FF6878] text-[13px] font-nata mb-5">This reset link is invalid or expired.</Text> : null}
           <Text className="text-white text-[15px] font-nata mb-3">New Password</Text>
           <LoginInput value={password} onChangeText={setPassword} placeholder="Enter a new password" autoComplete="new-password" secureTextEntry />
           {password && passwordError ? <Text className="text-[#FF6878] text-[13px] font-nata mt-4">{passwordError}</Text> : null}
@@ -122,7 +135,7 @@ export default function ResetPasswordScreen() {
           isActive.current = false;
           router.replace('/(auth)/login');
         }} className="items-center py-5 mt-2">
-          <Text className="text-[#63E08A] font-nataSemiBold">{isComplete && Platform.OS === 'web' ? 'Continue in browser' : 'Go to login'}</Text>
+          <Text className="text-[#63E08A] font-nataSemiBold">{isComplete && Platform.OS === 'web' ? 'Continue in browser' : 'Back to login'}</Text>
         </Pressable>
       </View>
     </KeyboardForm>
