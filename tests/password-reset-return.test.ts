@@ -16,6 +16,7 @@ function fixture(platform: 'web' | 'ios' | 'android', options: { updateFails?: b
   const nativeRequire = createRequire(filename);
   const module = { exports: {} as any };
   const mocks: Record<string, any> = {
+    '@/utils/password-policy': nativeRequire('../../utils/password-policy'),
     '@/components/keyboard/keyboard-layout': { KeyboardForm: 'KeyboardForm' },
     '@/components/Auth/LoginInput': { default: 'LoginInput', __esModule: true },
     '@/components/Auth/PrimaryButton': { default: 'PrimaryButton', __esModule: true },
@@ -143,4 +144,46 @@ test('choosing browser login suppresses handoff even before navigation unmounts 
   assert.deepEqual(f.events, ['/(auth)/login', 'updated']);
   assert.equal(screen.root.findByType('PrimaryButton').props.label, 'Updating…');
   await act(async () => screen.unmount());
+});
+
+
+test('signup and reset share the server password bounds and explicit unmet-rule messages', async () => {
+  const {passwordPolicyError,PASSWORD_REQUIREMENTS}=await import('../src/utils/password-policy');
+  assert.equal(PASSWORD_REQUIREMENTS,'Use 12–128 characters.');
+  assert.equal(passwordPolicyError('a'.repeat(11)),'Use at least 12 characters.');
+  assert.equal(passwordPolicyError('a'.repeat(12)),null);
+  assert.equal(passwordPolicyError('a'.repeat(128)),null);
+  assert.equal(passwordPolicyError('a'.repeat(129)),'Use no more than 128 characters.');
+});
+
+test('signup blocks the former eight-character rule and accepts the same policy as recovery', async () => {
+  const {loadSource}=await import('./support/startup-harness');
+  const {passwordPolicyError}=await import('../src/utils/password-policy');
+  const submissions:unknown[]=[];
+  const mocks:Record<string,any>={
+    'react-native':{Text:'Text',View:'View'},'expo-router':{useRouter:()=>({})},
+    '../../store/AuthContext':{useAuth:()=>({setSession:async()=>{}})},
+    '../../api/auth':{register:async(...args:unknown[])=>{submissions.push(args);throw Error('fixture stopped after validation');}},
+    '../../hooks/useOAuth':{useOAuth:()=>({})},
+    '@/components/keyboard/keyboard-layout':{KeyboardForm:'KeyboardForm'},
+    '@/utils/password-policy':{passwordPolicyError},
+  };
+  for(const component of ['AuthFooter','AuthInput','BrandWord','EmailTab','LogoCircle','OrDivider','PasswordRules','PrimaryButton','SectionLabel','SocialButton','date-of-birth-field']) {
+    mocks[`@/components/Auth/${component}`]={__esModule:true,default:component};
+  }
+  mocks['@/components/Auth/icons']={GithubIcon:'GithubIcon',GoogleIcon:'GoogleIcon'};
+  const {default:Screen}=loadSource('src/app/(auth)/sign-up-email.tsx',mocks);
+  let screen!:ReturnType<typeof create>;
+  await act(async()=>{screen=create(React.createElement(Screen));});
+  try {
+    const inputs=screen.root.findAllByType('AuthInput');
+    await act(async()=>{for(const [i,value] of ['Tarun','tarun','tarun@example.test','Strong12'].entries())inputs[i].props.onChangeText(value);
+      screen.root.findByType('date-of-birth-field').props.onChange('2005-01-01');});
+    await act(async()=>{screen.root.findByType('PrimaryButton').props.onPress();});
+    assert.equal(submissions.length,0);
+    assert.ok(screen.root.findAllByType('Text').some(node=>node.props.children==='Use at least 12 characters.'));
+    await act(async()=>{screen.root.findAllByType('AuthInput')[3].props.onChangeText('a'.repeat(12));});
+    await act(async()=>{await screen.root.findByType('PrimaryButton').props.onPress();});
+    assert.equal(submissions.length,1);
+  } finally {await act(async()=>screen.unmount());}
 });

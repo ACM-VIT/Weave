@@ -1,3 +1,4 @@
+import { passwordPolicyError, PASSWORD_REQUIREMENTS } from '@/utils/password-policy';
 import { KeyboardForm } from '@/components/keyboard/keyboard-layout';
 import { confirmPasswordReset } from '@/api/auth';
 import LoginInput from '@/components/Auth/LoginInput';
@@ -33,7 +34,8 @@ export default function ResetPasswordScreen() {
     () => params.error_description ?? webHash?.get('error_description') ?? '',
   );
 
-  const validPassword = password.length >= 12 && password.length <= 128;
+  const passwordError = passwordPolicyError(password);
+  const validPassword = passwordError === null;
   const isValid = Boolean(accessToken && refreshToken) && validPassword && password === confirmation;
 
   useEffect(() => {
@@ -102,11 +104,12 @@ export default function ResetPasswordScreen() {
           {handoffError ? <Text accessibilityRole="alert" className="text-[#FF6878] text-[13px] font-nata mt-4">{handoffError}</Text> : null}
         </> : <>
           <Text className="text-[#8A898F] text-[14px] leading-6 font-nata mt-3 mb-8">
-            Use at least 12 characters. Avoid reusing a password from another service.
+            {PASSWORD_REQUIREMENTS} Avoid reusing a password from another service.
           </Text>
           {(!accessToken || !refreshToken) && !isComplete ? <Text className="text-[#FF6878] text-[13px] font-nata mb-5">This reset link is invalid or expired.</Text> : null}
           <Text className="text-white text-[15px] font-nata mb-3">New Password</Text>
           <LoginInput value={password} onChangeText={setPassword} placeholder="Enter a new password" autoComplete="new-password" secureTextEntry />
+          {password && passwordError ? <Text className="text-[#FF6878] text-[13px] font-nata mt-4">{passwordError}</Text> : null}
           <Text className="text-white text-[15px] font-nata mt-6 mb-3">Confirm Password</Text>
           <LoginInput value={confirmation} onChangeText={setConfirmation} placeholder="Repeat the new password" autoComplete="new-password" secureTextEntry />
           {confirmation && password !== confirmation ? <Text className="text-[#FF6878] text-[13px] font-nata mt-4">Passwords do not match.</Text> : null}
