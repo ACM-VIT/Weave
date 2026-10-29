@@ -18,6 +18,7 @@ export function repository(id: string): RepositoryData {
   return {
     contentVersion:1,contentHash:'fixture-content-hash',hasReadme:true,
     id, name: id, fullName: `owner/${id}`, owner: 'owner', description: '', readmeSummary: 'Summary.', readmeFull: '# README',
+    languages: [], primaryLanguage: null,
     serveId: id, feedPosition: 3, githubUrl: `https://github.com/owner/${id}`,
     stats: { stars: 0, views: 0, openIssues: 0, forks: 0, comments: 0, likes: 0, dislikes: 0, saves: 0 },
   } as RepositoryData;
@@ -38,6 +39,17 @@ export function feed(ids: string[], reducedMotion = false, attribution?: { owner
   let loadLists: (signal?: AbortSignal) => Promise<any[]> = async () => saveCollections;
   let openExternal: () => Promise<void> = async () => undefined;
   let shareHeight=800;
+  const pinFiles = new Map<string, string>();
+  let pinStorageFailure = false;
+  class PinFile {
+    key: string;
+    constructor(_directory: unknown, name: string) { this.key = name; }
+    get exists() { return pinFiles.has(this.key); }
+    create() { pinFiles.set(this.key, ''); }
+    write(value: string) { if (pinStorageFailure) throw new Error('Storage unavailable'); pinFiles.set(this.key, value); }
+    async text() { return pinFiles.get(this.key) ?? null; }
+    async move(destination: PinFile) { pinFiles.set(destination.key, pinFiles.get(this.key)!); pinFiles.delete(this.key); }
+  }
 
   let loadMetadata: (id:string)=>Promise<any> = async(id)=>({...repository(id),readmeFull:null});
   let loadReadme: () => Promise<any> = async () => ({ ...repository('canonical'), readmeFull: '# Canonical fetched README' });
@@ -75,7 +87,7 @@ export function feed(ids: string[], reducedMotion = false, attribution?: { owner
 
   };
   const auth = { useAuth: () => ({ user: { user_id: attribution?.ownerId ?? 'viewer', username: 'viewer' }, checkOnboardingStatus: async () => undefined }) };
-  const storage = { getItemAsync: async () => 'token', getStorageItem: async () => 'token' };
+  const storage = { getItemAsync: async () => 'token', getStorageItem: async (key: string) => key.startsWith('weave.pinned-repositories.') ? null : 'token' };
   function pan() {
     const config: Record<string, any> = {};
     const gesture = new Proxy({ config }, {get: (target, key) => key === 'config' ? target.config : (...args: any[]) => {
@@ -107,6 +119,7 @@ export function feed(ids: string[], reducedMotion = false, attribution?: { owner
     '../follow-button': {FollowButton: () => null},
     '@/components/keyboard/keyboard-layout': {KeyboardSurface: 'KeyboardSurface'},
     'expo-blur': { BlurView: 'BlurView' },
+    'expo-file-system': { File: PinFile, Paths: { document: 'documents' } },
     'expo-haptics': { selectionAsync: async () => undefined, notificationAsync: async () => undefined, NotificationFeedbackType: { Success: 'success' } },
     'expo-linking': {createURL: (path: string) => `ghsocial://${path}`},
     'expo-clipboard': { setStringAsync: async () => undefined },
@@ -177,6 +190,8 @@ export function feed(ids: string[], reducedMotion = false, attribution?: { owner
   );
   return {
     requests, events, client,
+    setPinStorageFailure(value: boolean) { pinStorageFailure = value; },
+    async pins(owner = attribution?.ownerId ?? 'viewer') { return loadSource('src/services/pinnedRepositoryStorage.ts').loadPinnedRepositories(owner); },
     async moveListWindow(index: number) { await act(async () => { moveSaveWindow(index); }); },
     async setViewable(value: boolean) { viewable = value; await act(async () => { root.update(renderRows()); }); },
     get swipe() {return root.root.findByType('GestureDetector').props;},

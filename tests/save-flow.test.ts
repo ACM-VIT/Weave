@@ -12,6 +12,48 @@ import { repository, feed, waitForReadmeState } from "./support/feed-harness";
 import { SAVE_SWIPE_THRESHOLD, shouldOpenSavePicker } from "../src/components/home/save-swipe-gesture";
 
 describe("Membership and save sheet lifecycle", () => {
+  test('pinning persists independently of Lists, survives reopening and can be removed', async () => {
+    const metadata = { owner: 'owner' };
+    const app = feed(['repo'], true, { ownerId: 'viewer', repository: metadata });
+    await app.mount();
+    try {
+      await app.open(0, 'onSavePress');
+      await waitForReadmeState(() => app.button('Pin to profile')?.props.disabled === false);
+      assert.equal(app.button('Pin to profile').props.accessibilityState.checked, false);
+      await app.press('Pin to profile');
+      await waitForReadmeState(() => app.button('Pin to profile').props.accessibilityState.checked === true);
+      assert.deepEqual((await app.pins()).map((pin: any) => pin.repositoryId), ['repo']);
+      assert.deepEqual(await app.pins('different-viewer'), []);
+      assert.deepEqual(app.events, [], 'pinning must not emit a List save or feed interaction');
+      await app.requestClose(); await app.finishClose();
+      metadata.owner = 'renamed-owner';
+      await app.rerender(); await app.open(0, 'onSavePress');
+      assert.equal(app.button('Pin to profile').props.accessibilityState.checked, true);
+      await app.press('Pin to profile');
+      await waitForReadmeState(() => app.button('Pin to profile').props.accessibilityState.checked === false);
+      assert.deepEqual(await app.pins(), [], 'unpin uses canonical repository identity even after an owner rename');
+    } finally { await app.unmount(); }
+  });
+
+  test('a failed pin write stays unchecked and retries without changing List selections', async () => {
+    const app = feed(['repo'], true);
+    app.setListLoader(async () => [{ id: 'list', source: 'collection', name: 'Selected', selected: true, repositoryCount: 1 }]);
+    await app.mount();
+    try {
+      await app.open(0, 'onSavePress');
+      await waitForReadmeState(() => app.button('Pin to profile')?.props.disabled === false);
+      app.setPinStorageFailure(true);
+      await app.press('Pin to profile');
+      await waitForReadmeState(() => app.messages.includes('Could not update pin. Try again.'));
+      assert.equal(app.button('Pin to profile').props.accessibilityState.checked, false);
+      assert.equal(app.button('Selected, 1 repositories').props.accessibilityState.checked, true);
+      assert.deepEqual(await app.pins(), []);
+      app.setPinStorageFailure(false);
+      await app.press('Pin to profile');
+      await waitForReadmeState(() => app.button('Pin to profile').props.accessibilityState.checked === true);
+      assert.equal(app.button('Selected, 1 repositories').props.accessibilityState.checked, true);
+    } finally { await app.unmount(); }
+  });
   test('only a settled visible card warms Lists and its swipe reuses the complete memberships', async () => {
     const app = feed(['repo'], true);
     app.setListLoader(async () => [{id:'list',source:'collection',name:'Warmed List',selected:true,repositoryCount:1}]);

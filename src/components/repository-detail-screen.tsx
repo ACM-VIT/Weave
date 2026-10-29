@@ -431,6 +431,7 @@ export function RepositoryDetailScreen({ repositoryId,navigationToken }: { repos
         onListMembershipsChanged={handleListMembershipsChanged}
         repoId={repository.id}
         repoName={repository.name}
+        repository={repository}
       />
       <ShareRepositorySheet
         isVisible={shareVisible}

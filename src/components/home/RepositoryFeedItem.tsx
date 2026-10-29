@@ -286,6 +286,7 @@ export function RepositoryFeedItem({
         position={repository.feedPosition}
         repoId={repository.id}
         repoName={repository.name}
+        repository={repository}
         serveId={repository.serveId}
         sessionId={attribution.row?.sessionId}
         impressionEventId={attribution.row?repository.originalImpression?.eventId:undefined}

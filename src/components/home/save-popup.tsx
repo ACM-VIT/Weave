@@ -21,6 +21,7 @@ import { BlurView } from 'expo-blur';
 import * as Haptics from 'expo-haptics';
 import {
   useMutation,
+  useIsMutating,
   useQuery,
   useQueryClient,
   type InfiniteData,
@@ -30,6 +31,7 @@ import {
   Check,
   CheckCircle2,
   FolderHeart,
+  Pin,
   Plus,
   Search,
   Sparkles,
@@ -54,6 +56,7 @@ import { repositoryListsQueryOptions } from '@/hooks/use-repository-lists';
 import { useAuth } from '@/store/AuthContext';
 import { feedQueryKey, patchFeedSaved } from '@/utils/feed-repository';
 import { listRepositoryQueryKey } from '@/services/accountQueryCache';
+import { loadPinnedRepositories, setRepositoryPinned } from '@/services/pinnedRepositoryStorage';
 import * as SecureStore from '@/utils/storage';
 
 export type SavePopupMutationState = { save: boolean; create: boolean; error: string | null };
@@ -69,6 +72,7 @@ type SavePopupProps = {
   onListMembershipsChanged?: (listIds: string[], saved: boolean) => void;
   repoId?: string;
   repoName?: string;
+  repository?: RepositoryDetail;
   serveId?: string | null;
   sessionId?: string | null;
   impressionEventId?: string | null;
@@ -126,6 +130,7 @@ export function SavePopup({
   onListMembershipsChanged,
   repoId,
   repoName,
+  repository,
   serveId,
   sessionId,
   impressionEventId,
@@ -175,6 +180,37 @@ export function SavePopup({
     retry: 1,
     retryDelay: 500,
   });
+
+  const pinQueryKey = ['pinned-repositories', viewerUserId] as const;
+  const pinsQuery = useQuery({
+    queryKey: pinQueryKey,
+    enabled: isVisible && Boolean(viewerUserId && repository && repository.id === repoId),
+    queryFn: async () => {
+      authSessionLifecycle.assertCurrent(renderGeneration);
+      const pins = await loadPinnedRepositories(viewerUserId!);
+      authSessionLifecycle.assertCurrent(renderGeneration);
+      return pins;
+    },
+  });
+  const pinMutation = useMutation({
+    mutationKey: pinQueryKey,
+    mutationFn: async ({ pinned, generation }: { pinned: boolean; generation: number }) => {
+      authSessionLifecycle.assertCurrent(generation);
+      if (!viewerUserId || !repository || repository.id !== repoId) throw new Error('Repository information is missing.');
+      await queryClient.cancelQueries({ queryKey: pinQueryKey, exact: true });
+      authSessionLifecycle.assertCurrent(generation);
+      await setRepositoryPinned(viewerUserId, repository, pinned);
+      const pins = await loadPinnedRepositories(viewerUserId);
+      authSessionLifecycle.assertCurrent(generation);
+      return pins;
+    },
+    onSuccess: (pins, { generation }) => {
+      if (authSessionLifecycle.isCurrent(generation)) queryClient.setQueryData(pinQueryKey, pins);
+    },
+  });
+  const pinBusy = useIsMutating({ mutationKey: pinQueryKey, exact: true }) > 0;
+  const isPinned = pinsQuery.data?.some(pin => pin.repositoryId === repoId) ?? false;
+  const pinDisabled = pinBusy || pinsQuery.data === undefined || pinsQuery.isError;
 
   const listsUnavailable = listsQuery.data === undefined;
   const lists = useMemo(() => listsQuery.data ?? [], [listsQuery.data]);
@@ -549,6 +585,31 @@ export function SavePopup({
                   ) : null}
                 </View>
 
+                {repository?.id === repoId && viewerUserId ? (
+                  <View style={styles.pinSection}>
+                    <Pressable
+                      accessibilityLabel="Pin to profile"
+                      accessibilityRole="checkbox"
+                      accessibilityState={{ checked: isPinned, disabled: pinDisabled, busy: pinBusy }}
+                      disabled={pinDisabled}
+                      onPress={() => { pinMutation.mutate({ pinned: !isPinned, generation: renderGeneration }); void haptic(); }}
+                      style={[styles.pinRow, { backgroundColor: isPinned ? `${palette.accent}16` : palette.elevated, borderColor: isPinned ? palette.accent : palette.border }]}
+                    >
+                      <Pin color={isPinned ? palette.accent : palette.secondary} size={18} />
+                      <Text style={[styles.pinLabel, { color: palette.text }]}>Pin to profile</Text>
+                      {pinBusy || pinsQuery.isPending ? <ActivityIndicator color={palette.accent} size="small" /> : (
+                        <View style={[styles.checkbox, { backgroundColor: isPinned ? palette.accent : 'transparent', borderColor: isPinned ? palette.accent : palette.tertiary }]}>
+                          {isPinned ? <Check color={palette.accentText} size={13} strokeWidth={3} /> : null}
+                        </View>
+                      )}
+                    </Pressable>
+                    {pinMutation.isError ? <Text accessibilityLiveRegion="polite" style={[styles.pinError, { color: palette.danger }]}>Could not update pin. Try again.</Text> : null}
+                    {pinsQuery.isError ? <Pressable accessibilityRole="button" accessibilityLabel="Retry loading pin" onPress={() => void pinsQuery.refetch()} style={styles.pinRetry}>
+                      <Text style={{ color: palette.accent }}>Could not load pin. Retry</Text>
+                    </Pressable> : null}
+                  </View>
+                ) : null}
+
                 {listsQuery.isError ? (
                   <View style={{ alignItems: 'center', gap: 12, paddingVertical: 16 }}>
                     <Text accessibilityLiveRegion="polite" style={{ color: palette.danger, textAlign: 'center' }}>
@@ -806,6 +867,11 @@ const styles = StyleSheet.create({
   closeButton: { width: 36, height: 36, borderRadius: 18, alignItems: 'center', justifyContent: 'center' },
   search: { minHeight: 43, marginHorizontal: 14, borderWidth: 1, borderRadius: 13, paddingHorizontal: 12, flexDirection: 'row', alignItems: 'center', gap: 8 },
   searchInput: { flex: 1, minHeight: 41, fontFamily: 'NataSans-Regular', fontSize: 13 },
+  pinSection: { marginHorizontal: 14, marginTop: 12, gap: 6 },
+  pinRow: { minHeight: 48, borderRadius: 13, borderWidth: 1, paddingHorizontal: 12, flexDirection: 'row', alignItems: 'center', gap: 10 },
+  pinLabel: { flex: 1, fontFamily: 'NataSans-SemiBold', fontSize: 13.5 },
+  pinError: { fontFamily: 'NataSans-Regular', fontSize: 12, lineHeight: 16 },
+  pinRetry: { minHeight: 44, justifyContent: 'center' },
   collectionList: { padding: 14, gap: 9 },
   loadingList: { minHeight: 190, position: 'relative' },
   previewLoadingOverlay: { position: 'absolute', left: 0, top: 0, right: 0, bottom: 0, alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(29,29,31,0.34)' },
