@@ -17,7 +17,7 @@
       }
     },
     "android": {
-      "versionCode": 4,
+      "versionCode": 5,
       "predictiveBackGestureEnabled": false,
       "package": "com.weave.app",
       "blockedPermissions": [
