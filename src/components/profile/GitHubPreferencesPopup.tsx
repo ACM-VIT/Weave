@@ -124,6 +124,7 @@ function PopupBody({ userId, onClose, onSaved }: Props) {
           </Pressable>
         </View>
         <View style={styles.actions}>
+          <Text style={styles.description}>Revoke removes imported GitHub preferences. {state.linked ? 'Disconnect removes GitHub sign-in.' : 'Reconnect restores GitHub sign-in.'}</Text>
           <Pressable cssInterop={false} accessibilityRole="button" accessibilityLabel="Revoke" disabled={busy || !state.active}
             accessibilityState={{ disabled: busy || !state.active }} onPress={() => void run('revoke')}
             style={[styles.button, styles.secondary, (busy || !state.active) && styles.disabled]}>
@@ -149,6 +150,7 @@ const styles = StyleSheet.create({
   title: { flex: 1, fontFamily: 'NataSans-Bold', fontSize: 19, color: REFERENCE_THEME.text },
   close: { width: 44, height: 44, alignItems: 'center', justifyContent: 'center' },
   actions: { paddingHorizontal: 16, paddingBottom: 16, gap: 10 },
+  description: { color: REFERENCE_THEME.textSecondary, fontFamily: 'NataSans-Regular', fontSize: 13, lineHeight: 19, marginBottom: 4 },
   button: { minHeight: 48, justifyContent: 'center', alignItems: 'center', borderRadius: 12, paddingHorizontal: 16 },
   secondary: { backgroundColor: REFERENCE_THEME.surfaceElevated, borderWidth: 1, borderColor: REFERENCE_THEME.border },
   secondaryLabel: { color: REFERENCE_THEME.text, fontFamily: 'NataSans-SemiBold', fontSize: 15 },
