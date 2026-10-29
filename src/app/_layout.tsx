@@ -3,7 +3,7 @@ import { KeyboardProvider } from 'react-native-keyboard-controller';
 import '@/global.css';
 import { useEffect, useRef, useState } from 'react';
 import { Pressable, Text, View } from 'react-native';
-import { Stack, type Href, usePathname, useRouter, useSegments, useGlobalSearchParams } from 'expo-router';
+import { type Href, usePathname, useRouter, useSegments, useGlobalSearchParams } from 'expo-router';
 import Head from 'expo-router/head';
 import { useFonts } from 'expo-font';
 import * as SplashScreen from 'expo-splash-screen';
@@ -18,6 +18,7 @@ import {
 } from '../utils/auth-routing';
 import type { RepositoryRouteHref } from '../utils/repository-links';
 import { REFERENCE_THEME } from '../constants/theme';
+import { AppNavigationStack } from '../components/app-navigation-stack';
 
 // Keep the splash screen visible while we fetch resources
 SplashScreen.preventAutoHideAsync();
@@ -125,7 +126,7 @@ function RootLayoutNav({ fontsReady }: { fontsReady: boolean }) {
   }
   if (!isReady && !startupComplete && !publicRouteReady) return null;
 
-  return <Stack screenOptions={{ headerShown: false }} />;
+  return <AppNavigationStack />;
 }
 
 const queryClient = new QueryClient();

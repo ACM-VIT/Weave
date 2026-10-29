@@ -2,8 +2,8 @@ import test from "node:test";
 import { describe } from "node:test";
 import assert from "node:assert/strict";
 import { accessTokenOwner, selectCurrentSessionToken, tokensHaveSameOwner } from "../src/api/access-token-owner";
-import { QueryClient } from "@tanstack/react-query";
-import { clearAccountQueryCache, listRepositoryQueryKey } from "../src/services/accountQueryCache";
+import { InfiniteQueryObserver, QueryClient } from "@tanstack/react-query";
+import { clearAccountQueryCache, listRepositoryQueryKey, listRepositoryQueryOptions } from "../src/services/accountQueryCache";
 import { SessionLifecycle } from "../src/api/session-lifecycle";
 import { repositoryListsQueryKey } from "../src/models/list";
 import { repositoryDetailQueryKey } from "../src/models/repository";
@@ -92,4 +92,24 @@ describe("viewer query keys", () => {
     );
     assert.deepEqual(feedQueryKey('viewer-a'), ['feed', 'viewer-a']);
   });
+});
+
+
+test('List pages retain loaded rows on failure and resume the same cursor without crossing viewers', async () => {
+  const client = new QueryClient({defaultOptions:{queries:{retry:false}}});
+  const cursors: (string|null)[]=[]; let fail=true;
+  const options=listRepositoryQueryOptions('collection','alice','private',async(cursor)=>{
+    cursors.push(cursor);
+    if(cursor && fail)throw new Error('offline');
+    return {items:[cursor?'second':'first'],has_more:!cursor,next_cursor:cursor?null:'next'};
+  });
+  const observer=new InfiniteQueryObserver(client,options);const unsubscribe=observer.subscribe(()=>{});
+  try {
+    await observer.refetch(); await observer.fetchNextPage();
+    assert.deepEqual(observer.getCurrentResult().data?.pages.flatMap(page=>page.items),['first']);
+    fail=false;await observer.fetchNextPage();
+    assert.deepEqual(cursors,[null,'next','next']);
+    assert.deepEqual(observer.getCurrentResult().data?.pages.flatMap(page=>page.items),['first','second']);
+    assert.equal(client.getQueryData(listRepositoryQueryOptions('collection','bob','private',async()=>({items:[],has_more:false,next_cursor:null})).queryKey),undefined);
+  }finally{unsubscribe();client.clear();}
 });

@@ -574,3 +574,36 @@ test('a batch entirely excluded by cross-session hints remains retryable in defa
   assert.equal(queue.published, false);
   assert.equal(queue.released, true);
 });
+
+test('generation overlaps independent history and followed reads while retaining exclusions', async () => {
+  const persistence = new GenerationPersistence();
+  let release!: () => void; let historyStarted=false; let followedStarted=false;
+  const held=new Promise<void>(resolve=>{release=resolve;});
+  persistence.listExcludedRepositoryIds=async()=>{historyStarted=true;await held;return [socialRepoId];};
+  persistence.listFollowedRepositoryIds=async()=>{followedStarted=true;return [socialRepoId];};
+  const ml=new CapturingRecommendations();
+  const operation=new FeedGenerationService(persistence,new GenerationQueue(),ml).generate(userId,45);
+  try {
+    for(let i=0;i<10&&!historyStarted;i++)await new Promise(resolve=>setImmediate(resolve));
+    assert.equal(historyStarted,true);
+    assert.equal(followedStarted,true,'followed lookup must start while history remains pending');
+  }finally{release();await operation;}
+  assert.deepEqual(ml.request?.exclude_repo_ids,[socialRepoId]);
+  assert.deepEqual(ml.request?.social_repo_ids,[socialRepoId]);
+});
+
+test('a failed history read retains generation admission until the parallel read exits', async () => {
+  const persistence=new GenerationPersistence();const queue=new GenerationQueue();
+  const failure=new Error('history unavailable');let release!:()=>void;let followedStarted=false;let ended=false;
+  const held=new Promise<void>(resolve=>{release=resolve;});
+  persistence.listExcludedRepositoryIds=async()=>{throw failure;};
+  persistence.listFollowedRepositoryIds=async()=>{followedStarted=true;await held;return [];};
+  const operation=new FeedGenerationService(persistence,queue,new CapturingRecommendations()).generate(userId);
+  const observed=operation.then(()=>{ended=true;},error=>{ended=true;assert.equal(error,failure);});
+  try {
+    for(let i=0;i<10&&!followedStarted;i++)await new Promise(resolve=>setImmediate(resolve));
+    await new Promise(resolve=>setImmediate(resolve));
+    assert.equal(ended,false);assert.equal(queue.released,false);
+  }finally{release();await observed;}
+  assert.equal(queue.released,true);
+});

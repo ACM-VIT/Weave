@@ -12,6 +12,22 @@ import { repository, feed, waitForReadmeState } from "./support/feed-harness";
 import { SAVE_SWIPE_THRESHOLD, shouldOpenSavePicker } from "../src/components/home/save-swipe-gesture";
 
 describe("Membership and save sheet lifecycle", () => {
+  test('fresh membership data reopens immediately but invalidation reloads it', async () => {
+    const app = feed(['00000000-0000-4000-8000-000000000001']);
+    await app.mount();
+    try {
+      await app.open(0, 'onSavePress');
+      assert.equal(app.requests.filter(request => request.startsWith('save:')).length, 1);
+      await app.requestClose(); await app.finishClose();
+      await app.open(0, 'onSavePress');
+      assert.equal(app.requests.filter(request => request.startsWith('save:')).length, 1);
+      await app.requestClose(); await app.finishClose();
+      await app.client.invalidateQueries({queryKey:['repository-lists','viewer'],refetchType:'none'});
+      await app.open(0, 'onSavePress');
+      assert.equal(app.requests.filter(request => request.startsWith('save:')).length, 2);
+    } finally { await app.unmount(); }
+  });
+
   test('reopening a pending save blocks overlapping replacements and ignores the old popup close timer', async () => {
     const app = feed(['00000000-0000-4000-8000-000000000001']);
     let finish!: (result: any) => void;

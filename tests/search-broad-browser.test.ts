@@ -11,19 +11,27 @@ export async function buildExploreBrowser(directory: string) {
   const {build}=await import('esbuild');
   await build({stdin:{resolveDir:process.cwd(),loader:'tsx',contents:`
     import React from'react';import{createRoot}from'react-dom/client';import{QueryClient,QueryClientProvider}from'@tanstack/react-query';
-    import Explore from'./src/app/(tabs)/explore';
+    import {AppNavigationStack} from'./src/components/app-navigation-stack';
+    import {TestNavigation} from'expo-router';
     window.fixture={owner:'A',offline:false,mode:'normal',abortedQueries:[],settledQueries:[]};
     window.fixture.change=(values)=>{Object.assign(window.fixture,values);window.dispatchEvent(new Event('fixture-change'));};
-    createRoot(document.getElementById('panel-frame')).render(<QueryClientProvider client={new QueryClient({defaultOptions:{queries:{retry:false}}})}><Explore/></QueryClientProvider>);
+    createRoot(document.getElementById('panel-frame')).render(<QueryClientProvider client={new QueryClient({defaultOptions:{queries:{retry:false}}})}><TestNavigation><AppNavigationStack/></TestNavigation></QueryClientProvider>);
   `},outfile:path.join(directory,'bundle.js'),bundle:true,platform:'browser',format:'iife',jsx:'automatic',
-    alias:{'react-native':'react-native-web','lucide-react-native':path.resolve('node_modules/lucide-react-native/dist/esm/icons/index.mjs')},loader:{'.css':'empty'},
-    resolveExtensions:['.web.tsx','.tsx','.web.ts','.ts','.web.js','.js','.json'],define:{'process.env.NODE_ENV':'"development"'},
+    alias:{'react-native':'react-native-web','lucide-react-native':path.resolve('node_modules/lucide-react-native/dist/esm/icons/index.mjs')},loader:{'.css':'empty','.png':'dataurl'},
+    resolveExtensions:['.web.tsx','.tsx','.web.ts','.ts','.web.js','.js','.json'],define:{'process.env.NODE_ENV':'"development"',global:'globalThis',__DEV__:'true'},
     plugins:[{name:'explicit-search-platform-transport',setup(builder){
       const stubs={
         auth:"import{useEffect,useState}from'react';export function useAuth(){const[,update]=useState(0);useEffect(()=>{const event=()=>update(x=>x+1);window.addEventListener('fixture-change',event);return()=>window.removeEventListener('fixture-change',event);},[]);return{user:{user_id:window.fixture.owner}};}",
         net:"import{useEffect,useState}from'react';export function useNetInfo(){const[,update]=useState(0);useEffect(()=>{const event=()=>update(x=>x+1);window.addEventListener('fixture-change',event);return()=>window.removeEventListener('fixture-change',event);},[]);return{isConnected:!window.fixture.offline,isInternetReachable:!window.fixture.offline};}",
-        router:"export const router={push:value=>{window.fixture.route=value;}};",
-        safe:"export const useSafeAreaInsets=()=>({top:0,bottom:0,left:0,right:0});",
+        router:`import React from'react';import{View,Text,Pressable}from'react-native';
+          import{NavigationContainer,createNavigationContainerRef,useFocusEffect}from${JSON.stringify(path.resolve('node_modules/expo-router/build/react-navigation/native/index.js'))};
+          import{createNativeStackNavigator}from${JSON.stringify(path.resolve('node_modules/expo-router/build/react-navigation/native-stack/index.js'))};
+          import Explore from'./src/app/(tabs)/explore';
+          export{useFocusEffect};const navigation=createNavigationContainerRef();const NativeStack=createNativeStackNavigator();
+          export const router={push:value=>{window.fixture.route=value;navigation.navigate(value.pathname.startsWith('/')?value.pathname.slice(1):value.pathname,value.params);}};
+          function Detail(){return <View style={{flex:1,backgroundColor:'#000'}}><Text>Repository detail</Text><Pressable accessibilityRole="button" accessibilityLabel="Back to Explore" onPress={()=>navigation.goBack()}><Text>Back to Explore</Text></Pressable></View>;}
+          export function TestNavigation({children}){return <NavigationContainer ref={navigation}>{children}</NavigationContainer>;}
+          export function Stack(props){return <NativeStack.Navigator initialRouteName="(tabs)" {...props}><NativeStack.Screen name="(tabs)" component={Explore}/><NativeStack.Screen name="repository/[repoId]" component={Detail}/></NativeStack.Navigator>;}`,
         keyboard:"import React from'react';import{View}from'react-native';export const KeyboardSurface=props=><View {...props}/>;",
         crypto:"export const randomUUID=()=>window.crypto.randomUUID();",
         client:"export async function apiV2(path,options={}){if(!options.body){const url=new URL('/fixture'+path,location.origin);url.searchParams.set('owner',window.fixture.owner);url.searchParams.set('mode',window.fixture.mode);const response=await fetch(url,options);if(!response.ok)throw Error('Controlled browse failure');return response.json();}const query=JSON.parse(options.body).query;window.fixture.lastSent=query;options.signal?.addEventListener('abort',()=>window.fixture.abortedQueries.push(query),{once:true});try{const response=await fetch('/fixture/search?owner='+window.fixture.owner+'&mode='+window.fixture.mode,options);if(!response.ok)throw Error('Controlled transport failure');return await response.json();}finally{window.fixture.settledQueries.push(query);}}",
@@ -31,9 +39,9 @@ export async function buildExploreBrowser(directory: string) {
       };
       const route=(filter,key)=>builder.onResolve({filter},()=>({path:key,namespace:'fixture'}));
       route(/^@\/store\/AuthContext$/,'auth');route(/^@react-native-community\/netinfo$/,'net');route(/^expo-router$/,'router');
-      route(/^react-native-safe-area-context$/,'safe');route(/^@\/components\/keyboard\/keyboard-layout$/,'keyboard');route(/^expo-crypto$/,'crypto');
+      route(/^@\/components\/keyboard\/keyboard-layout$/,'keyboard');route(/^expo-crypto$/,'crypto');
       route(/api\/client$|^\.\/client$/,'client');route(/utils\/storage$/,'storage');
-      builder.onLoad({filter:/.*/,namespace:'fixture'},args=>({contents:stubs[args.path],resolveDir:process.cwd(),loader:args.path==='keyboard'?'tsx':'js'}));
+      builder.onLoad({filter:/.*/,namespace:'fixture'},args=>({contents:stubs[args.path],resolveDir:process.cwd(),loader:args.path==='keyboard'||args.path==='router'?'tsx':'js'}));
     }}]
   });
   execFileSync(process.execPath, [path.resolve('node_modules/tailwindcss/lib/cli.js'),
@@ -87,7 +95,7 @@ test('actual Explore retains Latest continuation, original Trending cards and br
     }
     if(url.pathname==='/bundle.js'){res.setHeader('Content-Type','application/javascript');res.end(await readFile(path.join(directory,'bundle.js')));return;}
     if(url.pathname==='/global.css'){res.setHeader('Content-Type','text/css');res.end(await readFile(path.join(directory,'global.css')));return;}
-    res.setHeader('Content-Type','text/html');res.end('<!doctype html><meta name="viewport" content="width=device-width, initial-scale=1"><link rel="stylesheet" href="/global.css"><style>html,body,#panel-frame{height:100%;margin:0;background:#000;color:#fff}</style><main id="panel-frame"></main><script src="/bundle.js"></script>');
+    res.setHeader('Content-Type','text/html');res.end('<!doctype html><meta name="viewport" content="width=device-width, initial-scale=1"><link rel="stylesheet" href="/global.css"><style>html,body,#panel-frame{height:100%;margin:0;background:#000;color:#fff}#panel-frame{display:flex;flex-direction:column}</style><main id="panel-frame"></main><script src="/bundle.js"></script>');
   });
   await new Promise<void>(resolve=>server.listen(0,'127.0.0.1',resolve));const address=server.address();assert.ok(address&&typeof address==='object');
   const chrome = spawn(process.env.CHROMIUM_BIN ?? 'chromium', ['--headless=new', '--no-sandbox', '--disable-dev-shm-usage',
@@ -113,8 +121,9 @@ test('actual Explore retains Latest continuation, original Trending cards and br
   socket = new WebSocket(target.webSocketDebuggerUrl);
   await new Promise<void>((resolve, reject) => { socket!.onopen = () => resolve(); socket!.onerror = reject; });
   let sequence = 0;
+  const browserErrors: unknown[] = [];
   const pending = new Map<number, (value: any) => void>();
-  socket.onmessage = message => { const value = JSON.parse(String(message.data)); pending.get(value.id)?.(value); pending.delete(value.id); };
+  socket.onmessage = message => { const value = JSON.parse(String(message.data)); if(value.method==='Runtime.exceptionThrown')browserErrors.push(value.params.exceptionDetails.exception?.description??value.params.exceptionDetails.text); pending.get(value.id)?.(value); pending.delete(value.id); };
   const send = (method: string, params = {}) => new Promise<any>(resolve => {
     const id = ++sequence; pending.set(id, resolve); socket!.send(JSON.stringify({ id, method, params }));
   });
@@ -125,13 +134,14 @@ test('actual Explore retains Latest continuation, original Trending cards and br
   };
   const until = async (expression: string) => {
     for (let n = 0; n < 100; n++) { if (await evaluate(expression)) return; await new Promise(resolve => setTimeout(resolve, 25)); }
-    assert.fail(`Browser state did not settle: ${expression}\n${await evaluate('document.body.innerText')}`);
+    assert.fail(`Browser state did not settle: ${expression}\n${await evaluate('document.body.innerText')}\nBrowse requests: ${JSON.stringify(browseRequests)}\nErrors: ${JSON.stringify(browserErrors)}`);
   };
   const click = async (label:string) => {
     const selector = `Array.from(document.querySelectorAll('[role="button"],[role="tab"],[tabindex="0"]')).find(node=>node.innerText.trim().toLowerCase()===${JSON.stringify(label.toLowerCase())})`;
     await until(`Boolean(${selector})`); await evaluate(`(${selector}).click()`);
   };
   await send('Page.enable');
+  await send('Runtime.enable');
   await send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
   await send('Page.navigate', { url: `http://127.0.0.1:${address.port}` });
   await until('Boolean(document.querySelector("input"))');
@@ -139,11 +149,29 @@ test('actual Explore retains Latest continuation, original Trending cards and br
   await until('document.body.innerText.includes("latest-0") && document.body.innerText.includes("latest-1")');
   const latestGeometry = await evaluate(`['latest-0','latest-1'].map(name=>{const box=document.querySelector('[aria-label="Open '+name+' by fixture"]').getBoundingClientRect();return {left:box.left,right:box.right,top:box.top};})`);
   assert.ok(latestGeometry[0].right <= latestGeometry[1].left, 'Latest keeps its two-column masonry');
+  // Exercise the production Stack configuration and FlashList together. A
+  // no-op router or fake list cannot detect display:none collapsing the cards.
+  await evaluate(`(()=>{let node=document.querySelector('[aria-label="Open latest-0 by fixture"]');while(node&&getComputedStyle(node).overflowY!=='auto')node=node.parentElement;node.scrollTop=420;})()`);
+  await until(`Array.from(document.querySelectorAll('[role="link"][aria-label^="Open latest-"]')).some(node=>{const r=node.getBoundingClientRect();return r.top>220&&r.bottom<700;})`);
+  const returningCard = await evaluate(`(()=>{const node=Array.from(document.querySelectorAll('[role="link"][aria-label^="Open latest-"]')).find(node=>{const r=node.getBoundingClientRect();return r.top>220&&r.bottom<700;});let scroller=node.parentElement;while(getComputedStyle(scroller).overflowY!=='auto')scroller=scroller.parentElement;const r=node.getBoundingClientRect();return{label:node.getAttribute('aria-label'),width:r.width,height:r.height,top:r.top,offset:scroller.scrollTop};})()`);
+  assert.ok(returningCard.offset>0);
+  const returningSelector=JSON.stringify(`[aria-label="${returningCard.label}"]`);
+  await evaluate(`document.querySelector(${returningSelector}).click()`);
+  await until(`Boolean(document.querySelector('[aria-label="Back to Explore"]'))`);
+  const coveredCard=await evaluate(`(()=>{const r=document.querySelector(${returningSelector}).getBoundingClientRect();return{width:r.width,height:r.height};})()`);
+  assert.equal(coveredCard.width,returningCard.width,'the real covered Stack must retain the masonry width');
+  assert.equal(coveredCard.height,returningCard.height,'covered cards must not collapse and rebuild on Back');
+  await click('Back to Explore');
+  await until(`!document.querySelector('[aria-label="Back to Explore"]')`);
+  const returnedCard=await evaluate(`(()=>{const node=document.querySelector(${returningSelector});let scroller=node.parentElement;while(getComputedStyle(scroller).overflowY!=='auto')scroller=scroller.parentElement;const r=node.getBoundingClientRect();return{width:r.width,height:r.height,top:r.top,offset:scroller.scrollTop};})()`);
+  assert.deepEqual(returnedCard,{width:returningCard.width,height:returningCard.height,top:returningCard.top,offset:returningCard.offset},'Back preserves card geometry and the scrolled position');
   const scrollToEnd = async () => evaluate(`(()=>{for(const node of document.querySelectorAll('div')){if(node.scrollHeight>node.clientHeight&&['auto','scroll'].includes(getComputedStyle(node).overflowY))node.scrollTop=node.scrollHeight;}})()`);
   await scrollToEnd();
   await until(`Array.from(document.querySelectorAll('[role="button"]')).some(node=>node.innerText.trim()==='Load more')`);
   assert.deepEqual(browseRequests.map(request => request.offset), [0], 'scrolling alone does not fetch another page');
   await click('Load more');
+  await until(`!Array.from(document.querySelectorAll('[role="button"]')).some(node=>node.innerText.trim()==='Load more')`);
+  await scrollToEnd();
   await until('document.body.innerText.includes("latest-24")');
   assert.deepEqual(browseRequests.map(request => request.offset), [0, 24]);
   assert.equal(await evaluate(`Array.from(document.querySelectorAll('[role="button"]')).some(node=>node.innerText.trim()==='Load more')`), false, 'the short second raw page ends continuation');
@@ -174,6 +202,8 @@ test('actual Explore retains Latest continuation, original Trending cards and br
   await until('document.body.innerText.includes("fixture/weekly-0")');
   await evaluate(`document.querySelector('[aria-label="Rank 1, fixture/weekly-0"]').click()`);
   assert.deepEqual(await evaluate('window.fixture.route'), { pathname: '/repository/[repoId]', params: { repoId: 'weekly-0' } });
+  await click('Back to Explore');
+  await until(`!document.querySelector('[aria-label="Back to Explore"]')`);
   await send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
   await type('g');await new Promise(resolve=>setTimeout(resolve,350));assert.equal(requests.length,0);
   const typedAt=Date.now();await type('go');await new Promise(resolve=>setTimeout(resolve,100));assert.equal(requests.length,0);
@@ -203,5 +233,5 @@ test('actual Explore retains Latest continuation, original Trending cards and br
   assert.equal(await evaluate('window.fixture.obsoleteFlashes.length'),0,'obsolete results must never flash after the latest query');
   assert.equal(await evaluate('document.body.innerText.includes("Description-only late")'),false,'late obsolete response cannot replace the active query');
   assert.equal(await evaluate('document.documentElement.scrollWidth<=innerWidth'),true);
-  t.diagnostic('Actual Explore/cards/SearchBar/ReactQuery/API mapping; controlled HTTP/auth/network boundaries. Latest manual continuation and Trending narrow/wide/loading/error geometry are browser checks, not native proof. SQL semantics are exercised separately by the real database parity suite.');
+  t.diagnostic('Actual app Stack options, Expo React Navigation native-stack web renderer, FlashList, Explore/cards/SearchBar/ReactQuery/API mapping; controlled HTTP/auth/network and detail-screen content. Covered/returned card geometry, scroll position, Latest continuation and Trending geometry are browser checks, not native proof. SQL semantics are exercised separately by the real database parity suite.');
 });

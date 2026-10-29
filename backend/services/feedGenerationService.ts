@@ -158,7 +158,17 @@ export class FeedGenerationService {
       }
       if (refill && state!.remainingDepth >= refill.lowWatermark) return { status: 'coalesced', feedVersion };
       requireBudget();
-      const history = await this.persistence.listExcludedRepositoryIds(userId, sessionId, 500);
+      const [historyResult, followedResult] = await Promise.allSettled([
+        this.persistence.listExcludedRepositoryIds(userId, sessionId, 500),
+        this.persistence.listFollowedRepositoryIds(userId, 500).catch(error => {
+          console.error('[FeedGenerationService] Failed to load followed-owner repositories:', error);
+          return [] as string[];
+        }),
+      ]);
+      if (historyResult.status === 'rejected') throw historyResult.reason;
+      if (followedResult.status === 'rejected') throw followedResult.reason;
+      const history = historyResult.value;
+      const socialRepoIds = followedResult.value;
       // Preserve every bounded snapshot/history exclusion locally even when
       // ML's 500-ID request limit cannot hold the complete union.
       const indexedExclusions = [
@@ -167,13 +177,7 @@ export class FeedGenerationService {
       const excludedIds = new Set(this.indexedRefill
         ? indexedExclusions : [...new Set([...excludeRepoIds, ...history])].slice(0, 500));
       const excluded = [...excludedIds].slice(0, 500);
-      let socialRepoIds: string[] = [];
       requireBudget();
-      try {
-        socialRepoIds = await this.persistence.listFollowedRepositoryIds(userId, 500);
-      } catch (error) {
-        console.error('[FeedGenerationService] Failed to load followed-owner repositories:', error);
-      }
       const socialCandidates = this.socialCandidatesEnabled && this.persistence.listSocialRepositoryCandidates
         ? await this.persistence.listSocialRepositoryCandidates(userId, 100, [...excludedIds]) : undefined;
       if (leaseLost || !await current()) return { status: 'stale', feedVersion };

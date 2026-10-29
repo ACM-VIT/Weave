@@ -91,7 +91,9 @@ export function startup({
       useGlobalSearchParams: () => globalParams,
       useLocalSearchParams: () => ({ code: 'synthetic-oauth-code' }),
       useRouter: () => router,
-      Stack: () => {
+    },
+    '../components/app-navigation-stack': {
+      AppNavigationStack: () => {
         useEffect(() => {
           navigationMounts += 1;
           return () => { navigationUnmounts += 1; };
