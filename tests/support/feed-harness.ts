@@ -35,7 +35,7 @@ export function feed(ids: string[], reducedMotion = false, attribution?: { owner
   let saveRepository: (...args: any[]) => Promise<any> = async () => { throw new Error('Unexpected save'); };
   let createCollection: () => Promise<any> = async () => { throw new Error('Unexpected create'); };
   let saveCollections: any[] = [];
-  let loadLists = async () => saveCollections;
+  let loadLists: (signal?: AbortSignal) => Promise<any[]> = async () => saveCollections;
   let openExternal: () => Promise<void> = async () => undefined;
   let shareHeight=800;
 
@@ -120,7 +120,7 @@ export function feed(ids: string[], reducedMotion = false, attribution?: { owner
     '@/hooks/use-modal-scroll-lock': { useModalScrollLock: () => undefined },
     '@/api/lists': {
       ...createRequire(resolve('src/api/lists.ts'))('../models/list'),
-      getRepositoryLists: async (id: string) => { requests.push(`save:${id}`); return loadLists(); },
+      getRepositoryLists: async (id: string, _token: string, signal?: AbortSignal) => { requests.push(`save:${id}`); return loadLists(signal); },
       createRepositoryList: () => createCollection(),
       syncRepositoryLists: (...args: any[]) => saveRepository(...args),
     },
@@ -231,7 +231,7 @@ export function feed(ids: string[], reducedMotion = false, attribution?: { owner
       });
     },
     setPost(value: () => Promise<any>) { postComment = value; },
-    setListLoader(value: () => Promise<any[]>) {loadLists = value;},
+    setListLoader(value: (signal?: AbortSignal) => Promise<any[]>) {loadLists = value;},
     setSave(value: (...args: any[]) => Promise<any>) {
       saveRepository = value;
       saveCollections = [{ id: 'list', source: 'collection', name: 'List', repositoryCount: 0, selected: true }];

@@ -12,6 +12,86 @@ import { repository, feed, waitForReadmeState } from "./support/feed-harness";
 import { SAVE_SWIPE_THRESHOLD, shouldOpenSavePicker } from "../src/components/home/save-swipe-gesture";
 
 describe("Membership and save sheet lifecycle", () => {
+  test('only a settled visible card warms Lists and its swipe reuses the complete memberships', async () => {
+    const app = feed(['repo'], true);
+    app.setListLoader(async () => [{id:'list',source:'collection',name:'Warmed List',selected:true,repositoryCount:1}]);
+    await app.mount();
+    try {
+      await app.setViewable(true); await app.setViewable(false);
+      await act(async () => {await new Promise(resolve => setTimeout(resolve, 450));});
+      assert.deepEqual(app.requests, [], 'offscreen and quickly passed cards do not fetch Lists');
+      await app.setViewable(true);
+      await act(async () => {await new Promise(resolve => setTimeout(resolve, 450));});
+      assert.deepEqual(app.requests, ['save:repo'], 'membership loading starts before a swipe');
+      assert.equal(app.mountedOverlays, 0);
+      await app.open(0, 'onSavePress');
+      assert.deepEqual(app.requests, ['save:repo']);
+      assert.equal(app.button('Warmed List, 1 repositories').props.accessibilityState.checked, true);
+      assert.equal(app.button('Save repository to selected Lists').props.disabled, false);
+    } finally {await app.unmount();}
+  });
+
+  test('a swipe shares an in-flight warmup and keeps the observed request alive offscreen', async () => {
+    const app = feed(['repo'], true);
+    let finish!: (lists: any[]) => void;
+    let requestSignal: AbortSignal | undefined;
+    app.setListLoader(signal => {requestSignal=signal;return new Promise(resolve => {finish=resolve;});});
+    await app.mount();
+    try {
+      await app.setViewable(true);
+      await act(async () => {await new Promise(resolve => setTimeout(resolve, 450));});
+      assert.deepEqual(app.requests, ['save:repo']);
+      await app.open(0, 'onSavePress'); await app.setViewable(false);
+      assert.deepEqual(app.requests, ['save:repo']);
+      assert.equal(requestSignal?.aborted, false);
+      await act(async () => {finish([]); await new Promise(resolve => setTimeout(resolve, 0));});
+      await waitForReadmeState(() => !app.button('Save repository to selected Lists').props.disabled);
+      assert.equal(app.button('Save repository to selected Lists').props.disabled, false);
+    } finally {await app.unmount();}
+  });
+
+  test('cached Lists stay selectable while refresh merges untouched memberships before saving', async () => {
+    const app=feed([],true);
+    const repo='00000000-0000-4000-8000-000000000001';
+    const lists=['A','B','C'].map(id=>({id,source:'collection',name:id,selected:id==='A',repositoryCount:1}));
+    let finish!: (lists: any[]) => void;
+    let submitted: string[]=[];
+    app.setSave(async(_repo,ids)=>{submitted=ids;return {saved:true,selectedListIds:ids,saveStateChanged:false};});
+    app.setListLoader(()=>new Promise(resolve=>{finish=resolve;}));
+    app.client.setQueryData(['repository-lists','viewer',repo],lists,{updatedAt:1});
+    await app.mountStandaloneSave(repo);
+    try {
+      assert.equal(app.button('C, 1 repositories').props.disabled,false);
+      assert.equal(app.button('Save repository to selected Lists').props.disabled,true,'saving waits for the complete current baseline');
+      await app.press('C, 1 repositories');
+      await act(async()=>{finish(lists.map(list=>({...list,selected:list.id==='B'})));await new Promise(resolve=>setTimeout(resolve,0));});
+      await waitForReadmeState(() => app.button('B, 1 repositories').props.accessibilityState.checked);
+      assert.equal(app.button('A, 1 repositories').props.accessibilityState.checked,false);
+      assert.equal(app.button('B, 1 repositories').props.accessibilityState.checked,true);
+      assert.equal(app.button('C, 1 repositories').props.accessibilityState.checked,true);
+      await app.press('Save repository to selected Lists');
+      assert.deepEqual(submitted.sort(),['collection:B','collection:C']);
+    } finally {await app.unmount();}
+  });
+
+  test('leaving an unobserved warmup cancels it and a late retired response cannot populate private data', async () => {
+    const app=feed(['repo'],true);
+    let finish!: (lists:any[])=>void;
+    let signal:AbortSignal|undefined;
+    app.setListLoader(value=>{signal=value;return new Promise(resolve=>{finish=resolve;});});
+    await app.mount();
+    try {
+      await app.setViewable(true);
+      await act(async()=>{await new Promise(resolve=>setTimeout(resolve,450));});
+      assert.deepEqual(app.requests,['save:repo']);
+      await app.setViewable(false);
+      assert.equal(signal?.aborted,true);
+      authSessionLifecycle.retire(authSessionLifecycle.currentGeneration());
+      await act(async()=>{finish([{id:'private',selected:true}]);await new Promise(resolve=>setTimeout(resolve,0));});
+      assert.equal(app.client.getQueryData(['repository-lists','viewer','repo']),undefined);
+    } finally {await app.unmount();}
+  });
+
   test('fresh membership data reopens immediately but invalidation reloads it', async () => {
     const app = feed(['00000000-0000-4000-8000-000000000001']);
     await app.mount();

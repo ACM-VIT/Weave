@@ -38,7 +38,6 @@ import {
 
 import {
   createRepositoryList,
-  getRepositoryLists,
   listMembershipKey,
   repositoryListsQueryKey,
   syncRepositoryLists,
@@ -51,6 +50,7 @@ import type { FeedPage } from '@/api/feed';
 import type { RepositoryDetail } from '@/models/repository';
 import { REFERENCE_THEME } from '@/constants/theme';
 import { useModalScrollLock } from '@/hooks/use-modal-scroll-lock';
+import { repositoryListsQueryOptions } from '@/hooks/use-repository-lists';
 import { useAuth } from '@/store/AuthContext';
 import { feedQueryKey, patchFeedSaved } from '@/utils/feed-repository';
 import { listRepositoryQueryKey } from '@/services/accountQueryCache';
@@ -149,8 +149,7 @@ export function SavePopup({
   const [search, setSearch] = useState('');
   const [localSelection, setLocalSelection] = useState(() => ({
     scope: selectionScope,
-    selectedIds: new Set<string>(),
-    hasChanges: false,
+    overrides: new Map<string, boolean>(),
   }));
   const [isCreating, setIsCreating] = useState(false);
   const [newListName, setNewListName] = useState('');
@@ -170,33 +169,31 @@ export function SavePopup({
   useModalScrollLock(isVisible);
 
   const listsQuery = useQuery({
-    queryKey: repositoryListsQueryKey(repoId, viewerUserId),
-    queryFn: async ({ signal }) => {
-      if (!repoId) throw new Error('Repository information is missing.');
-      const generation = authSessionLifecycle.currentGeneration();
-      const token = await SecureStore.getItemAsync('access_token');
-      authSessionLifecycle.assertCurrent(generation);
-      if (!token) throw new Error('Sign in to manage repository Lists.');
-      const lists = await getRepositoryLists(repoId, token, signal);
-      authSessionLifecycle.assertCurrent(generation);
-      return lists;
-    },
+    ...repositoryListsQueryOptions(repoId, viewerUserId),
     enabled: isVisible && Boolean(repoId && viewerUserId),
-    staleTime: 30_000,
     refetchOnMount: true,
     retry: 1,
     retryDelay: 500,
   });
 
-  const listsUnavailable = !listsQuery.isSuccess || listsQuery.isFetching;
+  const listsUnavailable = listsQuery.data === undefined;
   const lists = useMemo(() => listsQuery.data ?? [], [listsQuery.data]);
   const serverSelectedIds = useMemo(
     () => new Set(lists.filter((list) => list.selected).map(listMembershipKey)),
     [lists],
   );
-  const hasLocalChanges = localSelection.scope === selectionScope
-    && localSelection.hasChanges;
-  const selectedIds = hasLocalChanges ? localSelection.selectedIds : serverSelectedIds;
+  const selectedIds = useMemo(() => {
+    const selected = new Set(serverSelectedIds);
+    if (localSelection.scope === selectionScope) {
+      // Explicit checkbox edits survive refresh; untouched remote memberships
+      // follow the new complete baseline instead of a stale full-set snapshot.
+      for (const [id, checked] of localSelection.overrides) {
+        if (checked) selected.add(id);
+        else selected.delete(id);
+      }
+    }
+    return selected;
+  }, [localSelection, selectionScope, serverSelectedIds]);
   const filteredLists = useMemo(() => {
     const query = search.trim().toLocaleLowerCase();
     if (!query) return lists;
@@ -236,7 +233,7 @@ export function SavePopup({
       setLocalMessage(null);
       setIsCreating(false);
       setNewListName('');
-      setLocalSelection({ scope: selectionScope, selectedIds: new Set(), hasChanges: false });
+      setLocalSelection({ scope: selectionScope, overrides: new Map() });
       onClose();
     });
   }, [modalHeight, onClose, overlayOpacity, selectionScope, translateY, reducedMotion]);
@@ -285,7 +282,7 @@ export function SavePopup({
     },
     mutationFn: async (generation: number) => {
       authSessionLifecycle.assertCurrent(generation);
-      if (listsUnavailable) throw new Error('Load your Lists before creating a new one.');
+      if (listsUnavailable || listsQuery.isFetching || listsQuery.isError) throw new Error('Load your Lists before creating a new one.');
       const name = newListName.trim();
       if (!name) throw new Error('List name is required.');
       const token = await SecureStore.getItemAsync('access_token');
@@ -295,11 +292,10 @@ export function SavePopup({
     },
     onSuccess: async (list, generation) => {
       if (!authSessionLifecycle.isCurrent(generation)) return;
-      setLocalSelection({
+      setLocalSelection(current => ({
         scope: selectionScope,
-        selectedIds: new Set([...selectedIds, listMembershipKey(list)]),
-        hasChanges: true,
-      });
+        overrides: new Map(current.scope === selectionScope ? current.overrides : []).set(listMembershipKey(list), true),
+      }));
       setIsCreating(false);
       setNewListName('');
       setMessage({ type: 'success', text: `${list.name} created and selected.` });
@@ -435,8 +431,7 @@ export function SavePopup({
       void checkOnboardingStatus().catch(() => undefined);
       setLocalSelection({
         scope: selectionScope,
-        selectedIds: new Set(result.selectedListIds),
-        hasChanges: false,
+        overrides: new Map(),
       });
       if (mountedRef.current) closeTimer.current = setTimeout(closeAnimated, 900);
     },
@@ -449,19 +444,19 @@ export function SavePopup({
   const isCreatingList = createMutation.isPending || pending.create;
   const mutationBusy = isSaving || isCreatingList;
   const selectionBlocked = mutationBusy || listsUnavailable;
+  const creationBlocked = selectionBlocked || listsQuery.isFetching || listsQuery.isError;
 
   const toggleList = (listId: string) => {
     if (selectionBlocked) return;
     setMessage(null);
-    const next = new Set(selectedIds);
-    if (next.has(listId)) next.delete(listId);
-    else next.add(listId);
-    setLocalSelection({ scope: selectionScope, selectedIds: next, hasChanges: true });
+    const overrides = new Map(localSelection.scope === selectionScope ? localSelection.overrides : []);
+    overrides.set(listId, !selectedIds.has(listId));
+    setLocalSelection({ scope: selectionScope, overrides });
     void haptic();
   };
 
   const beginListCreation = () => {
-    if (selectionBlocked) return;
+    if (creationBlocked) return;
     setMessage(null);
     setIsCreating(true);
     void haptic();
@@ -654,7 +649,7 @@ export function SavePopup({
                     {
                       backgroundColor: palette.elevatedStrong,
                       borderColor: '#55555A',
-                      opacity: selectionBlocked ? 0.5 : 1,
+                      opacity: creationBlocked ? 0.5 : 1,
                     },
                   ]}
                 >
@@ -678,8 +673,8 @@ export function SavePopup({
                   <Pressable
                     accessibilityLabel="Create new List"
                     accessibilityRole="button"
-                    accessibilityState={{ disabled: selectionBlocked }}
-                    disabled={selectionBlocked}
+                    accessibilityState={{ disabled: creationBlocked }}
+                    disabled={creationBlocked}
                     onPress={beginListCreation}
                     style={StyleSheet.absoluteFill}
                   />
@@ -759,11 +754,11 @@ export function SavePopup({
                   </View>
                   <TextInput
                     accessibilityLabel="List name"
-                    editable={!selectionBlocked}
+                    editable={!creationBlocked}
                     ref={createInputRef}
                     maxLength={100}
                     onChangeText={(value) => { setNewListName(value); if (message) setMessage(null); }}
-                    onSubmitEditing={() => { if (newListName.trim() && !selectionBlocked) createMutation.mutate(renderGeneration); }}
+                    onSubmitEditing={() => { if (newListName.trim() && !creationBlocked) createMutation.mutate(renderGeneration); }}
                     placeholder="List name"
                     placeholderTextColor={palette.secondary}
                     returnKeyType="done"
@@ -775,13 +770,13 @@ export function SavePopup({
                   ) : null}
                   <Pressable cssInterop={false}
                     accessibilityRole="button"
-                    accessibilityState={{ disabled: !newListName.trim() || selectionBlocked }}
-                    disabled={!newListName.trim() || selectionBlocked}
-                    onPress={() => { if (newListName.trim() && !selectionBlocked) createMutation.mutate(renderGeneration); }}
+                    accessibilityState={{ disabled: !newListName.trim() || creationBlocked }}
+                    disabled={!newListName.trim() || creationBlocked}
+                    onPress={() => { if (newListName.trim() && !creationBlocked) createMutation.mutate(renderGeneration); }}
                     style={({ pressed }) => [
                       styles.createSubmit,
                       { backgroundColor: palette.saveAccent },
-                      (!newListName.trim() || selectionBlocked) && styles.disabled,
+                      (!newListName.trim() || creationBlocked) && styles.disabled,
                       pressed && styles.pressed,
                     ]}
                   >
@@ -834,7 +829,7 @@ const styles = StyleSheet.create({
   centerState: { minHeight: 174, paddingHorizontal: 24, alignItems: 'center', justifyContent: 'center', gap: 8 },
   stateTitle: { fontFamily: 'NataSans-Bold', fontSize: 16, textAlign: 'center' },
   stateBody: { fontFamily: 'NataSans-Regular', fontSize: 12.5, lineHeight: 18, textAlign: 'center' },
-  footer: { flexShrink: 0, borderTopWidth: 1, paddingHorizontal: 14, paddingTop: 10, paddingBottom: 14, gap: 9 },
+  footer: { flexShrink: 0, marginTop: 8, borderTopWidth: 1, paddingHorizontal: 14, paddingTop: 10, paddingBottom: 14, gap: 9 },
   footerActions: { flexDirection: 'row', alignItems: 'center', gap: 10 },
   newButtonFrame: {
     flex: 1,
