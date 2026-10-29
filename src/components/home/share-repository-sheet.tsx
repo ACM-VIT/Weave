@@ -23,6 +23,7 @@ import { useQuery } from '@tanstack/react-query';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
   Check,
+  CircleAlert,
   Copy,
   ExternalLink,
   RotateCcw,
@@ -43,8 +44,10 @@ import {
   buildRepositoryShareContent,
   repositoryPath,
   resolveRepositoryShareUrl,
+  normalizeGitHubRepositoryUrl,
 } from '@/utils/repository-links';
 import { shareResultConfirmsCompletion } from '@/utils/share-feedback';
+import { openRepositoryOnGitHub } from '@/services/repositoryGithubOpen';
 
 type ShareRepositorySheetProps = {
   isVisible: boolean;
@@ -72,11 +75,6 @@ const palette = {
   overlay: 'rgba(0,0,0,0.70)',
 };
 
-function githubRepositoryUrl(value: string | null | undefined): string | null {
-  if (!value || !/^https:\/\/github\.com\//i.test(value)) return null;
-  return value;
-}
-
 export function ShareRepositorySheet({
   isVisible,
   onClose,
@@ -94,6 +92,7 @@ export function ShareRepositorySheet({
   const [translateY] = useState(() => new Animated.Value(height));
   const [overlayOpacity] = useState(() => new Animated.Value(0));
   const [toast, setToast] = useState('');
+  const [toastIsError, setToastIsError] = useState(false);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useModalScrollLock(isVisible);
@@ -112,7 +111,7 @@ export function ShareRepositorySheet({
   });
 
   const details = repositoryDetails ?? repositoryQuery.data;
-  const githubUrl = githubRepositoryUrl(details?.githubUrl);
+  const githubUrl = normalizeGitHubRepositoryUrl(details?.githubUrl);
   const linkLoading = !details && (repositoryQuery.isLoading || repositoryQuery.isFetching);
   const linkFailed = !details && repositoryQuery.isError;
   const weaveUrl = useMemo(() => {
@@ -134,7 +133,7 @@ export function ShareRepositorySheet({
     : null, [details?.fullName, weaveUrl]);
 
   const haptic = useCallback(async (kind: 'selection' | 'success' = 'selection') => {
-    if (process.env.EXPO_OS === 'web') return;
+    if (Platform.OS === 'web') return;
     if (kind === 'success') {
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => undefined);
     } else {
@@ -142,10 +141,12 @@ export function ShareRepositorySheet({
     }
   }, []);
 
-  const showToast = useCallback((message: string) => {
+  const showToast = useCallback((message: string, isError = true) => {
     if (toastTimer.current) clearTimeout(toastTimer.current);
     setToast(message);
-    toastTimer.current = setTimeout(() => setToast(''), 2200);
+    setToastIsError(isError);
+    // Errors must remain available long enough to read or dismiss at large text sizes.
+    toastTimer.current = isError ? null : setTimeout(() => setToast(''), 2200);
   }, []);
 
   const closeAnimated = useCallback(() => {
@@ -196,17 +197,27 @@ export function ShareRepositorySheet({
     const copied = await Clipboard.setStringAsync(weaveUrl);
     if (!copied) throw new Error('Unable to copy the Weave link.');
     await haptic('success');
-    showToast('Weave link copied');
+    showToast('Weave link copied', false);
     onShared?.();
   }, [haptic, onShared, showToast, weaveUrl]);
 
   const shareWeaveLink = useCallback(async () => {
+    if (toastTimer.current) clearTimeout(toastTimer.current);
+    toastTimer.current = null;
+    setToast('');
     if (!shareContent) throw new Error('Weave link is unavailable.');
     await haptic();
-    const result = await Share.share(shareContent);
+    let result;
+    try {
+      result = await Share.share(shareContent);
+    } catch (error) {
+      // The Web Share API rejects a dismissed chooser rather than returning an action.
+      if (Platform.OS === 'web' && error instanceof Error && error.name === 'AbortError') return;
+      throw error;
+    }
     if (shareResultConfirmsCompletion(
-      process.env.EXPO_OS ?? 'unknown',
-      result.action,
+      Platform.OS,
+      result?.action,
       Share.sharedAction,
     )) {
       onShared?.();
@@ -215,10 +226,17 @@ export function ShareRepositorySheet({
 
   const openOnGithub = useCallback(async () => {
     if (!githubUrl) throw new Error('GitHub link is unavailable.');
-    await haptic();
-    await Linking.openURL(githubUrl);
-    onGithubOpened?.();
-  }, [githubUrl, haptic, onGithubOpened]);
+    setToast('');
+    // Do not await haptics before opening: browsers require transient user activation.
+    void haptic();
+    const opened = await openRepositoryOnGitHub(repositoryId, githubUrl, {
+      open: (url) => Linking.openURL(url),
+      platform: Platform.OS,
+      browser: Platform.OS === 'web' && typeof window !== 'undefined' ? window : undefined,
+      onOpened: onGithubOpened,
+    });
+    if (!opened) throw new Error('Unable to open GitHub. Please try again.');
+  }, [githubUrl, haptic, onGithubOpened, repositoryId]);
 
   if (!isVisible) return null;
 
@@ -385,19 +403,24 @@ export function ShareRepositorySheet({
               </Pressable>
             </View>
 
+            </ScrollView>
             {toast ? (
               <View
                 accessibilityLiveRegion="polite"
+                accessibilityRole={toastIsError ? 'alert' : undefined}
                 style={[styles.toast, {
                   backgroundColor: palette.elevated,
                   borderColor: palette.border,
                 }]}
               >
-                <Check color={palette.accent} size={17} strokeWidth={2.4} />
+                {toastIsError ? <CircleAlert color={palette.text} size={17} /> : <Check color={palette.accent} size={17} strokeWidth={2.4} />}
                 <Text selectable style={[styles.toastText, { color: palette.text }]}>{toast}</Text>
+                <Pressable accessibilityRole="button" accessibilityLabel="Dismiss share status"
+                  onPress={() => setToast('')} style={styles.statusDismiss}>
+                  <X color={palette.secondary} size={18} />
+                </Pressable>
               </View>
             ) : null}
-            </ScrollView>
           </Animated.View>
         </View>
       </View>
@@ -423,10 +446,11 @@ const styles = StyleSheet.create({
     alignItems: 'flex-start',
     gap: 12,
   },
-  headerText: { flex: 1, gap: 3 },
+  headerText: { flex: 1, minWidth: 0, gap: 3 },
   title: { fontFamily: 'NataSans-Bold', fontSize: 19, lineHeight: 24 },
   subtitle: { fontFamily: 'NataSans-Regular', fontSize: 12, lineHeight: 17 },
   closeButton: {
+    flexShrink: 0,
     width: 36,
     height: 36,
     borderRadius: 18,
@@ -456,9 +480,11 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  primaryActions: { flexDirection: 'row', gap: 10 },
+  primaryActions: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
   primaryAction: {
-    flex: 1,
+    flexGrow: 1,
+    flexBasis: 144,
+    minWidth: 0,
     minHeight: 72,
     borderRadius: 16,
     paddingHorizontal: 10,
@@ -488,10 +514,9 @@ const styles = StyleSheet.create({
   pressed: { opacity: 0.72, transform: [{ scale: 0.985 }] },
   disabled: { opacity: 0.45 },
   toast: {
-    position: 'absolute',
-    left: 14,
-    right: 14,
-    bottom: 14,
+    flexShrink: 0,
+    marginHorizontal: 14,
+    marginBottom: 14,
     minHeight: 44,
     borderWidth: 1,
     borderRadius: 13,
@@ -501,5 +526,6 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     gap: 8,
   },
-  toastText: { fontFamily: 'NataSans-SemiBold', fontSize: 12 },
+  toastText: { flex: 1, flexShrink: 1, fontFamily: 'NataSans-SemiBold', fontSize: 12 },
+  statusDismiss: { minWidth: 44, minHeight: 44, alignItems: 'center', justifyContent: 'center' },
 });

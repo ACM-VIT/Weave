@@ -3,14 +3,15 @@ import { FeedExposureChangedError, FeedPreferenceChangedError } from '../ports/f
 import crypto from 'node:crypto';
 import { performance } from 'node:perf_hooks';
 
-import type { FeedRequestV2, FeedResponseV2, FeedSource, RecommendationEntry, RepositoryProjection } from '../contracts/feed.v2.js';
-import type { FeedPersistencePort } from '../ports/feedPersistencePort.js';
+import type { FeedRequestV2, FeedResponseV2, FeedSource, RecommendationEntry, RepositoryProjection, StoredServe } from '../contracts/feed.v2.js';
+import type { CandidateEligibility, FeedPersistencePort } from '../ports/feedPersistencePort.js';
 import { FeedServeOverlapError, FeedProvenanceUnavailableError } from '../ports/feedPersistencePort.js';
 import type { FeedQueuePort, FeedReservation } from '../redis/feedQueue.js';
 import { ReservationOwnedError } from '../redis/feedQueue.js';
 import { incrementMetric, observeMetric } from '../observability/metrics.js';
 import { FeedCursorCodec } from './feedCursor.js';
 import type { FeedGenerationOutcome } from './feedGenerationService.js';
+import { isCurrentReadmeMediaManifest } from './readmeMediaManifest.js';
 import { FeedWaitCoordinator } from './feedWaitCoordinator.js';
 import { FeedRefillScheduler } from './feedRefillScheduler.js';
 
@@ -53,6 +54,15 @@ export class PersonalizedFeedUnavailableError extends Error {
   }
 }
 
+export class FeedReadmeMediaUnavailableError extends Error {
+  readonly code = 'FEED_README_MEDIA_UNAVAILABLE';
+
+  constructor() {
+    super('Repository preview media is still being prepared.');
+    this.name = 'FeedReadmeMediaUnavailableError';
+  }
+}
+
 function responseFromServe(serve: Awaited<ReturnType<FeedPersistencePort['createServe']>>): FeedResponseV2 {
   return {
     serve_id: serve.serve_id,
@@ -73,6 +83,14 @@ function responseFromServe(serve: Awaited<ReturnType<FeedPersistencePort['create
     })),
     next_cursor: serve.next_cursor,
   };
+}
+
+/** Request-local observation from the gateway, never accepted from HTTP input. */
+export interface FeedReplayObservation {
+  userId: string;
+  requestId: string;
+  replay: StoredServe | null;
+  feedVersion?: bigint;
 }
 
 export class FeedV2Service {
@@ -136,14 +154,19 @@ export class FeedV2Service {
   }
 
   private async unservedReservation(userId: string, version: bigint, request: FeedRequestV2, token: string,
-    initial: FeedReservation): Promise<FeedReservation> {
-    let reservation = initial;
+    initial: FeedReservation): Promise<FeedReservation & {eligibility?: CandidateEligibility}> {
+    let reservation: FeedReservation & {eligibility?: CandidateEligibility} = initial;
     // A late generation can contain IDs delivered by foreground recovery.
     // Validate at consumption, against exact candidate membership, so neither
     // publication races nor a 500-item generation-history window reintroduce them.
     for (let batch = 0; batch < 4; batch++) {
-      const items = await this.excludeSessionDeliveries(userId, request.session_id, reservation.items);
-      if (!reservation.items.length || items.length) return { ...reservation, items };
+      const eligibility = reservation.items.length
+        ? await this.persistence.listCandidateEligibility?.(userId,reservation.items.map(item=>item.repo_id),request.session_id,
+          request.readme_mode ?? 'inline') : undefined;
+      const delivered = new Set(eligibility?.servedIds ?? []);
+      const items = eligibility ? reservation.items.filter(item=>!delivered.has(item.repo_id))
+        : await this.excludeSessionDeliveries(userId, request.session_id, reservation.items);
+      if (!reservation.items.length || items.length) return { ...reservation, items, eligibility };
       incrementMetric('feed_v2_session_duplicate_batches_total');
       // Every reserved item already has a durable delivery witness. Retire and
       // refill atomically without opening a same-request ownership gap.
@@ -270,7 +293,7 @@ export class FeedV2Service {
     return response;
   }
 
-  async getFeed(userId: string, request: FeedRequestV2, signal?: AbortSignal): Promise<FeedResponseV2> {
+  async getFeed(userId: string, request: FeedRequestV2, signal?: AbortSignal, observed?: FeedReplayObservation): Promise<FeedResponseV2> {
     signal?.throwIfAborted();
     if (this.stopping || this.foreground.size
       + this.serveWaits.unobservedProbeCount + this.generationWaits.unobservedProbeCount
@@ -278,7 +301,7 @@ export class FeedV2Service {
       throw new FeedRequestInProgressError();
     }
     // Register admission before starting any work; there is no pending queue.
-    const operation = Promise.resolve().then(() => this.prepareFeed(userId, request, signal));
+    const operation = Promise.resolve().then(() => this.prepareFeed(userId, request, signal, observed));
     this.foreground.add(operation);
     const finish = () => this.foreground.delete(operation);
     void operation.then(finish, finish);
@@ -297,15 +320,18 @@ export class FeedV2Service {
     });
   }
 
-  private async prepareFeed(userId: string, request: FeedRequestV2, signal?: AbortSignal): Promise<FeedResponseV2> {
+  private async prepareFeed(userId: string, request: FeedRequestV2, signal?: AbortSignal, observed?: FeedReplayObservation): Promise<FeedResponseV2> {
     signal?.throwIfAborted();
-    const replay = await this.persistence.getServeByRequest(userId, request.feed_request_id);
+    const readmeMode = request.readme_mode ?? 'inline';
+    const replay = observed?.userId === userId && observed.requestId === request.feed_request_id
+      ? observed.replay : await this.persistence.getServeByRequest(userId, request.feed_request_id);
     if (replay) {
       incrementMetric('feed_v2_duplicate_requests_total');
       return responseFromServe(replay);
     }
 
-    const version = await this.persistence.getFeedVersion(userId);
+    const version = observed?.userId === userId && observed.requestId === request.feed_request_id && observed.feedVersion !== undefined
+      ? observed.feedVersion : await this.persistence.getFeedVersion(userId);
     const pageOffset = request.cursor === null ? 0 : this.cursorCodec.decode(request.cursor, {
       user_id: userId,
       session_id: request.session_id,
@@ -321,7 +347,7 @@ export class FeedV2Service {
     };
     let queueAvailable = true;
     let generationCompleted = false;
-    let reservation;
+    let reservation: FeedReservation & {eligibility?: CandidateEligibility};
     try {
       reservation = await this.queue.reserve(
         userId, version, request.feed_request_id, request.limit, token,
@@ -392,6 +418,7 @@ export class FeedV2Service {
     let entries = reservation.items;
     // Only this request's fresh, same-viewer fallback projections are reusable.
     const byId = new Map<string, RepositoryProjection>();
+    const freshlyHydrated = new Set<string>();
     incrementMetric(entries.length > 0 ? 'feed_v2_cache_hits_total' : 'feed_v2_cache_misses_total');
     let source: FeedSource = 'personalized';
     if (!generationCompleted && entries.length === 0 && request.cursor === null
@@ -412,7 +439,7 @@ export class FeedV2Service {
       }
       if (this.fallbackEnabled && !generationCompleted) {
         const fallback = await this.persistence.getTrendingFallback(request.limit,
-          await this.persistence.listExcludedRepositoryIds(userId, request.session_id, 500), userId);
+          await this.persistence.listExcludedRepositoryIds(userId, request.session_id, 500), userId, readmeMode);
         entries = fallback.map(repo => ({repo_id: repo.repo_id, score: 0, source: 'fallback', model_version: 'backend-fallback', summary_id: repo.summary_id}));
         for (const repository of fallback) {
           if (repository.status === 'active') byId.set(repository.repo_id, repository);
@@ -426,8 +453,13 @@ export class FeedV2Service {
     // Includes queued, durable recovery and fallback entries. Never apply this
     // to the immutable same-request replay returned above.
     try {
-      const eligible = new Set(await this.persistence.listPreferenceEligibleRepositoryIds(userId, entries.map(entry => entry.repo_id)));
-      const unexposed = this.persistence.listExposureEligibleRepositoryIds
+      const eligibility = (entries === reservation.items ? reservation.eligibility : undefined)
+        ?? await this.persistence.listCandidateEligibility?.(userId, entries.map(entry => entry.repo_id), undefined, readmeMode);
+      for (const repository of eligibility?.repositories ?? []) {
+        byId.set(repository.repo_id,repository);freshlyHydrated.add(repository.repo_id);
+      }
+      const eligible = new Set(eligibility?.preferenceIds ?? await this.persistence.listPreferenceEligibleRepositoryIds(userId, entries.map(entry => entry.repo_id)));
+      const unexposed = eligibility ? new Set(eligibility.exposureIds) : this.persistence.listExposureEligibleRepositoryIds
         ? new Set(await this.persistence.listExposureEligibleRepositoryIds(userId, entries.map(entry => entry.repo_id)))
         : eligible;
       const seen = new Set<string>();
@@ -448,12 +480,12 @@ export class FeedV2Service {
 
     const missingRepoIds = [...new Set(entries.filter((entry) => {
       const repository = byId.get(entry.repo_id);
-      return !repository || repository.summary_id !== entry.summary_id;
+      return !repository || (!freshlyHydrated.has(entry.repo_id) && repository.summary_id !== entry.summary_id);
     }).map((entry) => entry.repo_id))];
     if (missingRepoIds.length > 0) {
       // A refresh that omits an ID must not retain its invalidated projection.
       for (const repoId of missingRepoIds) byId.delete(repoId);
-      const projections = await this.persistence.listActiveRepositories(missingRepoIds, userId);
+      const projections = await this.persistence.listActiveRepositories(missingRepoIds, userId, readmeMode);
       for (const repository of projections) {
         if (repository.status === 'active') byId.set(repository.repo_id, repository);
       }
@@ -465,6 +497,12 @@ export class FeedV2Service {
     }
 
     try {
+      if (readmeMode === 'deferred' && usable.some(entry => {
+        const repository = byId.get(entry.repo_id)!;
+        return repository.content_version == null || repository.content_hash == null
+          || !isCurrentReadmeMediaManifest(repository.readme_media_manifest,
+            repository.content_version, repository.content_hash);
+      })) throw new FeedReadmeMediaUnavailableError();
       let nextCursor: string | null = null;
       if (queueAvailable && source === 'personalized' && usable.length > 0) {
         try {
@@ -489,6 +527,7 @@ export class FeedV2Service {
         feed_version: version,
         generation_id: usable[0]?.generation_id ?? null,
         source,
+        readme_mode: readmeMode,
         model_version: usable[0]?.model_version ?? null,
         next_cursor: nextCursor,
         items: usable.map((entry, position) => {

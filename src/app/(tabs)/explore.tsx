@@ -1,13 +1,14 @@
+import { rememberRepositoryPreview } from '@/services/repositoryPreview';
 import { KeyboardSurface } from '@/components/keyboard/keyboard-layout';
 import { useMemo, useState } from 'react';
-import { ActivityIndicator, Pressable, ScrollView, StatusBar, Text, View } from 'react-native';
+import { ActivityIndicator, FlatList, Pressable, ScrollView, StatusBar, Text, View } from 'react-native';
 import { FlashList } from '@shopify/flash-list';
 import { router } from 'expo-router';
 import { randomUUID } from 'expo-crypto';
 import { useNetInfo } from '@react-native-community/netinfo';
-import { useInfiniteQuery } from '@tanstack/react-query';
+import { useInfiniteQuery, useQueryClient } from '@tanstack/react-query';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { fetchExploreRepos, mergeExplorePages } from '@/api/explore';
+import { exploreBrowseQueryOptions, mergeExplorePages } from '@/api/explore';
 import { fetchSearch } from '@/api/search';
 import { MIN_SEARCH_LENGTH, searchQueryOptions, isSearchExpired, SearchSessions, SearchRequestTiming } from '@/api/search-query';
 import SearchBar from '@/components/explore/SearchBar';
@@ -20,7 +21,12 @@ import { useAuth } from '@/store/AuthContext';
 import type { TabName } from '@/types';
 
 function SearchRow({ item }: { item: SearchItem }) {
-  const open = () => router.push(searchResultHref(item));
+  const { user } = useAuth();
+  const queryClient = useQueryClient();
+  const open = () => {
+    if (item.type === 'repository') rememberRepositoryPreview(queryClient, user?.user_id, item.data);
+    router.push(searchResultHref(item));
+  };
   if (item.type === 'repository') return <TrendingRepoCard repo={item.data} onPress={open} />;
   const title = item.type === 'person' ? item.data.display_name || item.data.username : item.data.name;
   const subtitle = item.type === 'person' ? `@${item.data.username}${item.data.bio ? ` · ${item.data.bio}` : ''}` : `${item.data.repositoryCount} repositories${item.data.description ? ` · ${item.data.description}` : ''}`;
@@ -37,6 +43,7 @@ export default function ExploreScreen() {
   const network = useNetInfo();
   const offline = network.isConnected === false || network.isInternetReachable === false;
   const { user } = useAuth();
+  const queryClient = useQueryClient();
   const [activeTab, setActiveTab] = useState<TabName>('Latest');
   const [sessions] = useState(() => new SearchSessions(randomUUID));
   const [searchTiming] = useState(() => new SearchRequestTiming());
@@ -65,12 +72,8 @@ export default function ExploreScreen() {
     send: (cursor, signal) => fetchSearch(query, group, searchId, cursor, signal),
   }));
   const browse = useInfiniteQuery({
-    queryKey: ['exploreRepos', user?.user_id, activeTab, period],
+    ...exploreBrowseQueryOptions(user?.user_id, activeTab, period),
     enabled: !searching && !offline && Boolean(user?.user_id),
-    queryFn: ({ pageParam, signal }) => fetchExploreRepos(activeTab,'',pageParam,signal,period),
-    initialPageParam: 0,
-    getNextPageParam: page => page.nextOffset,
-    staleTime: 60_000,
   });
   const items = useMemo<SearchItem[]>(() => searching
     ? [...new Map((search.data?.pages ?? []).flatMap(page => page.items).map(item => [`${item.type}:${item.id}`,item])).values()]
@@ -78,6 +81,7 @@ export default function ExploreScreen() {
   [searching,search.data?.pages,browse.data?.pages]);
   const current = searching ? search : browse;
   const twoColumns = searching || activeTab === 'Latest';
+  const ResultsList = twoColumns ? FlashList<SearchItem> : FlatList<SearchItem>;
   const periods = browse.data?.pages[0]?.availablePeriods ?? [];
   const selectedPeriod = browse.data?.pages[0]?.period ?? period;
   const fallback = searching && search.data?.pages.some(page => page.mode === 'lexical');
@@ -100,26 +104,36 @@ export default function ExploreScreen() {
         </Pressable>)}
       </ScrollView> : null}
     </View>
-    <FlashList<SearchItem>
+    <ResultsList
       key={`${searching ? group : activeTab}:${query}:${selectedPeriod ?? ''}`}
       data={items}
       keyExtractor={item => `${item.type}:${item.id}`}
-      numColumns={twoColumns ? 2 : 1}
-      masonry={twoColumns}
-      optimizeItemArrangement={false}
-      getItemType={item => item.type}
-      renderItem={({ item }) => (
+      {...(twoColumns ? {
+        numColumns: 2,
+        masonry: true,
+        optimizeItemArrangement: false,
+        getItemType: (item: SearchItem) => item.type,
+        showsVerticalScrollIndicator: false,
+      } : {
+        numColumns: 1,
+        initialNumToRender: 8,
+        maxToRenderPerBatch: 8,
+        windowSize: 7,
+      })}
+      renderItem={({ item }) => twoColumns ? (
         <View style={{ minWidth: 0, paddingHorizontal: 5, paddingBottom: 10 }}>
-          {twoColumns && item.type === 'repository'
-            ? <RepoCard repo={item.data} onPress={() => router.push(searchResultHref(item))} />
+          {item.type === 'repository'
+            ? <RepoCard repo={item.data} onPress={() => {
+              rememberRepositoryPreview(queryClient, user?.user_id, item.data);
+              router.push(searchResultHref(item));
+            }} />
             : <SearchRow item={item} />}
         </View>
-      )}
-      showsVerticalScrollIndicator={false}
+      ) : <SearchRow item={item} />}
       keyboardDismissMode="on-drag"
       keyboardShouldPersistTaps="handled"
       contentInsetAdjustmentBehavior="automatic"
-      contentContainerStyle={{ paddingHorizontal: 15, paddingTop: 8, paddingBottom: Math.max(120,insets.bottom+96) }}
+      contentContainerStyle={{ paddingHorizontal: twoColumns ? 15 : 20, paddingTop: 8, paddingBottom: Math.max(120,insets.bottom+96), ...(!twoColumns ? { gap: 10 } : {}) }}
       ListHeaderComponent={<>
         {offline && items.length > 0 ? <Text accessibilityLiveRegion="polite" style={{ color: '#FFD60A', paddingBottom: 10 }}>You’re offline. Showing previous results.</Text> : null}
         {fallback ? <Text accessibilityLiveRegion="polite" style={{ color: '#FFD60A', paddingBottom: 10 }}>Showing keyword matches. Some related results may be unavailable.</Text> : null}

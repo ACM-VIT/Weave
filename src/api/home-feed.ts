@@ -8,7 +8,7 @@ export function fetchHomeFeed(token: string, cursor: string | null,
   return measureFeedLoad(async () => {
     const page = await loadHomeFeedPage(cursor, {
       // Reuse the same request/session identity across the existing bounded retries.
-      personalized: (pageCursor) => fetchFeed(token, pageCursor, { ...transportOptions, retryUnavailable: true }),
+      personalized: (pageCursor) => fetchFeed(token, pageCursor, { ...transportOptions, retryUnavailable: true, preparationRetryLimit: 1 }),
     });
     return { ...page, sessionId: page.sessionId ?? options.sessionId };
   }, initialPage);

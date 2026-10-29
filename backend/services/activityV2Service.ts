@@ -65,9 +65,9 @@ export async function processInteractionBatchV2InTransaction(
   // Profile/persona changes lock user first, then feed: preserve that order.
   await tx`SELECT user_id FROM app.users WHERE user_id=${userId}::uuid FOR KEY SHARE`;
   await tx`INSERT INTO app.user_feed_state (user_id) VALUES (${userId}::uuid) ON CONFLICT (user_id) DO NOTHING`;
-  const states = await tx`SELECT feed_version,feedback_version FROM app.user_feed_state WHERE user_id=${userId}::uuid FOR UPDATE`;
+  const states = await tx`SELECT feed_version,feedback_version,model_policy_sha256,model_policy_limits,model_initialized FROM app.user_feed_state WHERE user_id=${userId}::uuid FOR UPDATE`;
   if (states.length === 0) throw new Error('User feed state is unavailable.');
-  const modelLane = await lockModelLane(tx, userId);
+  const modelLane = await lockModelLane(tx, userId, states[0]);
   let feedVersion = BigInt(states[0].feed_version);
   let feedbackVersion = BigInt(states[0].feedback_version);
   let invalidateFeed = false;
@@ -81,31 +81,30 @@ export async function processInteractionBatchV2InTransaction(
     if (!previous) unique.set(event.event_id, event);
   }
   const inputs = [...unique.values()];
-  const attributed = inputs.filter(event => event.serve_id !== null);
-  if (attributed.length) {
-    const invalid = await tx`
-      SELECT input.event_id FROM jsonb_to_recordset(${JSON.stringify(attributed)}::jsonb)
-        AS input(event_id uuid,serve_id uuid,repo_id uuid,position integer)
+  // Validate the complete batch and insert accepted IDs in one round trip.
+  // Invalid attribution admits no subset; the caller rolls back all work.
+  const [insertion] = inputs.length ? await tx`
+    WITH input AS MATERIALIZED (
+      SELECT * FROM jsonb_to_recordset(${JSON.stringify(inputs)}::jsonb) AS item(
+        event_id uuid,session_id uuid,serve_id uuid,repo_id uuid,position smallint,event_type text,
+        dwell_ms integer,client_occurred_at timestamptz,context jsonb,impression_event_id uuid)
+    ), invalid AS MATERIALIZED (
+      SELECT input.event_id FROM input
       LEFT JOIN telemetry.feed_serves serve ON serve.serve_id=input.serve_id AND serve.user_id=${userId}::uuid
       LEFT JOIN telemetry.feed_serve_items item ON item.serve_id=serve.serve_id
         AND item.repo_id=input.repo_id AND item.position=input.position
-      WHERE item.serve_id IS NULL LIMIT 1
-    `;
-    if (invalid.length) throw new Error(`Event ${invalid[0].event_id} does not match its serve item.`);
-  }
-
-  // Insert IDs in deterministic order for cross-user collisions. Product
-  // transitions and feedback versions below still follow original client order.
-  const inserted = inputs.length ? await tx`
-    INSERT INTO telemetry.interaction_events (
-      event_id,schema_version,user_id,session_id,serve_id,repo_id,position,event_type,dwell_ms,client_occurred_at,context,impression_event_id
-    ) SELECT event_id,2,${userId}::uuid,session_id,serve_id,repo_id,position,event_type,dwell_ms,client_occurred_at,context,impression_event_id
-      FROM jsonb_to_recordset(${JSON.stringify(inputs)}::jsonb) AS input(
-        event_id uuid,session_id uuid,serve_id uuid,repo_id uuid,position smallint,event_type text,
-        dwell_ms integer,client_occurred_at timestamptz,context jsonb,impression_event_id uuid
-      ) ORDER BY event_id ON CONFLICT (event_id) DO NOTHING RETURNING event_id
-  ` : [];
-  const accepted = new Set(inserted.map(row => String(row.event_id)));
+      WHERE input.serve_id IS NOT NULL AND item.serve_id IS NULL LIMIT 1
+    ), inserted AS (
+      INSERT INTO telemetry.interaction_events (
+        event_id,schema_version,user_id,session_id,serve_id,repo_id,position,event_type,dwell_ms,client_occurred_at,context,impression_event_id
+      ) SELECT event_id,2,${userId}::uuid,session_id,serve_id,repo_id,position,event_type,dwell_ms,client_occurred_at,context,impression_event_id
+        FROM input WHERE NOT EXISTS(SELECT 1 FROM invalid)
+        ORDER BY event_id ON CONFLICT (event_id) DO NOTHING RETURNING event_id
+    ) SELECT (SELECT event_id FROM invalid) AS invalid_event_id,
+      COALESCE((SELECT jsonb_agg(event_id) FROM inserted),'[]'::jsonb) AS accepted_ids
+  ` : [{invalid_event_id:null,accepted_ids:[]}];
+  if (insertion.invalid_event_id) throw new Error(`Event ${insertion.invalid_event_id} does not match its serve item.`);
+  const accepted = new Set<string>(insertion.accepted_ids);
   const duplicateIds = inputs.filter(event => !accepted.has(event.event_id)).map(event => event.event_id);
   if (duplicateIds.length) {
     const existing = await tx`SELECT event_id,user_id,session_id,serve_id,repo_id,position,event_type,dwell_ms,client_occurred_at,context,impression_event_id

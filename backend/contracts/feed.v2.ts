@@ -1,6 +1,8 @@
+import type { RepositoryLanguageObservation } from '../services/repositoryLanguages.js';
 import type { FeedIntentScope } from './feedIntent.js';
 import type { ScoringInputReference } from './scoringCapture.js';
 import type { ReadmeSummaryArtifact } from './readmeSummary.v2.js';
+import type { ReadmeMediaManifest } from './readmeMedia.v2.js';
 export const FEED_SCHEMA_VERSION = 2 as const;
 
 export type FeedSource = 'personalized' | 'trending' | 'popular' | 'fresh' | 'fallback';
@@ -18,7 +20,8 @@ export interface RecommendationEntry {
   scoring_reference?: ScoringInputReference;
 }
 
-export interface RepositoryProjection {
+export interface RepositoryProjection extends RepositoryLanguageObservation {
+  language_observed_at?: string | null;
   repo_id: string;
   full_name: string;
   owner_user_id: string | null;
@@ -43,7 +46,12 @@ export interface RepositoryProjection {
   summary_format_version: string | null;
   summary_source: 'generated' | 'description_fallback' | null;
   readme_digest?: ReadmeSummaryArtifact | null;
-  readme_md: string | null;
+  /** Identity of the canonical body carried by readme_md, separate from digest identity. */
+  content_version?: number | null;
+  content_hash?: string | null;
+  readme_available?: boolean;
+  readme_media_manifest?: ReadmeMediaManifest | null;
+  readme_md?: string | null;
   readme_source_path: string | null;
   readme_default_branch: string | null;
   readme_base_url: string | null;
@@ -68,6 +76,7 @@ export interface StoredServe {
   feed_version: bigint;
   generation_id: string | null;
   source: FeedSource;
+  readme_mode?: 'inline' | 'deferred';
   model_version: string | null;
   next_cursor: string | null;
   items: StoredServeItem[];
@@ -82,6 +91,7 @@ export interface CreateServeInput {
   feed_version: bigint;
   generation_id: string | null;
   source: FeedSource;
+  readme_mode?: 'inline' | 'deferred';
   model_version: string | null;
   next_cursor: string | null;
   items: Array<RecommendationEntry & { position: number; repository: RepositoryProjection }>;
@@ -92,6 +102,7 @@ export interface FeedRequestV2 {
   session_id: string;
   limit: number;
   cursor: string | null;
+  readme_mode?: 'inline' | 'deferred';
 }
 
 /** Explicit public fields; internal queue/persistence provenance is never serialized. */

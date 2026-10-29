@@ -24,6 +24,7 @@
     "test": "npm run typecheck:test && tsx --test --test-concurrency=1 tests/**/*.test.ts",
     "worker:readme": "node dist/scripts/process-readme-summaries.js",
     "readme:regenerate": "tsx scripts/process-readme-summaries.ts",
+    "readme:media-backfill": "tsx scripts/backfill-readme-media.ts",
     "ml:generate": "node scripts/generate-ml-client.mjs",
     "ml:check": "node scripts/generate-ml-client.mjs --check"
   },
@@ -37,7 +38,9 @@
     "express": "^5.2.1",
     "ioredis": "^5.11.1",
     "jsonwebtoken": "^9.0.3",
-    "postgres": "^3.4.9"
+    "marked": "18.0.6",
+    "postgres": "^3.4.9",
+    "sharp": "0.35.5"
   },
   "devDependencies": {
     "@types/cookie-parser": "^1.4.10",

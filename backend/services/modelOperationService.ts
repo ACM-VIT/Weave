@@ -18,8 +18,9 @@ function limits(value: Record<string, unknown>): ModelPolicyLimits {
   return { input_bytes:Number(value.input_bytes),max_sessions:Number(value.max_sessions),generation_freshness_ms:Number(value.generation_freshness_ms),idle_expiry_ms:Number(value.idle_expiry_ms) };
 }
 /** Caller owns the parent user lock BEFORE this call; never upgrade it after feed. */
-export async function lockModelLane(tx: TransactionSql, userId: string): Promise<LockedModelLane | null> {
-  const [state] = await tx`SELECT model_policy_sha256,model_policy_limits,model_initialized,feedback_version FROM app.user_feed_state WHERE user_id=${userId}::uuid FOR UPDATE`;
+export async function lockModelLane(tx: TransactionSql, userId: string, lockedState?: Record<string, unknown>): Promise<LockedModelLane | null> {
+  // Only pass a row selected FOR UPDATE in this same transaction, after the parent lock.
+  const state = lockedState ?? (await tx`SELECT model_policy_sha256,model_policy_limits,model_initialized,feedback_version FROM app.user_feed_state WHERE user_id=${userId}::uuid FOR UPDATE`)[0];
   if (!state?.model_policy_sha256) return null;
   if(state.model_initialized!==true&&BigInt(String(state.feedback_version))>0n){
     const [pending]=await tx`SELECT count(*)::bigint AS count,min(feedback_version) AS first,max(feedback_version) AS last

@@ -7,7 +7,7 @@ import type { AuthRequest } from '../middlewares/authMiddleware.js';
 import { buildMlOnboardingJob, hasMlEmbeddingContext } from '../services/mlOnboardingService.js';
 import { setFollowRelationship } from '../services/followService.js';
 import { setSocialProfileFollowing } from '../services/socialProfileService.js';
-import { getRepositoryDetail } from '../services/repositoryDetailService.js';
+import { getRepositoryDetail, getRepositoryReadme as getCanonicalRepositoryReadme } from '../services/repositoryDetailService.js';
 import {
   addRepositoryToBoard,
   deleteRepositoryBoard,
@@ -98,6 +98,7 @@ async function readViewer(sql: Sql | TransactionSql, id: string) {
     WHERE u.user_id=${id}::uuid AND u.status<>'deleted'`;
   return rows[0] ? {
     ...rows[0],
+    onboarding_conditional_save: true,
     onboarding_completed: hasCompletedOnboarding(rows[0].onboarding_completed),
   } : null;
 }
@@ -131,18 +132,16 @@ export async function getUser(req: AuthRequest, res: Response): Promise<void> {
 
 export async function updateMe(req: AuthRequest, res: Response): Promise<void> {
   const id = userId(req, res); if (!id) return;
-  const allowed = ['username', 'full_name', 'date_of_birth', 'bio', 'avatar_url'];
+  const allowed = ['username', 'full_name', 'date_of_birth', 'bio'];
   if (!req.body || Object.keys(req.body).some((key) => !allowed.includes(key))) return sendError(res, 400, 'Unsupported profile field.');
   const usernameValue = req.body.username === undefined ? undefined : normalizeUsername(req.body.username) ?? undefined;
   const fullName = req.body.full_name === undefined ? undefined : text(req.body.full_name, 100);
   const dateOfBirth = req.body.date_of_birth === undefined ? undefined : req.body.date_of_birth;
   const bio = req.body.bio === undefined ? undefined : text(req.body.bio, 2_000);
-  const avatarUrl = req.body.avatar_url === undefined ? undefined : text(req.body.avatar_url, 2_048);
   if ((req.body.username !== undefined && usernameValue === undefined)
     || (req.body.full_name !== undefined && fullName === undefined)
     || (req.body.date_of_birth !== undefined && !isValidDateOfBirth(dateOfBirth))
-    || (req.body.bio !== undefined && bio === undefined)
-    || (req.body.avatar_url !== undefined && avatarUrl === undefined)) {
+    || (req.body.bio !== undefined && bio === undefined)) {
     return sendError(res, 400, 'Invalid profile value.');
   }
   try {
@@ -153,8 +152,7 @@ export async function updateMe(req: AuthRequest, res: Response): Promise<void> {
           (username::text IS DISTINCT FROM COALESCE(${usernameValue ?? null},username::text)
             OR full_name IS DISTINCT FROM CASE WHEN ${req.body.full_name !== undefined} THEN ${fullName ?? null} ELSE full_name END
             OR date_of_birth IS DISTINCT FROM CASE WHEN ${req.body.date_of_birth !== undefined} THEN ${dateOfBirth ?? null}::date ELSE date_of_birth END
-            OR bio IS DISTINCT FROM CASE WHEN ${req.body.bio !== undefined} THEN ${bio ?? null} ELSE bio END
-            OR avatar_url IS DISTINCT FROM CASE WHEN ${req.body.avatar_url !== undefined} THEN ${avatarUrl ?? null} ELSE avatar_url END) AS profile_changed
+            OR bio IS DISTINCT FROM CASE WHEN ${req.body.bio !== undefined} THEN ${bio ?? null} ELSE bio END) AS profile_changed
         FROM app.users WHERE user_id=${id}::uuid FOR UPDATE`;
       if (!profiles[0]) throw Object.assign(new Error('User profile not found.'), { statusCode: 404 });
       const { profile_changed, ...profile } = profiles[0];
@@ -166,7 +164,6 @@ export async function updateMe(req: AuthRequest, res: Response): Promise<void> {
           full_name=CASE WHEN ${req.body.full_name !== undefined} THEN ${fullName ?? null} ELSE full_name END,
           date_of_birth=CASE WHEN ${req.body.date_of_birth !== undefined} THEN ${dateOfBirth ?? null}::date ELSE date_of_birth END,
           bio=CASE WHEN ${req.body.bio !== undefined} THEN ${bio ?? null} ELSE bio END,
-          avatar_url=CASE WHEN ${req.body.avatar_url !== undefined} THEN ${avatarUrl ?? null} ELSE avatar_url END,
           profile_version=profile_version+1,updated_at=now()
         WHERE user_id=${id}::uuid
         RETURNING user_id,username,full_name,date_of_birth,bio,github_handle,avatar_url,interests,skills,tech_stack,
@@ -218,14 +215,20 @@ export async function completeOnboardingWithProfile(req: AuthRequest, res: Respo
 
 async function completeOnboardingRequest(req: AuthRequest, res: Response, atomic: boolean): Promise<void> {
   const id = userId(req, res); if (!id) return;
+  if (Object.hasOwn(req.body ?? {}, 'avatar_url')) return sendError(res, 400, 'Use the profile photo upload endpoint.');
   const profile = atomic ? req.body?.profile : undefined;
   const username = atomic ? normalizeUsername(profile?.username) : null;
   const fullName = atomic ? text(profile?.full_name, 100, true) : null;
-  const avatarUrl = atomic ? text(profile?.avatar_url ?? null, 2_048) : null;
   if (atomic && (!profile || typeof profile !== 'object' || Array.isArray(profile)
-    || Object.keys(profile).some(key => !['username','full_name','date_of_birth','avatar_url'].includes(key))
-    || !username || !fullName || !isValidDateOfBirth(profile.date_of_birth) || avatarUrl === undefined)) {
+    || Object.keys(profile).some(key => !['username','full_name','date_of_birth','expected_version'].includes(key))
+    || !username || !fullName || !isValidDateOfBirth(profile.date_of_birth))) {
     return sendError(res, 400, 'Invalid onboarding profile.');
+  }
+  const conditional = atomic && Object.hasOwn(profile, 'expected_version');
+  const expectedVersion = conditional ? profile.expected_version : undefined;
+  if (conditional && (typeof expectedVersion !== 'string' || !/^(0|[1-9][0-9]{0,18})$/.test(expectedVersion)
+    || BigInt(expectedVersion) > 9223372036854775807n)) {
+    return sendError(res, 400, 'Invalid onboarding profile version.');
   }
   const bio = req.body?.bio === undefined ? null : text(req.body.bio, 2_000);
   const structured = ['interests', 'skills', 'tech_stack'].some((key) => Object.hasOwn(req.body ?? {}, key));
@@ -253,12 +256,18 @@ async function completeOnboardingRequest(req: AuthRequest, res: Response, atomic
   try {
     const result = await sqlClient.begin(async (tx) => {
       const profiles = await tx`
-        SELECT username,full_name,date_of_birth,bio,interests,skills,tech_stack,onboarding_completed
+        SELECT username,full_name,date_of_birth,bio,interests,skills,tech_stack,onboarding_completed,profile_version
         FROM app.users
         WHERE user_id=${id}::uuid
         FOR UPDATE
       `;
       if (!profiles[0]) throw Object.assign(new Error('User profile not found.'), { statusCode: 404 });
+      // The strict nested field is part of the protocol: older handlers reject
+      // it before SQL. A row-locked comparison fences delayed requests/replays
+      // before any profile, preference, feed or durable-delivery mutation.
+      if (conditional && String(profiles[0].profile_version) !== expectedVersion) {
+        throw Object.assign(new Error('Your profile changed. Check save status before trying again.'), { statusCode: 412 });
+      }
       if (!atomic && (!profiles[0].username || !profiles[0].full_name || !profiles[0].date_of_birth)) {
         throw Object.assign(
           new Error('Complete your full name, username, and date of birth before finishing onboarding.'),
@@ -269,7 +278,6 @@ async function completeOnboardingRequest(req: AuthRequest, res: Response, atomic
         username=CASE WHEN ${atomic} THEN ${username} ELSE username END,
         full_name=CASE WHEN ${atomic} THEN ${fullName ?? null} ELSE full_name END,
         date_of_birth=CASE WHEN ${atomic} THEN ${atomic ? profile.date_of_birth : null}::date ELSE date_of_birth END,
-        avatar_url=CASE WHEN ${atomic} THEN ${avatarUrl ?? null} ELSE avatar_url END,
         bio=CASE WHEN ${atomic} THEN ${bio} ELSE COALESCE(${bio},bio) END,
         interests=${JSON.stringify(interests)}::jsonb,skills=${JSON.stringify(skills)}::jsonb,
         tech_stack=${JSON.stringify(techStack)}::jsonb,onboarding_taxonomy=${JSON.stringify(taxonomy ?? {})}::jsonb,onboarding_completed=true,
@@ -507,8 +515,8 @@ export async function listLikesGiven(req: AuthRequest, res: Response): Promise<v
       to_char(reaction.updated_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS __page_secondary,r.repo_id,r.github_id,r.owner_github_id,r.url AS github_repo_url,
       r.owner AS owner_id,r.name AS repo_name,r.full_name,r.owner,r.name,r.url,r.status,
       r.created_at,r.updated_at,c.description,c.languages AS language_used,
-      c.primary_language,c.languages,${sqlClient.unsafe(readmeSummaryProjection('r','c'))},to_jsonb(c)->>'readme_source_path' AS readme_source_path,
-      to_jsonb(c)->>'readme_default_branch' AS readme_default_branch,to_jsonb(c)->>'readme_base_url' AS readme_base_url,c.content_version,
+      c.primary_language,c.languages,c.language_breakdown,c.language_total_size::float8 AS language_total_size,c.language_breakdown_complete,to_char(c.language_observed_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS language_observed_at,${sqlClient.unsafe(readmeSummaryProjection('r','c'))},c.readme_source_path AS readme_source_path,
+      c.readme_default_branch AS readme_default_branch,c.readme_base_url AS readme_base_url,c.content_version,
       c.updated_at AS content_updated_at,c.source_updated_at,
       COALESCE((SELECT json_agg(t.slug ORDER BY t.slug) FROM app.repo_topics rt JOIN app.topics t USING(topic_id)
         WHERE rt.repo_id=r.repo_id),'[]'::json) AS topics,
@@ -552,7 +560,7 @@ export async function listLikesGiven(req: AuthRequest, res: Response): Promise<v
   sendSuccess(res, 200, keyset ? result : { ...result, ...page });
 }
 
-const repoProjection = `r.repo_id,r.github_id,r.full_name,r.owner,r.name,r.url,c.description,c.primary_language,c.languages,c.content_version,
+const repoProjection = `r.repo_id,r.github_id,r.full_name,r.owner,r.name,r.url,c.description,c.primary_language,c.languages,c.language_breakdown,c.language_total_size::float8 AS language_total_size,c.language_breakdown_complete,to_char(c.language_observed_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS language_observed_at,c.content_version,
   e.likes_count,e.dislikes_count,e.saves_count,e.comments_count,e.views_count,
   s.star_count,s.fork_count,s.open_issues_count,s.observed_at,cs.summary,cs.model_version`;
 
@@ -560,8 +568,12 @@ export async function listRepositories(req: AuthRequest, res: Response): Promise
   const viewer = userId(req, res); if (!viewer) return;
   const page = paging(req); if (!page) return sendError(res, 400, 'Invalid pagination.');
   const q = typeof req.query.q === 'string' ? req.query.q.trim().slice(0, 100) : '';
-  const rows = await sqlClient.unsafe(`SELECT ${repoProjection},r.owner_github_id,r.status,r.created_at,r.updated_at,
-    ${readmeSummaryProjection('r','c')},to_jsonb(c)->>'readme_source_path' AS readme_source_path,to_jsonb(c)->>'readme_default_branch' AS readme_default_branch,to_jsonb(c)->>'readme_base_url' AS readme_base_url,
+  const rows = await sqlClient.unsafe(`WITH page AS MATERIALIZED (
+    SELECT r.repo_id FROM app.repos r JOIN app.repo_content c USING(repo_id) JOIN app.repo_engagement e USING(repo_id)
+    WHERE r.status='active' AND ($1='' OR r.full_name ILIKE '%'||$1||'%' OR COALESCE(c.description,'') ILIKE '%'||$1||'%')
+    ORDER BY r.updated_at DESC,r.repo_id LIMIT $2 OFFSET $3
+  ) SELECT ${repoProjection},r.owner_github_id,r.status,r.created_at,r.updated_at,
+    ${readmeSummaryProjection('r','c')},c.readme_source_path AS readme_source_path,c.readme_default_branch AS readme_default_branch,c.readme_base_url AS readme_base_url,
     c.updated_at AS content_updated_at,c.source_updated_at,
     s.observed_at AS stats_observed_at,
     owner_profile.profile_id AS owner_profile_id,
@@ -592,7 +604,7 @@ export async function listRepositories(req: AuthRequest, res: Response): Promise
       FROM app.board_repos membership JOIN app.boards board USING(board_id)
       WHERE membership.repo_id=r.repo_id AND board.user_id=$4::uuid
     ) selection),'[]'::json) AS selected_list_ids
-    FROM app.repos r
+    FROM page JOIN app.repos r USING(repo_id)
     JOIN app.repo_content c USING(repo_id) JOIN app.repo_engagement e USING(repo_id)
     LEFT JOIN LATERAL (SELECT * FROM app.repo_stat_snapshots x WHERE x.repo_id=r.repo_id ORDER BY observed_at DESC LIMIT 1) s ON true
     LEFT JOIN LATERAL (SELECT x.summary_id,x.summary,to_jsonb(x)->'highlights' AS highlights,
@@ -614,8 +626,7 @@ export async function listRepositories(req: AuthRequest, res: Response): Promise
       AND external_owner_follow.profile_id=owner_profile.profile_id AND owner_profile.claimed_by_user_id IS NULL
     LEFT JOIN app.reactions viewer_reaction ON viewer_reaction.repo_id=r.repo_id AND viewer_reaction.user_id=$4::uuid
     LEFT JOIN app.saves viewer_save ON viewer_save.repo_id=r.repo_id AND viewer_save.user_id=$4::uuid
-    WHERE r.status='active' AND ($1='' OR r.full_name ILIKE '%'||$1||'%' OR COALESCE(c.description,'') ILIKE '%'||$1||'%')
-    ORDER BY r.updated_at DESC,r.repo_id LIMIT $2 OFFSET $3`, [q, page.limit, page.offset, viewer]);
+    ORDER BY r.updated_at DESC,r.repo_id`, [q, page.limit, page.offset, viewer]);
   sendSuccess(res, 200, { items: rows, ...page });
 }
 
@@ -631,9 +642,32 @@ export async function getRepository(req: AuthRequest, res: Response): Promise<vo
   const viewer = userId(req, res); const repo = idParam(req, res, 'repoId');
   if (!viewer || !repo) return;
   try {
-    const detail = await getRepositoryDetail(viewer, repo);
+    const projection = req.query.projection;
+    if (projection !== undefined && projection !== 'metadata') {
+      return sendError(res, 400, 'projection must be metadata when supplied.');
+    }
+    const detail = await getRepositoryDetail(viewer, repo, projection === 'metadata' ? 'metadata' : 'full');
     if (!detail) return sendError(res, 404, 'Repository not found.');
     sendSuccess(res, 200, detail);
+  } catch (error) { sendControllerError(res, error); }
+}
+
+export async function getRepositoryReadme(req: AuthRequest, res: Response): Promise<void> {
+  const viewer = userId(req, res); const repo = idParam(req, res, 'repoId');
+  if (!viewer || !repo) return;
+  const rawVersion = req.query.content_version;
+  const version = typeof rawVersion === 'string' && /^[1-9]\d*$/.test(rawVersion) ? Number(rawVersion) : NaN;
+  if (!Number.isSafeInteger(version) || version > 2_147_483_647) {
+    return sendError(res, 400, 'content_version must be a positive integer.');
+  }
+  try {
+    const document = await getCanonicalRepositoryReadme(repo, version);
+    if (!document) return sendError(res, 404, 'Repository not found.');
+    if (document.content_version !== version) {
+      res.status(409).json({ success: false, error: 'Repository content changed; reload metadata.', code: 'README_VERSION_CHANGED' });
+      return;
+    }
+    sendSuccess(res, 200, document);
   } catch (error) { sendControllerError(res, error); }
 }
 
@@ -676,8 +710,8 @@ export async function listSaved(req: AuthRequest, res: Response): Promise<void> 
     to_char(s.created_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS __page_timestamp,
     to_char(s.created_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS __page_secondary,s.created_at,s.created_at AS saved_at,r.repo_id,r.github_id,r.owner_github_id,
     r.full_name,r.owner,r.name,r.url,r.status,r.created_at AS repository_created_at,r.updated_at,
-    c.description,c.primary_language,c.languages,${sqlClient.unsafe(readmeSummaryProjection('r','c'))},to_jsonb(c)->>'readme_source_path' AS readme_source_path,
-    to_jsonb(c)->>'readme_default_branch' AS readme_default_branch,to_jsonb(c)->>'readme_base_url' AS readme_base_url,c.content_version,
+    c.description,c.primary_language,c.languages,c.language_breakdown,c.language_total_size::float8 AS language_total_size,c.language_breakdown_complete,to_char(c.language_observed_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS language_observed_at,${sqlClient.unsafe(readmeSummaryProjection('r','c'))},c.readme_source_path AS readme_source_path,
+    c.readme_default_branch AS readme_default_branch,c.readme_base_url AS readme_base_url,c.content_version,
     c.updated_at AS content_updated_at,c.source_updated_at,
     e.likes_count,e.dislikes_count,e.saves_count,e.comments_count,e.views_count,
     COALESCE(stat.star_count,0) AS star_count,COALESCE(stat.fork_count,0) AS fork_count,
@@ -903,8 +937,8 @@ export async function listCollectionRepos(req: AuthRequest, res: Response): Prom
       to_char(cr.added_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS __page_timestamp,
       to_char(cr.added_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS __page_secondary,
       cr.added_at,r.repo_id,r.github_id,r.owner_github_id,r.full_name,r.owner,r.name,r.url,
-      r.status,r.created_at,r.updated_at,c.description,c.primary_language,c.languages,
-      ${sqlClient.unsafe(readmeSummaryProjection('r','c'))},to_jsonb(c)->>'readme_source_path' AS readme_source_path,to_jsonb(c)->>'readme_default_branch' AS readme_default_branch,to_jsonb(c)->>'readme_base_url' AS readme_base_url,
+      r.status,r.created_at,r.updated_at,c.description,c.primary_language,c.languages,c.language_breakdown,c.language_total_size::float8 AS language_total_size,c.language_breakdown_complete,to_char(c.language_observed_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS language_observed_at,
+      ${sqlClient.unsafe(readmeSummaryProjection('r','c'))},c.readme_source_path AS readme_source_path,c.readme_default_branch AS readme_default_branch,c.readme_base_url AS readme_base_url,
       c.content_version,c.updated_at AS content_updated_at,c.source_updated_at,
       e.likes_count,e.dislikes_count,e.saves_count,e.comments_count,e.views_count,
       COALESCE(stat.star_count,0) AS star_count,COALESCE(stat.fork_count,0) AS fork_count,
@@ -994,8 +1028,8 @@ export async function listBoardRepos(req: AuthRequest, res: Response): Promise<v
       to_char(br.added_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS __page_timestamp,
       to_char(br.added_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS __page_secondary,
       br.added_at,r.repo_id,r.github_id,r.owner_github_id,r.full_name,r.owner,r.name,r.url,
-      r.status,r.created_at,r.updated_at,c.description,c.primary_language,c.languages,
-      ${sqlClient.unsafe(readmeSummaryProjection('r','c'))},to_jsonb(c)->>'readme_source_path' AS readme_source_path,to_jsonb(c)->>'readme_default_branch' AS readme_default_branch,to_jsonb(c)->>'readme_base_url' AS readme_base_url,
+      r.status,r.created_at,r.updated_at,c.description,c.primary_language,c.languages,c.language_breakdown,c.language_total_size::float8 AS language_total_size,c.language_breakdown_complete,to_char(c.language_observed_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS language_observed_at,
+      ${sqlClient.unsafe(readmeSummaryProjection('r','c'))},c.readme_source_path AS readme_source_path,c.readme_default_branch AS readme_default_branch,c.readme_base_url AS readme_base_url,
       c.content_version,c.updated_at AS content_updated_at,c.source_updated_at,
       e.likes_count,e.dislikes_count,e.saves_count,e.comments_count,e.views_count,
       COALESCE(stat.star_count,0) AS star_count,COALESCE(stat.fork_count,0) AS fork_count,

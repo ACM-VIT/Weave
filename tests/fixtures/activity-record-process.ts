@@ -13,9 +13,14 @@ if (dirname(realpathSync(directory)) !== realpathSync(tmpdir()) || !basename(dir
 const file = (name: string) => { if (basename(name) !== name) throw new Error('Unsafe fixture path'); return join(directory, name); };
 const report = (value: unknown) => process.stdout.write(JSON.stringify(value) + '\n');
 const hold = () => { setInterval(() => {}, 1000); };
+let quota = mode === 'quota-retry';
+let sends = 0;
 const storage = new IncrementalActivityStorage({
   exists: name => existsSync(file(name)), read: async name => readFileSync(file(name), 'utf8'),
-  writeFresh: (name, contents) => writeFileSync(file(name), contents),
+  writeFresh: (name, contents) => {
+    if (quota && name.startsWith('event-')) throw new Error('Fixture storage quota exceeded');
+    writeFileSync(file(name), contents);
+  },
   move: async (source, destination, overwrite) => {
     if (mode === 'interrupt-temp' && source.startsWith('event-') && source.endsWith('.tmp')) {
       report({ phase: 'verified-temporary' }); hold(); await new Promise(() => {});
@@ -35,6 +40,7 @@ async function main() {
   const queue = new DurableActivityOutbox({ load: () => storage.load(), append: event => storage.append(event),
     acknowledge: ids => storage.acknowledge(ids), prepare: input => input as QueuedActivity,
     send: async events => {
+      sends++;
       if (mode !== 'acknowledge') throw new Error('offline');
       return { accepted: events.length, duplicates: 0, feed_version: '2',
         results: events.map(event => ({ event_id: event.event_id, status: 'accepted' as const })) };
@@ -44,7 +50,14 @@ async function main() {
   if (mode === 'acknowledge') {
     await queue.flush('fixture-token'); report({ phase: 'acknowledged', pending: await queue.pendingCount() }); hold(); return;
   }
-  await queue.enqueue(value);
+  if (mode === 'quota-retry') {
+    let failed = false;
+    try { await queue.enqueue(value); } catch { failed = true; }
+    if (!failed || sends !== 0 || (await storage.load()).length !== 0) throw new Error('Failed enqueue must not send or claim durability');
+    quota = false;
+    // The same retained event is persisted by retry; no second enqueue/UUID.
+    try { await queue.flush('fixture-token'); } catch { /* Deliberate offline transport after persistence. */ }
+  } else await queue.enqueue(value);
   if (mode === 'offline') { try { await queue.flush('fixture-token'); } catch { /* Deliberate unavailable transport. */ } }
   report({ phase: 'persisted', events: await storage.load() }); hold();
 }

@@ -49,3 +49,11 @@ if (!supabaseServiceKey) {
 export const supabaseAdmin: SupabaseClient = createClient(supabaseUrl, supabaseServiceKey);
 
 export default supabase;
+
+/** Dedicated bounded transport: never change the shared authentication client. */
+export const createAvatarStorageClient = (): SupabaseClient => createClient(supabaseUrl, supabaseServiceKey, {
+  auth: { autoRefreshToken: false, detectSessionInUrl: false, persistSession: false },
+  global: { fetch: (input, init) => fetch(input, { ...init,
+    signal: init?.signal ? AbortSignal.any([init.signal, AbortSignal.timeout(15_000)]) : AbortSignal.timeout(15_000),
+  }) },
+});

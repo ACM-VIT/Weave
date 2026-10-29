@@ -1,3 +1,6 @@
+import { useBrowsePrefetch } from '@/hooks/use-browse-prefetch';
+import { homeFeedController, homeFeedQueryOptions } from '@/services/homeFeedQuery';
+import { rememberRepositoryPreview } from '@/services/repositoryPreview';
 import { feedSessions } from '@/api/feed-sessions';
 import { useState, useCallback, useEffect, useLayoutEffect, useMemo, useRef } from 'react';
 import {
@@ -18,7 +21,7 @@ import type { RepositoryData } from '@/data/repositories';
 import { RepositoryFeedItem } from '@/components/home/RepositoryFeedItem';
 import { FeedHeader } from '@/components/home/FeedHeader';
 import { REFERENCE_THEME } from '@/constants/theme';
-import { router, type Href } from 'expo-router';
+import { router, useFocusEffect, type Href } from 'expo-router';
 import {
   useInfiniteQuery,
   useQueryClient,
@@ -28,7 +31,6 @@ import * as SecureStore from '../../utils/storage';
 import { feedViewportIds, retainHomeFeedHistory, retainedFeedScrollOffset, shareHomeFeedHistory } from '@/services/feedHistory';
 import type { FeedItem } from '@/utils/feed-items';
 import { markFeedFirstVisible } from '@/services/feedTiming';
-import { fetchHomeFeed } from '@/api/home-feed';
 import { profileRepositoryInvalidationFilters } from '@/api/profile-section-queries';
 import type { ProfileRepositoryPage } from '@/api/profile-data';
 import { subscribeToHomeFeedInvalidations } from '@/utils/home-feed';
@@ -42,10 +44,10 @@ import {
   patchFeedSaved,
 } from '@/utils/feed-repository';
 import { repositoryHref } from '@/utils/repository-links';
-import { FeedPaginationController, type FeedPage } from '@/services/feedPagination';
+import { shouldPrefetchFeedPage, type FeedPage } from '@/services/feedPagination';
 import { authSessionLifecycle } from '@/api/session-lifecycle';
 import { createFeedItemMapper } from '@/utils/feed-items';
-import NetInfo from '@react-native-community/netinfo';
+import NetInfo, { useNetInfo } from '@react-native-community/netinfo';
 import { startActivityOutboxLifecycle } from '@/services/activityOutboxLifecycle';
 import {
   isRepositoryOptimisticallyLiked,
@@ -71,6 +73,18 @@ export default function HomeScreen() {
     settleLikesGivenCountAdjustments,
   } = useAuth();
   const queryClient = useQueryClient();
+  const viewerGeneration = authSessionLifecycle.currentGeneration();
+
+  const network = useNetInfo();
+  const offline = network.isConnected === false || network.isInternetReachable === false;
+  const [focused, setFocused] = useState(false);
+  const [appState, setAppState] = useState(AppState.currentState);
+  useFocusEffect(useCallback(() => { setFocused(true); return () => setFocused(false); }, []));
+  useEffect(() => {
+    const subscription = AppState.addEventListener('change', setAppState);
+    return () => subscription.remove();
+  }, []);
+  const active = focused && appState !== 'background' && appState !== 'inactive';
   const feedQueryKey = useMemo(() => getFeedQueryKey(user?.user_id), [user?.user_id]);
   const listRef = useRef<FlatList<{ feedId: string; repository: RepositoryData }> | null>(null);
   const committedViewerKey = useRef(feedQueryKey);
@@ -79,16 +93,9 @@ export default function HomeScreen() {
   const scrollOffset = useRef(0);
   const committedItems = useRef<FeedItem[]>([]);
   const pagination = useMemo(() => {
-    const controller = new FeedPaginationController(async (cursor, signal, requestId, sessionId, initialPage) => {
-      const token = await SecureStore.getItemAsync('access_token');
-      if (!token) throw new Error('No token');
-      const canonicalSessionId=await feedSessions(token).prepare(sessionId);
-      if(cursor!==null&&canonicalSessionId!==sessionId)throw Object.assign(new Error('Browsing session changed.'),{status:400,code:'FEED_CURSOR_STALE'});
-      return fetchHomeFeed(token, cursor, { signal, requestId, sessionId:canonicalSessionId, initialPage });
-    }, queryClient.getQueryData<InfiniteData<FeedPage>>(feedQueryKey)?.pages,
-    () => queryClient.getQueryData<InfiniteData<FeedPage>>(feedQueryKey)?.pages ?? []);
-    return { controller, reset: () => controller.reset() };
-  }, [feedQueryKey, queryClient]);
+    const controller = homeFeedController(queryClient, user?.user_id ?? '');
+    return {controller, reset: () => controller.reset()};
+  }, [queryClient, user?.user_id]);
   useEffect(() => subscribeToHomeFeedInvalidations(queryClient, feedQueryKey, () => pagination.controller.markStale()), [queryClient, feedQueryKey, pagination]);
   const activityOutbox = user?.user_id
     ? getActivityOutbox(user.user_id)
@@ -103,17 +110,15 @@ export default function HomeScreen() {
   const pageHeight = viewport.height;
   const listKey = `${pageWidth}-${pageHeight}`;
   const committedListKey = useRef(listKey);
-
-  
   const flushActivityBatch = useCallback(async () => {
     if (!activityOutbox) return { delivered: 0, invalidatedFeed: false, deferred: false };
-    const generation = authSessionLifecycle.currentGeneration();
+    const generation = viewerGeneration;
+    authSessionLifecycle.assertCurrent(generation);
     const token = await SecureStore.getItemAsync('access_token');
     authSessionLifecycle.assertCurrent(generation);
     if (!token) return { delivered: 0, invalidatedFeed: false, deferred: true };
     return activityOutbox.flush(token, generation);
-  }, [activityOutbox]);
-
+  }, [activityOutbox, viewerGeneration]);
 
   const {
     data,
@@ -128,17 +133,9 @@ export default function HomeScreen() {
     refetch,
     isRefetching,
   } = useInfiniteQuery({
-    queryKey: feedQueryKey,
-    queryFn: ({ pageParam, signal }) => pagination.controller.load(pageParam, signal),
+    ...homeFeedQueryOptions(queryClient, user?.user_id ?? ''),
     structuralSharing: (previous, next) => shareHomeFeedHistory(previous, next, retentionPins.current),
-    retry: false,
-    staleTime: Infinity,
-    refetchOnMount: false,
-    refetchOnWindowFocus: false,
-    refetchOnReconnect: false,
     enabled: Boolean(user?.user_id),
-    getNextPageParam: (lastPage) => lastPage.nextCursor ?? undefined,
-    initialPageParam: null as string | null,
   });
 
   const feedProjection = useMemo(() => ({
@@ -176,6 +173,7 @@ export default function HomeScreen() {
   }, [data, feedItems, listKey, pageHeight, feedQueryKey, pagination, queryClient]);
 
   const handleQueueActivity = useCallback((repository: RepositoryData, event: ActivityInput, flushNow?: boolean) => {
+    if (!authSessionLifecycle.isCurrent(viewerGeneration)) return;
     const currentLikeOverrides = queryClient.getQueryData<ProfileLikeOverrides>(
       profileLikeOverridesQueryKey(user?.user_id),
     );
@@ -193,7 +191,7 @@ export default function HomeScreen() {
     );
     if (!activityOutbox) return;
 
-    const generation = authSessionLifecycle.currentGeneration();
+    const generation = viewerGeneration;
     void activityOutbox.enqueue(event, (queuedActivity) => {
       queryClient.setQueryData<ProfileLikeOverrides>(
         profileLikeOverridesQueryKey(user?.user_id),
@@ -205,8 +203,8 @@ export default function HomeScreen() {
       if (flushNow || await activityOutbox.pendingCount() >= 10) {
         await flushActivityBatch();
       }
-    }).catch(() => undefined);
-  }, [activityOutbox, adjustLikesGivenCount, feedQueryKey, flushActivityBatch, queryClient, user?.user_id]);
+    }).catch(() => undefined); // The owner-bound outbox publishes retained recovery state.
+  }, [activityOutbox, adjustLikesGivenCount, feedQueryKey, flushActivityBatch, queryClient, user?.user_id, viewerGeneration]);
 
   const handleSavedChange = useCallback((
     repository: RepositoryData,
@@ -252,14 +250,15 @@ export default function HomeScreen() {
   }, [user]);
 
   useEffect(() => {
-    if (!activityOutbox) return;
-    const generation = authSessionLifecycle.currentGeneration();
+    if (!activityOutbox || !user?.user_id) return;
+    const generation = viewerGeneration;
     const unsubscribe = activityOutbox.subscribe(({
       acknowledgedActivities = [],
       invalidatedFeed,
       feedVersion,
     }) => {
-      if (!invalidatedFeed || !authSessionLifecycle.isCurrent(generation)) return;
+      if (!authSessionLifecycle.isCurrent(generation)) return;
+      if (!invalidatedFeed) return;
       settleLikesGivenCountAdjustments(acknowledgedActivities.map((activity) => activity.event_id));
       const overrides = queryClient.getQueryData<ProfileLikeOverrides>(
         profileLikeOverridesQueryKey(user?.user_id),
@@ -298,11 +297,13 @@ export default function HomeScreen() {
     queryClient,
     settleLikesGivenCountAdjustments,
     user?.user_id,
+    viewerGeneration,
   ]);
 
   const visiblePages = useRef(data?.pages);
   useLayoutEffect(() => { visiblePages.current = data?.pages; }, [data?.pages]);
   const [viewableItems, setViewableItems] = useState<string[]>([]);
+  useBrowsePrefetch(user?.user_id, Boolean(data?.pages[0]?.items.length && viewableItems.length));
   const onViewableItemsChanged = useCallback(({ viewableItems }: any) => {
     visibleIds.current = viewableItems.filter((v: any) => v.isViewable !== false).map((v: any) => v.item.feedId);
     setViewableItems(visibleIds.current);
@@ -325,33 +326,71 @@ export default function HomeScreen() {
         ? current
         : { width: nextWidth, height: nextHeight }
     );
-  }, [responsiveWidth]);
+  }, [responsiveWidth, setViewport]);
 
-  const [sessionError,setSessionError]=useState<string|null>(null);
-  const [resettingSession,setResettingSession]=useState(false);
+  const [refreshState,setRefreshState]=useState({key:feedQueryKey,error:null as string|null,refreshing:false});
+  const sessionError=refreshState.key===feedQueryKey?refreshState.error:null;
+  const resettingSession=refreshState.key===feedQueryKey&&refreshState.refreshing;
+  const setSessionError=(error:string|null)=>setRefreshState(current=>({key:feedQueryKey,error,
+    refreshing:current.key===feedQueryKey&&current.refreshing}));
+  const setResettingSession=(refreshing:boolean)=>setRefreshState(current=>({key:feedQueryKey,refreshing,
+    error:current.key===feedQueryKey?current.error:null}));
   const resettingSessionRef=useRef(false);
+  const refreshRequest = useRef<AbortController | null>(null);
+  useEffect(() => {
+    return () => {
+      refreshRequest.current?.abort();
+      refreshRequest.current = null;
+      resettingSessionRef.current = false;
+    };
+  }, [feedQueryKey]);
   const refreshFeed = async () => {
-    if(resettingSessionRef.current)return;
-    resettingSessionRef.current=true;setResettingSession(true);setSessionError(null);
-    try{
-    const token=await SecureStore.getItemAsync('access_token');
-    const preserveSession=token?await feedSessions(token).reset(pagination.controller.getSessionId()):false;
-    await queryClient.cancelQueries({ queryKey: feedQueryKey, exact: true });
-    pagination.controller.reset({preserveSession});
-    visibleIds.current = [];
-    retentionPins.current = [];
-    scrollOffset.current = 0;
-    committedItems.current = [];
-    listRef.current?.scrollToOffset({ offset: 0, animated: false });
-    await queryClient.resetQueries({ queryKey: feedQueryKey, exact: true });
-    }catch{setSessionError('Could not refresh. Try again.');}finally{resettingSessionRef.current=false;setResettingSession(false);}
+    if (resettingSessionRef.current) return;
+    const request = new AbortController();
+    const generation = authSessionLifecycle.currentGeneration();
+    const assertCurrent = () => {
+      request.signal.throwIfAborted();
+      authSessionLifecycle.assertCurrent(generation);
+    };
+    refreshRequest.current = request;
+    resettingSessionRef.current = true;
+    setResettingSession(true);setSessionError(null);
+    try {
+      await queryClient.cancelQueries({queryKey:feedQueryKey,exact:true});
+      assertCurrent();
+      const token = await SecureStore.getItemAsync('access_token');
+      assertCurrent();
+      if (!token) throw new Error('Your session has expired.');
+      const preserveSession = await feedSessions(token).reset(pagination.controller.getSessionId());
+      assertCurrent();
+      pagination.controller.reset({preserveSession});
+      // Keep the old presentation until a replacement page actually succeeds.
+      // Loading directly also avoids refetching every previously loaded page.
+      const page = await pagination.controller.load(null,request.signal);
+      assertCurrent();
+      visibleIds.current = [];setViewableItems([]);
+      retentionPins.current = [];scrollOffset.current = 0;committedItems.current = [];
+      queryClient.setQueryData<InfiniteData<FeedPage>>(feedQueryKey,{pages:[page],pageParams:[null]});
+      listRef.current?.scrollToOffset({offset:0,animated:false});
+    } catch {
+      if (!request.signal.aborted && authSessionLifecycle.isCurrent(generation)) {
+        pagination.controller.markStale();
+        setSessionError('Could not refresh. Your loaded repositories are still available. Try again.');
+      }
+    } finally {
+      if (refreshRequest.current === request) {
+        refreshRequest.current = null;resettingSessionRef.current = false;setResettingSession(false);
+      }
+    }
   };
   const loadMore = useCallback(() => {
-    if (hasNextPage && !isFetching) void fetchNextPage({ cancelRefetch: false });
-  }, [fetchNextPage, hasNextPage, isFetching]);
+    if (!resettingSessionRef.current && !sessionError && active && !offline && hasNextPage && !isFetching) void fetchNextPage({ cancelRefetch: false });
+  }, [active, offline, fetchNextPage, hasNextPage, isFetching, sessionError]);
   useEffect(() => {
-    if (!isFetchNextPageError && feedItems.slice(-3).some(item => viewableItems.includes(item.feedId))) loadMore();
-  }, [feedItems, isFetchNextPageError, loadMore, viewableItems]);
+    const lastVisible = feedItems.reduce((last, item, index) => viewableItems.includes(item.feedId) ? index : last, -1);
+    if (lastVisible >= 0 && shouldPrefetchFeedPage({remaining:feedItems.length-lastVisible-1,
+      hasNextPage:Boolean(hasNextPage),fetching:isFetching,failed:isFetchNextPageError,active,online:!offline})) loadMore();
+  }, [active, offline, feedItems, hasNextPage, isFetching, isFetchNextPageError, loadMore, viewableItems]);
   const boundary = (
     <View style={styles.boundary} accessibilityLiveRegion="polite">
       {isFetchNextPageError ? <Pressable accessibilityRole="button" onPress={loadMore} style={styles.boundaryButton}>
@@ -418,7 +457,10 @@ export default function HomeScreen() {
               onQueueActivity={(event, flushNow) => handleQueueActivity(item.repository, event, flushNow)}
               onSavedChange={(saved, changed) => handleSavedChange(item.repository, saved, changed)}
               onOwnerPress={() => openOwnerProfile(item.repository)}
-              onRepositoryPress={(navigationToken) => router.push(repositoryHref(item.repository.id,navigationToken))}
+              onRepositoryPress={(navigationToken) => {
+                rememberRepositoryPreview(queryClient, user?.user_id, item.repository);
+                router.push(repositoryHref(item.repository.id,navigationToken));
+              }}
               isViewable={viewableItems.includes(item.feedId)}
             />
           )}
@@ -441,7 +483,7 @@ export default function HomeScreen() {
           onEndReached={() => {
             if (!isFetchNextPageError) loadMore();
           }}
-          onEndReachedThreshold={3}
+          onEndReachedThreshold={6}
           initialNumToRender={4}
           maxToRenderPerBatch={4}
           removeClippedSubviews={false}
@@ -454,6 +496,7 @@ export default function HomeScreen() {
           viewabilityConfig={VIEWABILITY_CONFIG}
         />
         <FeedHeader pageWidth={pageWidth} discovery={data?.pages[0]?.mode === 'discovery'} onRefresh={refreshFeed} refreshing={resettingSession || (isFetching && !isFetchingNextPage)} statusMessage={sessionError} />
+
       </View>
     </View>
   );

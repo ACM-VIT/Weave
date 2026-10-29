@@ -1,3 +1,8 @@
+import { spawn, type ChildProcess } from 'node:child_process';
+import { once } from 'node:events';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
@@ -123,4 +128,76 @@ test('durable snapshots retain the original impression UUID without inventing ab
   assert.deepEqual(deserializeActivitySnapshot(JSON.stringify([linked])),[linked]);
   assert.equal('impression_event_id' in deserializeActivitySnapshot(JSON.stringify([event(3)]))[0],false);
   assert.throws(()=>deserializeActivitySnapshot(JSON.stringify([{...linked,impression_event_id:'invalid'}])),/impression_event_id/);
+});
+
+
+async function terminateProcess(child: ChildProcess): Promise<void> {
+  if (child.exitCode !== null || child.signalCode !== null) return;
+  const exited = once(child, 'exit'); child.kill('SIGKILL'); await exited;
+}
+
+function processFixture(t: test.TestContext) {
+  const directory = mkdtempSync(join(tmpdir(), 'weave-activity-restart-'));
+  const children: ChildProcess[] = [];
+  t.after(async () => { await Promise.all(children.map(terminateProcess)); rmSync(directory, { recursive: true, force: true }); });
+  const start = (mode: string) => {
+    const child = spawn(process.execPath, ['--import', 'tsx', resolve('tests/fixtures/activity-record-process.ts'), directory, mode],
+      { cwd: process.cwd(), stdio: ['ignore', 'pipe', 'inherit'] });
+    children.push(child);
+    const message = new Promise<any>((yes, no) => {
+      let output = '';
+      child.stdout.on('data', chunk => {
+        output += String(chunk); const line = output.indexOf('\n');
+        if (line >= 0) { try { yes(JSON.parse(output.slice(0, line))); } catch (error) { no(error); } }
+      });
+      child.once('error', no); child.once('exit', () => no(new Error('Activity fixture exited before reporting.')));
+    });
+    return { child, message };
+  };
+  return { start };
+}
+
+for (const mode of ['quota-retry']) {
+  test(`real event files survive SIGKILL and fresh-process recovery (${mode})`, { timeout: 10_000 }, async t => {
+    const app = processFixture(t); const first = app.start(mode);
+    const before = await first.message;
+    assert.equal(before.phase, mode === 'interrupt-temp' ? 'verified-temporary' : 'persisted');
+    await terminateProcess(first.child); assert.equal(first.child.signalCode, 'SIGKILL');
+    const restarted = app.start('load'); const restored = await restarted.message;
+    assert.equal(restored.events.length, 1);
+    assert.equal(restored.events[0].event_id, '00000000-0000-4000-8000-000000000001');
+    assert.equal(restored.events[0].client_occurred_at, '2026-10-23T00:00:00Z');
+    const delivered = app.start('acknowledge'); assert.deepEqual(await delivered.message, { phase: 'acknowledged', pending: 0 });
+    await terminateProcess(delivered.child);
+    assert.deepEqual(await app.start('load').message, { phase: 'loaded', events: [] }, 'acknowledged records cannot resurrect');
+  });
+}
+
+
+test('an explicit backend scope isolates new work while preserving the unscoped backlog',async()=>{
+  const {loadSource}=await import('./support/startup-harness');
+  const previousScope=process.env.EXPO_PUBLIC_ACTIVITY_STORAGE_SCOPE;
+  const previousStorage=globalThis.localStorage;
+  const values=new Map<string,string>();
+  const memory={get length(){return values.size;},key:(i:number)=>[...values.keys()][i]??null,
+    getItem:(key:string)=>values.get(key)??null,setItem:(key:string,value:string)=>{values.set(key,value);},removeItem:(key:string)=>{values.delete(key);},clear:()=>values.clear()};
+  Object.defineProperty(globalThis,'localStorage',{value:memory,configurable:true});
+  const owner='00000000-0000-4000-8000-000000000001';
+  const load=()=>loadSource('src/services/activityOutboxStorage.ts',{'react-native':{Platform:{OS:'web'}}});
+  try {
+    delete process.env.EXPO_PUBLIC_ACTIVITY_STORAGE_SCOPE;
+    const old=load();await old.appendActivityOutboxEvent(owner,event(1));
+    const original=new Map(values);
+    process.env.EXPO_PUBLIC_ACTIVITY_STORAGE_SCOPE='azure-test';const azure=load();
+    assert.deepEqual(await azure.loadActivityOutbox(owner),[]);
+    await azure.appendActivityOutboxEvent(owner,event(2));
+    assert.deepEqual((await azure.loadActivityOutbox(owner)).map((e:QueuedActivity)=>e.event_id),[event(2).event_id]);
+    process.env.EXPO_PUBLIC_ACTIVITY_STORAGE_SCOPE='other-backend';assert.deepEqual(await load().loadActivityOutbox(owner),[]);
+    for(const [key,value] of original)assert.equal(values.get(key),value,'Unknown-source work remains intact');
+    delete process.env.EXPO_PUBLIC_ACTIVITY_STORAGE_SCOPE;
+    assert.deepEqual((await load().loadActivityOutbox(owner)).map((e:QueuedActivity)=>e.event_id),[event(1).event_id]);
+  }finally{
+    if(previousScope===undefined)delete process.env.EXPO_PUBLIC_ACTIVITY_STORAGE_SCOPE;else process.env.EXPO_PUBLIC_ACTIVITY_STORAGE_SCOPE=previousScope;
+    Object.defineProperty(globalThis,'localStorage',{value:previousStorage,configurable:true});
+  }
 });

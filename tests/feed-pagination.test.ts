@@ -1,3 +1,4 @@
+import { FeedIntentLifecycle, type FeedSessionResult } from '../src/services/feedIntentLifecycle';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { InfiniteQueryObserver, QueryClient, type InfiniteData } from '@tanstack/react-query';
@@ -22,15 +23,45 @@ test('feed retries preserve request identity, respect Retry-After and stop after
   assert.deepEqual(waits, [2000, 2000]);
 });
 
+test('deferred feed retries inline only after an explicit pre-commit compatibility rejection', async () => {
+  const body = { ...request, readme_mode: 'deferred' as const };
+  for (const failure of [
+    Object.assign(new Error('media manifest is incomplete'), { status: 409, code: 'FEED_README_MEDIA_UNAVAILABLE' }),
+    Object.assign(new Error('deferred mode is unsupported'), { status: 400, code: 'INVALID_FEED_README_MODE' }),
+  ]) {
+    const bodies: unknown[] = [];
+    let calls = 0;
+    const result = await requestFeedWithRetry(body, async (sent) => {
+      bodies.push(sent);
+      if (calls++ === 0) throw failure;
+      return 'served';
+    }, undefined, async () => { throw new Error('Explicit compatibility fallback does not wait'); });
+
+    assert.equal(result, 'served');
+    assert.deepEqual(bodies, [body, { ...body, readme_mode: 'inline' }]);
+  }
+});
+
 test('transient network and server failures recover, validation and expired sessions do not retry', async () => {
   let calls = 0;
-  const result = await requestFeedWithRetry(request, async () => {
+  const bodies: { readme_mode?: string }[] = [];
+  const result = await requestFeedWithRetry({ ...request, readme_mode: 'deferred' }, async (body) => {
+    bodies.push(body);
     calls++;
     if (calls === 1) throw new TypeError('Network request failed');
     if (calls === 2) throw Object.assign(new Error('unavailable'), { status: 503 });
     return 'ready';
   }, undefined, async () => {});
   assert.equal(result, 'ready');
+  assert.deepEqual(bodies.map(body => body.readme_mode), ['deferred','deferred','deferred']);
+  const conflictBodies: { readme_mode?: string }[] = [];
+  let conflictCalls = 0;
+  await requestFeedWithRetry({ ...request, readme_mode: 'deferred' }, async (body) => {
+    conflictBodies.push(body);
+    if (conflictCalls++ === 0) throw Object.assign(new Error('unrelated conflict'), { status: 409, code: 'OTHER_CONFLICT' });
+    return 'ready';
+  }, undefined, async () => {});
+  assert.deepEqual(conflictBodies.map(body => body.readme_mode), ['deferred','deferred']);
   for (const failure of [stale(), Object.assign(new Error('unauthorized'), { status: 401 }),
     Object.assign(new Error('account changed'), { code: 'SESSION_CHANGED' })]) {
     let attempts = 0;
@@ -402,4 +433,103 @@ test('an explicit multi-page refresh may replace catalogue pages with personaliz
   const controller=new FeedPaginationController(async cursor=>({...page([cursor?'personalized-2':'personalized-1'],'2',cursor?null:'next'),mode:'personalized'}),loaded,()=>loaded);
   assert.equal((await controller.load(null,signal)).mode,'personalized');
   assert.equal((await controller.load('next',signal)).mode,'personalized');
+});
+
+
+{
+const owner='00000000-0000-4000-8000-000000000035',session='00000000-0000-4000-8000-000000000036';
+
+test('preparation reuses only this call inspection and writes only changed durable intent', async t => {
+ let stored:string|null=null, inspections=0, writes=0, epoch='1', active=false;
+ const deps={read:async()=>stored,write:async(value:string)=>{writes++;stored=value;},assertCurrent:()=>{},
+  inspect:async(id:string):Promise<FeedSessionResult|null>=>{inspections++;return active?{mode:'ordered',session:{session_id:id,epoch,status:'active'}}:null;},
+  send:async(control:FeedSessionControl):Promise<FeedSessionResult>=>{
+   assert.ok(stored?.includes(control.request_id),'a control is durable before I/O');active=true;
+   if(control.kind==='reset')epoch=(BigInt(control.expected_epoch)+1n).toString();
+   return {mode:'ordered',session:{session_id:control.session_id,epoch,status:'active'}};
+  }};
+ const client=new FeedIntentLifecycle(owner,deps);
+ await client.prepare(session);
+ t.diagnostic(`new ordered session: ${inspections} inspections, ${writes} writes (fixture boundaries, not production timing)`);
+ assert.deepEqual([inspections,writes],[1,2],'one authoritative lookup, then durable Begin and acknowledgement');
+ const original=stored;inspections=0;writes=0;
+ await client.prepare(session);
+ assert.deepEqual([inspections,writes],[1,0],'each next page still inspects, without rewriting unchanged state');
+ assert.equal(stored,original);
+ inspections=0;writes=0;
+ await new FeedIntentLifecycle(owner,deps).prepare(session);
+ assert.deepEqual([inspections,writes],[1,0],'restart validates the stored canonical session once');
+ epoch='2';inspections=0;writes=0;
+ await client.prepare(session);
+ assert.deepEqual([inspections,writes],[1,1],'another client epoch is inspected and persisted, never cached away');
+ assert.equal(JSON.parse(stored!).entries[0].epoch,'2');
+});
+
+test('failed acknowledgement persistence retries changed state without reissuing accepted Begin', async()=>{
+ let stored:string|null=null, failAck=true, active=false, sends=0;
+ const client=new FeedIntentLifecycle(owner,{read:async()=>stored,assertCurrent:()=>{},
+  write:async value=>{if(active&&failAck)throw new Error('quota');stored=value;},
+  inspect:async():Promise<FeedSessionResult|null>=>active?{mode:'ordered',session:{session_id:session,epoch:'1',status:'active'}}:null,
+  send:async():Promise<FeedSessionResult>=>{sends++;active=true;return {mode:'ordered',session:{session_id:session,epoch:'1',status:'active'}};}});
+ await assert.rejects(client.prepare(session),/quota/);
+ assert.equal(JSON.parse(stored!).entries[0].pending.length,1);
+ failAck=false;await client.prepare(session);
+ assert.equal(sends,1);assert.equal(JSON.parse(stored!).entries[0].pending.length,0);
+});
+}
+
+test('page prefetch starts with six remaining cards and stops for background, offline, failure or outstanding work', async () => {
+  const {shouldPrefetchFeedPage}=await import('../src/services/feedPagination');
+  const ready={remaining:6,hasNextPage:true,fetching:false,failed:false,active:true,online:true};
+  assert.equal(shouldPrefetchFeedPage(ready),true);
+  for(const changed of [{remaining:7},{remaining:-1},{hasNextPage:false},{fetching:true},{failed:true},{active:false},{online:false}]) {
+    assert.equal(shouldPrefetchFeedPage({...ready,...changed}),false);
+  }
+});
+
+test('consuming navigation attribution preserves the live Home controller and pending page', async () => {
+  const {loadSource}=await import('./support/startup-harness');
+  const {SessionLifecycle}=await import('../src/api/session-lifecycle');
+  const {takeFeedNavigation}=await import('../src/services/feedImpressionAttribution');
+  const lifecycle=new SessionLifecycle();
+  let finish!: (value:FeedPage)=>void;
+  const pending=new Promise<FeedPage>(resolve=>{finish=resolve;});
+  const token=`header.${Buffer.from(JSON.stringify({userId:'alice'})).toString('base64url')}.signature`;
+  const source=loadSource('src/services/homeFeedQuery.ts',{
+    '../utils/storage':{getStorageItem:async()=>token},
+    '../api/session-lifecycle':{authSessionLifecycle:lifecycle},
+    '../api/feed-sessions':{feedSessions:()=>({prepare:async(session:string)=>session})},
+    '../api/home-feed':{fetchHomeFeed:()=>pending},
+  });
+  const client=new QueryClient();
+  client.setQueryData(['feed','alice'],{pages:[page(['loaded'])],pageParams:[null]});
+  const controller=source.homeFeedController(client,'alice');
+  const loading=controller.load('next');
+  await new Promise(resolve=>setTimeout(resolve,0));
+  const navigationKey=['feed','alice','navigation','00000000-0000-4000-8000-000000000010'];
+  client.setQueryData(navigationKey,{ownerId:'alice',repoId:'loaded',generation:lifecycle.currentGeneration()});
+  takeFeedNavigation(client,'alice','loaded','00000000-0000-4000-8000-000000000010',lifecycle.currentGeneration());
+  assert.strictEqual(source.homeFeedController(client,'alice'),controller);
+  finish(page(['next']));
+  assert.equal((await loading).items[0].repo_id,'next');
+  client.removeQueries({queryKey:['feed','alice'],exact:true});
+  assert.notStrictEqual(source.homeFeedController(client,'alice'),controller,'Removing Home itself releases the controller');
+  source.releaseHomeFeedController(client);client.clear();
+});
+
+
+test('Home follows up preparation once with the same request and stops on persistent failure',async()=>{
+ const {loadSource}=await import('./support/startup-harness');
+ const error=Object.assign(new Error('Recommendations are still being prepared'),{status:503,code:'PERSONALIZED_FEED_UNAVAILABLE',retryAfter:'3'});
+ for(const recovers of [true,false]) {
+  const bodies:unknown[]=[];const waits:number[]=[];
+  const source=loadSource('src/api/home-feed.ts',{
+   './feed':{fetchFeed:async(_token:string,_cursor:unknown,options:any)=>requestFeedWithRetry(request,async body=>{
+     bodies.push(body);if(recovers&&bodies.length===2)return page(['ready']);throw error;
+   },options.signal,async ms=>{waits.push(ms);},options.retryUnavailable,options.preparationRetryLimit)},
+  });
+  if(recovers)assert.equal((await source.fetchHomeFeed('token',null)).items[0].repo_id,'ready');
+  else await assert.rejects(source.fetchHomeFeed('token',null),failure=>failure===error);
+  assert.deepEqual(bodies,[request,request]);assert.deepEqual(waits,[3000]);
+ }
 });

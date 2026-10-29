@@ -1,3 +1,4 @@
+import { normalizeRepositoryLanguages, type RepositoryLanguageObservation } from '../services/repositoryLanguages.js';
 import crypto from 'node:crypto';
 import { LINEAGE_FIELDS, type RepositoryLineage } from '../services/repositoryLineage.js';
 import { isValidUuid } from '../utils/validators.js';
@@ -20,7 +21,7 @@ export interface ReindexOptions {
   repositoryIds?: string[];
 }
 
-interface ReindexRow extends RepositoryLineage {
+interface ReindexRow extends RepositoryLineage, RepositoryLanguageObservation {
   repo_id: string;
   active_summary?: Record<string, unknown> | null;
   github_id: string;
@@ -91,6 +92,8 @@ export function buildCampaignRepositoryJob(
   row: ReindexRow,
   jobId = crypto.randomUUID(),
 ): MlRepositoryIndexJob | null {
+  let languages: ReturnType<typeof normalizeRepositoryLanguages>;
+  try { languages = normalizeRepositoryLanguages(row.languages, row); } catch { return null; }
   const [owner, ...nameParts] = row.full_name.split('/');
   const repository: RepositoryUpsert = {
     github_id: String(row.github_id),
@@ -106,7 +109,7 @@ export function buildCampaignRepositoryJob(
     readme_default_branch: row.readme_default_branch,
     readme_base_url: row.readme_base_url,
     primary_language: row.primary_language,
-    languages: Array.isArray(row.languages) ? row.languages.map(String) : [],
+    ...languages,
     topics: Array.isArray(row.topics) ? row.topics.map(String) : [],
     star_count: Number(row.star_count ?? 0),
     fork_count: Number(row.fork_count ?? 0),
@@ -167,7 +170,7 @@ export async function runReindex(options: ReindexOptions, databaseUrl: string): 
             repo.lineage_source,to_char(repo.lineage_observed_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS lineage_observed_at,
             content.description,content.readme,content.readme_source_path,
             content.readme_default_branch,content.readme_base_url,
-            content.primary_language,content.languages,
+            content.primary_language,content.languages,content.language_breakdown,content.language_total_size::float8 AS language_total_size,content.language_breakdown_complete,
             content.content_hash,content.content_version,content.source_updated_at,
             stat.star_count,stat.fork_count,stat.open_issues_count,
             COALESCE(stat.observed_at,content.updated_at) AS observed_at,topic_list.topics,active_summary.artifact AS active_summary
