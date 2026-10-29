@@ -80,6 +80,10 @@ export function ProfileContentLists(props: Props) {
       const query = props[row.section];
       if (!query) return null;
       const label = row.section === 'pinned' ? 'pinned repositories' : 'Lists';
+      const hasCachedData = query.data !== undefined;
+      const message = query.isFetching
+        ? `Refreshing ${label}…`
+        : hasCachedData ? `Couldn’t refresh ${label}.` : `Unable to load your ${label}.`;
       content = <View style={{ minHeight: 70, alignItems: 'center', justifyContent: 'center', gap: 10, paddingVertical: 12 }}>
         {query.isPending ? <View accessible={true} accessibilityRole="progressbar" accessibilityLabel={`Loading ${label}`}
           accessibilityState={{ busy: true }} style={{ width: '100%', gap: 10 }}>
@@ -93,7 +97,8 @@ export function ProfileContentLists(props: Props) {
             </View>
           </View>)}
         </View> : <>
-          <Text accessibilityLiveRegion="polite" className="text-[#FF6878] font-nata text-center">Unable to load your {label}.</Text>
+          <Text accessibilityLiveRegion="polite" className="font-nata text-center"
+            style={{ color: hasCachedData || query.isFetching ? '#8A898F' : '#FF6878' }}>{message}</Text>
           <Pressable accessibilityRole="button" accessibilityLabel={`Retry ${label}`} accessibilityState={{ busy: Boolean(query.isFetching), disabled: Boolean(query.isFetching) }}
             disabled={query.isFetching} onPress={() => { if (!query.isFetching) void query.refetch(); }} className="rounded-[12px] bg-[#292929] px-5 py-3">
             <Text className="text-white font-nataSemiBold">{query.isFetching ? 'Retrying…' : 'Retry'}</Text>
