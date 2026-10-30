@@ -45,6 +45,8 @@ integration('registered GitHub OAuth callback verifies identity without collecti
     import('../../routes/authRoutes.js'), import('../../db/index.js'), import('../../config/redis.js'),
   ]);
   app.use('/api/auth', routes);
+  const {default:productRoutes}=await import('../../routes/productV2Routes.js');
+  app.use('/api/v2',productRoutes);
   const originalFetch = globalThis.fetch;
   let forbiddenRequests = 0;
   globalThis.fetch = (input, init) => {
@@ -69,7 +71,20 @@ integration('registered GitHub OAuth callback verifies identity without collecti
       'ordinary sign-in retires the separate unlink-purpose cookie');
     const callback = await fetch(`${origin}/api/auth/callback?code=fixture-provider-code`, { redirect: 'manual', headers: { Cookie: cookie } });
     assert.equal(callback.status, 302);
-    assert.ok(new URL(callback.headers.get('location')!).searchParams.get('code'), callback.headers.get('location')!);
+    const appCode=new URL(callback.headers.get('location')!).searchParams.get('code');
+    assert.ok(appCode,callback.headers.get('location')!);
+    const reconnect=(owner:string|undefined,verifier='v'.repeat(64))=>fetch(`${origin}/api/v2/onboarding/github-reconnect`,{method:'POST',
+      headers:{'content-type':'application/json',...(owner?{authorization:`Bearer ${jwt.sign({userId:owner},process.env.JWT_SECRET!)}`}:{})},
+      body:JSON.stringify({code:appCode,code_verifier:verifier})});
+    assert.equal((await reconnect(undefined)).status,401);
+    const foreign=await reconnect(crypto.randomUUID());
+    assert.equal(foreign.status,409,'another authenticated account cannot consume a reconnect code');
+    assert.deepEqual(foreign.headers.getSetCookie(),[]);
+    const wrongProof=await reconnect(userId,'x'.repeat(64));assert.equal(wrongProof.status,409);
+    const confirmed=await reconnect(userId);assert.equal(confirmed.status,200,await confirmed.clone().text());
+    assert.deepEqual(confirmed.headers.getSetCookie(),[],'reconnection must not replace the current refresh cookie');
+    assert.equal(Number((await sqlClient`SELECT count(*) FROM app.refresh_tokens WHERE user_id=${userId}::uuid`)[0].count),0,'reconnection must not issue another login session');
+    assert.equal((await reconnect(userId)).status,409,'confirmation remains single use');
     assert.equal(tokenRequests, 1);
     assert.equal(forbiddenRequests, 0, 'authentication must not infer consent to fetch GitHub activity');
     const [profile] = await sqlClient`SELECT github_id,github_identity_verified_at,onboarding_completed,interests,skills,tech_stack FROM app.users WHERE user_id=${userId}::uuid`;
