@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
-test('README card remains visible without a digest and Tech Stack retains safe independent width', {
+test('README layout, linked-image event propagation and independent Tech Stack width', {
   skip: process.env.RUN_README_CARD_BROWSER !== '1' && process.env.BUILD_README_CARD_BROWSER !== '1', timeout: 30_000,
 }, async t => {
   const directory = await mkdtemp(path.join(tmpdir(), 'weave-readme-card-'));
@@ -15,14 +15,18 @@ test('README card remains visible without a digest and Tech Stack retains safe i
   await build({ stdin: { resolveDir: process.cwd(), loader: 'tsx', contents: `
     import React,{useState,useLayoutEffect}from'react';import{createRoot}from'react-dom/client';
     import ReadmeCard from './src/components/home/ReadmeCard';
+    import{ReadmePopup}from'./src/components/home/ReadmePopup';
     import{RepositoryScreen}from'./src/components/home/RepositoryScreen';
     import{QueryClient,QueryClientProvider}from'@tanstack/react-query';
     const client=new QueryClient();
     const params=new URLSearchParams(location.search);
-    window.fixture={status:'pending',error:false,compact:false,active:true,opens:0,summaries:0,retries:0,shares:0,insets:{top:0,bottom:0,left:Number(params.get('left')||0),right:Number(params.get('right')||0)}};
+    window.fixture={externalLinks:[],status:'pending',error:false,compact:false,active:true,opens:0,summaries:0,retries:0,shares:0,insets:{top:0,bottom:0,left:Number(params.get('left')||0),right:Number(params.get('right')||0)}};
     function Fixture(){const[revision,update]=useState(0);window.fixture.refresh=()=>update(x=>x+1);useLayoutEffect(()=>{document.getElementById('card-frame').dataset.revision=String(revision);},[revision]);
       const repository={id:'repo',name:'Books',fullName:'Tarun/Books',description:'Unverified description fallback',readmeSummary:'Unverified description fallback',summarySource:'description_fallback',readmeFull:'# Raw README sentinel',githubUrl:'https://github.com/Tarun/Books',readmeSourcePath:'README.md',readmeDefaultBranch:'main',readmeBaseUrl:null,owner:'Tarun',stats:{stars:12,views:1,forks:0,likes:0,dislikes:0,comments:0,saves:0},languages:params.has('stack')?['React','TypeScript','PostgreSQL','Docker','Rust']:[],topics:[]};
       if(params.has('preview'))Object.assign(repository,{summarySource:'generated',readmeSummary:'Forward CloudWatch logs with NR_LAMBDA_LOG_GROUP_PREFIX and configure an AWS Serverless application for infrastructure integrations.',readmeFull:'![Community Project header](https://github.com/newrelic/open-source-office/raw/master/examples/categories/images/Community_Project.png)'});
+      if(params.has('linked-image'))return <ReadmePopup isVisible onClose={()=>{}} title="Linked image regression" contentKind="readme"
+        readmeText={'# Original README\\n[![Architecture](https://cdn.example.com/diagram.png)](https://example.com/project)\\n\\n[External project](https://example.com/project)'}
+        readmeSource={{fullName:'fixture/project'}}/>;
       const actions={onReadFullPress:()=>window.fixture.summaries++,onOpenReadme:()=>window.fixture.opens++};
       return params.has('parent')?<RepositoryScreen repository={repository} pageWidth={innerWidth} pageHeight={innerHeight-(64+12)} {...actions} onSavePress={()=>{}} onSharePress={()=>window.fixture.shares++} onCommentPress={()=>{}}/>:<ReadmeCard repository={repository} availableWidth={innerWidth-40} compact={window.fixture.compact} isActive={window.fixture.active} {...actions}/>;}
 
@@ -30,6 +34,11 @@ test('README card remains visible without a digest and Tech Stack retains safe i
   `}, outfile:path.join(directory,'bundle.js'),bundle:true,platform:'browser',format:'iife',jsx:'automatic',resolveExtensions:['.web.tsx','.tsx','.web.ts','.ts','.web.js','.js','.json'],loader:{'.js':'jsx','.css':'empty'},
     alias:{'react-native':'react-native-web','lucide-react-native':path.resolve('node_modules/lucide-react-native/dist/esm/icons/index.mjs')},define:{'process.env.NODE_ENV':'"development"','__DEV__':'true'},
     plugins:[{name:'summary-transport-and-motion',setup(builder){
+      builder.onResolve({filter:/^expo-blur$|\/ReadmeImagePopup$|\/ReadmeVideoPopup$|readme-external-link$/},args=>({path:args.path,namespace:'readme-media-boundary'}));
+      builder.onLoad({filter:/.*/,namespace:'readme-media-boundary'},args=>({contents:args.path==='expo-blur'?
+        "export {View as BlurView} from 'react-native';":args.path.includes('readme-external-link')?
+        "export const openReadmeExternalLink=href=>{window.fixture.externalLinks.push(href);document.body.dataset.externalLinks=JSON.stringify(window.fixture.externalLinks);};":
+        `import React from'react';export const ${args.path.includes('ReadmeImagePopup')?'ReadmeImagePopup':'ReadmeVideoPopup'}=({url,onClose})=>React.createElement('section',{'aria-label':'README image viewer','data-url':url},React.createElement('button',{'aria-label':'Close fixture image',onClick:onClose},'Close image'));`,resolveDir:process.cwd()}));
       builder.onResolve({filter:/store\/AuthContext$|^react-native-safe-area-context$|\/follow-button$|^react-native-gesture-handler$|\/TechStackIcon$/},args=>({path:args.path,namespace:'parent-boundary'}));
       builder.onLoad({filter:/.*/,namespace:'parent-boundary'},args=>({contents:args.path.includes('AuthContext')?"export const useAuth=()=>({user:{user_id:'viewer'}});":args.path==='react-native-safe-area-context'?"export const useSafeAreaInsets=()=>window.fixture.insets;":args.path.includes('follow-button')?"export const FollowButton=()=>null;":args.path==='react-native-gesture-handler'?"const chain=new Proxy({},{get:()=>()=>chain});export const Gesture={Native:()=>chain};export const GestureDetector=({children})=>children;":"export const TechStackIcon=()=>null;"}));
       builder.onResolve({filter:/use-repository-readme-summary$|use-typewriter-text$|^react-native-reanimated$|^expo-image$/},args=>({path:args.path,namespace:'fixture'}));
@@ -90,12 +99,23 @@ test('README card remains visible without a digest and Tech Stack retains safe i
   const click = async (label: string) => { await until(`Boolean(document.querySelector('[aria-label="${label}"]'))`); await evaluate(`document.querySelector('[aria-label="${label}"]').click()`); };
   const pointerClick = async (label: string) => {
     const point=await evaluate(`(()=>{const button=[...document.querySelectorAll('[aria-label="${label}"]')].at(-1);button.scrollIntoView({block:'nearest'});const r=button.getBoundingClientRect();return{x:r.x+r.width/2,y:r.y+r.height/2};})()`);
-    assert.equal(await evaluate(`document.elementFromPoint(${point.x},${point.y})?.closest('[aria-label]')?.getAttribute('aria-label')`),label,'the intended control, not an overlapping sibling, owns the touch');
+    assert.equal(await evaluate(`document.elementFromPoint(${point.x},${point.y})?.closest('[role="button"]')?.getAttribute('aria-label')`),label,'the intended control, not an overlapping sibling, owns the touch');
     await send('Input.dispatchMouseEvent',{type:'mousePressed',...point,button:'left',clickCount:1});
     await send('Input.dispatchMouseEvent',{type:'mouseReleased',...point,button:'left',clickCount:1});
   };
 
   await send('Page.enable');
+  await send('Page.navigate',{url:`http://127.0.0.1:${address.port}/?linked-image=1`});
+  await until(`Boolean(document.querySelector('[aria-label="Enlarge README image: Architecture"]'))`);
+  assert.equal(await evaluate(`Boolean(document.querySelector('[aria-label="Enlarge README image: Architecture"]').closest('[role="link"]'))`),true,'the real HTML renderer must retain the surrounding link');
+  await pointerClick('Enlarge README image: Architecture');
+  await until(`Boolean(document.querySelector('[aria-label="README image viewer"]'))`);
+  assert.equal(await evaluate(`document.querySelector('[aria-label="README image viewer"]').dataset.url`),'https://cdn.example.com/diagram.png');
+  assert.deepEqual(await evaluate('window.fixture.externalLinks'),[],'an actual bubbling image press cannot open the surrounding link');
+  await click('Close fixture image');
+  await until(`!document.querySelector('[aria-label="README image viewer"]')`);
+  await evaluate(`document.querySelectorAll('[role="link"]')[1].click()`);
+  assert.deepEqual(await evaluate('window.fixture.externalLinks'),['https://example.com/project'],'the real link still reaches the external-navigation boundary');
   for(const width of [360,412]){
     await send('Emulation.setDeviceMetricsOverride',{width,height:915,deviceScaleFactor:1,mobile:true});
     await send('Page.navigate',{url:`http://127.0.0.1:${address.port}/?preview=1`});
