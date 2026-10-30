@@ -361,7 +361,8 @@ test('idle browse warmup preserves populated stale infinite pages and fetches on
 function exploreNavigation() {
   const filename = resolve('src/app/(tabs)/explore.tsx'), nativeRequire = createRequire(filename);
   let focused = true, viewer = 'viewer-a', physicalOffset = 0, sequence = 0, contentHeight = 6000;
-  let offline = false, paginationReads = 0;
+  let offline = false, paginationReads = 0, refreshReads = 0;
+  let currentSearchKey: unknown;
   const pagination: any = {hasNextPage:true,isFetching:false,isFetchingNextPage:false,isFetchNextPageError:false};
   let finishPage: (() => void) | undefined;
   const frames = new Map<number, FrameRequestCallback>();
@@ -374,7 +375,7 @@ function exploreNavigation() {
       scrollToOffset: ({offset}: {offset:number}) => { physicalOffset = Math.min(offset,contentHeight-600); },
       getScrollableNode: () => ({scrollHeight:contentHeight,clientHeight:600}),
     }));
-    return React.createElement('ResultList', props, props.data.map((item: any) => React.createElement(React.Fragment,{key:item.id},props.renderItem({item}))),props.ListFooterComponent);
+    return React.createElement('ResultList', props, props.data.map((item: any) => React.createElement(React.Fragment,{key:item.id},props.renderItem({item}))),props.ListHeaderComponent,props.ListFooterComponent);
   });
   const repo = mapRepositoryDetail({repo_id:'repo',full_name:'owner/repo'})!;
   const module = {exports:{} as any};
@@ -391,10 +392,11 @@ function exploreNavigation() {
     if(name==='@react-native-community/netinfo')return {useNetInfo:()=>({isConnected:!offline})};
     if(name==='react-native-safe-area-context')return {useSafeAreaInsets:()=>({top:0,bottom:0})};
     if(name==='@/store/AuthContext')return {useAuth:()=>({user:{user_id:viewer}})};
-    if(name==='@tanstack/react-query')return {useQueryClient:()=>({}),useInfiniteQuery:(options:any)=>({
+    if(name==='@tanstack/react-query')return {useQueryClient:()=>({}),useInfiniteQuery:(options:any)=>{if(options.queryKey[0]==='explore-search')currentSearchKey=options.queryKey;return ({
       ...pagination,data:{pages:[{items:options.queryKey[0]==='explore-search'?[{type:'repository',id:repo.id,data:repo}]:[repo]}]},
       fetchNextPage:()=>{paginationReads++;return new Promise<void>(resolve=>{finishPage=resolve;});},
-    })};
+      refetch:()=>{refreshReads++;return Promise.resolve();},
+    });}};
     if(name==='@/services/repositoryPreview')return {rememberRepositoryPreview(){}};
     if(name==='@/api/explore')return {exploreBrowseQueryOptions:()=>({queryKey:['browse']}),mergeExplorePages:(pages:any[])=>pages.flatMap(page=>page.items)};
     if(name==='@/api/search')return {fetchSearch(){throw Error('No search transport in navigation regression');}};
@@ -412,6 +414,9 @@ function exploreNavigation() {
     async type(value:string){await React.act(()=>root.root.findByType('SearchBar').props.onChangeText(value));},
     async finishPage(){await React.act(async()=>{finishPage?.();await Promise.resolve();});},
     get paginationReads(){return paginationReads;},
+    get refreshReads(){return refreshReads;},
+    get searchKey(){return currentSearchKey;},
+    async retry(label:string){await React.act(()=>{const button=root.root.findAllByType('Pressable').find(node=>node.findAllByType('Text').some(text=>text.props.children===label));assert.ok(button,'retained results expose recovery');button.props.onPress();});},
     get bottomPadding(){return root.root.findByType('ResultList').props.contentContainerStyle.paddingBottom;},
     get footerLabels(){return root.root.findAllByType('Text').map(node=>node.props.children);},
     get footerSpinners(){return root.root.findAllByType('ActivityIndicator').length;},
@@ -461,6 +466,20 @@ test('Explore automatic pagination stops on errors, offline, exhaustion and inac
     assert.equal(app.paginationReads,1,'search results also auto-page');
     await app.finishPage();
   } finally {await app.close();}
+});
+
+test('Explore retained results recover from failed refreshes and expired searches',async()=>{
+  const app=exploreNavigation();await app.mount();
+  try {
+    await app.pagination({isError:true,isFetchNextPageError:false});
+    await app.retry('Try again');assert.equal(app.refreshReads,1);
+    await app.type('repo');
+    await app.pagination({error:Object.assign(new Error('expired'),{status:410})});
+    const previous=app.searchKey;
+    await app.retry('Restart search');
+    assert.notDeepEqual(app.searchKey,previous,'expired searches restart with a new session');
+    assert.equal(app.refreshReads,1,'an expired snapshot cannot be refetched');
+  }finally{await app.close();}
 });
 
 test('Explore restores the scrolled list after repository Back without retaining hidden zero offsets', async () => {
