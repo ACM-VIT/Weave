@@ -236,6 +236,18 @@ export function SavePopup({
     () => new Set(lists.filter((list) => list.selected).map(listMembershipKey)),
     [lists],
   );
+  const [selectionBaseline, setSelectionBaseline] = useState(() => ({ scope: selectionScope, data: listsQuery.data, updatedAt: listsQuery.dataUpdatedAt }));
+  // A successful full refresh can retire deleted checkboxes. Local edits and
+  // creation responses alone must not be mistaken for a new server baseline.
+  if (listsQuery.isSuccess && !listsQuery.isFetching && (selectionBaseline.scope !== selectionScope
+    || selectionBaseline.data !== listsQuery.data || selectionBaseline.updatedAt !== listsQuery.dataUpdatedAt)) {
+    setSelectionBaseline({ scope: selectionScope, data: listsQuery.data, updatedAt: listsQuery.dataUpdatedAt });
+    if (localSelection.scope === selectionScope && localSelection.overrides.size) {
+      const available = new Set((listsQuery.data ?? []).map(listMembershipKey));
+      const retained = new Map([...localSelection.overrides].filter(([id]) => available.has(id)));
+      if (retained.size !== localSelection.overrides.size) setLocalSelection({ scope: selectionScope, overrides: retained });
+    }
+  }
   const selectedIds = useMemo(() => {
     const selected = new Set(serverSelectedIds);
     if (localSelection.scope === selectionScope) {

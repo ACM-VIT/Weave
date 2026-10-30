@@ -134,6 +134,25 @@ describe("Membership and save sheet lifecycle", () => {
     } finally {await app.unmount();}
   });
 
+  test('a completed List refresh removes an invisible deleted selection before saving', async () => {
+    const app=feed([],true), repo='00000000-0000-4000-8000-000000000001';
+    const kept={id:'kept',source:'collection',name:'Kept',selected:true,repositoryCount:1};
+    const deleted={id:'deleted',source:'collection',name:'Deleted',selected:false,repositoryCount:0};
+    let finish!:(lists:any[])=>void, submitted:string[]=[];
+    app.setListLoader(()=>new Promise(resolve=>{finish=resolve;}));
+    app.setSave(async(_repo,ids)=>{submitted=ids;return {saved:true,selectedListIds:ids,saveStateChanged:false};});
+    app.client.setQueryData(['repository-lists','viewer',repo],[kept,deleted],{updatedAt:1});
+    await app.mountStandaloneSave(repo);
+    try {
+      await app.press('Deleted, 0 repositories');
+      await act(async()=>{finish([kept]);await new Promise(resolve=>setTimeout(resolve,0));});
+      await waitForReadmeState(()=>!app.button('Save repository to selected Lists').props.disabled);
+      assert.deepEqual(app.saveListOrder,['kept']);
+      await app.press('Save repository to selected Lists');
+      assert.deepEqual(submitted,['collection:kept'],'removed checkboxes cannot leave hidden selected IDs');
+    }finally{await app.unmount();}
+  });
+
   test('leaving an unobserved warmup cancels it and a late retired response cannot populate private data', async () => {
     const app=feed(['repo'],true);
     let finish!: (lists:any[])=>void;
@@ -421,10 +440,10 @@ test('the windowed save grid retains offscreen memberships while filtering and c
     submitted.push([...selected]);
     return {saved:true,selectedListIds:selected,saveStateChanged:false};
   });
-  const lists=Array.from({length:5000},(_,index)=>({id:String(index),source:index%2?'legacy-board':'collection',
+  let lists=Array.from({length:5000},(_,index)=>({id:String(index),source:index%2?'legacy-board':'collection',
     name:`List ${String(index).padStart(5,'0')}`,selected:index===4999,repositoryCount:index}));
   app.setListLoader(async()=>lists);
-  app.setCreate(async()=>({id:'new',source:'collection',name:'New List',selected:false,repositoryCount:0}));
+  app.setCreate(async()=>{const created={id:'new',source:'collection',name:'New List',selected:false,repositoryCount:0};lists=[created,...lists];return created;});
   await app.mountStandaloneSave('00000000-0000-4000-8000-000000000011');
   try {
     await waitForReadmeState(()=>app.messages.includes('List 00000'));
