@@ -48,6 +48,7 @@ type ActionButtonProps = {
   active?: boolean;
   activeColor?: string;
   fillActive?: boolean;
+  disabled?: boolean;
   count?: string;
   dense?: boolean;
   icon: React.ComponentType<{ color?: string; size?: number; strokeWidth?: number; fill?: string }>;
@@ -118,10 +119,11 @@ function patchOwnerFollowState(
 
 function ActionButton({
   accessibilityLabel,
-  active = false,
+  active,
   activeColor = REFERENCE_THEME.accent,
   count,
   fillActive = false,
+  disabled = false,
   dense = false,
   icon: Icon,
   iconSize = 29,
@@ -134,7 +136,8 @@ function ActionButton({
     <Pressable cssInterop={false}
       accessibilityLabel={accessibilityLabel}
       accessibilityRole="button"
-      accessibilityState={{ selected: active }}
+      accessibilityState={{ selected: active, disabled }}
+      disabled={disabled}
       aria-pressed={active}
       onPress={onPress}
       hitSlop={8}
@@ -257,13 +260,16 @@ export function RepositoryScreen({
     setReaction('like');
     onQueueActivity?.({ repo_id: repository.id, action: FEEDBACK_ACTIONS.like }, true);
   };
+  const reactionsAvailable = isActive !== false && reactionsEnabled;
   const toggleLike = () => {
+    if (!reactionsAvailable) return;
     if (reactionRef.current === 'like') {
       setReaction(null);
       onQueueActivity?.({ repo_id: repository.id, action: FEEDBACK_ACTIONS.unlike }, true);
     } else likeRepository();
   };
   const toggleDislike = () => {
+    if (!reactionsAvailable) return;
     const undo = reactionRef.current === 'dislike';
     setReaction(undo ? null : 'dislike');
     onQueueActivity?.({ repo_id: repository.id, action: undo ? FEEDBACK_ACTIONS.undislike : FEEDBACK_ACTIONS.dislike }, true);
@@ -500,6 +506,7 @@ export function RepositoryScreen({
             <ActionButton
               accessibilityLabel={liked ? 'Unlike repository' : 'Like repository'}
               active={liked}
+              disabled={!reactionsAvailable}
               count={formatCount(String(likeCount))}
               dense={veryShort}
               activeColor={REFERENCE_THEME.danger}
@@ -525,6 +532,7 @@ export function RepositoryScreen({
             <ActionButton
               accessibilityLabel={disliked ? 'Undo not interested' : 'Not interested in this repository'}
               active={disliked}
+              disabled={!reactionsAvailable}
               activeColor={REFERENCE_THEME.danger}
               dense={veryShort}
               icon={Ban}

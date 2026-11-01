@@ -339,6 +339,8 @@ test('Home heart toggles while double-tap only likes and Not interested retains 
   const button = (label: string) => root.root.findAllByType('Pressable').find(node => node.props.accessibilityLabel === label)!;
   try {
     assert.equal(button('Like repository').findAllByType('Heart').length, 1);
+    assert.equal(button('Open comments').props['aria-pressed'], undefined, 'ordinary actions must not be announced as toggles');
+    assert.equal(button('Share repository').props['aria-pressed'], undefined);
     await act(async () => button('Like repository').props.onPress());
     const heart = button('Unlike repository').findByType('Heart');
     assert.equal(heart.props.fill, '#FF453A');
@@ -367,6 +369,10 @@ test('Home heart toggles while double-tap only likes and Not interested retains 
     assert.ok(button('Unlike repository'), 'double tapping a reaction control must also finish liked');
     await act(async () => root.update(React.createElement(RepositoryScreen, { ...props, isActive: false })));
     assert.equal(tap().enabled, false);
+    const beforeInactiveTap = events.length;
+    await act(async () => button('Unlike repository').props.onPress());
+    assert.equal(events.length, beforeInactiveTap, 'an inactive card cannot enqueue a direct heart press');
+    assert.equal(button('Unlike repository').props.disabled, true);
     await act(async () => root.update(React.createElement(RepositoryScreen, { ...props, reactionsEnabled: false })));
     assert.equal(tap().enabled, false, 'an overlay disables reactions on the card underneath');
   } finally { await act(async () => root.unmount()); }
