@@ -257,7 +257,8 @@ test('real HTTP paginates public owned/starred/contributed sources and merges ca
     assert.equal(result.sources.owned.pages, 2);
     assert.equal(result.sources.contributed.pages, 2);
     assert.equal(new Date(result.collected_at).toISOString(), result.collected_at);
-    assert.ok(f.requests.every(request => request.auth === 'Bearer fixture-only'));
+    assert.ok(f.requests.filter(request => new URL(request.url, 'http://fixture').pathname !== '/graphql').every(request => request.auth === undefined), 'public REST reads cannot carry credentials that reveal private repositories');
+    assert.ok(f.requests.filter(request => new URL(request.url, 'http://fixture').pathname === '/graphql').every(request => request.auth === 'Bearer fixture-only'));
     assert.ok(!JSON.stringify(result).includes('fixture-only'));
   } finally { await f.stop(); }
 });
@@ -287,6 +288,52 @@ test('rate limits and malformed pages remain explicit partial errors without dis
     assert.equal(result.sources.starred.retry_after_seconds, 120);
     assert.equal(result.sources.contributed.error_code, 'invalid_numeric_identity');
   } finally { await f.stop(); }
+});
+
+test('persona inference reads public profile and repositories without forwarding the service credential', async t => {
+  const {fetchGitHubPublicPersona} = await import('../../services/githubService.js');
+  const f = await fixture((url,_body,response) => response.end(JSON.stringify(url.pathname.endsWith('/repos')
+    ? [repository(88,{owner:{id:7,login:'public-dev'},full_name:'public-dev/repo88',html_url:'https://github.com/public-dev/repo88'})]
+    : {id:7,login:'public-dev',avatar_url:'https://avatars.githubusercontent.com/u/7',html_url:'https://github.com/public-dev'})));
+  const originalFetch = globalThis.fetch;
+  t.mock.method(globalThis,'fetch',(input:any,init:any) => new URL(String(input)).origin === 'https://api.github.com'
+    ? f.transport(input,init) : originalFetch(input,init));
+  try {
+    const source = await fetchGitHubPublicPersona('public-dev');
+    assert.equal(source.repositories.length,1);
+    assert.equal(source.profile.login,'public-dev');
+    assert.ok(f.requests.every(request=>request.auth===undefined),'persona requests must never gain access to private repository metadata');
+  } finally {t.mock.restoreAll();await f.stop();}
+});
+
+test('repository enrichment refuses private-capable or unverifiable tokens before fetching any repository', async () => {
+  const {GitHubTrendingIngestionService} = await import('../../services/githubTrendingIngestionService.js');
+  for (const scopes of ['repo', null, 'public_repo']) {
+    const f = await fixture((url, _body, response) => {
+      if (url.pathname === '/rate_limit') {
+        if (scopes !== null) response.setHeader('X-OAuth-Scopes', scopes);
+        response.end('{}');
+      } else if (url.pathname === '/search/repositories') {
+        response.end(JSON.stringify({items:[repository(88,{created_at:'2026-10-01T00:00:00Z',pushed_at:'2026-10-01T00:00:00Z',default_branch:'main'})]}));
+      } else if (url.pathname.endsWith('/languages')) response.end('{"TypeScript":100}');
+      else if (url.pathname.endsWith('/readme')) response.end(JSON.stringify({content:Buffer.from('# Public only').toString('base64'),encoding:'base64',path:'README.md'}));
+      else {response.writeHead(404);response.end('{}');}
+    });
+    try {
+      const service = new GitHubTrendingIngestionService({token:'ghp_fixture-token',fetchImpl:(url,init)=>f.transport(url,{...init,redirect:'error'}),now:()=>new Date('2026-10-02T00:00:00Z')});
+      if (scopes !== 'public_repo') {
+        await assert.rejects(service.buildSnapshot(), /public.only|public-only/i);
+        assert.deepEqual(f.requests.map(request=>new URL(request.url,'http://fixture').pathname),['/rate_limit'],
+          'broad or unknown permissions must stop before repository search, metadata or README');
+      } else {
+        const result = await service.buildSnapshot();
+        assert.ok(f.requests.filter(request=>request.url.startsWith('/search/repositories')).every(request=>new URL(request.url,'http://fixture').searchParams.get('q')!.includes('is:public')));
+        assert.equal(result.repositories.length,1);
+        assert.equal(result.repositories[0].readme,'# Public only');
+        assert.equal(f.requests.filter(request=>request.url==='/rate_limit').length,1,'concurrent search shares credential validation');
+      }
+    } finally {await f.stop();}
+  }
 });
 
 test('a renamed/taken-over handle cannot select an unverified provider identity', async () => {

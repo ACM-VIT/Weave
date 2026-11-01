@@ -1,3 +1,4 @@
+import { assertPublicGitHubCredential } from './githubPublicAccess.js';
 import crypto from 'node:crypto';
 
 import type { RepositoryUpsert, TrendingSnapshotInput } from '../contracts/ingestion.v2.js';
@@ -24,6 +25,8 @@ interface GitHubSearchRepository {
   updated_at: string;
   pushed_at: string;
   default_branch: string;
+  private?: boolean;
+  visibility?: string;
   archived?: boolean;
   fork?: boolean;
 }
@@ -165,6 +168,7 @@ export class GitHubTrendingIngestionService {
   private async request<T>(path: string): Promise<T> {
     const response = await this.fetchImpl(`https://api.github.com${path}`, {
       headers: this.headers(),
+      redirect: 'error',
       signal: AbortSignal.timeout(this.requestTimeoutMs),
     });
     if (!response.ok) {
@@ -178,9 +182,9 @@ export class GitHubTrendingIngestionService {
   }
 
   private async search(query: string): Promise<GitHubSearchRepository[]> {
-    const params = new URLSearchParams({ q: query, sort: 'stars', order: 'desc', per_page: '100' });
+    const params = new URLSearchParams({ q: `${query} is:public`, sort: 'stars', order: 'desc', per_page: '100' });
     const response = await this.request<GitHubSearchResponse>(`/search/repositories?${params.toString()}`);
-    return (response.items ?? []).filter((repo) => !repo.archived && !repo.fork && Boolean(repo.owner?.id));
+    return (response.items ?? []).filter((repo) => repo.private === false && (!repo.visibility || repo.visibility === 'public') && !repo.archived && !repo.fork && Boolean(repo.owner?.id));
   }
 
   private async enrich(repo: GitHubSearchRepository, observedAt: string): Promise<RepositoryUpsert> {
@@ -246,6 +250,7 @@ export class GitHubTrendingIngestionService {
   }
 
   async buildSnapshot(): Promise<TrendingSnapshotInput> {
+    await assertPublicGitHubCredential(this.token, this.fetchImpl, AbortSignal.timeout(this.requestTimeoutMs));
     const now = this.now();
     const observedAt = now.toISOString();
     const createdAfter = new Date(now.getTime() - 90 * 86_400_000);

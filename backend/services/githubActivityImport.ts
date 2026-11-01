@@ -126,7 +126,9 @@ export class GitHubActivityImportClient {
   private async request(path: string, signal: AbortSignal, body?: unknown): Promise<unknown> {
     const response = await this.fetcher(`https://api.github.com${path}`, {
       method: body ? 'POST' : 'GET', redirect: 'error', signal,
-      headers: { Authorization: `Bearer ${this.options.token}`, Accept: 'application/vnd.github+json',
+      // Anonymous REST is a privacy boundary, especially for /starred.
+      // Authenticated GraphQL is limited by the explicit privacy:PUBLIC query.
+      headers: { ...(path === '/graphql' ? { Authorization: `Bearer ${this.options.token}` } : {}), Accept: 'application/vnd.github+json',
         'Content-Type': 'application/json', 'X-GitHub-Api-Version': '2022-11-28' },
       ...(body ? { body: JSON.stringify(body) } : {}),
     });

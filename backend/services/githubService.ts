@@ -1,3 +1,4 @@
+import { assertPublicGitHubCredential } from './githubPublicAccess.js';
 import type {
   ParsedRepoUrl,
   RepoMetadata,
@@ -157,9 +158,12 @@ async function parseGitHubErrorMessage(response: Response): Promise<string> {
 }
 
 async function requestGitHubGraphql<T>(query: string, variables: Record<string, unknown>): Promise<T> {
+  const headers = buildGitHubHeaders();
+  await assertPublicGitHubCredential(headers.Authorization.slice('Bearer '.length));
   const response = await fetch(githubGraphqlUrl, {
+    redirect: 'error',
     method: 'POST',
-    headers: buildGitHubHeaders(),
+    headers,
     body: JSON.stringify({ query, variables }),
   });
 
@@ -183,7 +187,8 @@ async function requestGitHubRest<T>(path: string, signal?: AbortSignal): Promise
   try {
     response = await fetch(`${githubRestBaseUrl}${path}`, {
       method: 'GET',
-      headers: buildGitHubHeaders(),
+      headers: { Accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28' },
+      redirect: 'error',
       signal,
     });
   } catch (error) {
