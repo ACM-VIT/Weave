@@ -93,10 +93,15 @@ test('rendered Lists keep ready content through pending, failed and retried inde
     await settle();
     assert.ok(row('collection:current').length);
     assert.ok(retry());
+    const messages=() => root.root.findAllByType('Text').map(node => React.Children.toArray(node.props.children).join(''));
+    assert.ok(messages().includes('Couldn’t refresh Lists.'), 'retained Lists report a refresh failure, not a missing initial load');
+    assert.ok(!messages().includes('Unable to load your Lists.'));
+
     await act(async () => retry()!.props.onPress());
     await settle();
     assert.equal(retry()!.props.disabled, true, 'in-flight retry cannot be submitted repeatedly');
     assert.equal(retry()!.props.accessibilityState.busy, true);
+    assert.ok(messages().includes('Refreshing Lists…'), 'an active retry must not keep showing the previous error');
     await act(async () => resolveCollections([]));
     await settle();
     assert.equal(retry(), undefined);
