@@ -328,6 +328,43 @@ test('feed actions retain share, comments and swipe saving without redundant Sav
 });
 
 
+test('Home heart toggles while double-tap only likes and Not interested retains dislike feedback', async () => {
+  const { RepositoryScreen } = loadActionComponent('src/components/home/RepositoryScreen.tsx');
+  const events: any[] = [];
+  let root!: ReturnType<typeof create>;
+  const props = { repository, pageWidth: 390, pageHeight: 800, isActive: true,
+    onReadFullPress() {}, onSavePress() {}, onSharePress() {}, onCommentPress() {},
+    onQueueActivity: (event: any) => events.push(event) };
+  await act(async () => { root = create(React.createElement(RepositoryScreen, props)); });
+  const button = (label: string) => root.root.findAllByType('Pressable').find(node => node.props.accessibilityLabel === label)!;
+  try {
+    assert.equal(button('Like repository').findAllByType('Heart').length, 1);
+    await act(async () => button('Like repository').props.onPress());
+    const heart = button('Unlike repository').findByType('Heart');
+    assert.equal(heart.props.fill, '#F472B6');
+    assert.equal(heart.props.color, '#F472B6');
+    await act(async () => button('Unlike repository').props.onPress());
+    assert.equal(button('Like repository').findByType('Heart').props.fill, 'none');
+    const tap = () => root.root.findByType('GestureDetector').props.gesture.config;
+    assert.equal(tap().numberOfTaps, 2);
+    assert.ok(tap().hitSlop.top <= -84, 'the entire fixed top bar is excluded');
+    await act(async () => tap().onEnd({}, true));
+    await act(async () => tap().onEnd({}, true));
+    assert.ok(button('Unlike repository'), 'a second double tap never unlikes');
+    const labels = root.root.findAllByType('Pressable').map(node => node.props.accessibilityLabel);
+    assert.ok(labels.indexOf('Share repository') < labels.indexOf('Not interested in this repository'));
+    assert.equal(button('Not interested in this repository').findAllByType('Ban').length, 1);
+    await act(async () => button('Not interested in this repository').props.onPress());
+    await act(async () => button('Undo not interested').props.onPress());
+    assert.deepEqual(events.map(event => event.action), ['like', 'unlike', 'like', 'dislike', 'undislike']);
+    await act(async () => root.update(React.createElement(RepositoryScreen, { ...props, isActive: false })));
+    assert.equal(tap().enabled, false);
+    await act(async () => root.update(React.createElement(RepositoryScreen, { ...props, reactionsEnabled: false })));
+    assert.equal(tap().enabled, false, 'an overlay disables reactions on the card underneath');
+  } finally { await act(async () => root.unmount()); }
+});
+
+
 function text(root: ReturnType<typeof create>) {
   return root.root.findAllByType('Text').map(node => node.children.join('')).join('\n');
 }

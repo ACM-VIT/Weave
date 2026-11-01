@@ -1,5 +1,6 @@
 // Render the production components with only native/network boundaries replaced.
 // These tests exercise callback ordering and UI state, not device/browser gestures.
+import React from 'react';
 import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { resolve } from 'node:path';
@@ -31,8 +32,17 @@ export function loadActionComponent(path: string, overrides: Record<string, any>
     ...overrides.native,
   };
   const client = new QueryClient({defaultOptions:{queries:{gcTime:Infinity}}});
+  const tap = () => {
+    const config: Record<string, any> = {};
+    const gesture = new Proxy({ config }, { get: (target, key) => key === 'config' ? target.config : (...args: any[]) => {
+      config[String(key)] = args.length === 1 ? args[0] : args;
+      return gesture;
+    }});
+    return gesture;
+  };
   const mocks: Record<string, any> = {
     'react-native': native,
+    'react-native-gesture-handler': { Gesture: { Tap: tap }, GestureDetector: 'GestureDetector' },
     'react-native-reanimated': { useReducedMotion: () => true },
     'react-native-safe-area-context': { useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }) },
     'expo-blur': { BlurView: 'BlurView' },
@@ -55,7 +65,7 @@ export function loadActionComponent(path: string, overrides: Record<string, any>
     '../../services/repositoryGithubOpen': githubOpen,
     '@/utils/avatar-color': { getAvatarColor: () => '#123456' },
     '@/utils/follow-state': { getProfileFollowIdentity: () => ({}) },
-    './DescriptionCard': { __esModule: true, default: () => null }, './ReadmeCard': { __esModule: true, default: () => null },
+    './DescriptionCard': { __esModule: true, default: () => null, SaveSwipeGestureContext: React.createContext(null) }, './ReadmeCard': { __esModule: true, default: () => null },
     './RecommendationReason': { RecommendationReason: () => null }, '../follow-button': { FollowButton: () => null },
     '@/api/session-lifecycle': { authSessionLifecycle: { currentGeneration: () => 1, isCurrent: () => true } },
     '@/services/feedImpressionAttribution': { takeFeedNavigation: () => null },

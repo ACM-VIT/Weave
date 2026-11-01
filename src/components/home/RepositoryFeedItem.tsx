@@ -249,6 +249,7 @@ export function RepositoryFeedItem({
             <RepositoryScreen
               commentCount={commentCount}
               isActive={isViewable}
+              reactionsEnabled={isAppActive && !overlaysOpen}
               isSaved={isSaved}
               onCommentPress={() => setIsCommentsVisible(true)}
               onOwnerPress={onOwnerPress}

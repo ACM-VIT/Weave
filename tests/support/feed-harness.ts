@@ -108,7 +108,7 @@ export function feed(ids: string[], reducedMotion = false, attribution?: { owner
       useAnimatedStyle: (style: () => unknown) => style(), withSpring: (value: unknown) => value,
     },
     'react-native-worklets': {scheduleOnRN: (fn: (...args: any[]) => void, ...args: any[]) => fn(...args)},
-    'react-native-gesture-handler': {Gesture: {Pan: pan}, GestureDetector: 'GestureDetector'},
+    'react-native-gesture-handler': {Gesture: {Pan: pan, Tap: pan}, GestureDetector: 'GestureDetector'},
     './ReadmeImagePopup': {ReadmeImagePopup: 'ReadmeImagePopup'},
     './ReadmeVideoPopup': {ReadmeVideoPopup: 'ReadmeVideoPopup'},
     './ReadmeVideo': {ReadmeVideo: 'ReadmeVideo'},
@@ -195,7 +195,7 @@ export function feed(ids: string[], reducedMotion = false, attribution?: { owner
     get saveListOrder() { return root.root.findAllByType('FlatList').find(node => node.props.numColumns === 2)!.props.data.map((list: any) => list.id); },
     async moveListWindow(index: number) { await act(async () => { moveSaveWindow(index); }); },
     async setViewable(value: boolean) { viewable = value; await act(async () => { root.update(renderRows()); }); },
-    get swipe() {return root.root.findByType('GestureDetector').props;},
+    get swipe() {return root.root.findAllByType('GestureDetector').find(node => node.props.gesture.config.activeOffsetX !== undefined)!.props;},
     get saveRevealed() {return root.root.findAllByType('Pressable').some(node => node.props.accessibilityLabel === 'Close Save actions');},
     async swipeRight(x = 100, y = 0, success = true) {
       const config = this.swipe.gesture.config;
