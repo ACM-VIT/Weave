@@ -529,3 +529,22 @@ test('Android interop retains Trending podium borders, background and row layout
     assert.equal(resolved.padding,18);
   } finally {await React.act(async () => root.unmount());}
 });
+
+
+test('web search tabs announce the selected filter instead of only changing its colour', async () => {
+  const { renderToStaticMarkup } = await import('react-dom/server');
+  const { loadSource } = await import('./support/startup-harness');
+  const nativeRequire = createRequire(resolve('src/components/explore/search-filter-tabs.tsx'));
+  const Tabs = loadSource('src/components/explore/search-filter-tabs.tsx', {
+    'react-native': nativeRequire('react-native-web'),
+    '@/models/search': { SEARCH_GROUPS },
+  }).default;
+  for (const selected of ['all', 'repositories', 'people', 'lists']) {
+    const html = renderToStaticMarkup(React.createElement(Tabs, { value: selected, onChange() {} }));
+    const tabs = [...html.matchAll(/<div[^>]*role="tab"[^>]*>/g)].map(match => match[0]);
+    assert.equal(tabs.length, 4);
+    assert.equal(tabs.filter(tab => tab.includes('aria-selected="true"')).length, 1);
+    assert.ok(tabs[SEARCH_GROUPS.findIndex(group => group.id === selected)].includes('aria-selected="true"'));
+    assert.equal(tabs.filter(tab => tab.includes('aria-selected="false"')).length, 3);
+  }
+});
