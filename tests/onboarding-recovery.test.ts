@@ -182,7 +182,7 @@ test('profile retirement already writing its marker prevents a later Finish from
 
 test('the GitHub popup has only Revoke and Disconnect, then offers Reconnect after unlinking', async t => {
   t.mock.timers.enable({ apis: ['setTimeout'] });
-  let linked = true, active = true, reconnects = 0, pending = false, failRead = false, loseDisconnect = false, refreshes = 0;
+  let linked = true, active = true, reconnects = 0, pending = false, failRead = false, loseDisconnect = false, loseReconnect = false, failRefresh = false, refreshes = 0, unlinkOperation = 0;
   const client = new QueryClient();
   client.setQueryData(['feed', 'viewer'], { pages: ['old-familiar-card'] });
   client.setQueryData(['feed', 'other'], { pages: ['other-account'] });
@@ -194,9 +194,9 @@ test('the GitHub popup has only Revoke and Disconnect, then offers Reconnect aft
     'react-native-reanimated': { useReducedMotion: () => true }, 'lucide-react-native': { X:'X' },
     '@/assets/icons/github.svg': { __esModule: true, default: 'GitHubIcon' }, '../../constants/theme': theme,
     '../../hooks/use-modal-scroll-lock': { useModalScrollLock() {} },
-    '../../api/githubImport': { githubImportApi: api }, '../../api/githubUnlink': { githubUnlinkApi: { status: async () => ({status:linked?(pending?'pending':'none'):'done'}) } },
-    '../../services/githubUnlink': { startGithubUnlink: async () => {pending=true;if(loseDisconnect){linked=false;throw new Error('Response lost');}return {status:'pending',message:'Provider confirmation is pending.'};} },
-    '../../services/githubReconnect': { startGithubReconnect: async (owner:string) => {assert.equal(owner,'viewer');linked=true;pending=false;reconnects++;return true;} },
+    '../../api/githubImport': { githubImportApi: api }, '../../api/githubUnlink': { githubUnlinkApi: { status: async () => ({status:linked?(pending?'pending':'none'):'done',operation_id:unlinkOperation?`unlink-${unlinkOperation}`:undefined}) } },
+    '../../services/githubUnlink': { startGithubUnlink: async () => {pending=true;unlinkOperation++;if(loseDisconnect){linked=false;throw new Error('Response lost');}return {status:'pending',message:'Provider confirmation is pending.'};} },
+    '../../services/githubReconnect': { startGithubReconnect: async (owner:string) => {assert.equal(owner,'viewer');linked=true;pending=false;reconnects++;if(loseReconnect){failRead=true;throw new Error('Response lost');}return true;} },
     '@tanstack/react-query': { useQueryClient: () => client },
     '../../utils/feed-repository': feedRepository,
   };
@@ -226,7 +226,7 @@ test('the GitHub popup has only Revoke and Disconnect, then offers Reconnect aft
     // A failed initial read must never guess that GitHub is linked.
     await act(async()=>root.update(React.createElement(panel,{visible:false,userId:'viewer'})));
     failRead=true;
-    const props={visible:true,userId:'viewer',onClose(){},onSaved:async()=>{refreshes++;}};
+    const props={visible:true,userId:'viewer',onClose(){},onSaved:async()=>{if(failRefresh)throw new Error('Offline');refreshes++;}};
     await act(async()=>root.update(React.createElement(panel,props)));
     assert.deepEqual(buttons().map(n=>n.props.accessibilityLabel),['Revoke','Retry connection']);
     failRead=false;linked=false;active=false;
@@ -245,6 +245,60 @@ test('the GitHub popup has only Revoke and Disconnect, then offers Reconnect aft
     await act(async()=>{t.mock.timers.tick(2_001);await new Promise(r=>setImmediate(r));});
     assert.deepEqual(buttons().map(n=>n.props.accessibilityLabel),['Revoke','Reconnect'],'a lost disconnect response is reconciled automatically');
     assert.equal(client.getQueryData(['feed','viewer']),undefined);
+    await act(async()=>root.root.findByProps({accessibilityLabel:'Close GitHub preferences'}).props.onPress());
+    await t.test('reopening an already reconciled disconnect preserves loaded Home',async()=>{
+      await act(async()=>root.update(React.createElement(panel,{...props,visible:false})));
+      t.mock.timers.tick(6*60_000);
+      client.setQueryData(['feed','viewer'],{pages:['fresh-after-disconnect'],pageParams:[null,'cursor-2']});
+      const loaded=client.getQueryData(['feed','viewer']);
+      const refreshed=refreshes;
+      await act(async()=>root.update(React.createElement(panel,props)));
+      assert.equal(client.getQueryData(['feed','viewer']),loaded,'reading the same completed operation must preserve loaded pages and cursor');
+      await act(async()=>root.root.findByProps({accessibilityLabel:'Close GitHub preferences'}).props.onPress());
+      assert.equal(refreshes,refreshed,'unchanged settings do not refresh the account again');
+    });
+    await t.test('closing during reconciliation cannot mark an unapplied change as handled',async()=>{
+      await act(async()=>root.update(React.createElement(panel,{...props,visible:false})));
+      unlinkOperation++;
+      const gate=deferred<void>(),started=deferred<void>();
+      const cancel=client.cancelQueries.bind(client);
+      const held=t.mock.method(client,'cancelQueries',async(...args:Parameters<typeof client.cancelQueries>)=>{started.resolve();await gate.promise;return cancel(...args);});
+      await act(async()=>{root.update(React.createElement(panel,props));});
+      await started.promise;
+      await act(async()=>root.update(React.createElement(panel,{...props,visible:false})));
+      await act(async()=>{gate.resolve();await new Promise(r=>setImmediate(r));});
+      held.mock.restore();
+      client.setQueryData(['feed','viewer'],{pages:['stale-before-interrupted-reconciliation']});
+      await act(async()=>root.update(React.createElement(panel,props)));
+      assert.equal(client.getQueryData(['feed','viewer']),undefined,'reopening finishes the interrupted retirement');
+      await act(async()=>root.root.findByProps({accessibilityLabel:'Close GitHub preferences'}).props.onPress());
+    });
+    await t.test('manual verification refreshes a reconnect whose response and automatic checks were lost',async()=>{
+      await act(async()=>root.update(React.createElement(panel,{...props,visible:false})));
+      await act(async()=>root.update(React.createElement(panel,props)));
+      const refreshed=refreshes;
+      loseReconnect=true;
+      await press('Reconnect');
+      for(let i=0;i<5;i++)await act(async()=>{t.mock.timers.tick(2_001);await new Promise(r=>setImmediate(r));});
+      assert.equal(buttons()[1].props.accessibilityLabel,'Verify connection');
+      client.setQueryData(['feed','viewer'],{pages:['stale-before-verified-reconnect']});
+      failRead=false;
+      await press('Verify connection');
+      assert.equal(buttons()[1].props.accessibilityLabel,'Disconnect');
+      assert.equal(client.getQueryData(['feed','viewer']),undefined,'linked false-to-true must retire Home even when unlink status is none');
+      failRefresh=true;
+      await act(async()=>root.root.findByProps({accessibilityLabel:'Close GitHub preferences'}).props.onPress());
+      assert.ok(JSON.stringify(root.toJSON()).includes('Could not refresh your account'));
+      assert.equal(refreshes,refreshed);
+      await act(async()=>root.update(React.createElement(panel,{...props,visible:false})));
+      client.setQueryData(['feed','viewer'],{pages:['loaded-after-verified-reconnect']});
+      await act(async()=>root.update(React.createElement(panel,props)));
+      assert.deepEqual(client.getQueryData(['feed','viewer']),{pages:['loaded-after-verified-reconnect']});
+      failRefresh=false;
+      await act(async()=>root.root.findByProps({accessibilityLabel:'Close GitHub preferences'}).props.onPress());
+      assert.equal(refreshes,refreshed+1,'verified reconnect still refreshes the shared account after a failed close and reopen');
+      assert.deepEqual(client.getQueryData(['feed','other']),{pages:['other-account']});
+    });
   }finally{await act(async()=>root.unmount());}
 });
 

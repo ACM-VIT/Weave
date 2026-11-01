@@ -8,13 +8,15 @@ import { X } from 'lucide-react-native';
 import { APP_THEME, REFERENCE_THEME } from '../../constants/theme';
 import { githubImportApi } from '../../api/githubImport';
 import { githubUnlinkApi } from '../../api/githubUnlink';
+import { authSessionLifecycle } from '../../api/session-lifecycle';
 import { startGithubUnlink } from '../../services/githubUnlink';
 import { startGithubReconnect } from '../../services/githubReconnect';
 import { useModalScrollLock } from '../../hooks/use-modal-scroll-lock';
 import { retireHomeFeedForGitHubChange } from '../../utils/feed-repository';
 
 type Props = { visible: boolean; userId: string; onClose: () => void; onSaved: () => Promise<unknown> };
-type Connection = { linked: boolean | null; active: boolean; pending: boolean; retryable: boolean; completed: boolean; message: string };
+type Connection = { linked: boolean | null; active: boolean; pending: boolean; retryable: boolean; completed: boolean; operationId?: string; message: string };
+type ConnectionSnapshot = Pick<Connection, 'linked' | 'active'> & { completedOperationId?: string; needsRefresh: boolean; needsRetirement: boolean };
 export function GitHubPreferencesPopup(props: Props) {
   if (!props.visible) return null;
   return <PopupBody key={props.userId} {...props} />;
@@ -26,56 +28,72 @@ function PopupBody({ userId, onClose, onSaved }: Props) {
   const client = useQueryClient();
   const [state, setState] = useState<Connection & { busy: boolean; error: string }>({ linked: null, active: false, pending: false, retryable: false, completed: false, message: '', busy: true, error: '' });
   const [checks, setChecks] = useState(0);
-  const alive = useRef(false), changed = useRef(false), sequence = useRef(0);
+  const alive = useRef(false), sequence = useRef(0);
+  const generation = useRef(authSessionLifecycle.currentGeneration()).current;
   const request = useRef<AbortController | null>(null);
   useModalScrollLock(true);
 
   const read = useCallback(async (signal: AbortSignal): Promise<Connection> => {
     const unlink = await githubUnlinkApi.status(signal, userId);
     const activity = await githubImportApi.status(signal, userId);
-    return { linked: activity.linked, active: activity.active, pending: unlink.status === 'pending', retryable: unlink.retryable === true, completed: unlink.status === 'done' || unlink.status === 'refused' || unlink.status === 'superseded', message: unlink.message ?? '' };
+    return { linked: activity.linked, active: activity.active, pending: unlink.status === 'pending', retryable: unlink.retryable === true, completed: unlink.status === 'done' || unlink.status === 'refused' || unlink.status === 'superseded', operationId: unlink.operation_id, message: unlink.message ?? '' };
   }, [userId]);
+  // Keep reconciliation knowledge across popup openings, but clear it with all
+  // other account queries on logout. An old terminal operation is not a change.
+  const observe = useCallback(async (value: Connection, current: () => boolean) => {
+    if (!current()) return;
+    const key = ['github-connection-state', userId];
+    const previous = client.getQueryData<ConnectionSnapshot>(key);
+    const flagsChanged = previous && (previous.linked !== value.linked || previous.active !== value.active);
+    const newCompletion = value.completed && (!value.linked || !value.active)
+      && (value.operationId ? value.operationId !== previous?.completedOperationId : !previous);
+    const retire = Boolean(flagsChanged || newCompletion || previous?.needsRetirement);
+    client.setQueryData<ConnectionSnapshot>(key, {
+      linked: value.linked, active: value.active,
+      completedOperationId: value.completed ? value.operationId ?? previous?.completedOperationId : previous?.completedOperationId,
+      needsRefresh: Boolean(previous?.needsRefresh || retire), needsRetirement: retire,
+    });
+    if (retire) {
+      await retireHomeFeedForGitHubChange(client, userId, current);
+      if (current()) client.setQueryData<ConnectionSnapshot>(key, previous => previous ? { ...previous, needsRetirement: false } : undefined);
+    }
+  }, [client, userId]);
   useEffect(() => {
+    client.setQueryDefaults(['github-connection-state', userId], { gcTime: Infinity });
     alive.current = true;
     const controller = new AbortController(); request.current = controller;
     const operation = ++sequence.current;
-    const current = () => alive.current && !controller.signal.aborted && sequence.current === operation;
+    const current = () => alive.current && authSessionLifecycle.isCurrent(generation) && !controller.signal.aborted && sequence.current === operation;
     read(controller.signal).then(async value => {
       if (!current()) return;
-      if (value.completed && (!value.linked || !value.active)) {
-        changed.current = true;
-        await retireHomeFeedForGitHubChange(client, userId, current);
-      }
+      await observe(value, current);
       if (current()) setState({ ...value, busy: false, error: '' });
     }).catch(error => {
-      if (alive.current && !controller.signal.aborted && sequence.current === operation) setState(current => ({ ...current, busy: false, error: error instanceof Error ? error.message : 'Could not load GitHub connection.' }));
+      if (alive.current && authSessionLifecycle.isCurrent(generation) && !controller.signal.aborted && sequence.current === operation) setState(current => ({ ...current, busy: false, error: error instanceof Error ? error.message : 'Could not load GitHub connection.' }));
     });
     return () => { alive.current = false; controller.abort(); request.current?.abort(); };
-  }, [client, read, userId]);
+  }, [client, generation, observe, read, userId]);
   useEffect(() => {
     if (state.busy || !state.pending || checks >= 5) return;
     const controller = new AbortController();
     const operation = sequence.current;
     const timer = setTimeout(() => {
-      const current = () => alive.current && !controller.signal.aborted && sequence.current === operation;
+      const current = () => alive.current && authSessionLifecycle.isCurrent(generation) && !controller.signal.aborted && sequence.current === operation;
       read(controller.signal).then(async value => {
         if (!current()) return;
-        if ((value.completed && (!value.linked || !value.active)) || value.linked !== state.linked || value.active !== state.active) {
-          changed.current = true;
-          await retireHomeFeedForGitHubChange(client, userId, current);
-        }
+        await observe(value, current);
         if (current()) setState(previous => ({ ...previous, ...value, message: value.message || (value.pending ? previous.message : ''), error: '' }));
       }).catch(() => undefined).finally(() => { if (current()) setChecks(count => count + 1); });
     }, 2_000);
     return () => { clearTimeout(timer); controller.abort(); };
-  }, [checks, client, read, state.active, state.busy, state.linked, state.pending, userId]);
+  }, [checks, generation, observe, read, state.busy, state.pending]);
 
   const run = async (action: 'revoke' | 'connection') => {
     if (state.busy) return;
     request.current?.abort();
     const controller = new AbortController(); request.current = controller;
     const operation = ++sequence.current;
-    const current = () => alive.current && !controller.signal.aborted && sequence.current === operation;
+    const current = () => alive.current && authSessionLifecycle.isCurrent(generation) && !controller.signal.aborted && sequence.current === operation;
     let operationMessage = '';
     const checking = state.linked === null || (state.pending && !state.retryable);
     setState(value => ({ ...value, busy: true, error: '' })); setChecks(0);
@@ -89,16 +107,16 @@ function PopupBody({ userId, onClose, onSaved }: Props) {
         } else if (!await startGithubReconnect(userId, controller.signal)) return;
         if (!current()) return;
         // A successful mutation must retire old pages even if its status read fails.
-        changed.current = true;
+        client.setQueryData<ConnectionSnapshot>(['github-connection-state', userId], previous => ({
+          linked: state.linked, active: state.active, ...previous, needsRefresh: true, needsRetirement: true,
+        }));
         await retireHomeFeedForGitHubChange(client, userId, current);
+        if (current()) client.setQueryData<ConnectionSnapshot>(['github-connection-state', userId], previous => previous ? { ...previous, needsRetirement: false } : undefined);
       }
       if (!current()) return;
       const value = await read(controller.signal);
       if (!current()) return;
-      if (checking && value.completed && (!value.linked || !value.active)) {
-        changed.current = true;
-        await retireHomeFeedForGitHubChange(client, userId, current);
-      }
+      await observe(value, current);
       if (current()) setState({ ...value, message: value.message || (value.pending ? operationMessage : ''), busy: false, error: '' });
     } catch (error) {
       if (current()) setState(value => ({ ...value, pending: value.linked !== null,
@@ -108,10 +126,15 @@ function PopupBody({ userId, onClose, onSaved }: Props) {
   };
   const close = async () => {
     if (state.busy && sequence.current > 1) return;
-    if (changed.current) {
+    const key = ['github-connection-state', userId];
+    if (client.getQueryData<ConnectionSnapshot>(key)?.needsRefresh) {
       setState(value => ({ ...value, busy: true, error: '' }));
-      try { await onSaved(); }
-      catch { if (alive.current) setState(value => ({ ...value, busy: false, error: 'Could not refresh your account. Try closing again.' })); return; }
+      try {
+        await onSaved();
+        if (!alive.current || !authSessionLifecycle.isCurrent(generation)) return;
+        client.setQueryData<ConnectionSnapshot>(key, previous => previous ? { ...previous, needsRefresh: false } : undefined);
+      }
+      catch { if (alive.current && authSessionLifecycle.isCurrent(generation)) setState(value => ({ ...value, busy: false, error: 'Could not refresh your account. Try closing again.' })); return; }
     }
     onClose();
   };

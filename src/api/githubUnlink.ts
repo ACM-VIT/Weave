@@ -1,6 +1,6 @@
 import { apiV2ForOwner } from './owner-request';
 
-export interface GithubUnlinkResult { status: 'none' | 'pending' | 'done' | 'refused' | 'superseded'; message?: string; retryable?: boolean }
+export interface GithubUnlinkResult { status: 'none' | 'pending' | 'done' | 'refused' | 'superseded'; operation_id?: string; message?: string; retryable?: boolean }
 const base = '/onboarding/github-unlink';
 export const githubUnlinkApi = {
   start: (code_challenge: string, redirect_uri: string, signal: AbortSignal, owner: string) => apiV2ForOwner<{ url: string }>(owner, `${base}/start`, {
