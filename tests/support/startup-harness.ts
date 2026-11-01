@@ -83,7 +83,7 @@ export function startup({
 
   const mocks: Record<string, unknown> = {
     '@/global.css': {},
-    '@/components/onboarding/GithubUnlinkCallback': { GithubUnlinkCallback: () => null },
+    '@/components/onboarding/GithubUnlinkCallback': { GithubUnlinkCallback: () => null, GithubReconnectCallback: () => null },
     'react-native-keyboard-controller': { KeyboardProvider: ({ children }: { children: React.ReactNode }) => children },
     'expo-router': {
       useSegments: () => segments,

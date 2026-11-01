@@ -34,8 +34,8 @@ Sentry.init({
 function RootLayoutNav({ fontsReady }: { fontsReady: boolean }) {
   const { user, isLoading, startupError, retryStartupSession } = useAuth();
   const pathname = usePathname();
-  const unlinkParams = useGlobalSearchParams<{ unlink_code?: string; unlink_error?: string }>();
-  const unlinkCallback = pathname.endsWith('/callback') && Boolean(unlinkParams.unlink_code || unlinkParams.unlink_error);
+  const unlinkParams = useGlobalSearchParams<{ unlink_code?: string; unlink_error?: string; github_reconnect?: string }>();
+  const unlinkCallback = pathname.endsWith('/callback') && Boolean(unlinkParams.unlink_code || unlinkParams.unlink_error || unlinkParams.github_reconnect === '1');
   const queryClient = useQueryClient();
   const pendingProtectedRouteRef = useRef<RepositoryRouteHref | null>(null);
   const previousViewerRef = useRef<string | null | undefined>(undefined);

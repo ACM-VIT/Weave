@@ -70,7 +70,9 @@ function UnlinkBody({ userId, onSaved, linked, recoveryOnly = false, authorize =
       <Text style={{ color: REFERENCE_THEME.textSecondary, fontFamily: Fonts.sans, fontSize: 13, lineHeight: 19 }}>Disconnecting removes the login connection in Weave. To also revoke the app authorization on GitHub, remove it in GitHub Settings.</Text>
       <UnlinkAction label="GitHub authorization settings" onPress={() => { void Linking.openURL('https://github.com/settings/applications').catch(() => setError('Could not open GitHub Settings. Try again.')); }} disabled={busy} />
     </> : null}
-    {automaticChecks >= 5 && !busy && result?.status === 'pending' ? <Text style={{ color: REFERENCE_THEME.textSecondary, fontFamily: Fonts.sans }}>Verification is still pending. Reopen this panel to check again, or reauthenticate to retry.</Text> : null}
+    {automaticChecks >= 5 && !busy && result?.status === 'pending' ? <Text style={{ color: REFERENCE_THEME.textSecondary, fontFamily: Fonts.sans }}>Verification is still pending. Retry when your connection is available.</Text> : null}
+    {automaticChecks >= 5 && !busy && (result?.status === 'pending' || error) ? <UnlinkAction label="Retry verification"
+      onPress={() => { setAutomaticChecks(0); void run(true); }} disabled={busy} /> : null}
     {busy ? <ActivityIndicator accessibilityLabel="Verifying GitHub disconnect" color={APP_THEME.primary} /> : null}
     {error ? <Text accessibilityRole="alert" style={{ color: REFERENCE_THEME.text, fontFamily: Fonts.sans }}>{error}</Text> : null}
   </View>;

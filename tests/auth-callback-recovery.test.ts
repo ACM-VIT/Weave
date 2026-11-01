@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import { resolve } from "node:path";
 import test from "node:test";
-import { act } from "react";
-import { deferred, startup, fixtureToken, envelope } from "./support/startup-harness";
+import { act, createElement } from "react";
+import { create } from "react-test-renderer";
+import { deferred, startup, fixtureToken, envelope, loadSource } from "./support/startup-harness";
 
 test('a cold real OAuth callback exchanges its code despite an unrelated restore failure', async (t) => {
   t.mock.method(console, 'error', () => undefined);
@@ -83,4 +84,31 @@ test('owner-bound unlink callback stays mounted after session restoration instea
       assert.deepEqual(app.redirects, [], 'callback owns completion and its explicit return action');
     } finally { await app.unmount(); }
   }
+});
+
+
+test('same-account GitHub reconnect callback cannot be redirected into ordinary sign-in',async()=>{
+  const app=startup({segments:['(auth)','callback'],pathname:'/callback',globalParams:{github_reconnect:'1',code:'owned-code'},
+    viewer:{user_id:'Tarun',username:'Tarun',onboarding_completed:true}});
+  await app.mount();
+  try {
+    await act(async()=>{app.fonts.resolve();app.session.resolve('stored-token');});
+    assert.ok(app.navigationMounts>0);assert.deepEqual(app.redirects,[]);
+  }finally{await app.unmount();}
+});
+
+
+test('a web reconnect callback handed to its opener cannot consume the proof again',async()=>{
+  let completions=0;
+  const Callback=loadSource('src/app/(auth)/callback.tsx',{
+    '@/components/onboarding/GithubUnlinkCallback':{GithubReconnectCallback:()=>{completions++;return null;},GithubUnlinkCallback:()=>null},
+    'expo-router':{useLocalSearchParams:()=>({github_reconnect:'1',code:'owned-code'})},
+    'react-native':{View:'View',Text:'Text',ActivityIndicator:'ActivityIndicator',TouchableOpacity:'TouchableOpacity'},
+    '@/store/AuthContext':{},'@/api/auth':{},'@/services/oauthClientPkce':{},
+    'expo-web-browser':{maybeCompleteAuthSession:()=>({type:'success',message:'Handed to opener'})},
+  }).default;
+  let root!:ReturnType<typeof create>;
+  await act(async()=>{root=create(createElement(Callback));});
+  try{assert.equal(completions,0,'the opener owns completion after successful browser handoff');}
+  finally{await act(async()=>root.unmount());}
 });

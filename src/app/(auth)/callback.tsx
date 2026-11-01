@@ -1,4 +1,4 @@
-import { GithubUnlinkCallback } from '@/components/onboarding/GithubUnlinkCallback';
+import { GithubReconnectCallback, GithubUnlinkCallback } from '@/components/onboarding/GithubUnlinkCallback';
 import { useEffect, useRef, useState } from 'react';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { ActivityIndicator, Text, TouchableOpacity, View } from 'react-native';
@@ -11,7 +11,7 @@ import {
   loadOAuthClientVerifier,
 } from '@/services/oauthClientPkce';
 
-WebBrowser.maybeCompleteAuthSession();
+const browserCompletion = WebBrowser.maybeCompleteAuthSession();
 
 /**
  * OAuth Callback Screen — handles the deep-link redirect after OAuth completes.
@@ -24,7 +24,16 @@ WebBrowser.maybeCompleteAuthSession();
  * Expo Router parses those into search params automatically.
  */
 export default function OAuthCallbackScreen() {
-  const { unlink_code, unlink_error } = useLocalSearchParams<{ unlink_code?: string; unlink_error?: string }>();
+  const { unlink_code, unlink_error, github_reconnect, code, error } = useLocalSearchParams<{ unlink_code?: string; unlink_error?: string; github_reconnect?: string; code?: string; error?: string }>();
+  if (github_reconnect === '1') {
+    // A web popup has a separate JS realm. Once handed back to the opener it
+    // must not consume its copied proof or race that opener's completion.
+    if (browserCompletion?.type === 'success') return <View className="flex-1 bg-black items-center justify-center">
+      <ActivityIndicator accessibilityLabel="Returning to account" color="#63E08A" />
+      <Text className="text-white">Returning to Weave…</Text>
+    </View>;
+    return <GithubReconnectCallback code={code} error={error} />;
+  }
   if (unlink_code || unlink_error) return <GithubUnlinkCallback code={unlink_code} error={unlink_error} />;
   return <SignInCallbackScreen />;
 }

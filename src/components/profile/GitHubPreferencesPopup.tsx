@@ -9,12 +9,12 @@ import { APP_THEME, REFERENCE_THEME } from '../../constants/theme';
 import { githubImportApi } from '../../api/githubImport';
 import { githubUnlinkApi } from '../../api/githubUnlink';
 import { startGithubUnlink } from '../../services/githubUnlink';
-import { useOAuth } from '../../hooks/useOAuth';
+import { startGithubReconnect } from '../../services/githubReconnect';
 import { useModalScrollLock } from '../../hooks/use-modal-scroll-lock';
 import { retireHomeFeedForGitHubChange } from '../../utils/feed-repository';
 
 type Props = { visible: boolean; userId: string; onClose: () => void; onSaved: () => Promise<unknown> };
-type Connection = { linked: boolean; active: boolean; pending: boolean; retryable: boolean };
+type Connection = { linked: boolean | null; active: boolean; pending: boolean; retryable: boolean; completed: boolean; message: string };
 export function GitHubPreferencesPopup(props: Props) {
   if (!props.visible) return null;
   return <PopupBody key={props.userId} {...props} />;
@@ -24,8 +24,7 @@ function PopupBody({ userId, onClose, onSaved }: Props) {
   const insets = useSafeAreaInsets();
   const reducedMotion = useReducedMotion();
   const client = useQueryClient();
-  const oauth = useOAuth();
-  const [state, setState] = useState<Connection & { busy: boolean; error: string }>({ linked: true, active: false, pending: false, retryable: false, busy: true, error: '' });
+  const [state, setState] = useState<Connection & { busy: boolean; error: string }>({ linked: null, active: false, pending: false, retryable: false, completed: false, message: '', busy: true, error: '' });
   const [checks, setChecks] = useState(0);
   const alive = useRef(false), changed = useRef(false), sequence = useRef(0);
   const request = useRef<AbortController | null>(null);
@@ -34,19 +33,25 @@ function PopupBody({ userId, onClose, onSaved }: Props) {
   const read = useCallback(async (signal: AbortSignal): Promise<Connection> => {
     const unlink = await githubUnlinkApi.status(signal, userId);
     const activity = await githubImportApi.status(signal, userId);
-    return { linked: activity.linked, active: activity.active, pending: unlink.status === 'pending', retryable: unlink.retryable === true };
+    return { linked: activity.linked, active: activity.active, pending: unlink.status === 'pending', retryable: unlink.retryable === true, completed: unlink.status === 'done' || unlink.status === 'refused' || unlink.status === 'superseded', message: unlink.message ?? '' };
   }, [userId]);
   useEffect(() => {
     alive.current = true;
     const controller = new AbortController(); request.current = controller;
     const operation = ++sequence.current;
-    read(controller.signal).then(value => {
-      if (alive.current && !controller.signal.aborted && sequence.current === operation) setState({ ...value, busy: false, error: '' });
+    const current = () => alive.current && !controller.signal.aborted && sequence.current === operation;
+    read(controller.signal).then(async value => {
+      if (!current()) return;
+      if (value.completed && (!value.linked || !value.active)) {
+        changed.current = true;
+        await retireHomeFeedForGitHubChange(client, userId, current);
+      }
+      if (current()) setState({ ...value, busy: false, error: '' });
     }).catch(error => {
       if (alive.current && !controller.signal.aborted && sequence.current === operation) setState(current => ({ ...current, busy: false, error: error instanceof Error ? error.message : 'Could not load GitHub connection.' }));
     });
     return () => { alive.current = false; controller.abort(); request.current?.abort(); };
-  }, [read]);
+  }, [client, read, userId]);
   useEffect(() => {
     if (state.busy || !state.pending || checks >= 5) return;
     const controller = new AbortController();
@@ -55,55 +60,54 @@ function PopupBody({ userId, onClose, onSaved }: Props) {
       const current = () => alive.current && !controller.signal.aborted && sequence.current === operation;
       read(controller.signal).then(async value => {
         if (!current()) return;
-        if (value.linked !== state.linked || value.active !== state.active) {
+        if ((value.completed && (!value.linked || !value.active)) || value.linked !== state.linked || value.active !== state.active) {
           changed.current = true;
           await retireHomeFeedForGitHubChange(client, userId, current);
         }
-        if (current()) setState(previous => ({ ...previous, ...value }));
+        if (current()) setState(previous => ({ ...previous, ...value, message: value.message || (value.pending ? previous.message : ''), error: '' }));
       }).catch(() => undefined).finally(() => { if (current()) setChecks(count => count + 1); });
     }, 2_000);
     return () => { clearTimeout(timer); controller.abort(); };
   }, [checks, client, read, state.active, state.busy, state.linked, state.pending, userId]);
 
   const run = async (action: 'revoke' | 'connection') => {
-    if (state.busy || oauth.isLoading) return;
+    if (state.busy) return;
     request.current?.abort();
     const controller = new AbortController(); request.current = controller;
     const operation = ++sequence.current;
     const current = () => alive.current && !controller.signal.aborted && sequence.current === operation;
+    let operationMessage = '';
+    const checking = state.linked === null || (state.pending && !state.retryable);
     setState(value => ({ ...value, busy: true, error: '' })); setChecks(0);
     try {
-      if (action === 'revoke') {
-        await githubImportApi.revoke(controller.signal, userId);
+      if (!checking) {
+        if (action === 'revoke') await githubImportApi.revoke(controller.signal, userId);
+        else if (state.linked) {
+          const result = await startGithubUnlink(userId, controller.signal);
+          if (!result) return;
+          operationMessage = result.message ?? '';
+        } else if (!await startGithubReconnect(userId, controller.signal)) return;
         if (!current()) return;
-        // The mutation is already committed even if the following status read fails.
-      } else if (state.linked) {
-        const result = await startGithubUnlink(userId, controller.signal);
-        if (!result) return;
-      } else await oauth.signInWithProvider('github');
-      if (!current()) return;
-      const mutationCommitted = action === 'revoke' || state.linked;
-      if (mutationCommitted) {
+        // A successful mutation must retire old pages even if its status read fails.
         changed.current = true;
         await retireHomeFeedForGitHubChange(client, userId, current);
-        if (!current()) return;
       }
+      if (!current()) return;
       const value = await read(controller.signal);
       if (!current()) return;
-      const different = value.linked !== state.linked || value.active !== state.active;
-      changed.current ||= different;
-      setState({ ...value, busy: false, error: '' });
-      if (different && !mutationCommitted) {
-        // A changed GitHub identity or consent changes discovery eligibility.
-        // Retire old presentation pages; the durable activity outbox is untouched.
+      if (checking && value.completed && (!value.linked || !value.active)) {
+        changed.current = true;
         await retireHomeFeedForGitHubChange(client, userId, current);
       }
+      if (current()) setState({ ...value, message: value.message || (value.pending ? operationMessage : ''), busy: false, error: '' });
     } catch (error) {
-      if (current()) setState(value => ({ ...value, error: error instanceof Error ? error.message : 'Could not update GitHub connection.' }));
+      if (current()) setState(value => ({ ...value, pending: value.linked !== null,
+        retryable: false, message: 'Verifying whether the change completed…',
+        error: error instanceof Error ? error.message : 'Could not update GitHub connection.' }));
     } finally { if (current()) setState(value => ({ ...value, busy: false })); }
   };
   const close = async () => {
-    if ((state.busy && sequence.current > 1) || oauth.isLoading) return;
+    if (state.busy && sequence.current > 1) return;
     if (changed.current) {
       setState(value => ({ ...value, busy: true, error: '' }));
       try { await onSaved(); }
@@ -111,7 +115,11 @@ function PopupBody({ userId, onClose, onSaved }: Props) {
     }
     onClose();
   };
-  const busy = state.busy || oauth.isLoading;
+  const busy = state.busy;
+  const verificationLabel = state.linked ? 'Verify disconnect' : 'Verify connection';
+  const connectionLabel = state.linked === null ? 'Retry connection' : state.pending && checks >= 5 && !state.retryable
+    ? verificationLabel : state.linked ? 'Disconnect' : 'Reconnect';
+  const connectionDisabled = busy || (state.pending && !state.retryable && checks < 5);
   return <Modal visible transparent statusBarTranslucent animationType={reducedMotion ? 'none' : 'fade'} onRequestClose={() => void close()}>
     <View style={[styles.overlay, { paddingTop: Math.max(insets.top, 16), paddingBottom: Math.max(insets.bottom, 16) }]}>
       <Pressable accessibilityRole="button" accessibilityLabel="Dismiss GitHub preferences" onPress={() => void close()} style={StyleSheet.absoluteFill} />
@@ -130,13 +138,16 @@ function PopupBody({ userId, onClose, onSaved }: Props) {
             style={[styles.button, styles.secondary, (busy || !state.active) && styles.disabled]}>
             <Text style={styles.secondaryLabel}>Revoke</Text>
           </Pressable>
-          <Pressable cssInterop={false} accessibilityRole="button" accessibilityLabel={state.linked ? 'Disconnect' : 'Reconnect'}
-            disabled={busy || (state.pending && !state.retryable)} accessibilityState={{ disabled: busy || (state.pending && !state.retryable), busy }}
+          <Pressable cssInterop={false} accessibilityRole="button" accessibilityLabel={connectionLabel}
+            disabled={connectionDisabled} accessibilityState={{ disabled: connectionDisabled, busy }}
             onPress={() => void run('connection')} style={[styles.button, { backgroundColor: state.linked ? REFERENCE_THEME.danger : APP_THEME.primary }, busy && styles.disabled]}>
             {busy ? <ActivityIndicator accessibilityLabel="Updating GitHub connection" color={state.linked ? REFERENCE_THEME.text : APP_THEME.primaryForeground} />
-              : <Text style={[styles.connectionLabel, { color: state.linked ? REFERENCE_THEME.text : APP_THEME.primaryForeground }]}>{state.linked ? 'Disconnect' : 'Reconnect'}</Text>}
+              : <Text style={[styles.connectionLabel, { color: state.linked ? REFERENCE_THEME.text : APP_THEME.primaryForeground }]}>{connectionLabel}</Text>}
           </Pressable>
-          {state.error || oauth.error ? <Text accessibilityRole="alert" style={styles.error}>{state.error || oauth.error}</Text> : null}
+          {state.pending ? <Text accessibilityLiveRegion="polite" style={styles.description}>
+            {state.message || 'Disconnect is pending verification.'}{checks >= 5 ? ` Verification is still pending. Use ${verificationLabel} to check again.` : ''}
+          </Text> : null}
+          {state.error ? <Text accessibilityRole="alert" style={styles.error}>{state.error}</Text> : null}
         </View>
       </View>
     </View>
