@@ -20,6 +20,7 @@ router.post('/search', search);
 router.get('/users/me', product.getMe);
 router.patch('/users/me', product.updateMe);
 router.get('/users/:userId', product.getUser);
+router.get('/users/:userId/boards', product.listPublicUserBoards);
 router.put('/users/:userId/follow', product.setFollow);
 router.delete('/users/:userId/follow', product.removeFollow);
 router.get('/users/:userId/followers', product.listFollowers);

@@ -856,6 +856,34 @@ async function listOwned(req: AuthRequest, res: Response, resource: Resource): P
 export const listCollections = (req: AuthRequest, res: Response) => listOwned(req, res, 'collection');
 export const listBoards = (req: AuthRequest, res: Response) => listOwned(req, res, 'board');
 
+/** Public profile enumeration is always bounded and never includes unlisted Boards. */
+export async function listPublicUserBoards(req: AuthRequest, res: Response): Promise<void> {
+  const viewer = userId(req, res); if (!viewer) return;
+  const target = idParam(req, res, 'userId'); if (!target) return;
+  let page: ProductPage;
+  try {
+    page = readProductPage({ ...req.query, pagination: req.query.pagination ?? 'keyset' }, {
+      endpoint: 'public-boards', viewer, resource: target, selection: null,
+      sort: 'created_at:desc,board_id:desc',
+    })!;
+  } catch (error) { sendControllerError(res, error); return; }
+  const [owner] = await sqlClient`SELECT user_id FROM app.users WHERE user_id=${target}::uuid AND status='active'`;
+  if (!owner) return sendError(res, 404, 'User not found.');
+  const rows = await sqlClient`
+    SELECT b.board_id,b.name,b.description,b.created_at,
+      to_char(b.created_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS __page_timestamp,
+      to_char(b.created_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS __page_secondary,
+      (SELECT count(*)::int FROM app.board_repos br JOIN app.repos r USING(repo_id)
+        WHERE br.board_id=b.board_id AND r.status='active') AS repo_count
+    FROM app.boards b JOIN app.users owner ON owner.user_id=b.user_id AND owner.status='active'
+    WHERE b.user_id=${target}::uuid AND b.visibility='public'
+      AND (${page.after?.timestamp ?? null}::text::timestamptz IS NULL
+        OR (b.created_at,b.board_id) < (${page.after?.timestamp ?? null}::text::timestamptz,${page.after?.id ?? null}::uuid))
+    ORDER BY b.created_at DESC,b.board_id DESC LIMIT ${page.limit + 1}
+  `;
+  sendSuccess(res, 200, productPageResult(rows, page, 'board_id'));
+}
+
 export async function createCollection(req: AuthRequest, res: Response): Promise<void> {
   const id = userId(req, res); if (!id) return;
   const name = text(req.body?.name, 100, true);

@@ -62,7 +62,7 @@ test('long profile identity remains readable and every header action retains its
   } finally {await act(async () => root.unmount());}
 });
 
-test('another developer profile also presents the display name before its readable username',async()=>{
+async function otherProfile() {
   const {loadSource}=await import('./support/startup-harness');
   const theme=loadSource('src/constants/theme.ts',{'@/global.css':{},'react-native':{Platform:{select:(options:any)=>options.default}}});
   class Value {interpolate(){return 0;}}
@@ -76,6 +76,11 @@ test('another developer profile also presents the display name before its readab
     '@/components/profile/BoardListCard':{BoardListCard:'BoardListCard'},
     '@/constants/theme':theme,'@/utils/avatar-color':{getAvatarColor:()=> '#333'},'@/utils/format-count':{formatCompactCount:String},
   });
+  return OtherUserProfile;
+}
+
+test('another developer profile also presents the display name before its readable username',async()=>{
+  const OtherUserProfile = await otherProfile();
   let root!:ReturnType<typeof create>;
   await act(async()=>{root=create(React.createElement(OtherUserProfile,{profile:{userId:'other',username:'krishang-zinzuwadia-long-handle',displayName:'Krishang Zinzuwadia',bio:'Building apps',isFollowing:false,stats:{likes:0,followers:0,following:0},lists:[],pinnedRepositories:[]},onBack(){},onListPress(){},onRepositoryPress(){}}));});
   try {
@@ -151,4 +156,30 @@ test('Android interop preserves Profile stat widths and Edit Profile button styl
     assert.equal(styleOf('Edit profile').flexDirection,'row');
     assert.equal(styleOf('Edit profile').minHeight,48);
   } finally {await act(async () => root.unmount());}
+});
+
+
+test('public profile paging keeps rows visible through retry and does not call pending Lists empty', async () => {
+  const OtherUserProfile = await otherProfile();
+  let loaded = 0, retried = 0, opened = 0;
+  const profile = {userId:'other',username:'other',displayName:'Other',isFollowing:false,
+    stats:{likes:0,followers:0,following:0},lists:[],pinnedRepositories:[]};
+  const page = {loading:true,error:false,hasMore:true,onLoadMore:()=>{loaded++;},onRetry:()=>{retried++;}};
+  const props = {profile,onBack(){},onListPress(){},onRepositoryPress(){},onListsOpen:()=>{opened++;},listsPage:page,repositoriesPage:page};
+  let root!:ReturnType<typeof create>;
+  const texts = () => root.root.findAllByType('Text').map(node=>node.props.children);
+  const button = (label:string) => root.root.findAllByType('Pressable').find(node=>node.props.accessibilityLabel===label)!;
+  await act(async()=>{root=create(React.createElement(OtherUserProfile,props));});
+  try {
+    await act(async()=>root.root.findAllByType('Pressable').find(node=>node.props.accessibilityRole==='tab'&&node.props.children.props.children==='Lists')!.props.onPress());
+    assert.equal(opened,1);
+    assert.equal(texts().includes('No public lists'),false);
+    assert.ok(root.root.findAllByProps({accessibilityLabel:'Loading public Lists'}).length);
+    const lists=[{id:'public',name:'Public List',repositoryCount:1}];
+    await act(async()=>root.update(React.createElement(OtherUserProfile,{...props,profile:{...profile,lists},listsPage:{...page,loading:false,error:true}})));
+    assert.equal(root.root.findAllByType('BoardListCard').length,1);
+    await act(async()=>button('Retry public Lists').props.onPress());assert.equal(retried,1);
+    await act(async()=>root.update(React.createElement(OtherUserProfile,{...props,profile:{...profile,lists},listsPage:{...page,loading:false}})));
+    await act(async()=>button('Load more public Lists').props.onPress());assert.equal(loaded,1);
+  } finally {await act(async()=>root.unmount());}
 });

@@ -1,15 +1,16 @@
 import { useMemo, useState } from 'react';
 import { Alert } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useInfiniteQuery, useQueryClient, type InfiniteData } from '@tanstack/react-query';
 
 import {
   getPublicUserProfile,
+  getPublicUserBoardsPage,
   type PublicUserProfile,
 } from '@/api/profile';
 import {
-  getSocialProfile,
-  type SocialProfile,
+  getSocialProfilePage,
+  type SocialProfilePage,
 } from '@/api/social-profiles';
 import { ConnectionSheet, type ConnectionType } from '@/components/connection-sheet';
 import {
@@ -25,6 +26,8 @@ import {
 import { getStorageItem } from '@/utils/storage';
 import { repositoryHref } from '@/utils/repository-links';
 import { mapRepositoryList } from '@/utils/repository-mapper';
+
+type ProfilePage = { kind: 'user'; data: PublicUserProfile } | { kind: 'profile'; data: SocialProfilePage };
 
 type OtherUserRouteParams = {
   username?: string | string[];
@@ -67,10 +70,14 @@ export default function OtherUserProfileRoute() {
   const targetKind = userId ? 'user' : profileId ? 'profile' : 'route';
   const targetId = userId ?? profileId ?? routeUsername;
 
-  const profileQuery = useQuery({
-    queryKey: ['public-user-profile', targetKind, targetId],
-    enabled: targetKind !== 'route',
-    queryFn: async ({ signal }) => {
+  const viewer = user?.user_id;
+  const profileKey = ['public-user-profile', viewer, targetKind, targetId] as const;
+  const [listsFor, setListsFor] = useState<string | null>(null);
+  const profileQuery = useInfiniteQuery({
+    queryKey: profileKey,
+    enabled: Boolean(viewer) && targetKind !== 'route',
+    initialPageParam: undefined as string | undefined,
+    queryFn: async ({ signal, pageParam }): Promise<ProfilePage> => {
       const token = await getStorageItem('access_token');
       if (!token) throw new Error('Your session has expired. Please sign in again.');
       if (userId) {
@@ -81,24 +88,44 @@ export default function OtherUserProfileRoute() {
       }
       return {
         kind: 'profile' as const,
-        data: await getSocialProfile(profileId!, token, signal),
+        data: await getSocialProfilePage(profileId!, token, { limit: 25, cursor: pageParam }, signal),
       };
     },
+    getNextPageParam: (last) => last.kind === 'profile' && last.data.has_more ? last.data.next_cursor ?? undefined : undefined,
+    staleTime: 60_000,
+  });
+  const firstPage = profileQuery.data?.pages[0];
+  const listOwner = userId || (firstPage?.kind === 'profile' ? firstPage.data.claimed_by_user_id : undefined);
+  const listsRequested = listsFor === targetId;
+  const listsQuery = useInfiniteQuery({
+    queryKey: ['public-profile-lists', viewer, listOwner],
+    enabled: Boolean(viewer && listOwner && listsRequested),
+    initialPageParam: undefined as string | undefined,
+    queryFn: async ({ signal, pageParam }) => {
+      const token = await getStorageItem('access_token');
+      if (!token) throw new Error('Your session has expired. Please sign in again.');
+      return getPublicUserBoardsPage(listOwner!, token, { limit: 25, cursor: pageParam }, signal);
+    },
+    getNextPageParam: (last) => last.has_more ? last.next_cursor ?? undefined : undefined,
     staleTime: 60_000,
   });
 
   const profile = useMemo<OtherUserProfileData>(() => {
-    const fetchedUser = profileQuery.data?.kind === 'user'
-      ? profileQuery.data.data
+    const fetchedUser = firstPage?.kind === 'user'
+      ? firstPage.data
       : undefined;
-    const fetchedProfile = profileQuery.data?.kind === 'profile'
-      ? profileQuery.data.data
+    const fetchedProfile = firstPage?.kind === 'profile'
+      ? firstPage.data
       : undefined;
     const username = fetchedUser?.username?.trim()
       || fetchedProfile?.username?.trim()
       || fetchedProfile?.handle?.trim()
       || routeUsername;
-    const externalRepositories = mapRepositoryList(fetchedProfile?.repositories ?? []);
+    // updated_at can move a repository across keyset page boundaries. Keep one
+    // canonical card without changing the server cursor or treating a short page as exhaustion.
+    const externalRepositories = [...new Map(mapRepositoryList(
+      profileQuery.data?.pages.flatMap(page => page.kind === 'profile' ? page.data.repositories : []) ?? [],
+    ).map(repository => [repository.id, repository])).values()];
     return {
       userId: fetchedUser?.user_id || fetchedProfile?.claimed_by_user_id || userId,
       profileId: fetchedProfile?.profile_id || profileId,
@@ -129,7 +156,7 @@ export default function OtherUserProfileRoute() {
           ?? fetchedProfile?.following_count
           ?? countParam(params.following),
       },
-      lists: [],
+      lists: listsQuery.data?.pages.flatMap(page => page.items) ?? [],
       pinnedRepositories: externalRepositories,
     };
   }, [
@@ -139,6 +166,8 @@ export default function OtherUserProfileRoute() {
     params.isFollowing,
     params.likes,
     profileQuery.data,
+    firstPage,
+    listsQuery.data,
     profileId,
     routeAvatarUrl,
     routeBio,
@@ -161,44 +190,16 @@ export default function OtherUserProfileRoute() {
         following,
       );
     }
-    queryClient.setQueryData<{
-      kind: 'user';
-      data: PublicUserProfile;
-    } | {
-      kind: 'profile';
-      data: SocialProfile;
-    }>(
-      ['public-user-profile', targetKind, targetId],
-      (current) => {
-        if (!current) return current;
-        if (current.kind === 'user') {
-          if (current.data.viewer_follows_user === following) return current;
-          return {
-            ...current,
-            data: {
-              ...current.data,
-              viewer_follows_user: following,
-              followers_count: Math.max(
-                0,
-                current.data.followers_count + (following ? 1 : -1),
-              ),
-            },
-          };
-        }
-        if (current.data.viewer_follows_profile === following) return current;
-        return {
-          ...current,
-          data: {
-            ...current.data,
-            viewer_follows_profile: following,
-            followers_count: Math.max(
-              0,
-              current.data.followers_count + (following ? 1 : -1),
-            ),
-          },
-        };
-      },
-    );
+    queryClient.setQueryData<InfiniteData<ProfilePage>>(profileKey, current => {
+      if (!current) return current;
+      return { ...current, pages: current.pages.map(page => {
+        const field = page.kind === 'user' ? 'viewer_follows_user' : 'viewer_follows_profile';
+        if ((page.data as unknown as Record<string, unknown>)[field] === following) return page;
+        return { ...page, data: { ...page.data, [field]: following,
+          followers_count: Math.max(0, page.data.followers_count + (following ? 1 : -1)),
+        }} as ProfilePage;
+      }) };
+    });
   };
 
   const goBack = () => {
@@ -221,7 +222,28 @@ export default function OtherUserProfileRoute() {
         onFollowingPress={profile.userId ? () => setConnectionType('following') : undefined}
         onFollowError={(error) => Alert.alert('Follow failed', error.message)}
         onFollowingChange={handleFollowingChange}
-        onListPress={() => undefined}
+        onListsOpen={() => setListsFor(targetId)}
+        listsPage={{
+          loading: listsRequested && (profileQuery.isLoading || (Boolean(listOwner) && listsQuery.isFetching)),
+          error: listsRequested && (profileQuery.isError || (Boolean(listOwner) && listsQuery.isError)),
+          hasMore: listsQuery.hasNextPage,
+          onLoadMore: () => { if (!listsQuery.isFetching) void listsQuery.fetchNextPage(); },
+          onRetry: () => { if (profileQuery.isError) void profileQuery.refetch();
+            else void (listsQuery.isFetchNextPageError ? listsQuery.fetchNextPage() : listsQuery.refetch()); },
+        }}
+        repositoriesPage={{
+          loading: profileQuery.isFetching,
+          error: profileQuery.isError,
+          hasMore: profileQuery.hasNextPage,
+          onLoadMore: () => { if (!profileQuery.isFetching) void profileQuery.fetchNextPage(); },
+          onRetry: () => { void (profileQuery.isFetchNextPageError ? profileQuery.fetchNextPage() : profileQuery.refetch()); },
+        }}
+        onListPress={(id) => {
+          const list = profile.lists.find(item => item.id === id);
+          if (list) router.push({ pathname: '/board', params: {
+            boardId: list.id, boardName: list.name, boardDescription: list.description ?? '',
+          }});
+        }}
         onRepositoryPress={openRepository}
         profile={profile}
       />

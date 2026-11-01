@@ -1448,6 +1448,34 @@ integration('registered v2 HTTP paths complete controlled integration flows', as
       assert.deepEqual([...ids(first), ...ids(last)], ids(legacy));
     }
 
+    // Public profile Lists never enumerate owner-only Collections or private/unlisted Boards.
+    await sqlClient`UPDATE app.boards SET visibility='public' WHERE board_id IN (${pageBoardIds[0]}::uuid,${pageBoardIds[1]}::uuid)`;
+    for (const visibility of ['private', 'unlisted']) {
+      await sqlClient`INSERT INTO app.boards(board_id,user_id,name,visibility)
+        VALUES(${crypto.randomUUID()}::uuid,${pageViewer}::uuid,${visibility},${visibility})`;
+    }
+    await sqlClient`UPDATE app.repos SET status='archived' WHERE repo_id=${pageRepoIds[1]}::uuid`;
+    const publicListsUrl = `${base}/api/v2/users/${pageViewer}/boards?pagination=keyset&limit=1`;
+    const firstPublicResponse = await fetch(publicListsUrl, {headers:authHeaders});
+    assert.equal(firstPublicResponse.status,200);
+    const firstPublic = (await firstPublicResponse.json() as any).data;
+    assert.deepEqual(firstPublic.items.map((row:any)=>row.board_id),pageBoardIds.slice(0,1));
+    assert.equal(firstPublic.items[0].repo_count,1,'public counts exclude inactive repositories');
+    assert.equal(firstPublic.has_more,true);
+    const lastPublic = (await (await fetch(`${publicListsUrl}&cursor=${encodeURIComponent(firstPublic.next_cursor)}`,
+      {headers:authHeaders})).json() as any).data;
+    assert.deepEqual(lastPublic.items.map((row:any)=>row.board_id),pageBoardIds.slice(1));
+    assert.equal(lastPublic.has_more,false);
+    const ownerPublic = (await (await fetch(`${base}/api/v2/users/${pageViewer}/boards`,{headers:pageHeaders})).json() as any).data;
+    assert.deepEqual(ownerPublic.items.map((row:any)=>row.board_id),pageBoardIds,'even the owner sees only public Lists here');
+    assert.equal(ownerPublic.has_more,false,'the new profile endpoint is bounded by default');
+    assert.equal((await fetch(`${publicListsUrl}&cursor=${encodeURIComponent(firstPublic.next_cursor)}`,{headers:pageHeaders})).status,400,
+      'public List cursors remain bound to the viewer');
+    assert.equal((await fetch(`${base}/api/v2/users/${userId}/boards?pagination=keyset&cursor=${encodeURIComponent(firstPublic.next_cursor)}`,{headers:authHeaders})).status,400,
+      'public List cursors remain bound to the subject');
+    await sqlClient`UPDATE app.users SET status='suspended' WHERE user_id=${pageViewer}::uuid`;
+    assert.equal((await fetch(publicListsUrl,{headers:authHeaders})).status,404,'inactive owners do not expose public Lists');
+
     const status = await fetch(`${base}/api/internal/v2/operations/status`, {
       headers: { 'x-internal-secret': process.env.INTERNAL_API_SECRET! },
     });

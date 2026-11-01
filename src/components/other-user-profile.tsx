@@ -46,11 +46,39 @@ export type OtherUserProfileData = {
   pinnedRepositories: RepositoryDetail[];
 };
 
+export type ProfilePaging = {
+  loading: boolean;
+  error: boolean;
+  hasMore: boolean;
+  onLoadMore: () => void;
+  onRetry: () => void;
+};
+
+function PageControl({ page, label }: { page?: ProfilePaging; label: string }) {
+  if (!page) return null;
+  if (page.loading) return <View accessibilityRole="progressbar" accessibilityLabel={`Loading ${label}`} style={styles.loadingRow}>
+    <ActivityIndicator color={APP_THEME.primary} size="small" /><Text style={styles.loadingText}>Loading…</Text>
+  </View>;
+  if (page.error) return <View style={styles.pageStatus}>
+    <Text style={styles.loadingText}>Couldn’t load {label}.</Text>
+    <Pressable cssInterop={false} accessibilityRole="button" accessibilityLabel={`Retry ${label}`} onPress={page.onRetry} style={styles.pageButton}>
+      <Text style={styles.viewAllLabel}>Try again</Text>
+    </Pressable>
+  </View>;
+  if (!page.hasMore) return null;
+  return <Pressable cssInterop={false} accessibilityRole="button" accessibilityLabel={`Load more ${label}`} onPress={page.onLoadMore} style={styles.pageButton}>
+    <Text style={styles.viewAllLabel}>Load more</Text>
+  </Pressable>;
+}
+
 type OtherUserProfileProps = {
   profile: OtherUserProfileData;
   loading?: boolean;
   followStateUpdatedAt?: number;
   onBack: () => void;
+  onListsOpen?: () => void;
+  listsPage?: ProfilePaging;
+  repositoriesPage?: ProfilePaging;
   onFollowersPress?: () => void;
   onFollowingPress?: () => void;
   onFollowError?: (error: Error) => void;
@@ -72,6 +100,9 @@ export function OtherUserProfile({
   followStateUpdatedAt,
   loading = false,
   onBack,
+  onListsOpen,
+  listsPage,
+  repositoriesPage,
   onFollowersPress,
   onFollowingPress,
   onFollowError,
@@ -284,7 +315,7 @@ export function OtherUserProfile({
                   aria-selected={activeTab === tab}
                   accessibilityState={{ selected: activeTab === tab }}
                   key={tab}
-                  onPress={() => setActiveTab(tab)}
+                  onPress={() => { setActiveTab(tab); if (tab === 'Lists') onListsOpen?.(); }}
                   style={[
                     styles.tabButton,
                     compact && styles.tabButtonCompact,
@@ -299,7 +330,8 @@ export function OtherUserProfile({
             </View>
 
             {activeTab === 'Lists' ? (
-              profile.lists.length > 0 ? (
+              <View style={styles.repositoryTab}>
+              {profile.lists.length > 0 ? (
                 <View style={styles.repositoryList}>
                   {profile.lists.map((list) => (
                     <BoardListCard
@@ -312,7 +344,7 @@ export function OtherUserProfile({
                     />
                   ))}
                 </View>
-              ) : (
+              ) : listsPage?.loading || listsPage?.error ? null : (
                 <View style={styles.emptyState}>
                   <View style={styles.emptyIcon}>
                     <ListIcon color={REFERENCE_THEME.textTertiary} size={28} strokeWidth={1.6} />
@@ -322,7 +354,9 @@ export function OtherUserProfile({
                     Lists this developer shares will appear here.
                   </Text>
                 </View>
-              )
+              )}
+              <PageControl page={listsPage} label="public Lists" />
+              </View>
             ) : (
               <View style={styles.repositoryTab}>
                 <View style={styles.sectionHeading}>
@@ -336,7 +370,7 @@ export function OtherUserProfile({
                       onPress={() => setShowAllPinned((current) => !current)}
                       style={({ pressed }) => [styles.viewAllButton, pressed && styles.pressed]}
                     >
-                      <Text style={styles.viewAllLabel}>{showAllPinned ? 'Show Less' : 'View All'}</Text>
+                      <Text style={styles.viewAllLabel}>{showAllPinned ? 'Show Less' : repositoriesPage?.hasMore ? 'Show More' : 'View All'}</Text>
                     </Pressable>
                   ) : null}
                 </View>
@@ -357,7 +391,7 @@ export function OtherUserProfile({
                       </View>
                     ))}
                   </View>
-                ) : (
+                ) : repositoriesPage?.loading || repositoriesPage?.error ? null : (
                   <View style={styles.emptyState}>
                     <View style={styles.emptyIcon}>
                       <Pin color={REFERENCE_THEME.textTertiary} size={27} strokeWidth={1.6} />
@@ -368,6 +402,7 @@ export function OtherUserProfile({
                     </Text>
                   </View>
                 )}
+                {showAllPinned || !hasMorePinned || repositoriesPage?.error ? <PageControl page={repositoriesPage} label="repositories" /> : null}
               </View>
             )}
           </Animated.View>
@@ -378,6 +413,8 @@ export function OtherUserProfile({
 }
 
 const styles = StyleSheet.create({
+  pageStatus: { alignItems: 'center', gap: 8, paddingVertical: 12 },
+  pageButton: { alignSelf: 'center', minHeight: 44, justifyContent: 'center', paddingHorizontal: 20, paddingVertical: 12 },
   screen: { flex: 1, alignItems: 'center', backgroundColor: REFERENCE_THEME.background },
   content: { width: '100%', flex: 1 },
   navigation: { minHeight: 66, paddingBottom: 8, flexDirection: 'row', alignItems: 'center' },
