@@ -9,7 +9,7 @@ import { QueryClient } from '@tanstack/react-query';
 import * as githubOpen from '../../src/services/repositoryGithubOpen';
 import * as repositoryLinks from '../../src/utils/repository-links';
 import * as shareFeedback from '../../src/utils/share-feedback';
-const REFERENCE_THEME = { text: '#ffffff', textSecondary: '#aaaaaa', accent: '#63E08A' };
+const REFERENCE_THEME = { text: '#ffffff', textSecondary: '#aaaaaa', accent: '#63E08A', danger: '#FF453A' };
 
 export const repository = {
   id: 'repo', name: 'repo', fullName: 'owner/repo', owner: 'owner',

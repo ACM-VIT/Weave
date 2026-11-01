@@ -151,11 +151,11 @@ function ActionButton({
         style={[
           styles.actionLabel,
           dense && styles.actionLabelDense,
-          label === 'Not interested' && { fontSize: 10, width: 44 },
+          label === 'Not interested' && { fontSize: dense ? 8.5 : 9.5, width: dense ? 40 : 46 },
           active && { color: activeColor },
         ]}
       >
-        {count ?? label}
+        {count ?? (label === 'Not interested' ? 'Not\ninterested' : label)}
       </Text>
     </Pressable>
   );
@@ -247,7 +247,7 @@ export function RepositoryScreen({
   // Gesture callbacks can run twice before React renders. Read the current
   // reaction synchronously so a repeated double tap never emits an inverse.
   const reactionRef = React.useRef(reaction);
-  reactionRef.current = reaction;
+  React.useLayoutEffect(() => { reactionRef.current = reaction; }, [reaction]);
   const setReaction = (next: 'like' | 'dislike' | null) => {
     reactionRef.current = next;
     setLocalReactionState({ key: reactionStateKey, reaction: next });
@@ -269,19 +269,42 @@ export function RepositoryScreen({
     onQueueActivity?.({ repo_id: repository.id, action: undo ? FEEDBACK_ACTIONS.undislike : FEEDBACK_ACTIONS.dislike }, true);
   };
   const saveSwipe = React.useContext(SaveSwipeGestureContext);
-  const doubleTap = Gesture.Tap()
-    .enabled(isActive !== false && reactionsEnabled)
-    .numberOfTaps(2)
-    .maxDelay(300)
-    .maxDuration(250)
-    .maxDistance(12)
-    // The header overlays the card. Reduce the tap region by its full height;
-    // bottom navigation lives outside this screen already.
-    .hitSlop({ top: -(Math.max(insets.top + 6, 40) + 44) })
-    .cancelsTouchesInView(false)
-    .runOnJS(true)
-    .onEnd((_event, success) => { if (success) likeRepository(); });
-  if (saveSwipe) doubleTap.simultaneousWithExternalGesture(saveSwipe);
+  const interaction = React.useRef({ key: reactionStateKey, enabled: false, like: likeRepository });
+  React.useLayoutEffect(() => {
+    interaction.current = { key: reactionStateKey, enabled: isActive !== false && reactionsEnabled, like: likeRepository };
+  });
+  const doubleTapTask = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  React.useEffect(() => () => {
+    if (doubleTapTask.current !== null) clearTimeout(doubleTapTask.current);
+  }, [reactionStateKey]);
+  const handleDoubleTap = React.useCallback((_event: unknown, success: boolean) => {
+    if (!success) return;
+    const key = interaction.current.key;
+    if (doubleTapTask.current !== null) clearTimeout(doubleTapTask.current);
+    // Let child Pressables finish their second click first. The double tap
+    // then has the same like-only result anywhere within the feed surface.
+    doubleTapTask.current = setTimeout(() => {
+      doubleTapTask.current = null;
+      if (interaction.current.key === key && interaction.current.enabled) interaction.current.like();
+    }, 0);
+  }, []);
+  const doubleTap = React.useMemo(() => {
+    const gesture = Gesture.Tap()
+      .enabled(isActive !== false && reactionsEnabled)
+      .numberOfTaps(2)
+      .maxDelay(300)
+      .maxDuration(250)
+      .maxDistance(12)
+      // The header overlays the card; navigation is outside this screen.
+      .hitSlop({ top: -(Math.max(insets.top + 6, 40) + 44) })
+      .cancelsTouchesInView(false)
+      .runOnJS(true)
+      // RNGH only stores this event callback; it does not read refs during render.
+      // eslint-disable-next-line react-hooks/refs
+      .onEnd(handleDoubleTap);
+    if (saveSwipe) gesture.simultaneousWithExternalGesture(saveSwipe);
+    return gesture;
+  }, [isActive, reactionsEnabled, insets.top, saveSwipe, handleDoubleTap]);
 
   const handleOwnerFollowingChange = (following: boolean) => {
     const viewerUserId = user?.user_id;
@@ -470,7 +493,7 @@ export function RepositoryScreen({
               styles.actionRail,
               {
                 bottom: actionRailBottom,
-                width: veryShort ? 34 : 40,
+                width: veryShort ? 44 : 48,
               },
             ]}
           >
@@ -479,7 +502,7 @@ export function RepositoryScreen({
               active={liked}
               count={formatCount(String(likeCount))}
               dense={veryShort}
-              activeColor="#F472B6"
+              activeColor={REFERENCE_THEME.danger}
               fillActive
               icon={Heart}
               onPress={toggleLike}

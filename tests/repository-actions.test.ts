@@ -341,15 +341,15 @@ test('Home heart toggles while double-tap only likes and Not interested retains 
     assert.equal(button('Like repository').findAllByType('Heart').length, 1);
     await act(async () => button('Like repository').props.onPress());
     const heart = button('Unlike repository').findByType('Heart');
-    assert.equal(heart.props.fill, '#F472B6');
-    assert.equal(heart.props.color, '#F472B6');
+    assert.equal(heart.props.fill, '#FF453A');
+    assert.equal(heart.props.color, '#FF453A');
     await act(async () => button('Unlike repository').props.onPress());
     assert.equal(button('Like repository').findByType('Heart').props.fill, 'none');
     const tap = () => root.root.findByType('GestureDetector').props.gesture.config;
     assert.equal(tap().numberOfTaps, 2);
     assert.ok(tap().hitSlop.top <= -84, 'the entire fixed top bar is excluded');
-    await act(async () => tap().onEnd({}, true));
-    await act(async () => tap().onEnd({}, true));
+    await act(async () => { tap().onEnd({}, true); await new Promise(resolve => setTimeout(resolve, 0)); });
+    await act(async () => { tap().onEnd({}, true); await new Promise(resolve => setTimeout(resolve, 0)); });
     assert.ok(button('Unlike repository'), 'a second double tap never unlikes');
     const labels = root.root.findAllByType('Pressable').map(node => node.props.accessibilityLabel);
     assert.ok(labels.indexOf('Share repository') < labels.indexOf('Not interested in this repository'));
@@ -357,6 +357,14 @@ test('Home heart toggles while double-tap only likes and Not interested retains 
     await act(async () => button('Not interested in this repository').props.onPress());
     await act(async () => button('Undo not interested').props.onPress());
     assert.deepEqual(events.map(event => event.action), ['like', 'unlike', 'like', 'dislike', 'undislike']);
+    // A child's second press may be delivered after the parent recognizes a double tap.
+    await act(async () => button('Like repository').props.onPress());
+    await act(async () => {
+      tap().onEnd({}, true);
+      button('Unlike repository').props.onPress();
+      await new Promise(resolve => setTimeout(resolve, 0));
+    });
+    assert.ok(button('Unlike repository'), 'double tapping a reaction control must also finish liked');
     await act(async () => root.update(React.createElement(RepositoryScreen, { ...props, isActive: false })));
     assert.equal(tap().enabled, false);
     await act(async () => root.update(React.createElement(RepositoryScreen, { ...props, reactionsEnabled: false })));
