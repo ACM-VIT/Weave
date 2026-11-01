@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import test from 'node:test';
+import test, { after } from 'node:test';
 import { loadNegativePreferenceEligibleIds, NEGATIVE_PREFERENCE_ELIGIBILITY_SQL } from '../../services/negativePreferenceEligibility.js';
 const user='00000000-0000-4000-8000-000000000001';
 const a='00000000-0000-4000-8000-000000000002';
@@ -29,6 +29,10 @@ test('negative eligibility rejects malformed/unbounded input and unexpected resu
 });
 
 const integrationEnabled=process.env.RUN_NEGATIVE_PREFERENCE_INTEGRATION==='1';
+if(integrationEnabled) after(async () => {
+  const {sqlClient}=await import('../../db/index.js');
+  await sqlClient.end({timeout:1});
+});
 test('real current preferences reject old dislikes beyond 500 history without affecting another user or inverse state', {skip:!integrationEnabled},async () => {
   const target=new URL(process.env.DATABASE_URL??'');
   assert.notEqual(process.env.NODE_ENV,'production');
@@ -103,11 +107,9 @@ test('real current preferences reject old dislikes beyond 500 history without af
     await sql`UPDATE app.users SET status='suspended' WHERE user_id=${viewer!}::uuid`;
     assert.deepEqual(await loadNegativePreferenceEligibleIds(reader,viewer!,[oldest]),[]);
   } finally {
-    try {
-      await sql`DELETE FROM app.users WHERE user_id=ANY(${users}::uuid[])`;
-      await sql`DELETE FROM app.repos WHERE repo_id=ANY(${repos}::uuid[])`;
-      await sql`DELETE FROM auth.users WHERE id=ANY(${users}::uuid[])`;
-    } finally {await sql.end({timeout:1});}
+    await sql`DELETE FROM app.users WHERE user_id=ANY(${users}::uuid[])`;
+    await sql`DELETE FROM app.repos WHERE repo_id=ANY(${repos}::uuid[])`;
+    await sql`DELETE FROM auth.users WHERE id=ANY(${users}::uuid[])`;
   }
 });
 
@@ -116,8 +118,82 @@ test('candidate session UUID case aliases normalize without bypassing the served
   const {loadCandidateEligibility}=await import('../../services/feedExposureEligibility.js');
   const session='abcdef01-abcd-4abc-8abc-abcdef012345';
   const result=await loadCandidateEligibility({query:async(_sql,parameters)=>{
-    assert.equal(parameters[3],session);
+    assert.equal(parameters[4],session);
     return [{repo_id:a,summary_id:null,preference_eligible:true,exposure_eligible:false,session_served:true}];
   }},user,[a],7,session.toUpperCase());
   assert.deepEqual(result.servedIds,[a]);assert.deepEqual(result.exposureIds,[]);
+});
+
+test('global exposure reset retains old serves and pending actions while excluding new deliveries', {skip:!integrationEnabled},async () => {
+  const target=new URL(process.env.DATABASE_URL??'');
+  assert.ok(['127.0.0.1','localhost'].includes(target.hostname));
+  assert.equal(target.pathname,'/weave_negative_preferences_test');
+  assert.notEqual(process.env.NODE_ENV,'production');
+  const {randomUUID}=await import('node:crypto');
+  const {sqlClient:sql}=await import('../../db/index.js');
+  const {PostgresFeedPersistence}=await import('../../adapters/postgresFeedPersistence.js');
+  const {loadCandidateEligibility}=await import('../../services/feedExposureEligibility.js');
+  const viewer=randomUUID(),other=randomUUID(),repo=randomUUID(),session=randomUUID(),serve=randomUUID(),request=randomUUID();
+  const previous=process.env.FEED_EXPOSURE_RESET_AT;
+  const reader={query:async(text:string,parameters:readonly unknown[])=>[...await sql.unsafe(text,parameters as never)]};
+  try {
+    delete process.env.FEED_EXPOSURE_RESET_AT;
+    for(const id of [viewer,other]) {
+      await sql`INSERT INTO auth.users(id) VALUES(${id}::uuid)`;
+      await sql`INSERT INTO app.users(user_id,username,status) VALUES(${id}::uuid,${'reset_'+id.replaceAll('-','')},'active')`;
+      await sql`INSERT INTO app.user_feed_state(user_id) VALUES(${id}::uuid) ON CONFLICT DO NOTHING`;
+    }
+    await sql`INSERT INTO app.repos(repo_id,github_id,full_name,owner,name,url,status)
+      VALUES(${repo}::uuid,'7999999999',${'reset/'+repo},'reset',${repo},${'https://github.com/reset/'+repo},'active')`;
+    await sql`INSERT INTO app.repo_content(repo_id,readme,content_hash) VALUES(${repo}::uuid,'README fixture',${'a'.repeat(64)})`;
+    await sql`INSERT INTO telemetry.feed_serves(serve_id,feed_request_id,user_id,session_id,feed_version,source,model_version,created_at)
+      VALUES(${serve}::uuid,${request}::uuid,${viewer}::uuid,${session}::uuid,1,'personalized','test',now()-interval '1 hour')`;
+    await sql`INSERT INTO telemetry.feed_serve_items(serve_id,position,repo_id,score,source,model_version)
+      VALUES(${serve}::uuid,0,${repo}::uuid,1,'semantic','test')`;
+    await sql`INSERT INTO telemetry.interaction_events(schema_version,event_id,user_id,session_id,serve_id,repo_id,position,event_type,client_occurred_at,server_received_at)
+      VALUES(2,${randomUUID()}::uuid,${viewer}::uuid,${session}::uuid,${serve}::uuid,${repo}::uuid,0,'impression',now()-interval '1 hour',now()-interval '1 hour')`;
+    const before=new PostgresFeedPersistence();
+    assert.deepEqual((await loadCandidateEligibility(reader,viewer,[repo],7,session)).exposureIds,[]);
+    assert.deepEqual(await before.listExcludedRepositoryIds(viewer,session,500),[repo]);
+    process.env.FEED_EXPOSURE_RESET_AT=new Date(Date.now()-1000).toISOString();
+    const after=new PostgresFeedPersistence();
+    const reset=await after.listCandidateEligibility(viewer,[repo],session);
+    assert.deepEqual(reset.exposureIds,[repo]);
+    assert.deepEqual(reset.servedIds,[]);
+    assert.deepEqual(await after.listExcludedRepositoryIds(viewer,session,500),[]);
+    assert.deepEqual(await after.listServedRepositoryIds(viewer,session,[repo]),[]);
+    assert.deepEqual((await loadCandidateEligibility(reader,other,[repo],7,session)).exposureIds,[repo]);
+    const replay=await after.getServeByRequest(viewer,request);
+    assert.equal(replay?.serve_id,serve);
+    assert.equal(replay?.items[0]?.repo_id,repo,'reset preserves exact historical delivery for replay and attribution');
+    const {processInteractionBatchV2}=await import('../../services/activityV2Service.js');
+    assert.equal((await processInteractionBatchV2(viewer,[{schema_version:2,event_id:randomUUID(),session_id:session,serve_id:serve,
+      repo_id:repo,position:0,event_type:'impression',dwell_ms:null,client_occurred_at:new Date(Date.now()-3600000).toISOString(),context:{}}])).accepted,1);
+    assert.deepEqual(await after.listExcludedRepositoryIds(viewer,session,500),[], 'late pre-reset impressions must not restore viewing exclusions');
+    assert.deepEqual((await after.listCandidateEligibility(viewer,[repo],session)).exposureIds,[repo]);
+    const [repository]=await after.listActiveRepositories([repo],viewer);
+    await after.createServe({feed_request_id:randomUUID(),user_id:viewer,session_id:session,feed_version:1n,generation_id:null,
+      source:'personalized',model_version:'test',next_cursor:null,
+      items:[{repo_id:repo,position:0,score:1,source:'semantic',model_version:'test',summary_id:null,repository:repository!}]});
+    assert.deepEqual((await loadCandidateEligibility(reader,viewer,[repo],7,session)).exposureIds,[]);
+    assert.deepEqual(await after.listServedRepositoryIds(viewer,session,[repo]),[repo]);
+    assert.equal((await processInteractionBatchV2(viewer,[{schema_version:2,event_id:randomUUID(),session_id:session,serve_id:serve,
+      repo_id:repo,position:0,event_type:'like',dwell_ms:null,client_occurred_at:new Date().toISOString(),context:{}}])).accepted,1,
+      'pending action on a pre-reset delivery must still be accepted');
+  } finally {
+    if(previous===undefined)delete process.env.FEED_EXPOSURE_RESET_AT;else process.env.FEED_EXPOSURE_RESET_AT=previous;
+    await sql`DELETE FROM app.users WHERE user_id=ANY(${[viewer,other]}::uuid[])`;
+    await sql`DELETE FROM app.repos WHERE repo_id=${repo}::uuid`;
+    await sql`DELETE FROM auth.users WHERE id=ANY(${[viewer,other]}::uuid[])`;
+  }
+});
+
+
+test('exposure reset configuration accepts past UTC instants and rejects unsafe cutoffs',async () => {
+  const {feedExposureResetAt}=await import('../../config/feedExposure.js');
+  assert.equal(feedExposureResetAt(''), '1970-01-01T00:00:00.000Z');
+  assert.equal(feedExposureResetAt('2020-01-01T00:00:00Z'), '2020-01-01T00:00:00.000Z');
+  for(const raw of ['invalid','2020-02-31T00:00:00Z',new Date(Date.now()+60000).toISOString()]) {
+    assert.throws(() => feedExposureResetAt(raw), /UTC ISO timestamp in the past/);
+  }
 });

@@ -16,7 +16,7 @@ import type {
 } from '../contracts/feed.v2.js';
 import { loadNegativePreferenceEligibleIds } from '../services/negativePreferenceEligibility.js';
 import { loadCandidateEligibility, loadRecentExposureEligibleIds } from '../services/feedExposureEligibility.js';
-import { feedRecentExposureDays } from '../config/feedExposure.js';
+import { feedRecentExposureDays, feedExposureResetAt } from '../config/feedExposure.js';
 import { FeedExposureChangedError, FeedServeOverlapError, FeedPreferenceChangedError, MAX_FEED_SERVE_LOOKUP_BATCH } from '../ports/feedPersistencePort.js';
 import type {
   FeedPersistencePort, FeedReconciliationPersistencePort, FeedServeRequest, RepositoryIdentityProjection,
@@ -88,6 +88,7 @@ function boundSql(text: string, parameters: readonly (string|string[])[]) {
 
 export class PostgresFeedPersistence implements FeedPersistencePort, FeedReconciliationPersistencePort {
   private readonly recentExposureDays = feedRecentExposureDays();
+  private readonly exposureResetAt = feedExposureResetAt();
 
   async listCandidateEligibility(userId: string, repoIds: string[], sessionId?: string,
     readmeMode: 'inline' | 'deferred' = 'inline') {
@@ -239,12 +240,18 @@ export class PostgresFeedPersistence implements FeedPersistencePort, FeedReconci
         FROM telemetry.feed_serves serve
         JOIN telemetry.feed_serve_items item ON item.serve_id=serve.serve_id
         WHERE serve.user_id=${userId}::uuid
+          AND serve.created_at>=${this.exposureResetAt}::timestamptz
           AND (serve.session_id=${sessionId ?? null}::uuid
             OR serve.created_at>=now()-(${this.recentExposureDays * 86400}::integer * interval '1 second'))
         UNION ALL
         SELECT repo_id,server_received_at AS observed_at,1 AS priority
-        FROM telemetry.interaction_events WHERE user_id=${userId}::uuid
-          AND server_received_at>=now()-(${this.recentExposureDays * 86400}::integer * interval '1 second')
+        FROM telemetry.interaction_events event WHERE event.user_id=${userId}::uuid
+          AND event.server_received_at>=${this.exposureResetAt}::timestamptz
+          AND event.server_received_at>=now()-(${this.recentExposureDays * 86400}::integer * interval '1 second')
+          AND (event.serve_id IS NULL OR EXISTS (
+            SELECT 1 FROM telemetry.feed_serves origin WHERE origin.serve_id=event.serve_id
+              AND origin.user_id=event.user_id AND origin.created_at>=${this.exposureResetAt}::timestamptz
+          ))
       )
       SELECT repo_id FROM exposures GROUP BY repo_id
       ORDER BY min(priority),max(observed_at) DESC,repo_id LIMIT ${boundedLimit}
@@ -260,6 +267,7 @@ export class PostgresFeedPersistence implements FeedPersistencePort, FeedReconci
       JOIN telemetry.feed_serve_items item ON item.serve_id=serve.serve_id
       WHERE serve.user_id=${userId}::uuid AND serve.session_id=${sessionId}::uuid
         AND item.repo_id=ANY(${repoIds}::uuid[])
+        AND serve.created_at>=${this.exposureResetAt}::timestamptz
     `;
     return rows.map(row => String(row.repo_id));
   }
@@ -326,6 +334,7 @@ export class PostgresFeedPersistence implements FeedPersistencePort, FeedReconci
             JOIN telemetry.feed_serve_items seen ON seen.serve_id=delivered.serve_id
             WHERE delivered.user_id=${userId}::uuid AND delivered.session_id=${sessionId ?? null}::uuid
               AND seen.repo_id=item.repo_id
+              AND delivered.created_at>=${this.exposureResetAt}::timestamptz
           )
           AND NOT EXISTS (
             SELECT 1 FROM app.reactions negative
@@ -336,12 +345,18 @@ export class PostgresFeedPersistence implements FeedPersistencePort, FeedReconci
             SELECT 1 FROM telemetry.feed_serves recent_serve
             JOIN telemetry.feed_serve_items seen_item ON seen_item.serve_id=recent_serve.serve_id
             WHERE recent_serve.user_id=${userId}::uuid AND seen_item.repo_id=item.repo_id
-              AND recent_serve.created_at>=now()-(${this.recentExposureDays * 86400}::integer * interval '1 second')
+              AND recent_serve.created_at>=${this.exposureResetAt}::timestamptz
+            AND recent_serve.created_at>=now()-(${this.recentExposureDays * 86400}::integer * interval '1 second')
           )
           AND NOT EXISTS (
             SELECT 1 FROM telemetry.interaction_events recent_event
             WHERE recent_event.user_id=${userId}::uuid AND recent_event.repo_id=item.repo_id
-              AND recent_event.server_received_at>=now()-(${this.recentExposureDays * 86400}::integer * interval '1 second')
+              AND recent_event.server_received_at>=${this.exposureResetAt}::timestamptz
+            AND recent_event.server_received_at>=now()-(${this.recentExposureDays * 86400}::integer * interval '1 second')
+              AND (recent_event.serve_id IS NULL OR EXISTS (
+                SELECT 1 FROM telemetry.feed_serves origin WHERE origin.serve_id=recent_event.serve_id
+                  AND origin.user_id=recent_event.user_id AND origin.created_at>=${this.exposureResetAt}::timestamptz
+              ))
           )
       )
       SELECT repo_id,score,source,model_version,summary_id,generation_id,record_digest,capture_status,legacy_generation_hint
@@ -707,6 +722,7 @@ export class PostgresFeedPersistence implements FeedPersistencePort, FeedReconci
           SELECT 1 FROM telemetry.feed_serves delivered
           JOIN telemetry.feed_serve_items seen ON seen.serve_id=delivered.serve_id
           WHERE delivered.user_id=${input.user_id}::uuid AND delivered.session_id=${input.session_id}::uuid
+            AND delivered.created_at>=${this.exposureResetAt}::timestamptz
             AND delivered.feed_request_id<>${input.feed_request_id}::uuid
             AND seen.repo_id=ANY(${input.items.map(item => item.repo_id)}::uuid[])
         )
@@ -906,12 +922,18 @@ export class PostgresFeedPersistence implements FeedPersistencePort, FeedReconci
           SELECT 1 FROM telemetry.feed_serves recent_serve
           JOIN telemetry.feed_serve_items seen_item ON seen_item.serve_id=recent_serve.serve_id
           WHERE recent_serve.user_id=${viewerUserId ?? null}::uuid AND seen_item.repo_id=item.repo_id
+            AND recent_serve.created_at>=${this.exposureResetAt}::timestamptz
             AND recent_serve.created_at>=now()-(${this.recentExposureDays * 86400}::integer * interval '1 second')
         )
         AND NOT EXISTS (
           SELECT 1 FROM telemetry.interaction_events recent_event
           WHERE recent_event.user_id=${viewerUserId ?? null}::uuid AND recent_event.repo_id=item.repo_id
+            AND recent_event.server_received_at>=${this.exposureResetAt}::timestamptz
             AND recent_event.server_received_at>=now()-(${this.recentExposureDays * 86400}::integer * interval '1 second')
+              AND (recent_event.serve_id IS NULL OR EXISTS (
+                SELECT 1 FROM telemetry.feed_serves origin WHERE origin.serve_id=recent_event.serve_id
+                  AND origin.user_id=recent_event.user_id AND origin.created_at>=${this.exposureResetAt}::timestamptz
+              ))
         )
       ORDER BY snapshot.activated_at DESC, item.position ASC LIMIT ${limit}
     `;
