@@ -98,7 +98,7 @@ describe("onboarding taxonomy", () => {
     assert.throws(() => resolveOnboardingTaxonomy({ skills: Array(51).fill('data') }, taxonomy), /at most 50/);
   });
 
-  test('rendered step3 updates the onboarding draft so Back and Continue retain selected interests', async () => {
+  test('one-page topic choices survive remounts and uncertain saves retain recovery controls', async () => {
     const React = await import('react'); const { create } = await import('react-test-renderer');
     (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
     const onboarding = loadSource('src/store/OnboardingContext.tsx', {});
@@ -106,9 +106,10 @@ describe("onboarding taxonomy", () => {
     let checks = 0;
     const retryArguments: unknown[][] = [];
     const submitted: unknown[] = [];
-    const Step3 = loadSource('src/app/onboarding/step3.tsx', {
+    const Step3 = loadSource('src/components/onboarding/PreferencesScreen.tsx', {
       '@/components/keyboard/keyboard-layout': { KeyboardForm: 'KeyboardForm' },
-      'react-native': { View: 'View', Text: 'Text' },
+      'react-native': { Platform: { OS: 'web' }, View: 'View', Text: 'Text', Pressable: 'Pressable', TextInput: 'TextInput' },
+      './GitHubImportPanel': { GitHubImportPanel: () => null },
       '../../store/OnboardingContext': onboarding,
       '../../store/AuthContext': { useAuth: () => ({ completeOnboarding: async (data: unknown) => { submitted.push(data); }, checkOnboardingStatus: async () => {},
         retryOnboarding: async (...args: unknown[]) => { retryArguments.push(args); },
@@ -131,12 +132,12 @@ describe("onboarding taxonomy", () => {
     let root!: ReturnType<typeof create>;
     await React.act(async () => { root = create(React.createElement(onboarding.OnboardingProvider, null, React.createElement(Flow))); });
     try {
-      await React.act(async () => root.root.findByType('TechChip').props.onPress());
+      await React.act(async () => root.root.findByProps({ accessibilityLabel: 'AI & ML' }).props.onPress());
       await React.act(async () => show(false));
       await React.act(async () => show(true));
-      assert.deepEqual(draft.interests, ['react']);
-      assert.equal(root.root.findByType('TechChip').props.selected, true);
-      await React.act(async () => root.root.findByType('TechChip').props.onPress());
+      assert.deepEqual(draft.interests, ['machine learning']);
+      assert.equal(root.root.findByProps({ accessibilityLabel: 'AI & ML' }).props.accessibilityState.checked, true);
+      await React.act(async () => root.root.findByProps({ accessibilityLabel: 'AI & ML' }).props.onPress());
       assert.deepEqual(draft.interests, []);
       const retained = ['react', 'vue', 'angular', 'svelte', 'nextjs'];
       await React.act(async () => { updateDraft({ interests: retained }); show(false); });
@@ -167,9 +168,10 @@ describe("onboarding taxonomy", () => {
     (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
     const onboarding = loadSource('src/store/OnboardingContext.tsx', {});
     const submitted: any[] = [];
-    const Step3 = loadSource('src/app/onboarding/step3.tsx', {
+    const Step3 = loadSource('src/components/onboarding/PreferencesScreen.tsx', {
       '@/components/keyboard/keyboard-layout': { KeyboardForm: 'KeyboardForm' },
-      'react-native': { View: 'View', Text: 'Text' },
+      'react-native': { Platform: { OS: 'web' }, View: 'View', Text: 'Text', Pressable: 'Pressable', TextInput: 'TextInput' },
+      './GitHubImportPanel': { GitHubImportPanel: () => null },
       '../../store/OnboardingContext': onboarding,
       '../../store/AuthContext': { useAuth: () => ({
         completeOnboarding: async (data: unknown) => { submitted.push(data); },
@@ -193,23 +195,19 @@ describe("onboarding taxonomy", () => {
         interests: ['react', 'vue', 'angular', 'svelte', 'nextjs', 'express'], bio: 'Keep my bio', tech_stack: ['TypeScript'] }));
       assert.equal(root.root.findByProps({ title: 'Finish' }).props.disabled, false);
       await React.act(async () => show(false));
-      // Step 1 commits its replacement categories while Step 3 is unmounted.
+      // Replacement categories also prune an existing draft while the page is unmounted.
       await React.act(async () => updateDraft({ skills: ['backend', 'data'] }));
       await React.act(async () => show(true));
       assert.deepEqual(draft.interests, ['express'], 'only choices from retained categories stay selected');
       assert.equal(draft.bio, 'Keep my bio');
       assert.deepEqual(draft.tech_stack, ['TypeScript']);
-      assert.equal(root.root.findAllByType('TechChip').some(chip => chip.props.title === 'react'), false);
-      assert.equal(root.root.findByProps({ title: 'Finish' }).props.disabled, true, 'hidden choices cannot satisfy the five-interest minimum');
+      assert.equal(root.root.findByProps({ accessibilityLabel: 'Frontend' }).props.accessibilityState.checked, false);
+      assert.equal(root.root.findByProps({ title: 'Finish' }).props.disabled, false, 'one retained category is sufficient');
       await React.act(async () => root.root.findByProps({ title: 'Finish' }).props.onPress());
-      assert.equal(submitted.length, 0);
-      for (const title of ['django', 'flask', 'fastapi', 'spring']) {
-        await React.act(async () => root.root.findByProps({ title }).props.onPress());
-      }
-      await React.act(async () => root.root.findByProps({ title: 'Finish' }).props.onPress());
-      assert.deepEqual(submitted[0].interests, ['express', 'django', 'flask', 'fastapi', 'spring']);
+      assert.deepEqual(submitted[0].interests, ['express'], 'removed categories cannot leak hidden interests into the save');
+      assert.deepEqual(submitted[0].tech_stack, ['TypeScript']);
       await React.act(async () => updateDraft((previous: any) => ({ skills: [...previous.skills, 'web'] })));
-      assert.deepEqual(draft.interests, ['express', 'django', 'flask', 'fastapi', 'spring'], 'adding a category does not resurrect removed choices');
+      assert.deepEqual(draft.interests, ['express'], 'adding a category does not resurrect removed choices');
       await React.act(async () => updateDraft({ skills: [] }));
       assert.deepEqual(draft.interests, []);
     } finally { await React.act(async () => root.unmount()); }

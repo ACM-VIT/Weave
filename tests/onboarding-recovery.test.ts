@@ -27,6 +27,41 @@ function loadSource(path: string, mocks: Record<string, unknown>): Record<string
 const finishData = { username:'alice',full_name:'Alice',date_of_birth:'2005-01-01',skills:['web'],
   interests:['react','vue','angular','svelte','nextjs'] };
 
+test('one-page onboarding finishes with one discovery topic and optional technologies', async () => {
+ const onboarding=loadSource('src/store/OnboardingContext.tsx',{});
+ const saved:any[]=[];let draft:any;
+ const screen=loadSource('src/components/onboarding/PreferencesScreen.tsx',{
+  'react-native':{...Object.fromEntries(['View','Text','ScrollView','Pressable','TextInput'].map(name=>[name,name])),Platform:{OS:'web'}},
+  'react-native-safe-area-context':{SafeAreaView:'SafeAreaView'},
+  'expo-router':{router:{push:()=>assert.fail('onboarding should finish without another step')}},
+  '../../store/OnboardingContext':onboarding,
+  '../../store/AuthContext':{useAuth:()=>({user:{user_id:'viewer'},onboardingSave:{status:'idle'},
+   completeOnboarding:async(data:any)=>saved.push(data),checkOnboardingStatus:async()=>{}})},
+  '../../components/onboarding/GitHubImportPanel':{GitHubImportPanel:()=>React.createElement('ImportPanel')},
+  './GitHubImportPanel':{GitHubImportPanel:()=>React.createElement('ImportPanel')},
+  '@/components/keyboard/keyboard-layout':{KeyboardForm:'Form'},
+  '@/components/onboarding/PrimaryButton':(props:any)=>React.createElement('PrimaryButton',props),
+  ...Object.fromEntries(['LogoPlaceholder','SkillCard','ProgressBar'].map(name=>[
+   `@/components/onboarding/${name}`,()=>null])),
+  '@/constants/onboarding':{SKILL_CATEGORIES:[]},
+ });
+ function Probe(){draft=onboarding.useOnboarding().data;return React.createElement(screen.default);}
+ let root!:ReturnType<typeof create>;
+ try{
+  await act(async()=>{root=create(React.createElement(onboarding.OnboardingProvider,null,React.createElement(Probe)));});
+  assert.equal(root.root.findAllByType('ImportPanel' as any).length,0,'GitHub import is optional and stays unloaded');
+  assert.equal(root.root.findByProps({title:'Finish'}).props.disabled,true);
+  assert.equal(root.root.findAllByProps({accessibilityRole:'checkbox'}).length,7,'only broad topics are offered');
+  await act(async()=>root.root.findByProps({accessibilityLabel:'AI & ML'}).props.onKeyDown({key:' ',repeat:false,preventDefault(){}}));
+  assert.equal(root.root.findByProps({accessibilityLabel:'AI & ML'}).props['aria-checked'],true);
+  assert.deepEqual(draft.skills,['data']);assert.deepEqual(draft.interests,['machine learning']);
+  await act(async()=>root.root.findByType('TextInput' as any).props.onChangeText(' Python, PyTorch, '));
+  await act(async()=>root.root.findByProps({title:'Finish'}).props.onPress());
+  assert.equal(saved.length,1);assert.deepEqual(saved[0].skills,['data']);
+  assert.deepEqual(saved[0].interests,['machine learning']);assert.deepEqual(saved[0].tech_stack,['Python','PyTorch']);
+ }finally{await act(async()=>root?.unmount());}
+});
+
 test('mounted Finish uses one confirmed response and late profile reads cannot undo Home routing',async t=>{
  for(const lateStatus of [200,404]){
   const viewer={user_id:'alice',username:'alice',onboarding_completed:false,likes_given_count:0};
@@ -43,9 +78,9 @@ test('mounted Finish uses one confirmed response and late profile reads cannot u
   });
   await app.mount();await act(async()=>{app.session.resolve(fixtureToken('alice'));app.fonts.resolve();});
   const blank=()=>null,native={View:'View',Text:'Text'};
-  const step=loadSource('src/app/onboarding/step3.tsx',{
-   'react-native':native,'../../store/AuthContext':{useAuth:()=>app.auth},
-   '../../store/OnboardingContext':{useOnboarding:()=>({data:finishData})},
+  const step=loadSource('src/components/onboarding/PreferencesScreen.tsx',{
+   'react-native':{...native,Platform:{OS:'web'},Pressable:'Pressable',TextInput:'TextInput'},'./GitHubImportPanel':{GitHubImportPanel:()=>null},'../../store/AuthContext':{useAuth:()=>app.auth},
+   '../../store/OnboardingContext':{useOnboarding:()=>({data:finishData,updateData:()=>{}})},
    '@/components/keyboard/keyboard-layout':{KeyboardForm:(props:any)=>React.createElement('Form',props)},
    '@/components/onboarding/PrimaryButton':(props:any)=>React.createElement('PrimaryButton',props),
    '@/components/onboarding/ProgressBar':blank,'@/components/onboarding/TechChip':blank,
@@ -397,11 +432,11 @@ for (const manualMode of [false, true]) {
 test(`mounted onboarding recovery preserves drafts and refreshes controls (manualMode=${manualMode})`, async () => {
   (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
   let linked = true, reads = 0, refreshes = 0;
-  const routes: string[] = [];
-  const native = Object.fromEntries(['View', 'Text', 'ScrollView', 'Pressable', 'ActivityIndicator'].map(name => [name, name]));
+  const submitted: any[] = [];
+  const native = {...Object.fromEntries(['View', 'Text', 'ScrollView', 'Pressable', 'ActivityIndicator', 'TextInput'].map(name => [name, name])), Platform: { OS: 'web' }};
   const safeArea = { SafeAreaView: 'SafeAreaView', useSafeAreaInsets: () => ({ top: 59, bottom: 0, left: 0, right: 0 }) };
   const theme = { APP_THEME: {}, REFERENCE_THEME: {}, Fonts: {}, Spacing: { two: 8, three: 12, four: 16 } };
-  const auth = { useAuth: () => ({ user: { user_id: 'viewer' }, checkOnboardingStatus: async () => { refreshes++; } }) };
+  const auth = { useAuth: () => ({ user: { user_id: 'viewer' }, onboardingSave: { status: 'idle' }, completeOnboarding: async (data: any) => { submitted.push(data); }, checkOnboardingStatus: async () => { refreshes++; } }) };
   const onboarding = loadSource('src/store/OnboardingContext.tsx', {});
   const importPanel = loadSource('src/components/onboarding/GitHubImportPanel.tsx', {
     '@tanstack/react-query': { useQueryClient: () => new QueryClient() },
@@ -415,14 +450,14 @@ test(`mounted onboarding recovery preserves drafts and refreshes controls (manua
     '../../services/githubUnlink': { startGithubUnlink: async () => null },
   });
   const blank = () => null;
-  const step = loadSource('src/app/onboarding/step1.tsx', {
+  const step = loadSource('src/components/onboarding/PreferencesScreen.tsx', {
     'react-native': native, 'react-native-safe-area-context': safeArea,
-    'expo-router': { router: { push: (route: string) => routes.push(route) } },
+    '@/components/keyboard/keyboard-layout': { KeyboardForm: 'Form' },
     '@/components/onboarding/PrimaryButton': (props: any) => React.createElement('PrimaryButton', props), '@/components/onboarding/ProgressBar': blank,
     '@/components/onboarding/SkillCard': (props: any) => React.createElement('SkillCard', props), '@/components/onboarding/LogoPlaceholder': blank,
     '@/constants/onboarding': { SKILL_CATEGORIES: [{ id: 'data', title: 'Data' }, { id: 'systems', title: 'Systems' }] },
     '../../store/OnboardingContext': onboarding, '../../store/AuthContext': auth,
-    '../../components/onboarding/GitHubImportPanel': importPanel,
+    './GitHubImportPanel': importPanel,
   });
   let current: any;
   function Probe() { current = onboarding.useOnboarding(); return null; }
@@ -434,18 +469,21 @@ test(`mounted onboarding recovery preserves drafts and refreshes controls (manua
   let renderer!: ReturnType<typeof create>;
   try {
     await act(async () => { renderer = create(React.createElement(layout.default)); });
-    assert.ok(JSON.stringify(renderer.toJSON()).includes('Preview public activity'));
+    assert.ok(!JSON.stringify(renderer.toJSON()).includes('Preview public activity'));
+    if (!manualMode) {
+      await act(async () => renderer.root.findByProps({ accessibilityLabel: 'Use GitHub public activity instead' }).props.onPress());
+      assert.ok(JSON.stringify(renderer.toJSON()).includes('Preview public activity'));
+    }
     const recovery = renderer.root.findAllByType('ScrollView' as any).find(node => node.props.style?.maxHeight === '45%');
     assert.ok(recovery, 'pending recovery remains bounded above the onboarding step');
     assert.equal(recovery.props.contentContainerStyle.paddingTop, 59, 'recovery respects the top safe-area inset');
     await act(async () => { current.updateData({ username: 'draft-name', bio: 'draft-bio' }); });
     if (manualMode) {
-      await act(async () => { renderer.root.findByProps({ accessibilityLabel: 'Choose preferences myself' }).props.onPress(); });
       await act(async () => {
-        for (const card of renderer.root.findAllByType('SkillCard' as any)) card.props.onPress();
+        renderer.root.findByProps({ accessibilityLabel: 'AI & ML' }).props.onPress();
+        renderer.root.findByProps({ accessibilityLabel: 'Systems' }).props.onPress();
       });
-      assert.deepEqual(renderer.root.findAllByType('SkillCard' as any).map(card => card.props.selected), [true, true]);
-      assert.equal(current.data.skills, undefined, 'category picks are still an unsaved step-local draft');
+      assert.deepEqual(current.data.skills, ['data', 'systems']);
     }
     const before = reads;
     linked = false;
@@ -453,10 +491,9 @@ test(`mounted onboarding recovery preserves drafts and refreshes controls (manua
     await act(async () => { await new Promise(resolve => setTimeout(resolve, 2_150)); });
     if (!manualMode) assert.ok(reads > before, 'the mounted import panel must reload after recovery refresh');
     else {
-      assert.deepEqual(renderer.root.findAllByType('SkillCard' as any).map(card => card.props.selected), [true, true],
-        'recovery must not remount the whole step and lose unsaved category picks');
+      assert.deepEqual(current.data.skills, ['data', 'systems'], 'recovery must retain selected topics');
       assert.equal(renderer.root.findByType('PrimaryButton' as any).props.disabled, false);
-      assert.equal(current.data.skills, undefined);
+      assert.deepEqual(current.data.interests, ['machine learning', 'system']);
     }
     assert.ok(refreshes >= 2);
     assert.ok(!JSON.stringify(renderer.toJSON()).includes('Preview public activity'));
@@ -467,7 +504,10 @@ test(`mounted onboarding recovery preserves drafts and refreshes controls (manua
     if (manualMode) {
       await act(async () => { renderer.root.findByType('PrimaryButton' as any).props.onPress(); });
       assert.deepEqual(current.data.skills, ['data', 'systems']);
-      assert.deepEqual(routes, ['/onboarding/step2'], 'Continue saves the retained draft and advances');
+      assert.equal(submitted.length, 1, 'Finish submits directly without an intermediate route');
+      assert.equal(submitted[0].username, 'draft-name');
+      assert.equal(submitted[0].bio, 'draft-bio');
+      assert.deepEqual(submitted[0].interests, ['machine learning', 'system']);
     }
   } finally {
     await act(async () => renderer?.unmount());
