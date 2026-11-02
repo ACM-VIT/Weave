@@ -349,6 +349,7 @@ test('Home heart toggles while double-tap only likes and Not interested retains 
     assert.equal(button('Like repository').findByType('Heart').props.fill, 'none');
     const tap = () => root.root.findByType('GestureDetector').props.gesture.config;
     assert.equal(tap().numberOfTaps, 2);
+    assert.equal(root.root.findByType('GestureDetector').props.touchAction, 'pan-y', 'double taps must preserve native vertical browser panning');
     assert.ok(tap().hitSlop.top <= -84, 'the entire fixed top bar is excluded');
     await act(async () => { tap().onEnd({}, true); await new Promise(resolve => setTimeout(resolve, 0)); });
     await act(async () => { tap().onEnd({}, true); await new Promise(resolve => setTimeout(resolve, 0)); });

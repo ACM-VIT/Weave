@@ -336,7 +336,7 @@ export function RepositoryScreen({
   };
 
   return (
-    <GestureDetector gesture={doubleTap}>
+    <GestureDetector gesture={doubleTap} touchAction="pan-y">
     <View style={[styles.screen, { width: pageWidth, height: pageHeight }]}>
       <View style={[styles.body, bodyStyle]}>
         <DescriptionCard
