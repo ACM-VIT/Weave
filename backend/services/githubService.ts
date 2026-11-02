@@ -157,9 +157,14 @@ async function parseGitHubErrorMessage(response: Response): Promise<string> {
   return fallback;
 }
 
-async function requestGitHubGraphql<T>(query: string, variables: Record<string, unknown>): Promise<T> {
+async function verifiedGitHubHeaders(signal?: AbortSignal): Promise<Record<string, string>> {
   const headers = buildGitHubHeaders();
-  await assertPublicGitHubCredential(headers.Authorization.slice('Bearer '.length));
+  await assertPublicGitHubCredential(headers.Authorization.slice('Bearer '.length), fetch, signal);
+  return headers;
+}
+
+async function requestGitHubGraphql<T>(query: string, variables: Record<string, unknown>): Promise<T> {
+  const headers = await verifiedGitHubHeaders();
   const response = await fetch(githubGraphqlUrl, {
     redirect: 'error',
     method: 'POST',
@@ -182,12 +187,12 @@ async function requestGitHubGraphql<T>(query: string, variables: Record<string, 
   return payload.data;
 }
 
-async function requestGitHubRest<T>(path: string, signal?: AbortSignal): Promise<T> {
+async function requestGitHubRest<T>(path: string, signal?: AbortSignal, verifiedHeaders?: Record<string, string>): Promise<T> {
   let response: Response;
   try {
     response = await fetch(`${githubRestBaseUrl}${path}`, {
       method: 'GET',
-      headers: { Accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28' },
+      headers: verifiedHeaders ?? await verifiedGitHubHeaders(signal),
       redirect: 'error',
       signal,
     });
@@ -381,11 +386,12 @@ export async function fetchGitHubPublicPersona(
     options.signal,
   );
   const encodedHandle = encodeURIComponent(normalizedHandle);
+  const headers = await verifiedGitHubHeaders(signal);
   const [rawProfile, rawRepositories] = await Promise.all([
-    requestGitHubRest<unknown>(`/users/${encodedHandle}`, signal),
+    requestGitHubRest<unknown>(`/users/${encodedHandle}`, signal, headers),
     requestGitHubRest<unknown>(
       `/users/${encodedHandle}/repos?type=owner&sort=updated&direction=desc&per_page=100&page=1`,
-      signal,
+      signal, headers,
     ),
   ]);
   return {
