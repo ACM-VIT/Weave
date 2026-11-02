@@ -31,6 +31,7 @@ test('one-page onboarding finishes with one discovery topic and optional technol
  const onboarding=loadSource('src/store/OnboardingContext.tsx',{});
  const saved:any[]=[];let draft:any;
  const screen=loadSource('src/components/onboarding/PreferencesScreen.tsx',{
+  'lucide-react-native':{Check:()=>null},
   'react-native':{...Object.fromEntries(['View','Text','ScrollView','Pressable','TextInput'].map(name=>[name,name])),Platform:{OS:'web'}},
   'react-native-safe-area-context':{SafeAreaView:'SafeAreaView'},
   'expo-router':{router:{push:()=>assert.fail('onboarding should finish without another step')}},
@@ -79,13 +80,14 @@ test('mounted Finish uses one confirmed response and late profile reads cannot u
   await app.mount();await act(async()=>{app.session.resolve(fixtureToken('alice'));app.fonts.resolve();});
   const blank=()=>null,native={View:'View',Text:'Text'};
   const step=loadSource('src/components/onboarding/PreferencesScreen.tsx',{
+   'lucide-react-native':{Check:()=>null},
    'react-native':{...native,Platform:{OS:'web'},Pressable:'Pressable',TextInput:'TextInput'},'./GitHubImportPanel':{GitHubImportPanel:()=>null},'../../store/AuthContext':{useAuth:()=>app.auth},
    '../../store/OnboardingContext':{useOnboarding:()=>({data:finishData,updateData:()=>{}})},
    '@/components/keyboard/keyboard-layout':{KeyboardForm:(props:any)=>React.createElement('Form',props)},
    '@/components/onboarding/PrimaryButton':(props:any)=>React.createElement('PrimaryButton',props),
    '@/components/onboarding/ProgressBar':blank,'@/components/onboarding/TechChip':blank,
    '@/components/onboarding/LogoPlaceholder':blank,'@/components/onboarding/StepHeader':blank,
-   '@/constants/onboarding':{INTEREST_CATEGORIES:ONBOARDING_INTERESTS},
+   '@/constants/onboarding':{SKILL_CATEGORIES:[],INTEREST_CATEGORIES:ONBOARDING_INTERESTS},
   });
   let screen!:ReturnType<typeof create>,submission!:Promise<void>,reading!:Promise<void>;
   try{
@@ -451,6 +453,7 @@ test(`mounted onboarding recovery preserves drafts and refreshes controls (manua
   });
   const blank = () => null;
   const step = loadSource('src/components/onboarding/PreferencesScreen.tsx', {
+    'lucide-react-native': { Check: () => null },
     'react-native': native, 'react-native-safe-area-context': safeArea,
     '@/components/keyboard/keyboard-layout': { KeyboardForm: 'Form' },
     '@/components/onboarding/PrimaryButton': (props: any) => React.createElement('PrimaryButton', props), '@/components/onboarding/ProgressBar': blank,

@@ -93,7 +93,7 @@ test('concise onboarding retains selected topics and supports keyboard input', {
   };
   await send('Page.enable');
   await send('Page.navigate', { url: `http://127.0.0.1:${address.port}` });
-  await until('document.body.innerText.includes("Make it your feed")');
+  await until('document.body.innerText.includes("What are your")');
   await t.test('broad topics expose checked state and respond to Enter/Space', async () => {
     assert.equal(await evaluate(`document.querySelectorAll('[role="checkbox"]').length`), 7);
     for (const label of ['Frontend', 'AI & ML']) {

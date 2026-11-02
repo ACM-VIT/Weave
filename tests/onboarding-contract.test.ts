@@ -107,6 +107,7 @@ describe("onboarding taxonomy", () => {
     const retryArguments: unknown[][] = [];
     const submitted: unknown[] = [];
     const Step3 = loadSource('src/components/onboarding/PreferencesScreen.tsx', {
+      'lucide-react-native': { Check: () => null },
       '@/components/keyboard/keyboard-layout': { KeyboardForm: 'KeyboardForm' },
       'react-native': { Platform: { OS: 'web' }, View: 'View', Text: 'Text', Pressable: 'Pressable', TextInput: 'TextInput' },
       './GitHubImportPanel': { GitHubImportPanel: () => null },
@@ -119,7 +120,7 @@ describe("onboarding taxonomy", () => {
       ...Object.fromEntries(['ProgressBar', 'PrimaryButton', 'TechChip', 'LogoPlaceholder', 'StepHeader'].map(name => [
         `@/components/onboarding/${name}`, { __esModule: true, default: name },
       ])),
-      '@/constants/onboarding': { INTEREST_CATEGORIES: [{ id: 'web', title: 'Web', interests: [{ id: 'react', name: 'React' }] }] },
+      '@/constants/onboarding': { SKILL_CATEGORIES: [], INTEREST_CATEGORIES: [{ id: 'web', title: 'Web', interests: [{ id: 'react', name: 'React' }] }] },
     }).default;
     let updateDraft!: (data: unknown) => void;
     let draft: any, show!: (value: boolean) => void;
@@ -169,6 +170,7 @@ describe("onboarding taxonomy", () => {
     const onboarding = loadSource('src/store/OnboardingContext.tsx', {});
     const submitted: any[] = [];
     const Step3 = loadSource('src/components/onboarding/PreferencesScreen.tsx', {
+      'lucide-react-native': { Check: () => null },
       '@/components/keyboard/keyboard-layout': { KeyboardForm: 'KeyboardForm' },
       'react-native': { Platform: { OS: 'web' }, View: 'View', Text: 'Text', Pressable: 'Pressable', TextInput: 'TextInput' },
       './GitHubImportPanel': { GitHubImportPanel: () => null },
@@ -180,7 +182,7 @@ describe("onboarding taxonomy", () => {
       ...Object.fromEntries(['ProgressBar', 'PrimaryButton', 'TechChip', 'LogoPlaceholder', 'StepHeader'].map(name => [
         `@/components/onboarding/${name}`, { __esModule: true, default: name },
       ])),
-      '@/constants/onboarding': { INTEREST_CATEGORIES: ONBOARDING_INTERESTS },
+      '@/constants/onboarding': { SKILL_CATEGORIES: [], INTEREST_CATEGORIES: ONBOARDING_INTERESTS },
     }).default;
     let draft: any, updateDraft!: (updates: any) => void, show!: (visible: boolean) => void;
     function Flow() {
