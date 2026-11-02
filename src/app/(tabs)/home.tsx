@@ -93,6 +93,7 @@ export default function HomeScreen() {
   const retentionPins = useRef<string[]>([]);
   const scrollOffset = useRef(0);
   const committedItems = useRef<FeedItem[]>([]);
+  const pendingSkip = useRef<string | null>(null);
   const controller = homeFeedController(queryClient, user?.user_id ?? '');
   const pagination = useMemo(() => ({controller, reset: () => controller.reset()}), [controller]);
   useEffect(() => subscribeToHomeFeedInvalidations(queryClient, feedQueryKey, () => pagination.controller.markStale()), [queryClient, feedQueryKey, pagination]);
@@ -153,6 +154,7 @@ export default function HomeScreen() {
       retentionPins.current = [];
       scrollOffset.current = 0;
       committedItems.current = [];
+      pendingSkip.current = null;
       listRef.current?.scrollToOffset({ offset: 0, animated: false });
     }
     const bounded = data ? retainHomeFeedHistory(data, retentionPins.current) : undefined;
@@ -171,8 +173,32 @@ export default function HomeScreen() {
     retentionPins.current = feedViewportIds(feedItems, scrollOffset.current, pageHeight);
   }, [data, feedItems, listKey, pageHeight, feedQueryKey, pagination, queryClient]);
 
+  useLayoutEffect(() => {
+    const source = pendingSkip.current;
+    if (!source) return;
+    const index = feedItems.findIndex(item => item.feedId === source);
+    if (index < 0 || !active || !visibleIds.current.includes(source)) {
+      pendingSkip.current = null;
+    } else if (index + 1 < feedItems.length) {
+      pendingSkip.current = null;
+      listRef.current?.scrollToOffset({ offset: (index + 1) * pageHeight, animated: true });
+    } else if (!hasNextPage) {
+      pendingSkip.current = null;
+    } else if (!offline && !isFetchingNextPage && !isFetchNextPageError) {
+      void fetchNextPage({ cancelRefetch: false });
+    }
+  }, [active, feedItems, fetchNextPage, hasNextPage, isFetchNextPageError, isFetchingNextPage, offline, pageHeight]);
+
   const handleQueueActivity = useCallback((repository: RepositoryData, event: ActivityInput, flushNow?: boolean) => {
     if (!authSessionLifecycle.isCurrent(viewerGeneration)) return;
+    const source = committedItems.current.find(item => item.repository.id === event.repo_id
+      && (item.repository.serveId ?? null) === (event.serve_id ?? null)
+      && (item.repository.feedPosition ?? null) === (event.position ?? null));
+    if (source && event.action === 'dislike' && visibleIds.current.includes(source.feedId)) {
+      pendingSkip.current = source.feedId;
+    } else if (event.action === 'undislike' && pendingSkip.current === source?.feedId) {
+      pendingSkip.current = null;
+    }
     const currentLikeOverrides = queryClient.getQueryData<ProfileLikeOverrides>(
       profileLikeOverridesQueryKey(user?.user_id),
     );
@@ -305,6 +331,7 @@ export default function HomeScreen() {
   useBrowsePrefetch(user?.user_id, Boolean(data?.pages[0]?.items.length && viewableItems.length));
   const onViewableItemsChanged = useCallback(({ viewableItems }: any) => {
     visibleIds.current = viewableItems.filter((v: any) => v.isViewable !== false).map((v: any) => v.item.feedId);
+    if (pendingSkip.current && !visibleIds.current.includes(pendingSkip.current)) pendingSkip.current = null;
     setViewableItems(visibleIds.current);
     for (const page of visiblePages.current ?? []) {
       if (viewableItems.some((visible: any) => visible.isViewable !== false
