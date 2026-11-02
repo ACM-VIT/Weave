@@ -4,11 +4,11 @@
     "slug": "gh-social",
     "version": "2.0.0",
     "description": "Discover open-source repositories and connect with developers.",
-    "icon": "./assets/images/logo/weavelogo.png",
+    "icon": "./assets/images/logo/app-icon.png",
     "orientation": "portrait",
     "scheme": "ghsocial",
     "userInterfaceStyle": "automatic",
-    "backgroundColor": "#151110",
+    "backgroundColor": "#000000",
     "ios": {
       "bundleIdentifier": "com.weave.app",
       "supportsTablet": true,
@@ -17,7 +17,7 @@
       }
     },
     "android": {
-      "versionCode": 5,
+      "versionCode": 6,
       "predictiveBackGestureEnabled": false,
       "package": "com.weave.app",
       "blockedPermissions": [
@@ -26,8 +26,8 @@
         "android.permission.WRITE_EXTERNAL_STORAGE"
       ],
       "adaptiveIcon": {
-        "foregroundImage": "./assets/images/logo/weavelogo.png",
-        "backgroundColor": "#151110"
+        "foregroundImage": "./assets/images/logo/adaptive-foreground.png",
+        "backgroundColor": "#000000"
       },
       "softwareKeyboardLayoutMode": "resize"
     },
@@ -48,9 +48,9 @@
       [
         "expo-splash-screen",
         {
-          "backgroundColor": "#151110",
-          "image": "./assets/images/logo/weavelogo.png",
-          "imageWidth": 220,
+          "backgroundColor": "#000000",
+          "image": "./assets/images/logo/adaptive-foreground.png",
+          "imageWidth": 240,
           "resizeMode": "contain"
         }
       ],
