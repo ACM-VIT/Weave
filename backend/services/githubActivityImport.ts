@@ -1,4 +1,4 @@
-import { assertPublicGitHubCredential } from './githubPublicAccess.js';
+import { assertPublicGitHubCredential, GitHubPublicAccessError } from './githubPublicAccess.js';
 
 export type GitHubActivitySource = 'owned' | 'starred' | 'contributed';
 export interface GitHubActivityRepository {
@@ -271,6 +271,7 @@ export class GitHubActivityImportClient {
         repositories: [...repositories.values()], sources };
     } catch (error) {
       if (combined.aborted) throw new GitHubActivityImportError(signal?.aborted ? 'cancelled' : 'deadline_exceeded');
+      if (error instanceof GitHubPublicAccessError) throw new GitHubActivityImportError(error.code, error.retryAfterSeconds);
       throw error;
     } finally { clearTimeout(timer); }
   }

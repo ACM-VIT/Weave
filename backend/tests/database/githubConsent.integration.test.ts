@@ -30,6 +30,7 @@ integration('consented public import uses actual HTTP/SQL/Redis, rolls back fail
   const handle = `consent-${githubId}`;
   const importTopic = `consent-topic-${githubId}`;
   let providerRequests = 0;
+  let scopeStatus = 200;
   let hold = false, release!: () => void, arrived!: () => void;
   let blocked = Promise.resolve();
   let reached = Promise.resolve();
@@ -37,7 +38,10 @@ integration('consented public import uses actual HTTP/SQL/Redis, rolls back fail
     providerRequests++;
     const url = new URL(request.url!, 'http://localhost');
     response.setHeader('Content-Type', 'application/json');
-    if (url.pathname === '/rate_limit') {response.setHeader('X-OAuth-Scopes','public_repo');response.end('{}');}
+    if (url.pathname === '/rate_limit') {
+      if(scopeStatus!==200){response.writeHead(scopeStatus,{'Retry-After':'120'});response.end('{}');}
+      else {response.setHeader('X-OAuth-Scopes','public_repo');response.end('{}');}
+    }
     else if (url.pathname === `/users/${handle}`) response.end(JSON.stringify({ id: githubId, login: handle }));
     else if (url.pathname.endsWith('/repos')) {
       if (hold) { arrived(); await blocked; }
@@ -94,6 +98,18 @@ integration('consented public import uses actual HTTP/SQL/Redis, rolls back fail
     for (const [suffix, method] of [['', 'GET'], ['/preview', 'POST'], ['/accept', 'POST'], ['', 'DELETE']]) {
       assert.equal((await fetch(`http://127.0.0.1:${address.port}/api/v2/onboarding/github-import${suffix}`, { method })).status, 401);
     }
+    for (const status of [429,503]) {
+      scopeStatus=status;
+      await sqlClient`UPDATE app.user_github_imports SET last_collected_at=now()-interval '61 seconds' WHERE user_id=${user}::uuid`;
+      const unavailable = await send('/preview','POST',{consent:true});
+      assert.equal(unavailable.status,503,'scope provider failures retain the supported preview error response');
+      assert.equal(unavailable.headers.get('retry-after'),'120');
+      assert.match(await unavailable.text(),/Public activity could not be verified/);
+    }
+    assert.equal(providerRequests,2,'permission failures stop before any repository request');
+    scopeStatus=200;
+    providerRequests=0;
+    await sqlClient`UPDATE app.user_github_imports SET last_collected_at=now()-interval '61 seconds' WHERE user_id=${user}::uuid`;
     const previewResponse = await send('/preview', 'POST', { consent: true });
     assert.equal(previewResponse.status, 200, await previewResponse.clone().text());
     const preview = await data<Preview>(previewResponse);
@@ -236,6 +252,19 @@ async function fixture(handler: (url: URL, body: Record<string, unknown>, respon
   } };
 }
 
+test('scope probe provider failures preserve import error codes and bounded retry advice', async () => {
+  for (const [status,code] of [[429,'rate_limited'],[503,'provider_unavailable']] as const) {
+    const paths:string[]=[];
+    const client = new GitHubActivityImportClient({token:'ghp_fixture-public',fetch:async input=>{
+      paths.push(new URL(String(input)).pathname);
+      return new Response('{}',{status,headers:{'Retry-After':'120'}});
+    }});
+    await assert.rejects(client.collect({githubId:'7',handle:'viewer'}),error=>error instanceof GitHubActivityImportError
+      && error.code===code && error.retryAfterSeconds===120);
+    assert.deepEqual(paths,['/rate_limit'],'failed permission probes must never start repository acquisition');
+  }
+});
+
 test('activity previews use verified public-only authentication and recheck grants for each collection', async () => {
   let scopes = 'public_repo';
   const f = await fixture((url,_body,response) => response.end(JSON.stringify(url.pathname === '/graphql' ? graph([]) : [])),()=>scopes);
@@ -247,7 +276,7 @@ test('activity previews use verified public-only authentication and recheck gran
     assert.ok(f.requests.every(request=>request.auth==='Bearer ghp_fixture-public'),'public previews use authenticated quota, not anonymous IP quota');
     const prior = f.requests.length;
     scopes = 'repo';
-    await assert.rejects(collector.collect({githubId:'7',handle:'viewer'}),/public-only/);
+    await assert.rejects(collector.collect({githubId:'7',handle:'viewer'}),error=>error instanceof GitHubActivityImportError && error.code==='public_only_credential_required');
     assert.deepEqual(f.requests.slice(prior).map(request=>request.url),['/rate_limit'],'broadened grants stop before any profile/repository request');
   } finally {await f.stop();}
 });
