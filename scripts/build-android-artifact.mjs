@@ -29,7 +29,7 @@ Usage:
   npm run build:android:artifact -- --prebuild
 
 Options:
-  --prebuild  Run "expo prebuild --platform android" before Gradle. This is
+  --prebuild  Run "expo prebuild --platform android --no-clean" before Gradle. This is
               opt-in because prebuild modifies the generated native project.
   --help      Show this help without building.
 
@@ -196,7 +196,7 @@ function resolveJava17Home() {
   }
 
   throw new Error(
-    'JDK 17 is required for Expo SDK 56 Android builds. Install openjdk@17 or set WEAVE_ARTIFACT_JAVA_HOME.',
+    'JDK 17 is required for Android builds. Install openjdk@17 or set WEAVE_ARTIFACT_JAVA_HOME.',
   );
 }
 
@@ -255,8 +255,8 @@ async function main() {
     }
     runChecked(
       expoExecutable,
-      ['prebuild', '--platform', 'android'],
-      'Running Expo prebuild (without --clean)',
+      ['prebuild', '--platform', 'android', '--no-clean'],
+      'Running Expo prebuild (preserving the existing native project)',
       buildEnvironment,
     );
   }
