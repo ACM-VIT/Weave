@@ -1,3 +1,5 @@
+import { keysetPageQuery, validateKeysetPageResponse, type KeysetPage, type KeysetPageOptions } from './keyset-pagination';
+import type { ListDto } from '../models/list';
 import { apiV2 } from './client';
 import { mapCollectionList, mapLegacyBoardList } from '../models/list';
 import type {
@@ -65,4 +67,14 @@ export function getPublicUserProfile(
     { signal },
     token,
   );
+}
+
+/** Public Boards only; owner Collections and unlisted Boards are not discoverable. */
+export async function getPublicUserBoardsPage(userId: string, token: string,
+  options: KeysetPageOptions = {}, signal?: AbortSignal): Promise<KeysetPage<ListDto>> {
+  const data = await apiV2<KeysetPage<LegacyBoardListRecord>>(
+    `/users/${encodeURIComponent(userId)}/boards?${keysetPageQuery(options)}`, { signal }, token,
+  );
+  validateKeysetPageResponse(data);
+  return { ...data, items: data.items.map(mapLegacyBoardList) };
 }

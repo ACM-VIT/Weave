@@ -33,6 +33,8 @@ test('long profile identity remains readable and every header action retains its
   await act(async () => {root = create(React.createElement(Header, {
     username, name: 'Krishang Zinzuwadia', job: 'Building open source projects with multiple teams.', isCompact: true, isTablet: false,
     onEdit: () => actions.push('edit'), onLogout: () => actions.push('logout'),
+    onGitHubPreferences: () => actions.push('github'), githubPreferencesVisible: false, githubIcon: React.createElement('GitHubIcon'),
+    onChangePhoto: () => actions.push('photo'),
     stats: ['likes given', 'saved', 'followers', 'following'].map(label => ({label, value: '10.2K', onPress: () => actions.push(label)})),
   }));});
   try {
@@ -45,13 +47,52 @@ test('long profile identity remains readable and every header action retains its
     assert.ok(nameText.props.style.fontSize > text.props.style.fontSize, 'display name is the primary identity');
     assert.ok(texts.indexOf(nameText) < texts.indexOf(text), 'the name precedes the secondary handle');
     const buttons = root.root.findAllByType('Pressable');
-    assert.equal(buttons.length, 6);
+    assert.equal(buttons.length, 8);
     const edit = buttons.find(button => button.props.accessibilityLabel === 'Edit profile')!;
+    const logout = buttons.find(button => button.props.accessibilityLabel === 'Log out')!;
+    const github = buttons.find(button => button.props.accessibilityLabel === 'GitHub activity preferences')!;
+    assert.equal(github.findAllByType('GitHubIcon').length,1);
+    assert.equal(github.parent, logout.parent);
+    assert.ok(buttons.indexOf(github) < buttons.indexOf(logout), 'the compact GitHub action is immediately before logout');
+    assert.equal(texts.some(node => node.props.children === 'Change photo'), false, 'the avatar itself opens photo editing without a caption');
     assert.ok(edit.findAllByType('Text').some(node => node.props.children === 'Edit Profile'), 'Edit Profile must be visibly labeled, not an unexplained icon');
     assert.ok(texts.indexOf(edit.findByType('Text')) > texts.findIndex(node => node.props.children === 'following'), 'Edit Profile follows the complete stats row');
     for (const button of buttons) await act(async () => {button.props.onPress();});
-    assert.deepEqual(actions, ['logout', 'likes given', 'saved', 'followers', 'following', 'edit']);
+    assert.deepEqual(actions, ['photo', 'github', 'logout', 'likes given', 'saved', 'followers', 'following', 'edit']);
   } finally {await act(async () => root.unmount());}
+});
+
+async function otherProfile() {
+  const {loadSource}=await import('./support/startup-harness');
+  const theme=loadSource('src/constants/theme.ts',{'@/global.css':{},'react-native':{Platform:{select:(options:any)=>options.default}}});
+  class Value {interpolate(){return 0;}}
+  const animation=()=>({start(){},stop(){}});
+  const {OtherUserProfile}=loadSource('src/components/other-user-profile.tsx',{
+    'react-native':{ActivityIndicator:'ActivityIndicator',Image:'Image',Pressable:'Pressable',ScrollView:'ScrollView',Text:'Text',View:'View',StyleSheet:{create:(s:unknown)=>s,hairlineWidth:.5,absoluteFill:{}},useWindowDimensions:()=>({width:350}),Animated:{Value,View:'AnimatedView',timing:animation,stagger:animation},Easing:{out:()=>0,cubic:0}},
+    'react-native-safe-area-context':{useSafeAreaInsets:()=>({top:0,bottom:0})},
+    'lucide-react-native':{ArrowLeft:'ArrowLeft',List:'ListIcon',Pin:'Pin'},
+    '@/components/explore/RepoCard':{__esModule:true,default:'RepoCard'},
+    '@/components/follow-button':{FollowButton:'FollowButton'},
+    '@/components/profile/BoardListCard':{BoardListCard:'BoardListCard'},
+    '@/constants/theme':theme,'@/utils/avatar-color':{getAvatarColor:()=> '#333'},'@/utils/format-count':{formatCompactCount:String},
+  });
+  return OtherUserProfile;
+}
+
+test('another developer profile also presents the display name before its readable username',async()=>{
+  const OtherUserProfile = await otherProfile();
+  let root!:ReturnType<typeof create>;
+  await act(async()=>{root=create(React.createElement(OtherUserProfile,{profile:{userId:'other',username:'krishang-zinzuwadia-long-handle',displayName:'Krishang Zinzuwadia',bio:'Building apps',isFollowing:false,stats:{likes:0,followers:0,following:0},lists:[],pinnedRepositories:[]},onBack(){},onListPress(){},onRepositoryPress(){}}));});
+  try {
+    const texts=root.root.findAllByType('Text');
+    const name=texts.find(node=>node.props.children==='Krishang Zinzuwadia')!;
+    const handle=texts.find(node=>React.Children.toArray(node.props.children).join('')==='@krishang-zinzuwadia-long-handle')!;
+    const style=(node:any)=>Object.assign({},...node.props.style.flat());
+    assert.ok(texts.indexOf(name)<texts.indexOf(handle));
+    assert.ok(style(name).fontSize>style(handle).fontSize);
+    assert.equal(handle.props.adjustsFontSizeToFit,undefined);
+    assert.equal(root.root.findByType('FollowButton').props.targetUserId,'other');
+  }finally{await act(async()=>root.unmount());}
 });
 
 test('an empty profile omits empty identity rows and keeps an honest avatar fallback', async () => {
@@ -115,4 +156,30 @@ test('Android interop preserves Profile stat widths and Edit Profile button styl
     assert.equal(styleOf('Edit profile').flexDirection,'row');
     assert.equal(styleOf('Edit profile').minHeight,48);
   } finally {await act(async () => root.unmount());}
+});
+
+
+test('public profile paging keeps rows visible through retry and does not call pending Lists empty', async () => {
+  const OtherUserProfile = await otherProfile();
+  let loaded = 0, retried = 0, opened = 0;
+  const profile = {userId:'other',username:'other',displayName:'Other',isFollowing:false,
+    stats:{likes:0,followers:0,following:0},lists:[],pinnedRepositories:[]};
+  const page = {loading:true,error:false,hasMore:true,onLoadMore:()=>{loaded++;},onRetry:()=>{retried++;}};
+  const props = {profile,onBack(){},onListPress(){},onRepositoryPress(){},onListsOpen:()=>{opened++;},listsPage:page,repositoriesPage:page};
+  let root!:ReturnType<typeof create>;
+  const texts = () => root.root.findAllByType('Text').map(node=>node.props.children);
+  const button = (label:string) => root.root.findAllByType('Pressable').find(node=>node.props.accessibilityLabel===label)!;
+  await act(async()=>{root=create(React.createElement(OtherUserProfile,props));});
+  try {
+    await act(async()=>root.root.findAllByType('Pressable').find(node=>node.props.accessibilityRole==='tab'&&node.props.children.props.children==='Lists')!.props.onPress());
+    assert.equal(opened,1);
+    assert.equal(texts().includes('No public lists'),false);
+    assert.ok(root.root.findAllByProps({accessibilityLabel:'Loading public Lists'}).length);
+    const lists=[{id:'public',name:'Public List',repositoryCount:1}];
+    await act(async()=>root.update(React.createElement(OtherUserProfile,{...props,profile:{...profile,lists},listsPage:{...page,loading:false,error:true}})));
+    assert.equal(root.root.findAllByType('BoardListCard').length,1);
+    await act(async()=>button('Retry public Lists').props.onPress());assert.equal(retried,1);
+    await act(async()=>root.update(React.createElement(OtherUserProfile,{...props,profile:{...profile,lists},listsPage:{...page,loading:false}})));
+    await act(async()=>button('Load more public Lists').props.onPress());assert.equal(loaded,1);
+  } finally {await act(async()=>root.unmount());}
 });

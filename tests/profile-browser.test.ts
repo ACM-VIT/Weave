@@ -36,6 +36,7 @@ function profileLists() {
       if (name === 'react-native') return native;
       if (name === 'lucide-react-native') return { FolderPlus: 'FolderPlus', FolderOpen: 'FolderOpen', ChevronRight: 'ChevronRight', Pin: 'Pin' };
       if (name === './BoardListCard') return load('src/components/profile/BoardListCard.tsx');
+      if (name === '../explore/RepoCard') return {__esModule:true,default:'RepoCard'};
       if (name === '@/constants/theme') return load('src/constants/theme.ts');
       if (name.endsWith('.css')) return {};
       return nativeRequire(name);
@@ -44,6 +45,26 @@ function profileLists() {
   };
   return load('src/components/profile/ProfileContentLists.tsx').ProfileContentLists;
 }
+
+test('own profile repository and List sections render separately and pinned cards open their canonical repo',async()=>{
+  const Lists=profileLists();const opened:string[]=[];
+  const id='00000000-0000-4000-8000-000000000001';
+  const props={viewer:'viewer',header:React.createElement('View'),compact:true,horizontalPadding:20,maxWidth:600,paddingTop:20,paddingBottom:20,
+    collections:{data:[mapCollectionList({collection_id:'one',name:'My List',repo_count:2})],isPending:false,isError:false,refetch(){}},
+    pinned:{data:[{key:'pinned',repositoryId:id,name:'repo',owner:'owner',description:'Pinned repo',primaryLanguage:null,url:'https://github.com/owner/repo',pinnedAt:'2026-10-29T00:00:00Z'}],isPending:false,isError:false,refetch(){}},
+    openList(){},openRepository:(repo:any)=>opened.push(repo.id)};
+  let root!:ReturnType<typeof create>;
+  await act(async()=>{root=create(React.createElement(Lists,{...props,section:'Repositories'}));});
+  try {
+    const card=root.root.findByType('RepoCard');assert.equal(card.props.repo.id,id);assert.equal(card.props.showMetrics,false);
+    assert.equal(root.root.findAllByProps({testID:'profile-list-collection:one'}).length,0);
+    await act(async()=>card.props.onPress());assert.deepEqual(opened,[id]);
+    await act(async()=>root.update(React.createElement(Lists,{...props,section:'Lists'})));
+    assert.equal(root.root.findAllByType('RepoCard').length,0);
+    assert.equal(root.root.findAllByProps({testID:'profile-list-collection:one'}).length,1);
+    assert.equal(root.root.findAllByProps({testID:'profile-list-pinned'}).length,0,'Pinned is no longer mixed into Lists as a folder');
+  }finally{await act(async()=>root.unmount());}
+});
 
 test('rendered Lists keep ready content through pending, failed and retried independent sections', async () => {
   const Lists = profileLists();
@@ -223,4 +244,65 @@ test('rendered profile windows, lazy sheets, paging retry and scroll retention',
     t.diagnostic(JSON.stringify({ width, textScale, ...(result.result?.value ?? result) }));
     assert.equal(result.result?.value?.status, 'passed');
   }
+});
+
+test('other profile pages repositories on demand and opens only fetched public Lists', async t => {
+  const {loadSource} = await import('./support/startup-harness');
+  let viewer = 'viewer-a', failMore = false, legacyCalls = 0;
+  const requests: any[] = [], routes: any[] = [];
+  const owner = 'profile-owner';
+  const repo = (id:string) => ({repo_id:id,full_name:`owner/${id}`,owner:'owner',name:id,url:`https://github.com/owner/${id}`});
+  const metadata = {profile_id:'external',handle:'owner',display_name:'Owner',claimed_by_user_id:owner,
+    followers_count:0,following_count:0,likes_given_count:0,viewer_follows_profile:false,is_self:false};
+  const client = new QueryClient({defaultOptions:{queries:{retry:false,gcTime:Infinity}}});
+  const api = {getSocialProfile:async()=>{legacyCalls++;return {...metadata,repositories:[repo('first')]};},
+    getSocialProfilePage:async (_id:string,_token:string,options:any,signal:AbortSignal)=>{
+      requests.push({kind:'repositories',viewer,...options,signal});
+      if(options.cursor && failMore)throw new Error('Temporary page failure');
+      return {...metadata,repositories:options.cursor?[repo('first'),repo('second')]:[repo('first')],has_more:!options.cursor,next_cursor:options.cursor?null:'repo-next'};
+    }};
+  const Route = loadSource('src/app/user/[username].tsx', {
+    'react-native':{Alert:{alert(){}}},
+    'expo-router':{useLocalSearchParams:()=>({profileId:'external',username:'owner'}),router:{push:(route:any)=>routes.push(route),canGoBack:()=>true,back(){}}},
+    '@/api/social-profiles':api,
+    '@/api/profile':{getPublicUserProfile:async()=>{throw new Error('Unexpected user fetch');},getPublicUserBoardsPage:async (id:string,_token:string,options:any)=>{
+      requests.push({kind:'lists',subject:id,viewer,...options});return {items:[{id:'public-board',name:'Public List',description:'Shared projects',repositoryCount:2}],has_more:false,next_cursor:null};
+    }},
+    '@/components/other-user-profile':{OtherUserProfile:'OtherUserProfile'},
+    '@/components/connection-sheet':{ConnectionSheet:()=>null},
+    '@/store/AuthContext':{useAuth:()=>({user:{user_id:viewer}})},
+    '@/utils/follow-state':{followStateQueryKey:()=>[],getProfileFollowIdentity:()=>({})},
+    '@/utils/storage':{getStorageItem:async()=> 'token'},
+    '@/utils/repository-links':{repositoryHref:(id:string)=>({pathname:'/repository/[repoId]',params:{repoId:id}})},
+    '@/utils/repository-mapper':await import('../src/utils/repository-mapper'),
+  }).default;
+  let root!:ReturnType<typeof create>;
+  const render = () => React.createElement(QueryClientProvider,{client},React.createElement(Route));
+  const settle = () => act(async()=>{await new Promise(resolve=>setTimeout(resolve,20));});
+  await act(async()=>{root=create(render());});await settle();
+  t.after(async()=>{await act(async()=>root.unmount());client.clear();});
+  const screen=()=>root.root.findByType('OtherUserProfile').props;
+  assert.equal(legacyCalls,0,'the route must never fetch the complete external portfolio');
+  assert.deepEqual(screen().profile.pinnedRepositories.map((repo:any)=>repo.id),['first']);
+  assert.equal(requests[0].limit,25);
+  assert.equal(requests.some(request=>request.kind==='lists'),false,'Lists load when their tab is opened');
+  failMore=true;await act(async()=>screen().repositoriesPage.onLoadMore());await settle();
+  assert.deepEqual(screen().profile.pinnedRepositories.map((repo:any)=>repo.id),['first'],'page errors preserve existing repos');
+  assert.equal(screen().repositoriesPage.error,true);
+  failMore=false;await act(async()=>screen().repositoriesPage.onRetry());await settle();
+  assert.deepEqual(screen().profile.pinnedRepositories.map((repo:any)=>repo.id),['first','second']);
+  assert.equal(screen().repositoriesPage.hasMore,false);
+  await act(async()=>screen().onListsOpen());await settle();
+  assert.deepEqual(screen().profile.lists.map((list:any)=>list.id),['public-board']);
+  assert.equal(requests.find(request=>request.kind==='lists').subject,owner,'claimed external identity resolves the registered owner');
+  await act(async()=>screen().onListPress('public-board'));
+  assert.deepEqual(routes.at(-1),{pathname:'/board',params:{boardId:'public-board',boardName:'Public List',boardDescription:'Shared projects'}});
+  await act(async()=>screen().onListPress('unknown-board'));assert.equal(routes.length,1);
+  const {settleFollowCache} = await import('../src/services/followMutationCache');
+  const {authSessionLifecycle} = await import('../src/api/session-lifecycle');
+  await act(async()=>{await settleFollowCache(client,viewer,{profileId:'external'},true,authSessionLifecycle.currentGeneration());});await settle();
+  assert.equal(screen().profile.isFollowing,true,'settled follows reconcile the paged profile even after the initiating control unmounts');
+  assert.equal(screen().profile.stats.followers,1);
+  viewer='viewer-b';await act(async()=>root.update(render()));await settle();
+  assert.ok(requests.some(request=>request.kind==='repositories'&&request.viewer==='viewer-b'&&!request.cursor),'a new viewer gets its own first page');
 });

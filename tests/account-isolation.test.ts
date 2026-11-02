@@ -113,3 +113,35 @@ test('List pages retain loaded rows on failure and resume the same cursor withou
     assert.equal(client.getQueryData(listRepositoryQueryOptions('collection','bob','private',async()=>({items:[],has_more:false,next_cursor:null})).queryKey),undefined);
   }finally{unsubscribe();client.clear();}
 });
+
+test('GitHub reconnection confirms only the current account and retires an old provider flight', async () => {
+  const {loadSource}=await import('./support/startup-harness');
+  const lifecycle=new SessionLifecycle();
+  let token=`header.${Buffer.from(JSON.stringify({userId:'alice'})).toString('base64url')}.signature`;
+  let finish!: (value:{type:string;url:string})=>void;
+  let waiting=false, proofReads=0;
+  const calls:{owner:string;path:string;body:unknown}[]=[];
+  const source=loadSource('src/services/githubReconnect.ts',{
+    'expo-linking':{createURL:()=> 'https://fixture.invalid/callback?github_reconnect=1',parse:()=>({queryParams:{code:'one-time-code'}})},
+    'expo-web-browser':{openAuthSessionAsync:async()=>waiting?new Promise(resolve=>{finish=resolve;}):{type:'success',url:'callback'}},
+    '../api/auth':{getOAuthUrl:async()=> 'https://fixture.invalid/authorize',exchangeCode:()=>{throw new Error('Reconnect cannot perform a login exchange');}},
+    '../api/owner-request':{apiV2ForOwner:async(owner:string,path:string,options:RequestInit)=>{calls.push({owner,path,body:JSON.parse(String(options.body))});}},
+    '../api/session-lifecycle':{authSessionLifecycle:lifecycle,SessionChangedError:(await import('../src/api/session-lifecycle')).SessionChangedError},
+    '../utils/storage':{getStorageItem:async()=>token},
+    './oauthClientPkce':{createOAuthClientPkce:async()=>({verifier:'v'.repeat(64),challenge:'challenge'})},
+    './githubUnlinkProof':{saveGithubReconnectProof:async()=>{},takeGithubReconnectProof:async(owner:string)=>{assert.equal(owner,'alice');if(proofReads++)throw new Error('Proof already consumed');return 'v'.repeat(64);},clearGithubReconnectProof:async()=>{}},
+  });
+  await source.startGithubReconnect('alice',new AbortController().signal);
+  assert.deepEqual(calls,[{owner:'alice',path:'/onboarding/github-reconnect',body:{code:'one-time-code',code_verifier:'v'.repeat(64)}}]);
+  await Promise.all([source.finishGithubReconnect('alice','one-time-code',new AbortController().signal),source.finishGithubReconnect('alice','one-time-code',new AbortController().signal)]);
+  assert.equal(proofReads,1,'the native callback and browser result share a single completion');
+  assert.equal(calls.length,1);
+  waiting=true;
+  const stale=source.startGithubReconnect('alice',new AbortController().signal);
+  await new Promise(resolve=>setImmediate(resolve));
+  lifecycle.retire(lifecycle.currentGeneration());
+  token=`header.${Buffer.from(JSON.stringify({userId:'bob'})).toString('base64url')}.signature`;
+  finish({type:'success',url:'callback'});
+  await assert.rejects(stale,{name:'SessionChangedError'});
+  assert.equal(calls.length,1,'an old account cannot complete after another account signs in');
+});

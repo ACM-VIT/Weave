@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import { isValidUuid } from './validators.js';
 
 export type ProductPageScope = {
-  endpoint: 'profile-repositories' | 'collections' | 'boards' | 'collection-repositories' | 'board-repositories' | 'followers' | 'following' | 'likes' | 'saves' | 'comments';
+  endpoint: 'profile-repositories' | 'public-boards' | 'collections' | 'boards' | 'collection-repositories' | 'board-repositories' | 'followers' | 'following' | 'likes' | 'saves' | 'comments';
   viewer: string;
   resource: string;
   selection: string | null;

@@ -331,3 +331,46 @@ test('a recycled README image recovers after its failed URL changes', async () =
     assert.equal(root.root.findAllByType('ActivityIndicator').length,0);
   }finally{await act(async()=>root.unmount());}
 });
+
+test('Android image popup pinches within bounds, pans the enlarged image and resets with its controls', async () => {
+  const React=await import('react');const {act}=React;const {create}=await import('react-test-renderer');
+  const {loadSource}=await import('./support/startup-harness');
+  const images=await import('../src/utils/readme-images');
+  (globalThis as any).IS_REACT_ACT_ENVIRONMENT=true;
+  const makeGesture=(kind:string)=>{
+    const config:Record<string,any>={kind};
+    const gesture:any=new Proxy({config},{get:(target,key)=>key==='config'?target.config:(value:any)=>{config[String(key)]=value;return gesture;}});
+    return gesture;
+  };
+  const {ReadmeImagePopup}=loadSource('src/components/home/ReadmeImagePopup.tsx',{
+    'react-native':{Modal:'Modal',Pressable:'Pressable',ScrollView:'ScrollView',Text:'Text',View:'View',Platform:{OS:'android'},useWindowDimensions:()=>({width:400,height:800})},
+    'react-native-gesture-handler':{GestureHandlerRootView:'GestureRoot',GestureDetector:'GestureDetector',Gesture:{Pinch:()=>makeGesture('pinch'),Pan:()=>makeGesture('pan'),Simultaneous:(...gestures:any[])=>({gestures})}},
+    'react-native-reanimated':{__esModule:true,default:{View:'AnimatedView'},useSharedValue:(value:number)=>React.useRef({value,get(){return this.value;},set(next:number){this.value=next;}}).current,useAnimatedStyle:(callback:()=>unknown)=>callback},
+    'react-native-worklets':{scheduleOnRN:(fn:Function,...args:any[])=>fn(...args)},
+    'expo-image':{Image:'Image'},'lucide-react-native':{X:'X',ZoomIn:'ZoomIn',ZoomOut:'ZoomOut'},
+    'react-native-safe-area-context':{useSafeAreaInsets:()=>({top:0,bottom:0})},
+    '@/utils/readme-images':images,'@/constants/theme':{REFERENCE_THEME:{}},
+  });
+  let root!:ReturnType<typeof create>;
+  await act(async()=>{root=create(React.createElement(ReadmeImagePopup,{url:'https://example.com/image.png',alt:'Diagram',onClose(){}}));});
+  const button=(label:string)=>root.root.findAllByType('Pressable').find(node=>node.props.accessibilityLabel===label)!;
+  const gesture=(kind:string)=>root.root.findByType('GestureDetector').props.gesture.gestures.find((g:any)=>g.config.kind===kind).config;
+  const transform=()=>root.root.findByType('AnimatedView').props.style[1]().transform;
+  try {
+    assert.equal(root.root.findAllByType('GestureRoot').length,1,'Android modals need their own gesture root');
+    await act(async()=>{const pinch=gesture('pinch');pinch.onStart({focalX:188,focalY:330});pinch.onUpdate({scale:10,focalX:188,focalY:330});pinch.onFinalize();});
+    assert.ok(root.root.findAllByType('Text').some(node=>node.children.join('')==='400%'));
+    assert.equal(button('Zoom in').props.disabled,true);
+    assert.equal(transform()[2].scale,4);
+    await act(async()=>{const pan=gesture('pan');pan.onStart();pan.onUpdate({translationX:5000,translationY:-5000});});
+    assert.ok(transform()[0].translateX>0&&transform()[0].translateX<=564);
+    assert.ok(transform()[1].translateY>=-93);
+    await act(async()=>button('Reset image zoom').props.onPress());
+    assert.deepEqual(transform(),[{translateX:0},{translateY:0},{scale:1}]);
+    assert.equal(gesture('pan').enabled,false);
+    await act(async()=>{const pinch=gesture('pinch');pinch.onStart({focalX:188,focalY:330});pinch.onUpdate({scale:0.1,focalX:188,focalY:330});pinch.onFinalize();});
+    assert.equal(transform()[2].scale,1);
+    await act(async()=>button('Zoom in').props.onPress());
+    assert.equal(transform()[2].scale,1.5,'accessible zoom controls still share the gesture scale');
+  }finally{await act(async()=>root.unmount());}
+});

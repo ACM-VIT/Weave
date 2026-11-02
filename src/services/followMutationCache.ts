@@ -31,14 +31,20 @@ export async function settleFollowCache(
   for (const [kind, id] of [['user', target.userId], ['profile', target.profileId]] as const) {
     if (!id) continue;
     const flag = kind === 'user' ? 'viewer_follows_user' : 'viewer_follows_profile';
-    client.setQueryData<{ kind: string; data: Record<string, unknown> }>(
-      ['public-user-profile', kind, id], current => {
-        if (!current || current.data[flag] === following) return current;
-        const previous = current.data[flag];
-        return { ...current, data: { ...current.data, [flag]: following,
-          ...(typeof previous === 'boolean' && typeof current.data.followers_count === 'number'
-            ? { followers_count: Math.max(0, current.data.followers_count + (following ? 1 : -1)) } : {}),
-        } };
+    client.setQueryData<{ pages: { kind: string; data: Record<string, unknown> }[] }>(
+      ['public-user-profile', viewer, kind, id], current => {
+        if (!current) return current;
+        let changed = false;
+        const pages = current.pages.map(page => {
+          if (page.data[flag] === following) return page;
+          changed = true;
+          const previous = page.data[flag];
+          return { ...page, data: { ...page.data, [flag]: following,
+            ...(typeof previous === 'boolean' && typeof page.data.followers_count === 'number'
+              ? { followers_count: Math.max(0, page.data.followers_count + (following ? 1 : -1)) } : {}),
+          }};
+        });
+        return changed ? { ...current, pages } : current;
       },
     );
   }

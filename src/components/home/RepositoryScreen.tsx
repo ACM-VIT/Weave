@@ -10,6 +10,7 @@ import {
   type StyleProp,
   type ViewStyle,
 } from 'react-native';
+import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
   ChevronRight,
@@ -19,8 +20,8 @@ import {
   MessageCircle,
   Forward as ShareIcon,
   Star,
-  ThumbsDown,
-  ThumbsUp,
+  Ban,
+  Heart,
 } from 'lucide-react-native';
 
 import { REFERENCE_THEME } from '@/constants/theme';
@@ -31,7 +32,7 @@ import {
   getProfileFollowIdentity,
 } from '@/utils/follow-state';
 import type { RepositoryData } from '../../data/repositories';
-import DescriptionCard from './DescriptionCard';
+import DescriptionCard, { SaveSwipeGestureContext } from './DescriptionCard';
 import ReadmeCard from './ReadmeCard';
 import type { FeedbackAction } from '../../api/activity';
 import { FEEDBACK_ACTIONS } from '../../constants/feedbackActions';
@@ -46,9 +47,11 @@ type ActionButtonProps = {
   accessibilityLabel: string;
   active?: boolean;
   activeColor?: string;
+  fillActive?: boolean;
+  disabled?: boolean;
   count?: string;
   dense?: boolean;
-  icon: React.ComponentType<{ color?: string; size?: number; strokeWidth?: number }>;
+  icon: React.ComponentType<{ color?: string; size?: number; strokeWidth?: number; fill?: string }>;
   iconSize?: number;
   label?: string;
   onPress: () => void;
@@ -116,9 +119,11 @@ function patchOwnerFollowState(
 
 function ActionButton({
   accessibilityLabel,
-  active = false,
+  active,
   activeColor = REFERENCE_THEME.accent,
   count,
+  fillActive = false,
+  disabled = false,
   dense = false,
   icon: Icon,
   iconSize = 29,
@@ -131,6 +136,9 @@ function ActionButton({
     <Pressable cssInterop={false}
       accessibilityLabel={accessibilityLabel}
       accessibilityRole="button"
+      accessibilityState={{ selected: active, disabled }}
+      disabled={disabled}
+      aria-pressed={active}
       onPress={onPress}
       hitSlop={8}
       style={({ pressed }) => [
@@ -140,16 +148,17 @@ function ActionButton({
       ]}
     >
       <View style={[styles.iconShadow, dense && styles.iconShadowDense]}>
-        <Icon color={colour} size={renderedIconSize} strokeWidth={1.9} />
+        <Icon color={colour} fill={active && fillActive ? colour : 'none'} size={renderedIconSize} strokeWidth={1.9} />
       </View>
       <Text
         style={[
           styles.actionLabel,
           dense && styles.actionLabelDense,
+          label === 'Not interested' && { fontSize: dense ? 8.5 : 9.5, width: dense ? 40 : 46 },
           active && { color: activeColor },
         ]}
       >
-        {count ?? label}
+        {count ?? (label === 'Not interested' ? 'Not\ninterested' : label)}
       </Text>
     </Pressable>
   );
@@ -160,6 +169,7 @@ export function RepositoryScreen({
   pageHeight,
   repository,
   isActive,
+  reactionsEnabled = true,
   commentCount,
   onReadFullPress,
   onOpenReadme,
@@ -173,6 +183,7 @@ export function RepositoryScreen({
   pageHeight: number;
   repository: RepositoryData;
   isActive?: boolean;
+  reactionsEnabled?: boolean;
   isSaved?: boolean;
   commentCount?: number;
   onReadFullPress: (digest?: ReadmeDigest | null) => void;
@@ -236,25 +247,70 @@ export function RepositoryScreen({
     gap: bodyGap,
   };
 
-  const toggleLike = () => {
-    if (liked) {
-      setLocalReactionState({ key: reactionStateKey, reaction: null });
-      onQueueActivity?.({ repo_id: repository.id, action: FEEDBACK_ACTIONS.unlike }, true);
-      return;
-    }
-    setLocalReactionState({ key: reactionStateKey, reaction: 'like' });
+  // Gesture callbacks can run twice before React renders. Read the current
+  // reaction synchronously so a repeated double tap never emits an inverse.
+  const reactionRef = React.useRef(reaction);
+  React.useLayoutEffect(() => { reactionRef.current = reaction; }, [reaction]);
+  const setReaction = (next: 'like' | 'dislike' | null) => {
+    reactionRef.current = next;
+    setLocalReactionState({ key: reactionStateKey, reaction: next });
+  };
+  const likeRepository = () => {
+    if (reactionRef.current === 'like') return;
+    setReaction('like');
     onQueueActivity?.({ repo_id: repository.id, action: FEEDBACK_ACTIONS.like }, true);
   };
-
-  const toggleDislike = () => {
-    if (disliked) {
-      setLocalReactionState({ key: reactionStateKey, reaction: null });
-      onQueueActivity?.({ repo_id: repository.id, action: FEEDBACK_ACTIONS.undislike }, true);
-      return;
-    }
-    setLocalReactionState({ key: reactionStateKey, reaction: 'dislike' });
-    onQueueActivity?.({ repo_id: repository.id, action: FEEDBACK_ACTIONS.dislike }, true);
+  const reactionsAvailable = isActive !== false && reactionsEnabled;
+  const toggleLike = () => {
+    if (!reactionsAvailable) return;
+    if (reactionRef.current === 'like') {
+      setReaction(null);
+      onQueueActivity?.({ repo_id: repository.id, action: FEEDBACK_ACTIONS.unlike }, true);
+    } else likeRepository();
   };
+  const toggleDislike = () => {
+    if (!reactionsAvailable) return;
+    const undo = reactionRef.current === 'dislike';
+    setReaction(undo ? null : 'dislike');
+    onQueueActivity?.({ repo_id: repository.id, action: undo ? FEEDBACK_ACTIONS.undislike : FEEDBACK_ACTIONS.dislike }, true);
+  };
+  const saveSwipe = React.useContext(SaveSwipeGestureContext);
+  const interaction = React.useRef({ key: reactionStateKey, enabled: false, like: likeRepository });
+  React.useLayoutEffect(() => {
+    interaction.current = { key: reactionStateKey, enabled: isActive !== false && reactionsEnabled, like: likeRepository };
+  });
+  const doubleTapTask = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  React.useEffect(() => () => {
+    if (doubleTapTask.current !== null) clearTimeout(doubleTapTask.current);
+  }, [reactionStateKey]);
+  const handleDoubleTap = React.useCallback((_event: unknown, success: boolean) => {
+    if (!success) return;
+    const key = interaction.current.key;
+    if (doubleTapTask.current !== null) clearTimeout(doubleTapTask.current);
+    // Let child Pressables finish their second click first. The double tap
+    // then has the same like-only result anywhere within the feed surface.
+    doubleTapTask.current = setTimeout(() => {
+      doubleTapTask.current = null;
+      if (interaction.current.key === key && interaction.current.enabled) interaction.current.like();
+    }, 0);
+  }, []);
+  const doubleTap = React.useMemo(() => {
+    const gesture = Gesture.Tap()
+      .enabled(isActive !== false && reactionsEnabled)
+      .numberOfTaps(2)
+      .maxDelay(300)
+      .maxDuration(250)
+      .maxDistance(12)
+      // The header overlays the card; navigation is outside this screen.
+      .hitSlop({ top: -(Math.max(insets.top + 6, 40) + 44) })
+      .cancelsTouchesInView(false)
+      .runOnJS(true)
+      // RNGH only stores this event callback; it does not read refs during render.
+      // eslint-disable-next-line react-hooks/refs
+      .onEnd(handleDoubleTap);
+    if (saveSwipe) gesture.simultaneousWithExternalGesture(saveSwipe);
+    return gesture;
+  }, [isActive, reactionsEnabled, insets.top, saveSwipe, handleDoubleTap]);
 
   const handleOwnerFollowingChange = (following: boolean) => {
     const viewerUserId = user?.user_id;
@@ -280,6 +336,7 @@ export function RepositoryScreen({
   };
 
   return (
+    <GestureDetector gesture={doubleTap} touchAction="pan-y">
     <View style={[styles.screen, { width: pageWidth, height: pageHeight }]}>
       <View style={[styles.body, bodyStyle]}>
         <DescriptionCard
@@ -442,25 +499,20 @@ export function RepositoryScreen({
               styles.actionRail,
               {
                 bottom: actionRailBottom,
-                width: veryShort ? 34 : 40,
+                width: veryShort ? 44 : 48,
               },
             ]}
           >
             <ActionButton
               accessibilityLabel={liked ? 'Unlike repository' : 'Like repository'}
               active={liked}
+              disabled={!reactionsAvailable}
               count={formatCount(String(likeCount))}
               dense={veryShort}
-              icon={ThumbsUp}
-              onPress={toggleLike}
-            />
-            <ActionButton
-              accessibilityLabel={disliked ? 'Undo not interested' : 'Not interested in this repository'}
-              active={disliked}
               activeColor={REFERENCE_THEME.danger}
-              dense={veryShort}
-              icon={ThumbsDown}
-              onPress={toggleDislike}
+              fillActive
+              icon={Heart}
+              onPress={toggleLike}
             />
             <ActionButton
               accessibilityLabel="Open comments"
@@ -477,10 +529,21 @@ export function RepositoryScreen({
               label="Share"
               onPress={onSharePress}
             />
+            <ActionButton
+              accessibilityLabel={disliked ? 'Undo not interested' : 'Not interested in this repository'}
+              active={disliked}
+              disabled={!reactionsAvailable}
+              activeColor={REFERENCE_THEME.danger}
+              dense={veryShort}
+              icon={Ban}
+              label="Not interested"
+              onPress={toggleDislike}
+            />
           </ScrollView>
         </View>
       </View>
     </View>
+    </GestureDetector>
   );
 }
 

@@ -30,6 +30,7 @@ integration('consented public import uses actual HTTP/SQL/Redis, rolls back fail
   const handle = `consent-${githubId}`;
   const importTopic = `consent-topic-${githubId}`;
   let providerRequests = 0;
+  let scopeStatus = 200;
   let hold = false, release!: () => void, arrived!: () => void;
   let blocked = Promise.resolve();
   let reached = Promise.resolve();
@@ -37,7 +38,11 @@ integration('consented public import uses actual HTTP/SQL/Redis, rolls back fail
     providerRequests++;
     const url = new URL(request.url!, 'http://localhost');
     response.setHeader('Content-Type', 'application/json');
-    if (url.pathname === `/users/${handle}`) response.end(JSON.stringify({ id: githubId, login: handle }));
+    if (url.pathname === '/rate_limit') {
+      if(scopeStatus!==200){response.writeHead(scopeStatus,{'Retry-After':'120'});response.end('{}');}
+      else {response.setHeader('X-OAuth-Scopes','public_repo');response.end('{}');}
+    }
+    else if (url.pathname === `/users/${handle}`) response.end(JSON.stringify({ id: githubId, login: handle }));
     else if (url.pathname.endsWith('/repos')) {
       if (hold) { arrived(); await blocked; }
       response.end(JSON.stringify([{ id: repoGithubId, owner: { id: githubId, login: handle }, name: 'public-repo',
@@ -50,7 +55,7 @@ integration('consented public import uses actual HTTP/SQL/Redis, rolls back fail
   });
   await new Promise<void>(resolve => provider.listen(0, '127.0.0.1', resolve));
   const providerAddress = provider.address(); if (!providerAddress || typeof providerAddress === 'string') throw new Error('Missing provider address.');
-  const collector = new GitHubActivityImportClient({ token: 'fixture-not-real', fetch: (input, init) => {
+  const collector = new GitHubActivityImportClient({ token: 'ghp_fixture-not-real', fetch: (input, init) => {
     const url = new URL(String(input));
     assert.equal(url.origin, 'https://api.github.com');
     return fetch(`http://127.0.0.1:${providerAddress.port}${url.pathname}${url.search}`, init);
@@ -93,16 +98,28 @@ integration('consented public import uses actual HTTP/SQL/Redis, rolls back fail
     for (const [suffix, method] of [['', 'GET'], ['/preview', 'POST'], ['/accept', 'POST'], ['', 'DELETE']]) {
       assert.equal((await fetch(`http://127.0.0.1:${address.port}/api/v2/onboarding/github-import${suffix}`, { method })).status, 401);
     }
+    for (const status of [429,503]) {
+      scopeStatus=status;
+      await sqlClient`UPDATE app.user_github_imports SET last_collected_at=now()-interval '61 seconds' WHERE user_id=${user}::uuid`;
+      const unavailable = await send('/preview','POST',{consent:true});
+      assert.equal(unavailable.status,503,'scope provider failures retain the supported preview error response');
+      assert.equal(unavailable.headers.get('retry-after'),'120');
+      assert.match(await unavailable.text(),/Public activity could not be verified/);
+    }
+    assert.equal(providerRequests,2,'permission failures stop before any repository request');
+    scopeStatus=200;
+    providerRequests=0;
+    await sqlClient`UPDATE app.user_github_imports SET last_collected_at=now()-interval '61 seconds' WHERE user_id=${user}::uuid`;
     const previewResponse = await send('/preview', 'POST', { consent: true });
     assert.equal(previewResponse.status, 200, await previewResponse.clone().text());
     const preview = await data<Preview>(previewResponse);
-    assert.equal(providerRequests, 4);
+    assert.equal(providerRequests, 5);
     assert.equal(preview.repository_count, 1);
     assert.ok(preview.expires_in_seconds > 0 && preview.expires_in_seconds <= 300);
     assert.ok(preview.suggestions.skills.includes('Web / Frontend Frameworks'));
     const cached = await data<Preview>(await send('/preview', 'POST', { consent: true }));
     assert.equal(cached.snapshot_id, preview.snapshot_id);
-    assert.equal(providerRequests, 4, 'fresh previews are cached without another GitHub collection');
+    assert.equal(providerRequests, 5, 'fresh previews are cached without another GitHub collection');
     assert.equal((await send('/accept', 'POST', { snapshot_id: preview.snapshot_id }, peer)).status, 409);
     const cacheKey = `persona:github-import:v1:${user}:${preview.snapshot_id}`;
     const raw = await redis.get(cacheKey); assert.ok(raw);
@@ -207,7 +224,7 @@ function contribution(id: number) {
 function graph(nodes: unknown[], hasNextPage = false, endCursor: string | null = null) {
   return { data: { user: { databaseId: 7, repositoriesContributedTo: { nodes, pageInfo: { hasNextPage, endCursor } } } } };
 }
-async function fixture(handler: (url: URL, body: Record<string, unknown>, response: http.ServerResponse) => void) {
+async function fixture(handler: (url: URL, body: Record<string, unknown>, response: http.ServerResponse) => void, scopes: () => string | null = () => 'public_repo') {
   const requests: { url: string; body: Record<string, unknown>; auth?: string }[] = [];
   const server = http.createServer(async (request, response) => {
     let raw = '';
@@ -216,7 +233,8 @@ async function fixture(handler: (url: URL, body: Record<string, unknown>, respon
     const url = new URL(request.url!, 'http://localhost');
     requests.push({ url: request.url!, body, auth: request.headers.authorization });
     response.setHeader('Content-Type', 'application/json');
-    if (url.pathname === '/users/viewer') response.end(JSON.stringify({ id: 7, login: 'viewer' }));
+    if (url.pathname === '/rate_limit') {const granted=scopes();if(granted!==null)response.setHeader('X-OAuth-Scopes',granted);response.end('{}');}
+    else if (url.pathname === '/users/viewer') response.end(JSON.stringify({ id: 7, login: 'viewer' }));
     else handler(url, body, response);
   });
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
@@ -234,6 +252,35 @@ async function fixture(handler: (url: URL, body: Record<string, unknown>, respon
   } };
 }
 
+test('scope probe provider failures preserve import error codes and bounded retry advice', async () => {
+  for (const [status,code] of [[429,'rate_limited'],[503,'provider_unavailable']] as const) {
+    const paths:string[]=[];
+    const client = new GitHubActivityImportClient({token:'ghp_fixture-public',fetch:async input=>{
+      paths.push(new URL(String(input)).pathname);
+      return new Response('{}',{status,headers:{'Retry-After':'120'}});
+    }});
+    await assert.rejects(client.collect({githubId:'7',handle:'viewer'}),error=>error instanceof GitHubActivityImportError
+      && error.code===code && error.retryAfterSeconds===120);
+    assert.deepEqual(paths,['/rate_limit'],'failed permission probes must never start repository acquisition');
+  }
+});
+
+test('activity previews use verified public-only authentication and recheck grants for each collection', async () => {
+  let scopes = 'public_repo';
+  const f = await fixture((url,_body,response) => response.end(JSON.stringify(url.pathname === '/graphql' ? graph([]) : [])),()=>scopes);
+  const collector = new GitHubActivityImportClient({token:'ghp_fixture-public',fetch:f.transport});
+  try {
+    const result = await collector.collect({githubId:'7',handle:'viewer'});
+    assert.equal(result.status,'complete');
+    assert.equal(f.requests[0].url,'/rate_limit','permission verification precedes every repository/profile read');
+    assert.ok(f.requests.every(request=>request.auth==='Bearer ghp_fixture-public'),'public previews use authenticated quota, not anonymous IP quota');
+    const prior = f.requests.length;
+    scopes = 'repo';
+    await assert.rejects(collector.collect({githubId:'7',handle:'viewer'}),error=>error instanceof GitHubActivityImportError && error.code==='public_only_credential_required');
+    assert.deepEqual(f.requests.slice(prior).map(request=>request.url),['/rate_limit'],'broadened grants stop before any profile/repository request');
+  } finally {await f.stop();}
+});
+
 test('real HTTP paginates public owned/starred/contributed sources and merges canonical IDs with provenance', async () => {
   const f = await fixture((url, body, response) => {
     if (url.pathname.endsWith('/repos')) response.end(JSON.stringify(url.searchParams.get('page') === '1'
@@ -247,7 +294,7 @@ test('real HTTP paginates public owned/starred/contributed sources and merges ca
     }
   });
   try {
-    const result = await new GitHubActivityImportClient({ token: 'fixture-only', fetch: f.transport, pageSize: 2 }).collect({ githubId: '7', handle: 'viewer' });
+    const result = await new GitHubActivityImportClient({ token: 'ghp_fixture-only', fetch: f.transport, pageSize: 2 }).collect({ githubId: '7', handle: 'viewer' });
     assert.equal(result.status, 'complete');
     assert.deepEqual(result.repositories.map(row => row.github_id), ['1', '3', '4']);
     assert.deepEqual(result.repositories[0].sources, ['owned', 'starred', 'contributed']);
@@ -257,7 +304,8 @@ test('real HTTP paginates public owned/starred/contributed sources and merges ca
     assert.equal(result.sources.owned.pages, 2);
     assert.equal(result.sources.contributed.pages, 2);
     assert.equal(new Date(result.collected_at).toISOString(), result.collected_at);
-    assert.ok(f.requests.every(request => request.auth === 'Bearer fixture-only'));
+    assert.equal(f.requests[0].url,'/rate_limit');
+    assert.ok(f.requests.every(request => request.auth === 'Bearer ghp_fixture-only'), 'all source reads use the verified public-only credential');
     assert.ok(!JSON.stringify(result).includes('fixture-only'));
   } finally { await f.stop(); }
 });
@@ -266,7 +314,7 @@ test('resource limits produce an explicit truncated source rather than pretendin
   const f = await fixture((url, _body, response) => response.end(JSON.stringify(url.pathname === '/graphql'
     ? graph([]) : url.pathname.endsWith('/repos') ? [repository(Number(url.searchParams.get('page')))] : [])));
   try {
-    const result = await new GitHubActivityImportClient({ token: 'fixture', fetch: f.transport, pageSize: 1, maxPages: 2 }).collect({ githubId: '7', handle: 'viewer' });
+    const result = await new GitHubActivityImportClient({ token: 'ghp_fixture', fetch: f.transport, pageSize: 1, maxPages: 2 }).collect({ githubId: '7', handle: 'viewer' });
     assert.equal(result.status, 'partial');
     assert.deepEqual(result.sources.owned, { status: 'truncated', pages: 2, count: 2 });
     assert.equal(f.requests.filter(row => row.url.includes('/repos?')).length, 2);
@@ -280,7 +328,7 @@ test('rate limits and malformed pages remain explicit partial errors without dis
     else response.end(JSON.stringify(graph([contribution(2), { ...contribution(3), databaseId: Number.MAX_SAFE_INTEGER + 1 }])));
   });
   try {
-    const result = await new GitHubActivityImportClient({ token: 'fixture', fetch: f.transport }).collect({ githubId: '7', handle: 'viewer' });
+    const result = await new GitHubActivityImportClient({ token: 'ghp_fixture', fetch: f.transport }).collect({ githubId: '7', handle: 'viewer' });
     assert.equal(result.status, 'partial');
     assert.deepEqual(result.repositories.map(row => row.github_id), ['1'], 'an invalid page never partly enters the snapshot');
     assert.equal(result.sources.starred.error_code, 'rate_limited');
@@ -289,21 +337,70 @@ test('rate limits and malformed pages remain explicit partial errors without dis
   } finally { await f.stop(); }
 });
 
+test('persona inference uses authenticated quota only after public-only scope verification', async t => {
+  const {fetchGitHubPublicPersona} = await import('../../services/githubService.js');
+  const f = await fixture((url,_body,response) => response.end(JSON.stringify(url.pathname.endsWith('/repos')
+    ? [repository(88,{owner:{id:7,login:'public-dev'},full_name:'public-dev/repo88',html_url:'https://github.com/public-dev/repo88'})]
+    : {id:7,login:'public-dev',avatar_url:'https://avatars.githubusercontent.com/u/7',html_url:'https://github.com/public-dev'})));
+  const previousToken = process.env.GITHUB_TOKEN;
+  process.env.GITHUB_TOKEN='ghp_fixture-persona';
+  const originalFetch = globalThis.fetch;
+  t.mock.method(globalThis,'fetch',(input:any,init:any) => new URL(String(input)).origin === 'https://api.github.com'
+    ? f.transport(input,init) : originalFetch(input,init));
+  try {
+    const source = await fetchGitHubPublicPersona('public-dev');
+    assert.equal(source.repositories.length,1);
+    assert.equal(source.profile.login,'public-dev');
+    assert.equal(f.requests[0].url,'/rate_limit');
+    assert.ok(f.requests.every(request=>request.auth==='Bearer ghp_fixture-persona'),'persona reads require public-only authentication instead of anonymous IP quota');
+  } finally {t.mock.restoreAll();if(previousToken===undefined)Reflect.deleteProperty(process.env,'GITHUB_TOKEN');else process.env.GITHUB_TOKEN=previousToken;await f.stop();}
+});
+
+test('repository enrichment refuses private-capable or unverifiable tokens before fetching any repository', async () => {
+  const {GitHubTrendingIngestionService} = await import('../../services/githubTrendingIngestionService.js');
+  for (const scopes of ['repo', null, 'public_repo']) {
+    const f = await fixture((url, _body, response) => {
+      if (url.pathname === '/rate_limit') {
+        if (scopes !== null) response.setHeader('X-OAuth-Scopes', scopes);
+        response.end('{}');
+      } else if (url.pathname === '/search/repositories') {
+        response.end(JSON.stringify({items:[repository(88,{created_at:'2026-10-01T00:00:00Z',pushed_at:'2026-10-01T00:00:00Z',default_branch:'main'})]}));
+      } else if (url.pathname.endsWith('/languages')) response.end('{"TypeScript":100}');
+      else if (url.pathname.endsWith('/readme')) response.end(JSON.stringify({content:Buffer.from('# Public only').toString('base64'),encoding:'base64',path:'README.md'}));
+      else {response.writeHead(404);response.end('{}');}
+    },()=>scopes);
+    try {
+      const service = new GitHubTrendingIngestionService({token:'ghp_fixture-token',fetchImpl:(url,init)=>f.transport(url,{...init,redirect:'error'}),now:()=>new Date('2026-10-02T00:00:00Z')});
+      if (scopes !== 'public_repo') {
+        await assert.rejects(service.buildSnapshot(), /public.only|public-only/i);
+        assert.deepEqual(f.requests.map(request=>new URL(request.url,'http://fixture').pathname),['/rate_limit'],
+          'broad or unknown permissions must stop before repository search, metadata or README');
+      } else {
+        const result = await service.buildSnapshot();
+        assert.ok(f.requests.filter(request=>request.url.startsWith('/search/repositories')).every(request=>new URL(request.url,'http://fixture').searchParams.get('q')!.includes('is:public')));
+        assert.equal(result.repositories.length,1);
+        assert.equal(result.repositories[0].readme,'# Public only');
+        assert.equal(f.requests.filter(request=>request.url==='/rate_limit').length,1,'concurrent search shares credential validation');
+      }
+    } finally {await f.stop();}
+  }
+});
+
 test('a renamed/taken-over handle cannot select an unverified provider identity', async () => {
   const f = await fixture((_url, _body, response) => response.end('[]'));
   try {
-    await assert.rejects(new GitHubActivityImportClient({ token: 'fixture', fetch: f.transport }).collect({ githubId: '8', handle: 'viewer' }),
+    await assert.rejects(new GitHubActivityImportClient({ token: 'ghp_fixture', fetch: f.transport }).collect({ githubId: '8', handle: 'viewer' }),
       (error: unknown) => error instanceof GitHubActivityImportError && error.code === 'provider_identity_changed');
-    assert.equal(f.requests.length, 1);
+    assert.equal(f.requests.length, 2, 'scope verification then identity lookup');
   } finally { await f.stop(); }
 });
 
-test('private/internal/unknown visibility is filtered even behind a privileged credential', async () => {
+test('unexpected private/internal/unknown visibility is filtered after public-only authorization', async () => {
   const f = await fixture((url, _body, response) => response.end(JSON.stringify(url.pathname === '/graphql' ? graph([
     { ...contribution(5), isPrivate: true }, { ...contribution(6), visibility: 'INTERNAL' },
   ]) : url.pathname.endsWith('/repos') ? [repository(1, { private: true }), repository(2, { visibility: 'internal' }), repository(3, { private: undefined })] : [])));
   try {
-    const result = await new GitHubActivityImportClient({ token: 'privileged-fixture', fetch: f.transport }).collect({ githubId: '7', handle: 'viewer' });
+    const result = await new GitHubActivityImportClient({ token: 'ghp_fixture-public', fetch: f.transport }).collect({ githubId: '7', handle: 'viewer' });
     assert.deepEqual(result.repositories, []);
     assert.equal(result.status, 'complete');
   } finally { await f.stop(); }
@@ -313,7 +410,7 @@ test('repeated contribution cursors and oversized bodies stop bounded acquisitio
   const f = await fixture((url, _body, response) => response.end(url.pathname === '/graphql'
     ? JSON.stringify(graph([contribution(1)], true, 'repeat')) : url.pathname.endsWith('/repos') ? ' '.repeat(2_001) : '[]'));
   try {
-    const result = await new GitHubActivityImportClient({ token: 'fixture', fetch: f.transport, maxBodyBytes: 2_000 }).collect({ githubId: '7', handle: 'viewer' });
+    const result = await new GitHubActivityImportClient({ token: 'ghp_fixture', fetch: f.transport, maxBodyBytes: 2_000 }).collect({ githubId: '7', handle: 'viewer' });
     assert.equal(result.sources.owned.error_code, 'response_too_large');
     assert.equal(result.sources.contributed.error_code, 'repeated_cursor');
     assert.equal(result.sources.contributed.pages, 1);
@@ -327,12 +424,12 @@ test('one overall deadline aborts a stalled source while independent channels re
     // Owned HTTP remains open until the shared deadline aborts it.
   });
   try {
-    const result = await new GitHubActivityImportClient({ token: 'fixture', fetch: f.transport, timeoutMs: 200 }).collect({ githubId: '7', handle: 'viewer' });
+    const result = await new GitHubActivityImportClient({ token: 'ghp_fixture', fetch: f.transport, timeoutMs: 200 }).collect({ githubId: '7', handle: 'viewer' });
     assert.equal(result.status, 'partial');
     assert.equal(result.sources.owned.error_code,'deadline_exceeded');
     assert.deepEqual(result.repositories.map(row=>row.github_id),['2','3']);
     assert.equal(result.sources.starred.status,'complete');assert.equal(result.sources.contributed.status,'complete');
-    assert.equal(f.requests.length,4,'only profile and one bounded request per source reached HTTP');
+    assert.equal(f.requests.length,5,'scope verification, profile and one bounded request per source reached HTTP');
   } finally { await f.stop(); }
 });
 
@@ -361,14 +458,14 @@ test('source concurrency is bounded, pagination stays sequential and metadata pr
   });
   try {
     const started=performance.now();
-    const result=await new GitHubActivityImportClient({token:'fixture',fetch:f.transport,pageSize:1}).collect({githubId:'7',handle:'viewer'});
+    const result=await new GitHubActivityImportClient({token:'ghp_fixture',fetch:f.transport,pageSize:1}).collect({githubId:'7',handle:'viewer'});
     t.diagnostic(JSON.stringify({milliseconds:Math.round((performance.now()-started)*100)/100,maximumSourceRequests:maximum,completionOrder}));
     assert.equal(maximum,3);
     assert.equal(result.status,'complete');
     assert.equal(result.repositories[0].description,'owned');
     assert.deepEqual(result.repositories[0].sources,['owned','starred','contributed']);
     assert.ok(Object.values(result.sources).every(source=>source.pages===2&&source.count===1));
-    assert.equal(f.requests.length,7,'profile plus two sequential pages per source');
+    assert.equal(f.requests.length,8,'scope verification, profile plus two sequential pages per source');
     assert.deepEqual(completionOrder.filter(value=>value.endsWith(':1')),['contributed:1','starred:1','owned:1']);
   } finally {await f.stop();}
 });
@@ -386,7 +483,7 @@ for (const laterFailure of [false,true]) test(`ordered merge rejects a conflicti
     response.end(JSON.stringify(rows));
   });
   try {
-    const result=await new GitHubActivityImportClient({token:'fixture',fetch:f.transport,pageSize:2}).collect({githubId:'7',handle:'viewer'});
+    const result=await new GitHubActivityImportClient({token:'ghp_fixture',fetch:f.transport,pageSize:2}).collect({githubId:'7',handle:'viewer'});
     assert.deepEqual(result.repositories.map(row=>row.github_id),['1','2','3']);
     assert.deepEqual(result.repositories[0].sources,['owned','contributed']);
     assert.deepEqual(result.sources.starred,{status:'unavailable',pages:1,count:2,error_code:'conflicting_repository_identity'});
@@ -397,8 +494,8 @@ test('cancelling active acquisition aborts all channels without starting later p
   const controller=new AbortController();let sourcesStarted=0;
   const f=await fixture(()=>{if(++sourcesStarted===3)controller.abort();});
   try {
-    const result=await new GitHubActivityImportClient({token:'fixture',fetch:f.transport,pageSize:1}).collect({githubId:'7',handle:'viewer'},controller.signal);
-    assert.equal(f.requests.length,4);
+    const result=await new GitHubActivityImportClient({token:'ghp_fixture',fetch:f.transport,pageSize:1}).collect({githubId:'7',handle:'viewer'},controller.signal);
+    assert.equal(f.requests.length,5);
     assert.deepEqual(result.repositories,[]);
     assert.ok(Object.values(result.sources).every(source=>source.status==='unavailable'&&source.error_code==='cancelled'&&source.pages===0));
   } finally {await f.stop();}
@@ -412,7 +509,7 @@ test('owned-source and conflicting immutable owner IDs cannot contaminate any ac
       : url.pathname.endsWith('/repos') ? [conflicting] : [valid, conflicting]));
   });
   try {
-    const result = await new GitHubActivityImportClient({ token: 'fixture', fetch: f.transport }).collect({ githubId: '7', handle: 'viewer' });
+    const result = await new GitHubActivityImportClient({ token: 'ghp_fixture', fetch: f.transport }).collect({ githubId: '7', handle: 'viewer' });
     assert.deepEqual(result.repositories, []);
     assert.equal(result.sources.owned.error_code, 'invalid_owned_repository');
     assert.equal(result.sources.starred.error_code, 'conflicting_repository_identity');
@@ -425,7 +522,7 @@ test('actual redirects cannot forward the configured service credential', async 
     else response.end(JSON.stringify(url.pathname === '/graphql' ? graph([]) : []));
   });
   try {
-    const result = await new GitHubActivityImportClient({ token: 'fixture', fetch: f.transport }).collect({ githubId: '7', handle: 'viewer' });
+    const result = await new GitHubActivityImportClient({ token: 'ghp_fixture', fetch: f.transport }).collect({ githubId: '7', handle: 'viewer' });
     assert.equal(result.sources.owned.error_code, 'transport_error');
     assert.equal(f.requests.some(request => request.url === '/credential-target'), false);
   } finally { await f.stop(); }
@@ -433,13 +530,13 @@ test('actual redirects cannot forward the configured service credential', async 
 
 test('invalid resource settings fail before HTTP and pre-cancelled acquisition sends nothing', async () => {
   for (const options of [{ maxPages: 6 }, { pageSize: 101 }, { timeoutMs: 0 }, { maxBodyBytes: Infinity }]) {
-    assert.throws(() => new GitHubActivityImportClient({ token: 'fixture', ...options }), /resource limit/);
+    assert.throws(() => new GitHubActivityImportClient({ token: 'ghp_fixture', ...options }), /resource limit/);
   }
   const f = await fixture((_url, _body, response) => response.end('[]'));
   try {
     const cancelled = new AbortController();
     cancelled.abort();
-    await assert.rejects(new GitHubActivityImportClient({ token: 'fixture', fetch: f.transport }).collect({ githubId: '7', handle: 'viewer' }, cancelled.signal),
+    await assert.rejects(new GitHubActivityImportClient({ token: 'ghp_fixture', fetch: f.transport }).collect({ githubId: '7', handle: 'viewer' }, cancelled.signal),
       (error: unknown) => error instanceof GitHubActivityImportError && error.code === 'cancelled');
     assert.equal(f.requests.length, 0);
   } finally { await f.stop(); }

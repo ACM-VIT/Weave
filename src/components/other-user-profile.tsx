@@ -46,11 +46,39 @@ export type OtherUserProfileData = {
   pinnedRepositories: RepositoryDetail[];
 };
 
+export type ProfilePaging = {
+  loading: boolean;
+  error: boolean;
+  hasMore: boolean;
+  onLoadMore: () => void;
+  onRetry: () => void;
+};
+
+function PageControl({ page, label }: { page?: ProfilePaging; label: string }) {
+  if (!page) return null;
+  if (page.loading) return <View accessibilityRole="progressbar" accessibilityLabel={`Loading ${label}`} style={styles.loadingRow}>
+    <ActivityIndicator color={APP_THEME.primary} size="small" /><Text style={styles.loadingText}>Loading…</Text>
+  </View>;
+  if (page.error) return <View style={styles.pageStatus}>
+    <Text style={styles.loadingText}>Couldn’t load {label}.</Text>
+    <Pressable cssInterop={false} accessibilityRole="button" accessibilityLabel={`Retry ${label}`} onPress={page.onRetry} style={styles.pageButton}>
+      <Text style={styles.viewAllLabel}>Try again</Text>
+    </Pressable>
+  </View>;
+  if (!page.hasMore) return null;
+  return <Pressable cssInterop={false} accessibilityRole="button" accessibilityLabel={`Load more ${label}`} onPress={page.onLoadMore} style={styles.pageButton}>
+    <Text style={styles.viewAllLabel}>Load more</Text>
+  </Pressable>;
+}
+
 type OtherUserProfileProps = {
   profile: OtherUserProfileData;
   loading?: boolean;
   followStateUpdatedAt?: number;
   onBack: () => void;
+  onListsOpen?: () => void;
+  listsPage?: ProfilePaging;
+  repositoriesPage?: ProfilePaging;
   onFollowersPress?: () => void;
   onFollowingPress?: () => void;
   onFollowError?: (error: Error) => void;
@@ -72,6 +100,9 @@ export function OtherUserProfile({
   followStateUpdatedAt,
   loading = false,
   onBack,
+  onListsOpen,
+  listsPage,
+  repositoriesPage,
   onFollowersPress,
   onFollowingPress,
   onFollowError,
@@ -200,13 +231,11 @@ export function OtherUserProfile({
               <View style={styles.identity}>
                 <View style={styles.handleRow}>
                   <Text
-                    adjustsFontSizeToFit
-                    minimumFontScale={0.7}
-                    numberOfLines={1}
+                    numberOfLines={2}
                     selectable
-                    style={[styles.handle, compact && styles.handleCompact]}
+                    style={[styles.displayName, compact && styles.displayNameCompact]}
                   >
-                    @{profile.username.replace(/^@/, '')}
+                    {profile.displayName.trim() || profile.username.replace(/^@/, '')}
                   </Text>
                   {!profile.isSelf ? (
                     <FollowButton
@@ -223,28 +252,18 @@ export function OtherUserProfile({
                     />
                   ) : null}
                 </View>
+                <Text numberOfLines={2} selectable style={[styles.handle, compact && styles.handleCompact]}>
+                  @{profile.username.replace(/^@/, '')}
+                </Text>
                 {profile.bio ? (
                   <Text
-                    adjustsFontSizeToFit
-                    minimumFontScale={0.75}
-                    numberOfLines={1}
+                    numberOfLines={2}
                     selectable
                     style={[styles.bio, compact && styles.bioCompact]}
                   >
                     {profile.bio}
                   </Text>
                 ) : null}
-                <Text
-                  numberOfLines={1}
-                  selectable
-                  style={[
-                    styles.displayName,
-                    !profile.bio && styles.displayNameWithoutBio,
-                    compact && styles.displayNameCompact,
-                  ]}
-                >
-                  {profile.displayName}
-                </Text>
               </View>
             </View>
 
@@ -293,9 +312,10 @@ export function OtherUserProfile({
               {(['Repositories', 'Lists'] as const).map((tab) => (
                 <Pressable
                   accessibilityRole="tab"
+                  aria-selected={activeTab === tab}
                   accessibilityState={{ selected: activeTab === tab }}
                   key={tab}
-                  onPress={() => setActiveTab(tab)}
+                  onPress={() => { setActiveTab(tab); if (tab === 'Lists') onListsOpen?.(); }}
                   style={[
                     styles.tabButton,
                     compact && styles.tabButtonCompact,
@@ -310,7 +330,8 @@ export function OtherUserProfile({
             </View>
 
             {activeTab === 'Lists' ? (
-              profile.lists.length > 0 ? (
+              <View style={styles.repositoryTab}>
+              {profile.lists.length > 0 ? (
                 <View style={styles.repositoryList}>
                   {profile.lists.map((list) => (
                     <BoardListCard
@@ -323,7 +344,7 @@ export function OtherUserProfile({
                     />
                   ))}
                 </View>
-              ) : (
+              ) : listsPage?.loading || listsPage?.error ? null : (
                 <View style={styles.emptyState}>
                   <View style={styles.emptyIcon}>
                     <ListIcon color={REFERENCE_THEME.textTertiary} size={28} strokeWidth={1.6} />
@@ -333,7 +354,9 @@ export function OtherUserProfile({
                     Lists this developer shares will appear here.
                   </Text>
                 </View>
-              )
+              )}
+              <PageControl page={listsPage} label="public Lists" />
+              </View>
             ) : (
               <View style={styles.repositoryTab}>
                 <View style={styles.sectionHeading}>
@@ -347,7 +370,7 @@ export function OtherUserProfile({
                       onPress={() => setShowAllPinned((current) => !current)}
                       style={({ pressed }) => [styles.viewAllButton, pressed && styles.pressed]}
                     >
-                      <Text style={styles.viewAllLabel}>{showAllPinned ? 'Show Less' : 'View All'}</Text>
+                      <Text style={styles.viewAllLabel}>{showAllPinned ? 'Show Less' : repositoriesPage?.hasMore ? 'Show More' : 'View All'}</Text>
                     </Pressable>
                   ) : null}
                 </View>
@@ -368,7 +391,7 @@ export function OtherUserProfile({
                       </View>
                     ))}
                   </View>
-                ) : (
+                ) : repositoriesPage?.loading || repositoriesPage?.error ? null : (
                   <View style={styles.emptyState}>
                     <View style={styles.emptyIcon}>
                       <Pin color={REFERENCE_THEME.textTertiary} size={27} strokeWidth={1.6} />
@@ -379,6 +402,7 @@ export function OtherUserProfile({
                     </Text>
                   </View>
                 )}
+                {showAllPinned || !hasMorePinned || repositoriesPage?.error ? <PageControl page={repositoriesPage} label="repositories" /> : null}
               </View>
             )}
           </Animated.View>
@@ -389,6 +413,8 @@ export function OtherUserProfile({
 }
 
 const styles = StyleSheet.create({
+  pageStatus: { alignItems: 'center', gap: 8, paddingVertical: 12 },
+  pageButton: { alignSelf: 'center', minHeight: 44, justifyContent: 'center', paddingHorizontal: 20, paddingVertical: 12 },
   screen: { flex: 1, alignItems: 'center', backgroundColor: REFERENCE_THEME.background },
   content: { width: '100%', flex: 1 },
   navigation: { minHeight: 66, paddingBottom: 8, flexDirection: 'row', alignItems: 'center' },
@@ -406,11 +432,10 @@ const styles = StyleSheet.create({
   avatarInitialCompact: { fontSize: 27, lineHeight: 33 },
   identity: { flex: 1, minWidth: 0, justifyContent: 'center' },
   handleRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
-  handle: { flex: 1, minWidth: 0, color: REFERENCE_THEME.text, fontFamily: 'NataSans-Bold', fontSize: 21, lineHeight: 27, letterSpacing: -0.35 },
-  handleCompact: { fontSize: 17, lineHeight: 22 },
-  displayName: { marginTop: 2, color: REFERENCE_THEME.textTertiary, fontFamily: 'NataSans-Regular', fontSize: 14, lineHeight: 18 },
-  displayNameWithoutBio: { marginTop: 6 },
-  displayNameCompact: { fontSize: 11, lineHeight: 15 },
+  handle: { marginTop: 4, color: REFERENCE_THEME.textSecondary, fontFamily: 'NataSans-Regular', fontSize: 15, lineHeight: 21 },
+  handleCompact: { fontSize: 14, lineHeight: 20 },
+  displayName: { flex: 1, minWidth: 0, color: REFERENCE_THEME.text, fontFamily: 'NataSans-Bold', fontSize: 22, lineHeight: 28 },
+  displayNameCompact: { fontSize: 20, lineHeight: 26 },
   bio: { marginTop: 5, color: REFERENCE_THEME.textSecondary, fontFamily: 'NataSans-Regular', fontSize: 15, lineHeight: 20 },
   bioCompact: { fontSize: 12, lineHeight: 16 },
   loadingRow: { minHeight: 22, marginTop: -10, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8 },

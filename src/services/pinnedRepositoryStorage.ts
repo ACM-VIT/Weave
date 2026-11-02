@@ -97,7 +97,7 @@ export async function setRepositoryPinned(
   const previousWrite = writeQueues.get(userId) ?? Promise.resolve();
   const nextWrite = previousWrite.catch(() => undefined).then(async () => {
     const repositories = await loadPinnedRepositories(userId);
-    const withoutRepository = repositories.filter((item) => item.key !== key);
+    const withoutRepository = repositories.filter((item) => item.repositoryId !== repository.id);
     const nextRepositories = pinned
       ? [{
           key,

@@ -64,10 +64,6 @@ const markdownFonts = [
   'NataSans-Bold',
 ];
 
-const markdownRenderers: CustomTagRendererRecord = {
-  img: SafeReadmeImageRenderer,
-};
-
 const markdownTagStyles = {
   body: {
     color: REFERENCE_THEME.textPrimary,
@@ -200,6 +196,21 @@ function VisibleReadmePopup({
   const contentProgress = useMemo(() => new Animated.Value(0), []);
   const closingRef = useRef(false);
   const [media, setMedia] = useState<{kind:'video';url:string}|{kind:'image';url:string;alt:string}|null>(null);
+  const markdownRenderers = useMemo<CustomTagRendererRecord>(() => ({
+    img: (props: React.ComponentProps<typeof SafeReadmeImageRenderer>) => {
+      const url = props.tnode.attributes.src;
+      const alt = props.tnode.attributes.alt ?? '';
+      if (!url) return null;
+      return <Pressable accessibilityRole="button" accessibilityLabel={`Enlarge README image: ${alt || 'README image'}`}
+        accessibilityHint="Opens a larger image viewer with zoom controls" style={{ alignSelf: 'stretch' }}
+        onPress={event => {
+          event.stopPropagation();
+          setMedia({ kind: 'image', url, alt });
+        }}>
+        <SafeReadmeImageRenderer {...props} />
+      </Pressable>;
+    },
+  }), []);
   const content = useMemo(() => contentKind === 'summary'
     ? readmeText || README_SUMMARY_PENDING
     : prepareReadmeForDisplay(readmeText), [contentKind, readmeText]);

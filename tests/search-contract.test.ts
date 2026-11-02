@@ -361,6 +361,10 @@ test('idle browse warmup preserves populated stale infinite pages and fetches on
 function exploreNavigation() {
   const filename = resolve('src/app/(tabs)/explore.tsx'), nativeRequire = createRequire(filename);
   let focused = true, viewer = 'viewer-a', physicalOffset = 0, sequence = 0, contentHeight = 6000;
+  let offline = false, paginationReads = 0, refreshReads = 0;
+  let currentSearchKey: unknown;
+  const pagination: any = {hasNextPage:true,isFetching:false,isFetchingNextPage:false,isFetchNextPageError:false};
+  let finishPage: (() => void) | undefined;
   const frames = new Map<number, FrameRequestCallback>();
   const originalFrame = globalThis.requestAnimationFrame, originalCancel = globalThis.cancelAnimationFrame;
   globalThis.requestAnimationFrame = callback => { frames.set(++sequence, callback); return sequence; };
@@ -371,7 +375,7 @@ function exploreNavigation() {
       scrollToOffset: ({offset}: {offset:number}) => { physicalOffset = Math.min(offset,contentHeight-600); },
       getScrollableNode: () => ({scrollHeight:contentHeight,clientHeight:600}),
     }));
-    return React.createElement('ResultList', props, props.data.map((item: any) => React.createElement(React.Fragment,{key:item.id},props.renderItem({item}))));
+    return React.createElement('ResultList', props, props.data.map((item: any) => React.createElement(React.Fragment,{key:item.id},props.renderItem({item}))),props.ListHeaderComponent,props.ListFooterComponent);
   });
   const repo = mapRepositoryDetail({repo_id:'repo',full_name:'owner/repo'})!;
   const module = {exports:{} as any};
@@ -385,10 +389,14 @@ function exploreNavigation() {
       React.useEffect(()=>active?effect():undefined,[active,effect]);
     }};
     if(name==='expo-crypto')return {randomUUID:()=>`search-${++sequence}`};
-    if(name==='@react-native-community/netinfo')return {useNetInfo:()=>({isConnected:true})};
+    if(name==='@react-native-community/netinfo')return {useNetInfo:()=>({isConnected:!offline})};
     if(name==='react-native-safe-area-context')return {useSafeAreaInsets:()=>({top:0,bottom:0})};
     if(name==='@/store/AuthContext')return {useAuth:()=>({user:{user_id:viewer}})};
-    if(name==='@tanstack/react-query')return {useQueryClient:()=>({}),useInfiniteQuery:(options:any)=>({data:{pages:[{items:options.queryKey[0]==='explore-search'?[{type:'repository',id:repo.id,data:repo}]:[repo]}]}})};
+    if(name==='@tanstack/react-query')return {useQueryClient:()=>({}),useInfiniteQuery:(options:any)=>{if(options.queryKey[0]==='explore-search')currentSearchKey=options.queryKey;return ({
+      ...pagination,data:{pages:[{items:options.queryKey[0]==='explore-search'?[{type:'repository',id:repo.id,data:repo}]:[repo]}]},
+      fetchNextPage:()=>{paginationReads++;return new Promise<void>(resolve=>{finishPage=resolve;});},
+      refetch:()=>{refreshReads++;return Promise.resolve();},
+    });}};
     if(name==='@/services/repositoryPreview')return {rememberRepositoryPreview(){}};
     if(name==='@/api/explore')return {exploreBrowseQueryOptions:()=>({queryKey:['browse']}),mergeExplorePages:(pages:any[])=>pages.flatMap(page=>page.items)};
     if(name==='@/api/search')return {fetchSearch(){throw Error('No search transport in navigation regression');}};
@@ -400,6 +408,18 @@ function exploreNavigation() {
   const render=()=>React.act(()=>{if(root)root.update(React.createElement(module.exports.default));else root=create(React.createElement(module.exports.default));});
   return {
     async mount(){await render();},
+    async end(){await React.act(()=>root.root.findByType('ResultList').props.onEndReached?.());},
+    async pagination(state:Record<string,unknown>){Object.assign(pagination,state);await render();},
+    async network(value:boolean){offline=!value;await render();},
+    async type(value:string){await React.act(()=>root.root.findByType('SearchBar').props.onChangeText(value));},
+    async finishPage(){await React.act(async()=>{finishPage?.();await Promise.resolve();});},
+    get paginationReads(){return paginationReads;},
+    get refreshReads(){return refreshReads;},
+    get searchKey(){return currentSearchKey;},
+    async retry(label:string){await React.act(()=>{const button=root.root.findAllByType('Pressable').find(node=>node.findAllByType('Text').some(text=>text.props.children===label));assert.ok(button,'retained results expose recovery');button.props.onPress();});},
+    get bottomPadding(){return root.root.findByType('ResultList').props.contentContainerStyle.paddingBottom;},
+    get footerLabels(){return root.root.findAllByType('Text').map(node=>node.props.children);},
+    get footerSpinners(){return root.root.findAllByType('ActivityIndicator').length;},
     async scroll(offset:number){physicalOffset=offset;await React.act(()=>root.root.findByType('ResultList').props.onScroll?.({nativeEvent:{contentOffset:{y:offset}}}));},
     async interrupt(){await React.act(()=>root.root.findByType('ResultList').props.onScrollBeginDrag?.());},
     async open(){await React.act(()=>root.root.findByType('RepoCard').props.onPress());},
@@ -414,6 +434,53 @@ function exploreNavigation() {
     async close(){await React.act(()=>root.unmount());globalThis.requestAnimationFrame=originalFrame;globalThis.cancelAnimationFrame=originalCancel;},
   };
 }
+
+test('Explore automatically pages near the end without a Load more button or duplicate requests',async()=>{
+  const app=exploreNavigation();await app.mount();
+  try {
+    assert.ok(app.bottomPadding<=24,'the navigator already reserves the tab bar');
+    assert.ok(!app.footerLabels.includes('Load more'));
+    await app.end();await app.end();
+    assert.equal(app.paginationReads,1,'repeated end events before a rerender must share one flight');
+    await app.pagination({isFetching:true,isFetchingNextPage:true});
+    assert.equal(app.footerSpinners,1);
+    await app.end();assert.equal(app.paginationReads,1);
+    await app.finishPage();await app.pagination({isFetching:false,isFetchingNextPage:false});
+    await app.end();assert.equal(app.paginationReads,2);
+    await app.finishPage();
+  } finally {await app.close();}
+});
+
+test('Explore automatic pagination stops on errors, offline, exhaustion and inactive screens',async()=>{
+  const app=exploreNavigation();await app.mount();
+  try {
+    await app.pagination({isFetchNextPageError:true});await app.end();
+    assert.equal(app.paginationReads,0);assert.ok(app.footerLabels.includes('Try again'));
+    await app.pagination({isFetchNextPageError:false});await app.network(false);await app.end();
+    await app.network(true);await app.pagination({hasNextPage:false});await app.end();
+    await app.pagination({hasNextPage:true});await app.focus(false);await app.end();
+    assert.equal(app.paginationReads,0);
+    await app.focus(true);await app.type('x');await app.end();
+    assert.equal(app.paginationReads,0,'short queries cannot issue pages');
+    await app.type('repo');await app.end();
+    assert.equal(app.paginationReads,1,'search results also auto-page');
+    await app.finishPage();
+  } finally {await app.close();}
+});
+
+test('Explore retained results recover from failed refreshes and expired searches',async()=>{
+  const app=exploreNavigation();await app.mount();
+  try {
+    await app.pagination({isError:true,isFetchNextPageError:false});
+    await app.retry('Try again');assert.equal(app.refreshReads,1);
+    await app.type('repo');
+    await app.pagination({error:Object.assign(new Error('expired'),{status:410})});
+    const previous=app.searchKey;
+    await app.retry('Restart search');
+    assert.notDeepEqual(app.searchKey,previous,'expired searches restart with a new session');
+    assert.equal(app.refreshReads,1,'an expired snapshot cannot be refetched');
+  }finally{await app.close();}
+});
 
 test('Explore restores the scrolled list after repository Back without retaining hidden zero offsets', async () => {
   const app=exploreNavigation();await app.mount();
@@ -461,4 +528,23 @@ test('Android interop retains Trending podium borders, background and row layout
     assert.equal(resolved.flexDirection,'row');
     assert.equal(resolved.padding,18);
   } finally {await React.act(async () => root.unmount());}
+});
+
+
+test('web search tabs announce the selected filter instead of only changing its colour', async () => {
+  const { renderToStaticMarkup } = await import('react-dom/server');
+  const { loadSource } = await import('./support/startup-harness');
+  const nativeRequire = createRequire(resolve('src/components/explore/search-filter-tabs.tsx'));
+  const Tabs = loadSource('src/components/explore/search-filter-tabs.tsx', {
+    'react-native': nativeRequire('react-native-web'),
+    '@/models/search': { SEARCH_GROUPS },
+  }).default;
+  for (const selected of ['all', 'repositories', 'people', 'lists']) {
+    const html = renderToStaticMarkup(React.createElement(Tabs, { value: selected, onChange() {} }));
+    const tabs = [...html.matchAll(/<div[^>]*role="tab"[^>]*>/g)].map(match => match[0]);
+    assert.equal(tabs.length, 4);
+    assert.equal(tabs.filter(tab => tab.includes('aria-selected="true"')).length, 1);
+    assert.ok(tabs[SEARCH_GROUPS.findIndex(group => group.id === selected)].includes('aria-selected="true"'));
+    assert.equal(tabs.filter(tab => tab.includes('aria-selected="false"')).length, 3);
+  }
 });

@@ -40,7 +40,8 @@ async function fixture(t:test.TestContext){
    if(offline)throw new Error('Offline');return {accepted:events.length,duplicates:0,feed_version:'2',results:events.map(event=>({event_id:event.event_id,status:'accepted' as const}))};}});
  outboxes.set(ownerA,outbox);
  const client=new QueryClient({defaultOptions:{queries:{retry:false,gcTime:Infinity}}});
- let loadPage:()=>Promise<any>;
+ let loadPage:(...args:any[])=>Promise<any>;
+ let resetSession:string|undefined;
  const page={items:[{repo_id:repo,full_name:'fixture/project',serve_id:serve,position:4,feed_session_id:session}],nextCursor:null,feedVersion:'1',sessionId:session,mode:'personalized'};
  loadPage=async()=>page;
  for(const id of [ownerA,ownerB])client.setQueryData(['feed',id],{pages:[page],pageParams:[null]});
@@ -53,8 +54,8 @@ async function fixture(t:test.TestContext){
   '@/components/responsive-layout':{getResponsiveContentWidth:()=>400},'@/components/home/RepositoryFeedItem':{RepositoryFeedItem:Card},'@/components/home/FeedHeader':{FeedHeader:(props:any)=>React.createElement('FeedHeader',props)},
   '@/constants/theme':{REFERENCE_THEME:{}},'expo-router':{router:{push(){}},useFocusEffect:(callback:any)=>useEffect(callback,[])},
   '../../utils/storage':{getItemAsync:async()=>{await tokenWait;return owner;}},
-  '@/api/feed-sessions':{feedSessions:()=>({prepare:async(id:string)=>id,reset:async()=>true})},
-  '@/api/home-feed':{fetchHomeFeed:()=>loadPage()},'@/api/session-lifecycle':{authSessionLifecycle:lifecycle},
+  '@/api/feed-sessions':{feedSessions:()=>({prepare:async(id:string)=>id,reset:async(id:string)=>{resetSession=id;return true;}})},
+  '@/api/home-feed':{fetchHomeFeed:(...args:any[])=>loadPage(...args)},'@/api/session-lifecycle':{authSessionLifecycle:lifecycle},
   '@/store/AuthContext':{useAuth:()=>({...auth,user:{user_id:owner}})},
   '@/services/activityOutboxClient':{getActivityOutbox:(id:string)=>outboxes.get(id)??null},
   '@react-native-community/netinfo':{useNetInfo:()=>({isConnected:true,isInternetReachable:true}),addEventListener:(listener:typeof connectivity)=>{connectivity=listener;return ()=>{};}},
@@ -74,7 +75,13 @@ async function fixture(t:test.TestContext){
  t.after(async()=>{await act(async()=>{root.unmount();await tick();});client.clear();delete(globalThis as any).IS_REACT_ACT_ENVIRONMENT;});
  const retry=()=>root.root.findAllByType('Pressable' as any).find(node=>node.props.accessibilityLabel==='Retry pending activity');
  return {outbox,storage,sent,lifecycle,client,fs,retry,
-  setPageLoader:(loader:()=>Promise<any>)=>{loadPage=loader;},
+  setPageLoader:(loader:(...args:any[])=>Promise<any>)=>{loadPage=loader;},
+  get resetSession(){return resetSession;},
+  async retireFeed(){
+    const {retireHomeFeedForGitHubChange}=await import('../src/utils/feed-repository');
+    await act(async()=>{await retireHomeFeedForGitHubChange(client,owner,()=>true);root.update(render());await tick();});
+    await act(async()=>{await tick();});
+  },
   refresh:()=>root.root.findByType('FeedHeader' as any).props.onRefresh(),
   get refreshMessage(){return root.root.findByType('FeedHeader' as any).props.statusMessage;},
   get mounts(){return mounts;},get prepared(){return prepared;},
@@ -169,4 +176,20 @@ test('Home refresh retains loaded cards on failure and replaces them only after 
  await act(async()=>{finish({items:[],nextCursor:null,feedVersion:'99',sessionId:session});await refreshing;});
  assert.strictEqual(app.client.getQueryData(['feed',ownerB]),other,'A late refresh cannot replace another account');
  assert.equal(app.refreshMessage,null);
+});
+
+
+test('mounted Home refresh and pagination share the current controller after a GitHub change',async t=>{
+ const app=await fixture(t);
+ const sessions:string[]=[];
+ app.setPageLoader(async(_token,_cursor,options)=>{
+  sessions.push(options.sessionId);
+  return {items:[{repo_id:repo,full_name:'fixture/project',serve_id:serve,position:0}],nextCursor:null,feedVersion:'2',sessionId:options.sessionId,mode:'personalized'};
+ });
+ await app.retireFeed();
+ assert.ok(sessions.length>0,'mounted Home loads replacement pages');
+ const currentSession=sessions.at(-1);
+ await act(async()=>{await app.refresh();});
+ assert.equal(app.resetSession,currentSession,'refresh must reset the session used by the replacement query');
+ assert.equal(sessions.at(-1),currentSession,'refresh and query pagination must retain the same session');
 });

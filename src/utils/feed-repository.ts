@@ -1,3 +1,4 @@
+import type { QueryClient } from '@tanstack/react-query';
 import type { FeedbackAction } from '@/api/activity';
 import type { FeedPage, FeedRepositoryPayload } from '@/api/feed';
 import type { RepositoryApiPayload } from '@/api/repositories';
@@ -34,6 +35,18 @@ type FeedCache = {
 
 export function feedQueryKey(viewerUserId: string | null | undefined) {
   return ['feed', viewerUserId ?? null] as const;
+}
+
+// Removing this exact query also releases its pagination controller, including
+// pending request IDs that could otherwise replay pre-change durable serves.
+export async function retireHomeFeedForGitHubChange(
+  client: QueryClient,
+  viewer: string,
+  isCurrent: () => boolean,
+): Promise<void> {
+  const filters = { queryKey: feedQueryKey(viewer), exact: true };
+  await client.cancelQueries(filters);
+  if (isCurrent()) client.removeQueries(filters);
 }
 
 export function mapFeedRepository(

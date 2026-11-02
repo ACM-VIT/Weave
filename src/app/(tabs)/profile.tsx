@@ -4,7 +4,7 @@ import { useReducedMotion } from 'react-native-reanimated';
 import { KeyboardForm } from '@/components/keyboard/keyboard-layout';
 import React, { useState } from "react"
 import { ActivityIndicator, Modal, Pressable, Text, TextInput, View, useWindowDimensions } from "react-native"
-import { ChevronRight, LogOut } from "lucide-react-native"
+import { LogOut } from "lucide-react-native"
 import { router, type Href } from "expo-router"
 import { SafeAreaProvider, useSafeAreaInsets } from "react-native-safe-area-context"
 import { useQuery } from "@tanstack/react-query"
@@ -21,6 +21,7 @@ import { isValidUsername, USERNAME_GUIDANCE } from "@/utils/username"
 import { loadPinnedRepositories } from "@/services/pinnedRepositoryStorage"
 import { GitHubPreferencesPopup } from '@/components/profile/GitHubPreferencesPopup'
 import { APP_THEME, REFERENCE_THEME } from '@/constants/theme'
+import { repositoryHref } from '@/utils/repository-links'
 
 function requestError(error: unknown, fallback: string) {
   if (error instanceof TypeError) return `Unable to connect to the local backend at ${API_URL}.`
@@ -53,6 +54,8 @@ export default function ProfileScreen() {
   const [isSaving, setIsSaving] = useState(false)
   const [editError, setEditError] = useState("")
   const [statSheetType, setStatSheetType] = useState<ProfileStatType | null>(null)
+  const [contentTab, setContentTab] = useState({owner:user?.user_id,section:'Repositories' as 'Repositories'|'Lists'})
+  const activeSection = contentTab.owner === user?.user_id ? contentTab.section : 'Repositories'
   const sections = useProfileSections(user?.user_id)
   const pinnedRepositoriesQuery = useQuery({
     queryKey: ["pinned-repositories", user?.user_id],
@@ -133,20 +136,19 @@ export default function ProfileScreen() {
       <View className="w-full" style={{ maxWidth: isTablet ? 760 : 600, gap: isTablet ? 34 : 28 }}>
         <View className="w-full" style={{ gap: isTablet ? 34 : 28 }}>
           <View className="w-full" style={{ gap: isTablet ? 30 : 25 }}>
-            <ProfileHeader username={username} name={name} job={job} avatarUrl={user?.avatar_url} isTablet={isTablet} isCompact={isCompact} stats={stats} onEdit={openEditor} onChangePhoto={() => setPhotoVisible(true)} onLogout={() => { setLogoutError(""); setLogoutVisible(true) }} />
+            <ProfileHeader username={username} name={name} job={job} avatarUrl={user?.avatar_url} isTablet={isTablet} isCompact={isCompact} stats={stats} onEdit={openEditor} onChangePhoto={() => setPhotoVisible(true)} onLogout={() => { setLogoutError(""); setLogoutVisible(true) }}
+              onGitHubPreferences={() => setGithubPreferencesVisible(true)} githubPreferencesVisible={githubPreferencesVisible}
+              githubIcon={<GitHubIcon width={20} height={20} fill={APP_THEME.primary} />} />
           </View>
 
           <View className="w-full" style={{ gap: isTablet ? 22 : 18 }}>
-            <Pressable cssInterop={false} accessibilityRole="button" accessibilityLabel="GitHub activity preferences" accessibilityHint="Opens GitHub activity and account settings" accessibilityState={{ expanded: githubPreferencesVisible }}
-              onPress={() => setGithubPreferencesVisible(true)} style={({ pressed }) => ({ minHeight: 72, flexDirection: 'row', alignItems: 'center', gap: 12, padding: 14, borderRadius: 17, borderWidth: 1, borderColor: REFERENCE_THEME.border, backgroundColor: pressed ? REFERENCE_THEME.surfaceElevated : REFERENCE_THEME.surface })}>
-              <View style={{ width: 40, height: 40, borderRadius: 12, alignItems: 'center', justifyContent: 'center', backgroundColor: '#63E08A18' }}><GitHubIcon width={22} height={22} fill={APP_THEME.primary} /></View>
-              <View style={{ flex: 1, minWidth: 0, gap: 4 }}>
-                <Text className="font-nataSemiBold" style={{ color: REFERENCE_THEME.text, fontSize: 15 }}>GitHub preferences</Text>
-                <Text className="font-nata" style={{ color: REFERENCE_THEME.textSecondary, fontSize: 12 }}>Public activity and account connection</Text>
-              </View>
-              <ChevronRight size={19} color={REFERENCE_THEME.textSecondary} />
-            </Pressable>
-            <Text className="text-white font-nataBold" style={{ fontSize: isCompact ? 18 : 22 }}>Lists</Text>
+            <View accessibilityRole="tablist" style={{flexDirection:'row',borderRadius:13,overflow:'hidden',backgroundColor:'#151515',borderWidth:.5,borderColor:REFERENCE_THEME.separator}}>
+              {(['Repositories','Lists'] as const).map(section => <Pressable key={section} accessibilityRole="tab" aria-selected={activeSection===section} accessibilityState={{selected:activeSection===section}}
+                onPress={()=>setContentTab({owner:user?.user_id,section})}
+                style={{flex:1,minHeight:isCompact?44:48,alignItems:'center',justifyContent:'center',borderRadius:13,backgroundColor:activeSection===section?APP_THEME.primary:'transparent'}}>
+                <Text style={{fontFamily:'NataSans-SemiBold',fontSize:14,lineHeight:18,color:activeSection===section?APP_THEME.primaryForeground:'#99989E'}}>{section}</Text>
+              </Pressable>)}
+            </View>
           </View>
         </View>
       </View>
@@ -161,6 +163,8 @@ export default function ProfileScreen() {
         paddingTop={Math.max(insets.top, 20) + (isTablet ? 28 : 16)}
         paddingBottom={Math.max(insets.bottom, 20) + (isTablet ? 28 : 16)}
         collections={sections.collections} pinned={pinnedRepositoriesQuery}
+        section={activeSection}
+        openRepository={repository => router.push(repositoryHref(repository.id))}
         openList={params => router.push(boardHref(params))}
       />
 

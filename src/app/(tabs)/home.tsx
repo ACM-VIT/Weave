@@ -93,10 +93,8 @@ export default function HomeScreen() {
   const retentionPins = useRef<string[]>([]);
   const scrollOffset = useRef(0);
   const committedItems = useRef<FeedItem[]>([]);
-  const pagination = useMemo(() => {
-    const controller = homeFeedController(queryClient, user?.user_id ?? '');
-    return {controller, reset: () => controller.reset()};
-  }, [queryClient, user?.user_id]);
+  const controller = homeFeedController(queryClient, user?.user_id ?? '');
+  const pagination = useMemo(() => ({controller, reset: () => controller.reset()}), [controller]);
   useEffect(() => subscribeToHomeFeedInvalidations(queryClient, feedQueryKey, () => pagination.controller.markStale()), [queryClient, feedQueryKey, pagination]);
   const activityOutbox = user?.user_id
     ? getActivityOutbox(user.user_id)

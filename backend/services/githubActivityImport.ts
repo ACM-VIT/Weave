@@ -1,3 +1,5 @@
+import { assertPublicGitHubCredential, GitHubPublicAccessError } from './githubPublicAccess.js';
+
 export type GitHubActivitySource = 'owned' | 'starred' | 'contributed';
 export interface GitHubActivityRepository {
   github_id: string;
@@ -102,12 +104,13 @@ function publicRepository(value: unknown, source: GitHubActivitySource): GitHubA
 
 export class GitHubActivityImportClient {
   private readonly fetcher: typeof fetch;
+  private readonly token: string;
   private readonly timeoutMs: number;
   private readonly pageSize: number;
   private readonly maxPages: number;
   private readonly maxBodyBytes: number;
 
-  constructor(private readonly options: {
+  constructor(options: {
     token: string;
     fetch?: typeof fetch;
     timeoutMs?: number;
@@ -117,6 +120,7 @@ export class GitHubActivityImportClient {
   }) {
     if (!options.token.trim()) throw new Error('GitHub import requires a configured service credential.');
     this.fetcher = options.fetch ?? fetch;
+    this.token = options.token;
     this.timeoutMs = integer(options.timeoutMs, 8_000, 60_000);
     this.pageSize = integer(options.pageSize, 100, 100);
     this.maxPages = integer(options.maxPages, 3, 5);
@@ -126,7 +130,8 @@ export class GitHubActivityImportClient {
   private async request(path: string, signal: AbortSignal, body?: unknown): Promise<unknown> {
     const response = await this.fetcher(`https://api.github.com${path}`, {
       method: body ? 'POST' : 'GET', redirect: 'error', signal,
-      headers: { Authorization: `Bearer ${this.options.token}`, Accept: 'application/vnd.github+json',
+      // collect() verifies this immutable credential before any repository read.
+      headers: { Authorization: `Bearer ${this.token}`, Accept: 'application/vnd.github+json',
         'Content-Type': 'application/json', 'X-GitHub-Api-Version': '2022-11-28' },
       ...(body ? { body: JSON.stringify(body) } : {}),
     });
@@ -163,6 +168,8 @@ export class GitHubActivityImportClient {
     timer.unref();
     const combined = signal ? AbortSignal.any([signal, deadline.signal]) : deadline.signal;
     try {
+      combined.throwIfAborted();
+      await assertPublicGitHubCredential(this.token, this.fetcher, combined);
       const profile = object(await this.request(`/users/${encodeURIComponent(identity.handle)}`, combined));
       if (numericId(profile.id) !== githubId) throw new GitHubActivityImportError('provider_identity_changed');
       const handle = text(profile.login, 100);
@@ -264,6 +271,7 @@ export class GitHubActivityImportClient {
         repositories: [...repositories.values()], sources };
     } catch (error) {
       if (combined.aborted) throw new GitHubActivityImportError(signal?.aborted ? 'cancelled' : 'deadline_exceeded');
+      if (error instanceof GitHubPublicAccessError) throw new GitHubActivityImportError(error.code, error.retryAfterSeconds);
       throw error;
     } finally { clearTimeout(timer); }
   }

@@ -75,6 +75,11 @@ export default function ExploreScreen() {
     : mergeExplorePages(browse.data?.pages ?? []).map(repo => ({ type: 'repository', id: repo.id, data: repo })),
   [searching,search.data?.pages,browse.data?.pages]);
   const current = searching ? search : browse;
+  const retryRefresh = () => {
+    searchTiming.explicit();
+    if (searching && isSearchExpired(search.error)) restartSearch();
+    else void current.refetch();
+  };
   const twoColumns = searching || activeTab === 'Latest';
   const ResultsList = twoColumns ? FlashList<SearchItem> : FlatList<SearchItem>;
   const periods = browse.data?.pages[0]?.availablePeriods ?? [];
@@ -87,6 +92,17 @@ export default function ExploreScreen() {
   const scrollPosition = useRef({key:listKey,offset:0});
   const returnPosition = useRef<{key:string;offset:number} | null>(null);
   const focused = useRef(false);
+  const paginationFlights = useRef(new Set<string>());
+  const loadNextPage = () => {
+    if (!focused.current || offline || composing || !user?.user_id || items.length === 0
+      || (searching && query.length < MIN_SEARCH_LENGTH) || !current.hasNextPage
+      || current.isFetching || current.isError || current.isFetchNextPageError
+      || paginationFlights.current.has(listKey)) return;
+    paginationFlights.current.add(listKey);
+    searchTiming.explicit();
+    void current.fetchNextPage({ cancelRefetch: false }).catch(() => undefined)
+      .finally(() => paginationFlights.current.delete(listKey));
+  };
   const restorePosition = useCallback(() => {
     const saved = returnPosition.current;
     if (!focused.current || !saved) return;
@@ -141,6 +157,8 @@ export default function ExploreScreen() {
         if (focused.current) scrollPosition.current = {key:listKey,offset:event.nativeEvent.contentOffset.y};
       }}
       scrollEventThrottle={16}
+      onEndReached={loadNextPage}
+      onEndReachedThreshold={0.5}
       onLayout={event => { if (event.nativeEvent.layout.height > 0) restorePosition(); }}
       onContentSizeChange={restorePosition}
       onScrollBeginDrag={() => { returnPosition.current = null; }}
@@ -173,30 +191,34 @@ export default function ExploreScreen() {
       keyboardDismissMode="on-drag"
       keyboardShouldPersistTaps="handled"
       contentInsetAdjustmentBehavior="automatic"
-      contentContainerStyle={{ paddingHorizontal: twoColumns ? 15 : 20, paddingTop: 8, paddingBottom: Math.max(120,insets.bottom+96), ...(!twoColumns ? { gap: 10 } : {}) }}
+      contentContainerStyle={{ paddingHorizontal: twoColumns ? 15 : 20, paddingTop: 8, paddingBottom: 16, ...(!twoColumns ? { gap: 10 } : {}) }}
       ListHeaderComponent={<>
         {offline && items.length > 0 ? <Text accessibilityLiveRegion="polite" style={{ color: '#FFD60A', paddingBottom: 10 }}>You’re offline. Showing previous results.</Text> : null}
         {fallback ? <Text accessibilityLiveRegion="polite" style={{ color: '#FFD60A', paddingBottom: 10 }}>Showing keyword matches. Some related results may be unavailable.</Text> : null}
-        {current.isError && items.length > 0 ? <Text style={{ color: '#FF6878', paddingBottom: 10 }}>Could not refresh. Showing previous results.</Text> : null}
+        {current.isError && !current.isFetchNextPageError && items.length > 0 ? <View style={{ paddingBottom: 10 }}>
+          <Text style={{ color: '#FF6878' }}>Could not refresh. Showing previous results.</Text>
+          <Pressable accessibilityRole="button" disabled={offline || current.isFetching} onPress={retryRefresh}
+            style={{ minHeight: 44, justifyContent: 'center' }}>
+            <Text style={{ color: '#63E6A9' }}>{searching && isSearchExpired(search.error) ? 'Restart search' : 'Try again'}</Text>
+          </Pressable>
+        </View> : null}
         {!searching && activeTab === 'Trending' && selectedPeriod ? <Text style={{ color: '#B8B8C0', paddingBottom: 10 }}>Trending · {selectedPeriod}</Text> : null}
       </>}
       ListEmptyComponent={<View style={{ minHeight: 220, alignItems: 'center', justifyContent: 'center', gap: 16 }}>
         {current.isLoading ? <ActivityIndicator color="#63E6A9" accessibilityLabel="Loading results" /> : <Text selectable accessibilityLiveRegion="polite" style={{ color: '#B8B8C0', textAlign: 'center' }}>{status}</Text>}
-        {current.isError ? <Pressable accessibilityRole="button" disabled={offline} onPress={() => {
-          searchTiming.explicit();
-          if (searching && isSearchExpired(search.error)) restartSearch();
-          else void current.refetch();
-        }} style={{ minHeight: 44, justifyContent: 'center' }}><Text style={{ color: '#63E6A9' }}>{searching && isSearchExpired(search.error) ? 'Restart search' : 'Try again'}</Text></Pressable> : null}
+        {current.isError ? <Pressable accessibilityRole="button" disabled={offline} onPress={retryRefresh} style={{ minHeight: 44, justifyContent: 'center' }}><Text style={{ color: '#63E6A9' }}>{searching && isSearchExpired(search.error) ? 'Restart search' : 'Try again'}</Text></Pressable> : null}
       </View>}
-      ListFooterComponent={current.hasNextPage || current.isFetchNextPageError ? <View style={{ minHeight: 64, alignItems: 'center', justifyContent: 'center' }}>
+      ListFooterComponent={current.isFetchingNextPage || current.isFetchNextPageError ? <View style={{ minHeight: 48, alignItems: 'center', justifyContent: 'center' }}>
+        {current.isFetchingNextPage ? <ActivityIndicator color="#63E6A9" accessibilityLabel="Loading more results" /> : <>
         {current.isFetchNextPageError ? <Text style={{ color: '#FF6878' }}>Could not load more results.</Text> : null}
-        <Pressable accessibilityRole="button" disabled={offline || current.isFetchingNextPage} onPress={() => {
+        <Pressable accessibilityRole="button" disabled={offline || current.isFetching} onPress={() => {
           searchTiming.explicit();
           if (searching && isSearchExpired(search.error)) restartSearch();
-          else void current.fetchNextPage();
+          else void current.fetchNextPage({ cancelRefetch: false });
         }} style={{ minHeight: 48, minWidth: 160, alignItems: 'center', justifyContent: 'center' }}>
-          {current.isFetchingNextPage ? <ActivityIndicator color="#63E6A9" /> : <Text style={{ color: '#63E6A9' }}>{searching && isSearchExpired(search.error) ? 'Restart search' : current.isFetchNextPageError ? 'Try again' : 'Load more'}</Text>}
+          <Text style={{ color: '#63E6A9' }}>{searching && isSearchExpired(search.error) ? 'Restart search' : 'Try again'}</Text>
         </Pressable>
+        </>}
       </View> : null}
     />
   </KeyboardSurface>;

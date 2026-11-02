@@ -233,7 +233,6 @@ test('summary image tap opens a separate viewer and returns to the retained dige
   }finally{await app.unmount();}
 });
 
-
 test('passive visibility requires a full second for impressions and three seconds for neutral dwell', async t => {
   t.mock.timers.enable({apis:['setTimeout','Date']});
   const app=feed(['repo'],true,{ownerId:'viewer',repository:{},viewable:false});
