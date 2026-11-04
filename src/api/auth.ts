@@ -19,34 +19,37 @@ const readJson = async (response: Response) => {
   }
 };
 
+export type PendingRegistration = { requiresEmailConfirmation: true; message: string };
+
 export const register = async (
   email: string,
   password: string,
   fullName: string,
   username: string,
   dateOfBirth: string,
-) => {
+): Promise<PendingRegistration> => {
   if (!isValidUsername(username)) throw new Error('Enter a valid username.');
-  return establishSession(async () => {
-    const response = await fetch(`${API_URL}/auth/signup`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      credentials: 'include',
-      body: JSON.stringify({
-        email,
-        password,
-        username: normalizeUsername(username),
-        full_name: fullName,
-        date_of_birth: dateOfBirth,
-      }),
-    });
-
-    const data = await readJson(response);
-    if (!response.ok) {
-      throw new Error(data.error || 'Failed to register');
-    }
-    return data.data as RawAuthenticatedSession<any>;
+  const response = await fetch(`${API_URL}/auth/signup`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    credentials: 'include',
+    body: JSON.stringify({
+      email,
+      password,
+      username: normalizeUsername(username),
+      full_name: fullName,
+      date_of_birth: dateOfBirth,
+    }),
   });
+
+  const data = await readJson(response);
+  if (!response.ok) {
+    throw new Error(data.error || 'Failed to register');
+  }
+  if (data.data?.requiresEmailConfirmation !== true) {
+    throw new Error('Email confirmation is required before signing in.');
+  }
+  return { requiresEmailConfirmation: true, message: data.data.message };
 };
 
 export const login = async (email: string, password: string) => establishSession(async () => {

@@ -36,6 +36,7 @@ function RootLayoutNav({ fontsReady }: { fontsReady: boolean }) {
   const pathname = usePathname();
   const unlinkParams = useGlobalSearchParams<{ unlink_code?: string; unlink_error?: string; github_reconnect?: string }>();
   const unlinkCallback = pathname.endsWith('/callback') && Boolean(unlinkParams.unlink_code || unlinkParams.unlink_error || unlinkParams.github_reconnect === '1');
+  const emailConfirmationCallback = pathname.endsWith('/confirm-email');
   const queryClient = useQueryClient();
   const pendingProtectedRouteRef = useRef<RepositoryRouteHref | null>(null);
   const previousViewerRef = useRef<string | null | undefined>(undefined);
@@ -62,7 +63,7 @@ function RootLayoutNav({ fontsReady }: { fontsReady: boolean }) {
   }, [isLoading, queryClient, user?.user_id]);
 
   useEffect(() => {
-    if (!isReady || unlinkCallback) return;
+    if (!isReady || unlinkCallback || emailConfirmationCallback) return;
 
     const inOnboardingGroup = segments[0] === 'onboarding';
     const routeRequiresAuthentication = !inAuthGroup && !inPublicRoute;
@@ -84,7 +85,7 @@ function RootLayoutNav({ fontsReady }: { fontsReady: boolean }) {
         router.replace(destination as Href);
       }
     }
-  }, [user, isReady, pathname, segments, router, inAuthGroup, inPublicRoute, unlinkCallback]);
+  }, [user, isReady, pathname, segments, router, inAuthGroup, inPublicRoute, unlinkCallback, emailConfirmationCallback]);
 
   useEffect(() => {
     if (isLoading || startupError || !user?.user_id || user.onboarding_completed !== true || unlinkCallback) return;

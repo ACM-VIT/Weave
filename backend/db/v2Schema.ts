@@ -57,6 +57,7 @@ export const appUsers = appSchema.table('users', {
   profileVersion: bigint('profile_version', { mode: 'bigint' }).notNull().default(1n),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  sessionsRevokedAt: timestamp('sessions_revoked_at', { withTimezone: true }),
 }, (table) => [
   uniqueIndex('app_users_username_lower_uidx').on(sql`lower(${table.username})`),
   uniqueIndex('app_users_verified_github_id_uidx')

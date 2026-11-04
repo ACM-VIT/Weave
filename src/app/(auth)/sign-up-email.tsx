@@ -6,7 +6,6 @@ import {
     Text,
     View,
 } from "react-native";
-import { useAuth } from "../../store/AuthContext";
 import { register } from "../../api/auth";
 import { useOAuth } from "../../hooks/useOAuth";
 
@@ -35,7 +34,7 @@ export default function SignUpEmail() {
   const [password, setPassword] = useState("");
   const [dateOfBirth, setDateOfBirth] = useState("");
 
-  const { setSession } = useAuth();
+  const [confirmationEmail, setConfirmationEmail] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState("");
 
@@ -73,9 +72,9 @@ export default function SignUpEmail() {
     setIsLoading(true);
     setErrorMsg("");
     try {
-      const data = await register(email, password, fullName, normalizedUsername, dateOfBirth);
-      await setSession(data);
-      // _layout.tsx will automatically redirect to onboarding
+      await register(email, password, fullName, normalizedUsername, dateOfBirth);
+      setConfirmationEmail(email.trim());
+      setPassword('');
     } catch (err: any) {
       setErrorMsg(err.message || 'Registration failed');
     } finally {
@@ -86,6 +85,20 @@ export default function SignUpEmail() {
   const handleOAuth = (provider: 'github' | 'google') => {
     void signInWithProvider(provider, 'signup');
   };
+
+  if (confirmationEmail) return (
+    <KeyboardForm className="flex-1 bg-black" contentContainerStyle={{flexGrow:1,justifyContent:'center',padding:32}}>
+      <View className="w-full max-w-[450px] self-center">
+        <LogoCircle size={56} />
+        <Text className="text-white text-[28px] font-nataBold mt-6">Check your email</Text>
+        <Text accessibilityLiveRegion="polite" className="text-[#8A898F] text-[15px] leading-6 font-nata mt-3 mb-7">
+          Open the confirmation link sent to {confirmationEmail}, then sign in to finish setting up Weave. Check your spam folder if it hasn’t arrived.
+        </Text>
+        <PrimaryButton label="Continue to login" onPress={()=>router.replace('/(auth)/login')} />
+        <AuthFooter prompt="Wrong address or no email?" linkLabel="Try again" onPress={()=>setConfirmationEmail('')} />
+      </View>
+    </KeyboardForm>
+  );
 
   return (
       <KeyboardForm
