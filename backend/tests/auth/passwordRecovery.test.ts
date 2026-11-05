@@ -59,7 +59,8 @@ test('password recovery never updates through an invalid session', async () => {
 });
 
 
-async function controllerFixture(recoveryAuth?: Parameters<typeof updatePasswordFromRecoverySession>[0], signupSuccess: boolean | 'session' = false, revokeSessions: (id: string) => Promise<void> = async()=>undefined) {
+async function controllerFixture(recoveryAuth?: Parameters<typeof updatePasswordFromRecoverySession>[0], signupSuccess: boolean | 'session' = false, revokeSessions: (id: string) => Promise<void> = async()=>undefined,
+  refresh?: {db: unknown; getUserById: (id: string) => Promise<unknown>; rotate: (id: string, hash: string) => Promise<string>; rotatedError: new () => Error}) {
   const {readFileSync}=await import('node:fs');
   const {createRequire}=await import('node:module');
   const {fileURLToPath}=await import('node:url');
@@ -70,20 +71,23 @@ async function controllerFixture(recoveryAuth?: Parameters<typeof updatePassword
   const exports={};const module={exports};
   const signupRequests: unknown[] = [];
   const signup = async (attributes: unknown) => { providerCalls++; signupRequests.push(attributes); return signupSuccess ? { data: {user:{id:recoveryUserId},session:signupSuccess==='session'?{user:{id:recoveryUserId}}:null}, error:null } : {data:null,error:{message:'Controlled provider boundary'}}; };
-  const auth={admin:{createUser:signup},signUp:signup,signInWithPassword:async()=>({data:{user:{id:recoveryUserId,email_confirmed_at:null}},error:null})};
+  const auth={admin:{createUser:signup,getUserById:refresh?.getUserById},signUp:signup,signInWithPassword:async()=>({data:{user:{id:recoveryUserId,email_confirmed_at:null}},error:null})};
   const javascript=ts.transpileModule(readFileSync(filename,'utf8'),{
     fileName:filename,compilerOptions:{module:ts.ModuleKind.CommonJS,esModuleInterop:true},
   }).outputText;
   new Function('require','module','exports','process',javascript)((specifier:string)=>{
     if(specifier==='../config/supabase.js')return {requireEmailConfirmation:async()=>undefined,supabaseAdmin:{auth},createRecoverySupabaseClient:()=>({auth:recoveryAuth}),createEmailAuthSupabaseClient:()=>({auth})};
     if(specifier==='../services/oauthPkceService.js')return {OAuthPkceCoordinator:class{},RedisOAuthAttemptStore:class{}};
-    if(specifier==='../services/authSessionService.js')return {revokeRefreshSessions:revokeSessions,authAttemptStartedAt:async()=>new Date().toISOString()};
+    if(specifier==='../services/authSessionService.js')return {revokeRefreshSessions:revokeSessions,authAttemptStartedAt:async()=>new Date().toISOString(),rotateRefreshToken:refresh?.rotate,RefreshTokenRotatedError:refresh?.rotatedError};
+    if(specifier==='../db/index.js')return {db:refresh?.db};
+    if(specifier==='../db/v2Schema.js')return require(specifier.replace(/\.js$/,'.ts'));
+    if(specifier==='../services/refreshUserLookup.js')return require(specifier.replace(/\.js$/,'.ts'));
     if(specifier==='../services/passwordRecoveryService.js')return {updatePasswordFromRecoverySession};
     if(specifier.startsWith('../utils/')||specifier==='../contracts/passwordPolicy.js')return require(specifier.replace(/\.js$/,'.ts'));
     if(specifier.startsWith('.'))return {};
     return require(specifier);
   },module,exports,{env:{CLIENT_URL:'http://fixture.invalid',BACKEND_URL:'http://fixture.invalid',JWT_SECRET:'test-only'}});
-  return {...module.exports as {signUp:(req:unknown,res:unknown)=>Promise<void>;login:(req:unknown,res:unknown)=>Promise<void>;confirmPasswordReset:(req:unknown,res:unknown)=>Promise<void>},providerCalls:()=>providerCalls,signupRequests};
+  return {...module.exports as {signUp:(req:unknown,res:unknown)=>Promise<void>;login:(req:unknown,res:unknown)=>Promise<void>;confirmPasswordReset:(req:unknown,res:unknown)=>Promise<void>;refreshToken:(req:unknown,res:unknown)=>Promise<void>},providerCalls:()=>providerCalls,signupRequests};
 }
 
 test('signup enforces password policy before provider admission', async () => {
@@ -166,7 +170,7 @@ test('durable recovery fences old sessions and in-flight rotation without revoki
   const {randomUUID,randomInt,createHash} = await import('node:crypto');
   const {setTimeout:delay} = await import('node:timers/promises');
   const {sqlClient:sql} = await import('../../db/index.js');
-  const {authAttemptStartedAt,issueRefreshToken,rotateRefreshToken,revokeRefreshSessions} = await import('../../services/authSessionService.js');
+  const {authAttemptStartedAt,issueRefreshToken,rotateRefreshToken,revokeRefreshSessions,RefreshTokenRotatedError} = await import('../../services/authSessionService.js');
   const owner=randomUUID(), peer=randomUUID(), suffix=owner.replaceAll('-',''), name='auth_gate_'+suffix;
   const hash=(value:string)=>createHash('sha256').update(value).digest('hex');
   let releaseGate:(()=>void)|undefined, gate:Promise<unknown>|undefined, rotating:Promise<unknown>|undefined, revoking:Promise<unknown>|undefined;
@@ -189,13 +193,46 @@ test('durable recovery fences old sessions and in-flight rotation without revoki
     assert.equal(recoveredStatus,200);
     assert.equal(Number((await sql`SELECT count(*) FROM app.refresh_tokens WHERE user_id=${owner}::uuid`)[0].count),0);
     assert.equal(Number((await sql`SELECT count(*) FROM app.refresh_tokens WHERE user_id=${peer}::uuid`)[0].count),1);
+
+    // Two independent tabs read the same cookie before either rotates it.
+    const {db}=await import('../../db/index.js');
+    const shared=await issueRefreshToken(owner,await authAttemptStartedAt());
+    let lookups=0, releaseLookups!:()=>void;
+    const bothLookups=new Promise<void>(resolve=>{releaseLookups=resolve;});
+    const refreshController=await controllerFixture(undefined,false,revokeRefreshSessions,{
+      db,rotate:rotateRefreshToken,rotatedError:RefreshTokenRotatedError,getUserById:async(id)=>{
+        assert.equal(id,owner);if(++lookups===2)releaseLookups();
+        if(lookups<=2)await bothLookups;
+        return {data:{user:{id:owner,email:'tarun@example.test'}},error:null};
+      },
+    });
+    let cookie=shared, cleared=0;
+    const response=()=>({code:0,payload:{} as Record<string,unknown>,
+      status(value:number){this.code=value;return this;},json(value:Record<string,unknown>){this.payload=value;return this;},
+      cookie(_name:string,value:string){cookie=value;return this;},clearCookie(){cleared++;cookie='';return this;},
+    });
+    const a=response(),b=response();
+    await Promise.all([refreshController.refreshToken({cookies:{refresh_token:shared}},a),refreshController.refreshToken({cookies:{refresh_token:shared}},b)]);
+    assert.deepEqual([a.code,b.code].sort(),[200,409]);
+    assert.equal(cleared,0,'a concurrent loser cannot erase the winning cookie');
+    const loser=a.code===409?a:b;
+    assert.equal(loser.payload.code,'REFRESH_TOKEN_ROTATED');
+    assert.ok(cookie&&cookie!==shared);
+    assert.equal(Number((await sql`SELECT count(*) FROM app.refresh_tokens WHERE user_id=${owner}::uuid AND last_used_at IS NULL`)[0].count),1,'only one active replacement is issued');
+    const followup=response();await refreshController.refreshToken({cookies:{refresh_token:cookie}},followup);
+    assert.equal(followup.code,200,'the surviving browser cookie still renews the session');
+    const validCookie=cookie;
+    const consumed=response();await refreshController.refreshToken({cookies:{refresh_token:shared}},consumed);
+    assert.equal(consumed.code,409);assert.equal(cookie,validCookie,'a consumed token cannot issue or clear a cookie');
+    const stale=response();await refreshController.refreshToken({cookies:{refresh_token:'unknown-old-cookie'}},stale);
+    assert.equal(stale.code,401);assert.equal(cookie,validCookie,'an invalid stale request cannot mutate a newer shared credential');
     assert.equal(Number((await sql`SELECT count(*) FROM app.oauth_codes WHERE user_id=${owner}::uuid`)[0].count),0);
     await assert.rejects(rotateRefreshToken(owner,hash(original)),/InvalidToken/);
     await assert.rejects(issueRefreshToken(owner,beforeReset),/session changed/,'a login/code admitted before reset cannot recreate the session');
     const current=await issueRefreshToken(owner,await authAttemptStartedAt());
     assert.ok(current);
 
-    // Pause a real rotation after its DELETE, before its replacement INSERT.
+    // Pause a real rotation after consumption, before its replacement INSERT.
     // Revocation must wait on the same owner lock, then delete the replacement.
     const lockKey=randomInt(1,2_000_000_000);
     await sql.unsafe(`CREATE FUNCTION app.${name}() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN

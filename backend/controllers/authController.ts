@@ -21,7 +21,7 @@ import {
 } from "../services/identityService.js";
 import { RefreshUserLookupTimeoutError, withRefreshUserLookupDeadline } from '../services/refreshUserLookup.js';
 import { updatePasswordFromRecoverySession } from "../services/passwordRecoveryService.js";
-import { authAttemptStartedAt, issueRefreshToken, revokeRefreshSessions, rotateRefreshToken } from '../services/authSessionService.js';
+import { authAttemptStartedAt, issueRefreshToken, revokeRefreshSessions, rotateRefreshToken, RefreshTokenRotatedError } from '../services/authSessionService.js';
 import {
   OAuthPkceCoordinator,
   RedisOAuthAttemptStore,
@@ -332,6 +332,7 @@ export async function refreshToken(req: Request, res: Response): Promise<void> {
       .select({
         user_id: refreshTokens.userId,
         expires_at: refreshTokens.expiresAt,
+        last_used_at: refreshTokens.lastUsedAt,
       })
       .from(refreshTokens)
       .where(eq(refreshTokens.tokenHash, tokenHash))
@@ -344,6 +345,7 @@ export async function refreshToken(req: Request, res: Response): Promise<void> {
     if (new Date(tokenData.expires_at) < new Date()) {
       throw new Error("ExpiredToken");
     }
+    if (tokenData.last_used_at != null) throw new RefreshTokenRotatedError();
 
     // 2. Fetch user metadata from Supabase Auth via Admin Client
     // IMPORTANT: We do this BEFORE the transaction so we don't hold database connections open across network calls!
@@ -373,12 +375,17 @@ export async function refreshToken(req: Request, res: Response): Promise<void> {
       user: authData.user,
     });
   } catch (error: any) {
+    if (error?.code === 'REFRESH_TOKEN_ROTATED') {
+      res.status(409).json({success:false,error:error.message,code:'REFRESH_TOKEN_ROTATED',retryable:true});
+      return;
+    }
     if (error instanceof RefreshUserLookupTimeoutError) {
       // No token mutation has started, so preserve the caller's refresh cookie.
       return sendError(res, 503, 'Session refresh is temporarily unavailable. Please try again.');
     }
     if (error.message === "InvalidToken" || error.message === "ExpiredToken") {
-      res.clearCookie("refresh_token", clearRefreshCookieOptions());
+      // This response can arrive after another request established a newer
+      // cookie. Only an explicit successful logout may clear shared credentials.
       return sendError(
         res,
         401,

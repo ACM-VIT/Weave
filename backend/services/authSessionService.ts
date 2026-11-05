@@ -7,6 +7,11 @@ export class SessionRevokedError extends Error {
   constructor() { super('Your session changed. Please sign in again.'); }
 }
 
+export class RefreshTokenRotatedError extends Error {
+  readonly code = 'REFRESH_TOKEN_ROTATED';
+  constructor() { super('Another request has already refreshed this session. Please retry.'); }
+}
+
 /** Use one database clock for admission and reset cutoffs, including sub-ms precision. */
 export async function authAttemptStartedAt(): Promise<string> {
   const [row] = await sqlClient`SELECT clock_timestamp()::text AS started_at`;
@@ -41,9 +46,20 @@ export async function issueRefreshToken(userId: string, startedAt: string): Prom
 export async function rotateRefreshToken(userId: string, tokenHash: string): Promise<string> {
   return sqlClient.begin(async tx => {
     if (!await lockOwner(tx, userId)) throw new Error('InvalidToken');
-    const deleted = await tx`DELETE FROM app.refresh_tokens WHERE user_id=${userId}::uuid
-      AND token_hash=${tokenHash} AND expires_at>clock_timestamp() RETURNING token_id`;
-    if (!deleted.length) throw new Error('InvalidToken');
+    await tx`DELETE FROM app.refresh_tokens WHERE user_id=${userId}::uuid
+      AND last_used_at IS NOT NULL AND expires_at<=clock_timestamp()`;
+    // Retain only the consumed hash briefly. It can diagnose a parallel loser,
+    // but never mint another replacement or expose the winner's credential.
+    const consumed = await tx`UPDATE app.refresh_tokens
+      SET last_used_at=clock_timestamp(),expires_at=LEAST(expires_at,clock_timestamp()+interval '1 minute')
+      WHERE user_id=${userId}::uuid AND token_hash=${tokenHash}
+        AND last_used_at IS NULL AND expires_at>clock_timestamp() RETURNING token_id`;
+    if (!consumed.length) {
+      const rotated = await tx`SELECT token_id FROM app.refresh_tokens WHERE user_id=${userId}::uuid
+        AND token_hash=${tokenHash} AND last_used_at IS NOT NULL AND expires_at>clock_timestamp()`;
+      if (rotated.length) throw new RefreshTokenRotatedError();
+      throw new Error('InvalidToken');
+    }
     return storeToken(tx, userId);
   });
 }
