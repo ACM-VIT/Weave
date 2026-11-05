@@ -21,6 +21,7 @@ export async function authRateLimit(req: Request, res: Response, next: NextFunct
       "local n=redis.call('INCR',KEYS[1]); if n==1 then redis.call('EXPIRE',KEYS[1],ARGV[1]) end; return n",
       1, key, windowSeconds,
     ));
+    if (!Number.isSafeInteger(count) || count < 1) throw new Error('Invalid auth rate-limit counter');
     res.setHeader('RateLimit-Limit', maximum);
     res.setHeader('RateLimit-Remaining', Math.max(0, maximum - count));
     if (count > maximum) {
@@ -29,7 +30,11 @@ export async function authRateLimit(req: Request, res: Response, next: NextFunct
       return;
     }
   } catch (error) {
-    console.error('[RateLimit] Redis unavailable; relying on ingress limits:', error);
+    console.error('[RateLimit] Authentication admission unavailable:', error);
+    res.setHeader('Retry-After', 5);
+    res.status(503).json({success:false,code:'AUTH_RATE_LIMIT_UNAVAILABLE',retryable:true,
+      error:'Authentication is temporarily unavailable. Please try again shortly.'});
+    return;
   }
   next();
 }

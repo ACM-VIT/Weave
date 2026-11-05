@@ -292,3 +292,40 @@ test('password signup never exposes a session from an auto-confirming provider',
   await controller.signUp({body:{email:'tarun@example.test',password:'a-secure-new-password',date_of_birth:'2005-01-01'}},{status(value:number){status=value;return this;},json(value:unknown){payload=value;return this;},cookie(){cookies++;}});
   assert.equal(status,503);assert.equal(payload.data,undefined);assert.equal(cookies,0);
 });
+
+test('auth HTTP admission refuses Redis failure and invalid counters without reaching authentication', async t => {
+  const [{default:express},{readFileSync},{createRequire},{fileURLToPath},ts]=await Promise.all([
+    import('express'),import('node:fs'),import('node:module'),import('node:url'),import('typescript'),
+  ]);
+  const filename=fileURLToPath(new URL('../../middlewares/securityMiddleware.ts',import.meta.url));
+  const require=createRequire(filename);
+  let outcome: number | string | Error = 1, admitted=0;
+  const redis={async eval(){if(outcome instanceof Error)throw outcome;return outcome;}};
+  const box={exports:{}};
+  const source=ts.transpileModule(readFileSync(filename,'utf8'),{fileName:filename,compilerOptions:{module:ts.ModuleKind.CommonJS,esModuleInterop:true}}).outputText;
+  new Function('require','module','exports',source)((name:string)=>name==='../config/redis.js'?redis:require(name),box,box.exports);
+  const {authRateLimit}=box.exports as typeof import('../../middlewares/securityMiddleware.js');
+  const app=express();app.use('/api/auth',authRateLimit);
+  app.post('/api/auth/login',(_req,res)=>{admitted++;res.status(204).end();});
+  app.get('/api/v2/probe',(_req,res)=>res.status(204).end());
+  const server=app.listen(0,'127.0.0.1');await new Promise<void>(resolve=>server.listening?resolve():server.once('listening',resolve));
+  t.after(async()=>{server.closeAllConnections();await new Promise<void>(resolve=>server.close(()=>resolve()));});
+  const address=server.address();assert.ok(address&&typeof address==='object');
+  const base=`http://127.0.0.1:${address.port}`;
+  t.mock.method(console,'error',()=>undefined);
+  assert.equal((await fetch(base+'/api/auth/login',{method:'POST'})).status,204);
+  outcome=21;
+  assert.equal((await fetch(base+'/api/auth/login',{method:'POST'})).status,429);
+  outcome=new Error('Redis connection lost');
+  const refused=await fetch(base+'/api/auth/login',{method:'POST'});
+  assert.equal(refused.status,503);
+  assert.equal(refused.headers.get('set-cookie'),null);
+  assert.equal(refused.headers.get('retry-after'),'5');
+  assert.equal((await refused.json() as {code:string}).code,'AUTH_RATE_LIMIT_UNAVAILABLE');
+  outcome='not-a-counter';
+  assert.equal((await fetch(base+'/api/auth/login',{method:'POST'})).status,503);
+  assert.equal(admitted,1,'neither dependency failures nor invalid counters can reach the auth handler');
+  assert.equal((await fetch(base+'/api/v2/probe')).status,204,'the auth outage policy does not block unrelated product routes');
+  outcome=1;
+  assert.equal((await fetch(base+'/api/auth/login',{method:'POST'})).status,204,'admission recovers when Redis does');
+});
