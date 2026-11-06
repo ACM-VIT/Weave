@@ -42,6 +42,11 @@ example
 /ios
 /android
 
+# Private Android signing material must never enter source control.
+*.jks
+*.keystore
+*.p12
+
 # backend build output
 backend/dist/
 
@@ -62,3 +67,14 @@ backend/dist/
 /artifacts/
 /repositories-batch-01.json
 /repositories-batch-01-result.json
+
+# Local Azure deployment targets, artifacts and receipts
+/.deploy-local/
+
+# Bytecode from the local Azure deployment helpers
+/scripts/__pycache__/
+
+# Local Azure deployment tooling and its private verification suite
+/scripts/azure_web_release.py
+/scripts/deploy-web-azure.py
+/tests/azure-deploy.test.ts

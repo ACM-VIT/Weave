@@ -88,7 +88,7 @@ class GenerationQueue implements FeedQueuePort {
 
 class CapturingRecommendations implements RecommendationPort {
   request: MlRecommendationRequest | null = null;
-  async generate(input: MlRecommendationRequest): Promise<MlRecommendationResponse> {
+  async generate(input: MlRecommendationRequest): Promise<Extract<MlRecommendationResponse, {feed_version: number}>> {
     this.request = input;
     return {
       schema_version: 2,
@@ -134,6 +134,7 @@ test('feed generation sends followed-owner repositories as bounded ML context', 
     recommendations,
   ).generate(userId, 45);
 
+  assert.equal(recommendations.request?.limit, 45, 'ordinary requests retain their existing ranking budget');
   assert.deepEqual(result, { status: 'generated', feedVersion: 1n, count: 2 });
   assert.deepEqual(recommendations.request?.social_repo_ids, [socialRepoId]);
   assert.equal(queue.replaced, true);
@@ -146,6 +147,31 @@ test('feed generation sends followed-owner repositories as bounded ML context', 
     { repo_id: otherRepoId, summary_id: null,
       score: 0.9, source: 'semantic', model_version: 'test-model' },
   ]);
+});
+
+test('a saturated exclusion hint window can reach unseen ranked candidates beyond a rejected prefix', async () => {
+  const id = (value: number) => `00000000-0000-4000-8000-${String(value).padStart(12, '0')}`;
+  const ranked = Array.from({ length: 100 }, (_, index) => ({ repo_id: id(index + 1000), score: 1 - index / 1000, source: 'semantic' as const }));
+  const hints = Array.from({ length: 500 }, (_, index) => id(index + 2000));
+  const unseen = ranked.slice(45).map(item => item.repo_id);
+  const persistence = new GenerationPersistence();
+  persistence.identities = ranked.map(item => ({repo_id:item.repo_id,summary_id:null}));
+  Object.assign(persistence, {
+    listExcludedRepositoryIds: async () => hints,
+    listExposureEligibleRepositoryIds: async () => unseen,
+  });
+  const provider = new CapturingRecommendations();
+  const generate = provider.generate.bind(provider);
+  provider.generate = async request => {
+    const response = await generate(request);
+    return {...response,items:ranked.slice(0,request.limit)};
+  };
+  const queue = new GenerationQueue();
+  const result = await new FeedGenerationService(persistence,queue,provider).generate(userId,45);
+  assert.deepEqual(result,{status:'generated',feedVersion:1n,count:45});
+  assert.equal(provider.request?.limit,100,'overfetch stays inside the existing ML response contract');
+  assert.deepEqual(provider.request?.exclude_repo_ids,hints);
+  assert.deepEqual(queue.entries.map(item=>item.repo_id),unseen.slice(0,45),'seen candidates remain excluded and queue size stays bounded');
 });
 
 test('feed generation rejects an entirely missing or inactive set without replacing the queue', async () => {

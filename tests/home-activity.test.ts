@@ -46,7 +46,8 @@ async function fixture(t:test.TestContext){
  loadPage=async()=>page;
  for(const id of [ownerA,ownerB])client.setQueryData(['feed',id],{pages:[page],pageParams:[null]});
  const auth={checkOnboardingStatus:async()=>{},adjustLikesGivenCount(){},settleLikesGivenCountAdjustments(){}};
- const FlatList=React.forwardRef(function FixtureFlatList(props:any,ref){useImperativeHandle(ref,()=>({scrollToOffset(){}}));return React.createElement('FlatList',null,props.data.map((item:any,index:number)=>React.createElement(React.Fragment,{key:props.keyExtractor(item)},props.renderItem({item,index}))));});
+ const scrolls:{offset:number;animated:boolean}[]=[];
+ const FlatList=React.forwardRef(function FixtureFlatList(props:any,ref){useImperativeHandle(ref,()=>({scrollToOffset(options:any){scrolls.push(options);}}));return React.createElement('FlatList',props,props.data.map((item:any,index:number)=>React.createElement(React.Fragment,{key:props.keyExtractor(item)},props.renderItem({item,index}))));});
  function Card(props:any){useEffect(()=>{mounts++;},[]);return React.createElement('Card',props);}
  const filename=resolve('src/app/(tabs)/home.tsx'),nativeRequire=createRequire(filename);
  const mocks:Record<string,unknown>={
@@ -74,7 +75,9 @@ async function fixture(t:test.TestContext){
  await act(async()=>{root=create(render());await tick();});
  t.after(async()=>{await act(async()=>{root.unmount();await tick();});client.clear();delete(globalThis as any).IS_REACT_ACT_ENVIRONMENT;});
  const retry=()=>root.root.findAllByType('Pressable' as any).find(node=>node.props.accessibilityLabel==='Retry pending activity');
- return {outbox,storage,sent,lifecycle,client,fs,retry,
+ return {outbox,storage,sent,lifecycle,client,fs,retry,scrolls,
+  async appendRepo(){await act(async()=>{client.setQueryData<any>(['feed',owner],(cached:any)=>({...cached,pages:[{...cached.pages[0],items:[...cached.pages[0].items,{...page.items[0],repo_id:'00000000-0000-4000-8000-000000000008',serve_id:'00000000-0000-4000-8000-000000000009',position:5}]}]}));await tick();});},
+  async show(index:number){await act(async()=>{const list=root.root.findByType('FlatList' as any);list.props.onViewableItemsChanged({viewableItems:[{item:list.props.data[index],isViewable:true}]});await tick();});},
   setPageLoader:(loader:(...args:any[])=>Promise<any>)=>{loadPage=loader;},
   get resetSession(){return resetSession;},
   async retireFeed(){
@@ -87,7 +90,7 @@ async function fixture(t:test.TestContext){
   get mounts(){return mounts;},get prepared(){return prepared;},
   set quota(value:boolean){quota=value;},set offline(value:boolean){offline=value;},set failRemoval(value:boolean){failRemoval=value;},advance(){clock+=2000;},
   get reaction(){return root.root.findByType('Card' as any).props.repository.viewerReaction;},
-  async react(action:ActivityInput['action']='like'){await act(async()=>{root.root.findByType('Card' as any).props.onQueueActivity({...input,action},true);await tick();});},
+  async react(action:ActivityInput['action']='like'){await act(async()=>{root.root.findAllByType('Card' as any)[0].props.onQueueActivity({...input,action},true);await tick();});},
   async pressRetry(){await act(async()=>{connectivity({isConnected:false,isInternetReachable:false});connectivity({isConnected:true,isInternetReachable:true});await tick();});},
   async remount(){await act(async()=>{root.unmount();await tick();});await act(async()=>{root=create(render());await tick();});},
   async reconnect(){await act(async()=>{connectivity({isConnected:true,isInternetReachable:true});await tick();});},
@@ -95,6 +98,29 @@ async function fixture(t:test.TestContext){
   async switchOwner(){lifecycle.retire(lifecycle.currentGeneration());owner=ownerB;await act(async()=>{root.update(render());await tick();});},
  };
 }
+
+test('Not interested advances to the next loaded repo without waiting for feedback delivery',async t=>{
+ const app=await fixture(t);await app.appendRepo();await app.show(0);app.offline=true;
+ await app.react('dislike');
+ assert.deepEqual(app.scrolls,[{offset:800,animated:true}]);
+ assert.equal((await app.storage.load())[0].action,'dislike','failed delivery retains the same durable feedback');
+ await app.react('undislike');assert.equal(app.scrolls.length,1,'undo does not skip another card');
+ await app.show(1);await app.react('dislike');
+ assert.equal(app.scrolls.length,1,'a late action on a card that is no longer visible cannot move the current card');
+});
+
+test('Not interested waits for an in-flight next page before advancing past the loaded end',async t=>{
+ const app=await fixture(t);app.offline=true;let resolvePage!:(page:any)=>void;
+ app.setPageLoader(()=>new Promise(resolve=>{resolvePage=resolve;}));
+ await act(async()=>{app.client.setQueryData<any>(['feed',ownerA],cached=>({...cached,
+  pages:[{...cached.pages[0],nextCursor:'next-page'}]}));await tick();});
+ await app.show(0);await app.react('dislike');
+ assert.deepEqual(app.scrolls,[],'never scroll into an unloaded card');
+ await act(async()=>{resolvePage({items:[{repo_id:'00000000-0000-4000-8000-000000000008',
+  full_name:'fixture/next',serve_id:'00000000-0000-4000-8000-000000000009',position:5,feed_session_id:session}],
+  nextCursor:null,feedVersion:'1',sessionId:session,mode:'personalized'});await tick();});
+ assert.deepEqual(app.scrolls,[{offset:800,animated:true}]);
+});
 
 test('Home quietly retains quota failures and retries exact durable intent on reconnect',async t=>{
  const app=await fixture(t);app.quota=true;await app.react();

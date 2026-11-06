@@ -434,6 +434,20 @@
       "when": 1795305600000,
       "tag": "0058_deferred_feed_readme_media",
       "breakpoints": true
+    },
+    {
+      "idx": 62,
+      "version": "7",
+      "when": 1795392000000,
+      "tag": "0059_auth_session_revocation",
+      "breakpoints": true
+    },
+    {
+      "idx": 63,
+      "version": "7",
+      "when": 1795392000001,
+      "tag": "0060_identity_session_fences",
+      "breakpoints": true
     }
   ]
 }

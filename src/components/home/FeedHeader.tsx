@@ -1,19 +1,17 @@
-import { ActivityIndicator, Image, Pressable, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Svg, { Defs, LinearGradient, Rect, Stop } from 'react-native-svg';
 
 import { RefreshCw } from 'lucide-react-native';
 
 import { REFERENCE_THEME } from '@/constants/theme';
-
-const WEAVE_LOGO = require('../../../assets/images/logo/weavelogo.png');
+import WeaveSymbol from '@/assets/images/logo/weave-symbol.svg';
 
 export function FeedHeader({ pageWidth, discovery = false, onRefresh, refreshing = false,statusMessage }: { pageWidth: number; discovery?: boolean; onRefresh?: () => void; refreshing?: boolean;statusMessage?:string|null }) {
   const insets = useSafeAreaInsets();
   const compact = pageWidth < 360;
   const outerGutter = pageWidth < 330 ? 10 : 14;
   const logoSize = compact ? 26 : 30;
-  const imageSize = logoSize * 1.4;
 
   return (
     <View pointerEvents="box-none" style={styles.root}>
@@ -45,17 +43,10 @@ export function FeedHeader({ pageWidth, discovery = false, onRefresh, refreshing
               { width: logoSize, height: logoSize, borderRadius: logoSize / 2 },
             ]}
           >
-            <Image
+            <WeaveSymbol
               accessible={false}
-              resizeMode="contain"
-              source={WEAVE_LOGO}
-              style={{
-                position: 'absolute',
-                width: imageSize,
-                height: imageSize,
-                left: (logoSize - imageSize) / 2,
-                top: -logoSize * 0.06,
-              }}
+              width={logoSize * 0.76}
+              height={logoSize * 0.76 * (650 / 740)}
             />
           </View>
           <Text style={[styles.brand, compact && styles.brandCompact]}>
@@ -103,6 +94,8 @@ const styles = StyleSheet.create({
   },
   logoFrame: {
     overflow: 'hidden',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   brand: {
     color: REFERENCE_THEME.text,
