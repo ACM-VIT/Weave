@@ -63,7 +63,12 @@ if (!BACKEND_URL)
 const JWT_SECRET = process.env.JWT_SECRET as string;
 const PASSWORD_RESET_URL = process.env.PASSWORD_RESET_URL
   ?? CLIENT_URL.replace(/callback\/?$/, "reset-password");
-const EMAIL_CONFIRMATION_URL = new URL('/confirm-email', CLIENT_URL).toString();
+const clientUrl = new URL(CLIENT_URL);
+const EMAIL_CONFIRMATION_URL = process.env.EMAIL_CONFIRMATION_URL
+  ? new URL(process.env.EMAIL_CONFIRMATION_URL).toString()
+  : ['http:', 'https:'].includes(clientUrl.protocol)
+    ? new URL('/confirm-email', clientUrl).toString()
+    : `${clientUrl.protocol}//confirm-email`;
 
 if (!JWT_SECRET) {
   throw new Error(
@@ -262,7 +267,9 @@ export async function login(req: Request, res: Response): Promise<void> {
       ),
     };
     try { await ensureIdentityProfile(profile); } catch (error: any) {
-      if (error?.code !== '23505' || error?.constraint_name !== 'app_users_username_lower_uidx') throw error;
+      // Migration 0009 uses citext UNIQUE; adopted Drizzle schemas may use the
+      // explicitly named lower-case index. Other identity conflicts must fail.
+      if (error?.code !== '23505' || !['users_username_key', 'app_users_username_lower_uidx'].includes(error?.constraint_name)) throw error;
       await ensureIdentityProfile({...profile,username:fallbackUsername(userId,data.user.user_metadata)});
     }
 

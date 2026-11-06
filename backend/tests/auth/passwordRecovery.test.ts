@@ -60,7 +60,12 @@ test('password recovery never updates through an invalid session', async () => {
 
 
 async function controllerFixture(recoveryAuth?: Parameters<typeof updatePasswordFromRecoverySession>[0], signupSuccess: boolean | 'session' = false, revokeSessions: (id: string) => Promise<void> = async()=>undefined,
-  refresh?: {db: unknown; getUserById: (id: string) => Promise<unknown>; rotate: (id: string, hash: string) => Promise<string>; rotatedError: new () => Error}) {
+  refresh?: {db: unknown; getUserById: (id: string) => Promise<unknown>; rotate: (id: string, hash: string) => Promise<string>; rotatedError: new () => Error},
+  options: {clientUrl?: string; confirmationUrl?: string; db?: unknown;
+    loginUser?: {id: string; email_confirmed_at: string; user_metadata?: Record<string,string>};
+    identity?: typeof import('../../services/identityService.js');
+    issueRefreshToken?: (id: string, started: string) => Promise<string>;
+    authAttemptStartedAt?: () => Promise<string>} = {}) {
   const {readFileSync}=await import('node:fs');
   const {createRequire}=await import('node:module');
   const {fileURLToPath}=await import('node:url');
@@ -71,22 +76,24 @@ async function controllerFixture(recoveryAuth?: Parameters<typeof updatePassword
   const exports={};const module={exports};
   const signupRequests: unknown[] = [];
   const signup = async (attributes: unknown) => { providerCalls++; signupRequests.push(attributes); return signupSuccess ? { data: {user:{id:recoveryUserId},session:signupSuccess==='session'?{user:{id:recoveryUserId}}:null}, error:null } : {data:null,error:{message:'Controlled provider boundary'}}; };
-  const auth={admin:{createUser:signup,getUserById:refresh?.getUserById},signUp:signup,signInWithPassword:async()=>({data:{user:{id:recoveryUserId,email_confirmed_at:null}},error:null})};
+  const auth={admin:{createUser:signup,getUserById:refresh?.getUserById},signUp:signup,signInWithPassword:async()=>({data:{user:options.loginUser??{id:recoveryUserId,email_confirmed_at:null}},error:null})};
   const javascript=ts.transpileModule(readFileSync(filename,'utf8'),{
     fileName:filename,compilerOptions:{module:ts.ModuleKind.CommonJS,esModuleInterop:true},
   }).outputText;
   new Function('require','module','exports','process',javascript)((specifier:string)=>{
     if(specifier==='../config/supabase.js')return {requireEmailConfirmation:async()=>undefined,supabaseAdmin:{auth},createRecoverySupabaseClient:()=>({auth:recoveryAuth}),createEmailAuthSupabaseClient:()=>({auth})};
     if(specifier==='../services/oauthPkceService.js')return {OAuthPkceCoordinator:class{},RedisOAuthAttemptStore:class{}};
-    if(specifier==='../services/authSessionService.js')return {revokeRefreshSessions:revokeSessions,authAttemptStartedAt:async()=>new Date().toISOString(),rotateRefreshToken:refresh?.rotate,RefreshTokenRotatedError:refresh?.rotatedError};
-    if(specifier==='../db/index.js')return {db:refresh?.db};
+    if(specifier==='../services/authSessionService.js')return {revokeRefreshSessions:revokeSessions,authAttemptStartedAt:options.authAttemptStartedAt??(async()=>new Date().toISOString()),issueRefreshToken:options.issueRefreshToken,rotateRefreshToken:refresh?.rotate,RefreshTokenRotatedError:refresh?.rotatedError};
+    if(specifier==='../services/identityService.js')return options.identity??{};
+    if(specifier==='../services/oauthAvatarPolicy.js'||specifier==='../services/oauthProfilePolicy.js')return require(specifier.replace(/\.js$/,'.ts'));
+    if(specifier==='../db/index.js')return {db:options.db??refresh?.db};
     if(specifier==='../db/v2Schema.js')return require(specifier.replace(/\.js$/,'.ts'));
     if(specifier==='../services/refreshUserLookup.js')return require(specifier.replace(/\.js$/,'.ts'));
     if(specifier==='../services/passwordRecoveryService.js')return {updatePasswordFromRecoverySession};
     if(specifier.startsWith('../utils/')||specifier==='../contracts/passwordPolicy.js')return require(specifier.replace(/\.js$/,'.ts'));
     if(specifier.startsWith('.'))return {};
     return require(specifier);
-  },module,exports,{env:{CLIENT_URL:'http://fixture.invalid',BACKEND_URL:'http://fixture.invalid',JWT_SECRET:'test-only'}});
+  },module,exports,{env:{CLIENT_URL:options.clientUrl??'http://fixture.invalid',EMAIL_CONFIRMATION_URL:options.confirmationUrl,BACKEND_URL:'http://fixture.invalid',JWT_SECRET:'test-only'}});
   return {...module.exports as {signUp:(req:unknown,res:unknown)=>Promise<void>;login:(req:unknown,res:unknown)=>Promise<void>;confirmPasswordReset:(req:unknown,res:unknown)=>Promise<void>;refreshToken:(req:unknown,res:unknown)=>Promise<void>},providerCalls:()=>providerCalls,signupRequests};
 }
 
@@ -128,7 +135,12 @@ test('recovery HTTP distinguishes terminal tokens from temporary session and upd
 
 
 test('password signup requests mailbox confirmation and returns no app credentials', async () => {
-  const fixture = await controllerFixture(undefined, true);
+  for (const [clientUrl, confirmationUrl, expected] of [
+    ['https://weave.example/home', undefined, 'https://weave.example/confirm-email'],
+    ['ghsocial://callback', undefined, 'ghsocial://confirm-email'],
+    ['ghsocial://callback', 'https://weave.example/confirm-email', 'https://weave.example/confirm-email'],
+  ]) {
+  const fixture = await controllerFixture(undefined, true, undefined, undefined, {clientUrl,confirmationUrl});
   let status = 0, payload: any, cookies = 0;
   const res = {status(value: number){status=value;return this;},json(value: unknown){payload=value;return this;},cookie(){cookies++;}};
   await fixture.signUp({body:{email:'tarun@example.test',password:'a-secure-new-password',full_name:'Tarun',date_of_birth:'2005-01-01'}}, res);
@@ -138,6 +150,8 @@ test('password signup requests mailbox confirmation and returns no app credentia
   assert.equal(payload.data.accessToken, undefined);
   assert.equal(payload.data.user, undefined);
   assert.equal(cookies, 0);
+  assert.equal((fixture.signupRequests[0] as any).options.emailRedirectTo, expected);
+  }
 });
 
 test('recovery revokes owner sessions before changing the password and after success', async () => {
@@ -171,7 +185,7 @@ test('durable recovery fences old sessions and in-flight rotation without revoki
   const {setTimeout:delay} = await import('node:timers/promises');
   const {sqlClient:sql} = await import('../../db/index.js');
   const {authAttemptStartedAt,issueRefreshToken,rotateRefreshToken,revokeRefreshSessions,RefreshTokenRotatedError} = await import('../../services/authSessionService.js');
-  const owner=randomUUID(), peer=randomUUID(), suffix=owner.replaceAll('-',''), name='auth_gate_'+suffix;
+  const owner=randomUUID(), peer=randomUUID(), pending=randomUUID(), claimant=randomUUID(), suffix=owner.replaceAll('-',''), name='auth_gate_'+suffix;
   const hash=(value:string)=>createHash('sha256').update(value).digest('hex');
   let releaseGate:(()=>void)|undefined, gate:Promise<unknown>|undefined, rotating:Promise<unknown>|undefined, revoking:Promise<unknown>|undefined;
   let triggerCreated=false;
@@ -180,6 +194,38 @@ test('durable recovery fences old sessions and in-flight rotation without revoki
       await sql`INSERT INTO auth.users(id) VALUES(${id}::uuid)`;
       await sql`INSERT INTO app.users(user_id,username) VALUES(${id}::uuid,${'auth_'+id})`;
     }
+    // An old-password login has authenticated but has not provisioned its first
+    // product profile. Both recovery fences must survive that missing row.
+    await sql`INSERT INTO auth.users(id) VALUES(${pending}::uuid)`;
+    const firstLoginStarted = await authAttemptStartedAt();
+    const pendingReset = await updatePasswordFromRecoverySession({
+      setSession: async () => ({data:{session:{user:{id:pending}}},error:null}),
+      updateUser: async () => ({error:null}),
+    }, tokens, 'a-secure-new-password', revokeRefreshSessions);
+    assert.equal(pendingReset, 'updated');
+    const {ensureIdentityProfile} = await import('../../services/identityService.js');
+    await ensureIdentityProfile({userId:pending,username:'auth_'+pending});
+    await assert.rejects(issueRefreshToken(pending,firstLoginStarted), /session changed/,
+      'a first login admitted before reset cannot create renewable credentials after provisioning');
+    assert.ok(await issueRefreshToken(pending,await authAttemptStartedAt()), 'a fresh post-reset login remains valid');
+    // Two verified identities may have requested the same username while both
+    // signups were pending. Exercise the real migration's unique constraint.
+    await sql`INSERT INTO auth.users(id) VALUES(${claimant}::uuid)`;
+    const {db} = await import('../../db/index.js');
+    const identity = await import('../../services/identityService.js');
+    const metadata = {user_name:'auth_'+owner};
+    const loginController = await controllerFixture(undefined,false,revokeRefreshSessions,undefined,{
+      db,identity,issueRefreshToken,authAttemptStartedAt,
+      loginUser:{id:claimant,email_confirmed_at:new Date().toISOString(),user_metadata:metadata},
+    });
+    let loginStatus=0, loginCookies=0;
+    await loginController.login({body:{email:'tarun@example.test',password:'a-secure-new-password'}},{
+      status(value:number){loginStatus=value;return this;},json(){return this;},cookie(){loginCookies++;return this;},
+    });
+    assert.equal(loginStatus,200,'a claimed signup username must not permanently block verified login');
+    assert.equal(loginCookies,1);
+    assert.equal((await sql`SELECT username FROM app.users WHERE user_id=${claimant}::uuid`)[0].username,
+      identity.fallbackUsername(claimant,metadata));
     const beforeReset=await authAttemptStartedAt();
     const original=await issueRefreshToken(owner,beforeReset);
     await issueRefreshToken(owner,beforeReset); await issueRefreshToken(peer,beforeReset);
@@ -195,7 +241,6 @@ test('durable recovery fences old sessions and in-flight rotation without revoki
     assert.equal(Number((await sql`SELECT count(*) FROM app.refresh_tokens WHERE user_id=${peer}::uuid`)[0].count),1);
 
     // Two independent tabs read the same cookie before either rotates it.
-    const {db}=await import('../../db/index.js');
     const shared=await issueRefreshToken(owner,await authAttemptStartedAt());
     let lookups=0, releaseLookups!:()=>void;
     const bothLookups=new Promise<void>(resolve=>{releaseLookups=resolve;});
@@ -260,7 +305,7 @@ test('durable recovery fences old sessions and in-flight rotation without revoki
     releaseGate?.();await Promise.allSettled([gate,rotating,revoking]);
     if(triggerCreated)await sql.unsafe(`DROP TRIGGER IF EXISTS ${name} ON app.refresh_tokens`);
     await sql.unsafe(`DROP FUNCTION IF EXISTS app.${name}()`);
-    for(const id of [owner,peer])await sql`DELETE FROM auth.users WHERE id=${id}::uuid`;
+    for(const id of [owner,peer,pending,claimant])await sql`DELETE FROM auth.users WHERE id=${id}::uuid`;
     await sql.end({timeout:1});
   }
 });

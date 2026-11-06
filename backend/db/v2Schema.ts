@@ -67,6 +67,13 @@ export const appUsers = appSchema.table('users', {
   check('app_users_onboarding_taxonomy_object', sql`jsonb_typeof(${table.onboardingTaxonomy})='object' AND octet_length(${table.onboardingTaxonomy}::text)<=32768`),
 ]);
 
+// Keyed by the Supabase Auth UUID; intentionally independent of app.users so a
+// password reset can fence credentials before first profile provisioning.
+export const authSessionFences = appSchema.table('auth_session_fences', {
+  userId: uuid('user_id').primaryKey(),
+  revokedAt: timestamp('revoked_at', { withTimezone: true }),
+});
+
 export const userGithubImports = appSchema.table('user_github_imports', {
   userId: uuid('user_id').primaryKey().references(() => appUsers.userId, { onDelete: 'cascade' }),
   revision: bigint('revision', { mode: 'bigint' }).notNull().default(0n),

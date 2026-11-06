@@ -20,6 +20,14 @@ export async function authAttemptStartedAt(): Promise<string> {
 
 type Transaction = TransactionSql;
 
+async function lockAdmissionFence(tx: Transaction, userId: string): Promise<void> {
+  // This row belongs to the Auth UUID, so recovery can fence a first login
+  // before any product profile exists. Always acquire it before the user lock.
+  await tx`INSERT INTO app.auth_session_fences(user_id) VALUES(${userId}::uuid)
+    ON CONFLICT (user_id) DO NOTHING`;
+  await tx`SELECT user_id FROM app.auth_session_fences WHERE user_id=${userId}::uuid FOR UPDATE`;
+}
+
 async function lockOwner(tx: Transaction, userId: string): Promise<boolean> {
   const rows = await tx`SELECT user_id FROM app.users WHERE user_id=${userId}::uuid FOR UPDATE`;
   return rows.length === 1;
@@ -35,9 +43,12 @@ async function storeToken(tx: Transaction, userId: string): Promise<string> {
 
 export async function issueRefreshToken(userId: string, startedAt: string): Promise<string> {
   return sqlClient.begin(async tx => {
+    await lockAdmissionFence(tx, userId);
     if (!await lockOwner(tx, userId)) throw new SessionRevokedError();
-    const [row] = await tx`SELECT sessions_revoked_at IS NULL OR sessions_revoked_at < ${startedAt}::timestamptz AS allowed
-      FROM app.users WHERE user_id=${userId}::uuid`;
+    const [row] = await tx`SELECT
+      (f.revoked_at IS NULL OR f.revoked_at < ${startedAt}::timestamptz)
+      AND (u.sessions_revoked_at IS NULL OR u.sessions_revoked_at < ${startedAt}::timestamptz) AS allowed
+      FROM app.users u JOIN app.auth_session_fences f USING (user_id) WHERE u.user_id=${userId}::uuid`;
     if (row.allowed !== true) throw new SessionRevokedError();
     return storeToken(tx, userId);
   });
@@ -66,8 +77,10 @@ export async function rotateRefreshToken(userId: string, tokenHash: string): Pro
 
 export async function revokeRefreshSessions(userId: string): Promise<void> {
   await sqlClient.begin(async tx => {
-    // Password recovery is also valid for an Auth identity that never acquired
-    // a product profile; there cannot be app sessions for that identity yet.
+    await lockAdmissionFence(tx, userId);
+    await tx`UPDATE app.auth_session_fences SET revoked_at=GREATEST(revoked_at,clock_timestamp())
+      WHERE user_id=${userId}::uuid`;
+    // Keep the cutoff even when a first login has not provisioned the profile.
     if (!await lockOwner(tx, userId)) return;
     await tx`UPDATE app.users SET sessions_revoked_at=GREATEST(sessions_revoked_at,clock_timestamp())
       WHERE user_id=${userId}::uuid`;
