@@ -17,7 +17,7 @@
       }
     },
     "android": {
-      "versionCode": 6,
+      "versionCode": 7,
       "predictiveBackGestureEnabled": false,
       "package": "com.weave.app",
       "blockedPermissions": [
@@ -66,7 +66,8 @@
           "microphonePermission": false
         }
       ],
-      "expo-status-bar"
+      "expo-status-bar",
+      "./plugins/with-android-release-signing"
     ],
     "experiments": {
       "typedRoutes": true,

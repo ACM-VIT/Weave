@@ -7,10 +7,14 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
+  readdirSync,
+  realpathSync,
+  statSync,
   renameSync,
   rmSync,
 } from 'node:fs';
 import { isIP } from 'node:net';
+import { homedir } from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -18,11 +22,11 @@ import { preflightOAuthContract } from './oauth-contract-preflight.mjs';
 
 const DEFAULT_BACKEND_URL = 'https://weave-backend.krishang.dev/api';
 const DEFAULT_ANDROID_ARCHITECTURES = 'armeabi-v7a,arm64-v8a';
-const ARTIFACT_NAME = 'Weave-v2.0.0-internal-QA.apk';
+const ARTIFACT_NAME = 'Weave-v2.0.0-release.apk';
 const SCRIPT_DIRECTORY = path.dirname(fileURLToPath(import.meta.url));
 const REPOSITORY_ROOT = path.resolve(SCRIPT_DIRECTORY, '..');
 
-const HELP = `Build the Weave Android internal-QA artifact locally (without EAS).
+const HELP = `Build a signed Weave Android release artifact locally (without EAS).
 
 Usage:
   npm run build:android:artifact
@@ -34,6 +38,14 @@ Options:
   --help      Show this help without building.
 
 Environment:
+  WEAVE_ANDROID_KEYSTORE, WEAVE_ANDROID_KEY_ALIAS,
+  WEAVE_ANDROID_STORE_PASSWORD, WEAVE_ANDROID_KEY_PASSWORD,
+  WEAVE_ANDROID_CERT_SHA256
+              Required persistent release key outside the checkout, its
+              credentials and pinned SHA-256 certificate. Debug keys are rejected.
+  WEAVE_ANDROID_SIGNING_ENV
+              Optional private environment file. Defaults to
+              ~/.local/share/weave/signing/release-signing.env when present.
   WEAVE_ARTIFACT_BACKEND_URL
               Optional HTTPS API base URL ending in /api. The build defaults to
               ${DEFAULT_BACKEND_URL} and always overrides EXPO_PUBLIC_BACKEND_URL.
@@ -147,6 +159,65 @@ export function validatedAndroidArchitectures(value) {
   return architectures.join(',');
 }
 
+export function validatedSigningEnvironment(environment = process.env) {
+  for (const name of ['WEAVE_ANDROID_KEYSTORE', 'WEAVE_ANDROID_KEY_ALIAS',
+    'WEAVE_ANDROID_STORE_PASSWORD', 'WEAVE_ANDROID_KEY_PASSWORD', 'WEAVE_ANDROID_CERT_SHA256']) {
+    if (typeof environment[name] !== 'string' || !environment[name].trim()) {
+      throw new Error(`${name} is required for release signing.`);
+    }
+  }
+  const keyAlias = environment.WEAVE_ANDROID_KEY_ALIAS;
+  if (keyAlias.toLowerCase() === 'androiddebugkey') throw new Error('Debug signing keys are not release credentials.');
+  const supplied = environment.WEAVE_ANDROID_KEYSTORE;
+  if (!path.isAbsolute(supplied) || !existsSync(supplied) || !statSync(supplied).isFile()) throw new Error('Release keystore must be an existing absolute file outside the checkout.');
+  const keystorePath = realpathSync(supplied);
+  const relative = path.relative(realpathSync(REPOSITORY_ROOT), keystorePath);
+  if (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative)) {
+    throw new Error('Release signing keys must remain outside the checkout.');
+  }
+  const certificateSha256 = environment.WEAVE_ANDROID_CERT_SHA256.replaceAll(':', '').toLowerCase();
+  if (!/^[0-9a-f]{64}$/.test(certificateSha256)) throw new Error('WEAVE_ANDROID_CERT_SHA256 must pin the release certificate SHA-256 digest.');
+  return { keystorePath, keyAlias, certificateSha256 };
+}
+
+export function verifiedReleaseMetadata(signerOutput, manifestOutput, expected) {
+  if (/certificate DN:.*\bCN\s*=\s*Android Debug\b/i.test(signerOutput)) {
+    throw new Error('APK uses an Android debug certificate.');
+  }
+  const certificates = [...signerOutput.matchAll(/^Signer #\d+ certificate SHA-256 digest: ([a-f0-9]{64})\s*$/gim)];
+  if (certificates.length !== 1 || certificates[0][1].toLowerCase() !== expected.certificateSha256) {
+    throw new Error('APK signing certificate does not match the pinned release identity.');
+  }
+  const manifest = /^package: name='([^']+)' versionCode='(\d+)'/m.exec(manifestOutput);
+  if (!manifest || manifest[1] !== expected.packageName) throw new Error('APK package does not match app.json.');
+  if (Number(manifest[2]) !== expected.versionCode) throw new Error('APK version code does not match app.json; run prebuild.');
+  if (/^application-debuggable\s*$/m.test(manifestOutput)) throw new Error('Release APK is debuggable.');
+  return { certificateSha256: certificates[0][1].toLowerCase(), packageName: manifest[1], versionCode: Number(manifest[2]) };
+}
+
+function androidBuildTools(environment) {
+  let sdk = environment.ANDROID_HOME || environment.ANDROID_SDK_ROOT;
+  const properties = path.join(REPOSITORY_ROOT, 'android', 'local.properties');
+  if (!sdk && existsSync(properties)) {
+    sdk = /^sdk\.dir=(.+)$/m.exec(readFileSync(properties, 'utf8'))?.[1].replace(/\\([ :\\])/g, '$1');
+  }
+  if (!sdk || !existsSync(path.join(sdk, 'build-tools'))) throw new Error('Android SDK build-tools are required for release verification.');
+  const versions = readdirSync(path.join(sdk, 'build-tools')).sort((a, b) => b.localeCompare(a, undefined, { numeric: true }));
+  for (const version of versions) {
+    const root = path.join(sdk, 'build-tools', version);
+    const apksigner = path.join(root, process.platform === 'win32' ? 'apksigner.bat' : 'apksigner');
+    const aapt = path.join(root, process.platform === 'win32' ? 'aapt.exe' : 'aapt');
+    if (existsSync(apksigner) && existsSync(aapt)) return { apksigner, aapt };
+  }
+  throw new Error('Android apksigner and aapt are required for release verification.');
+}
+
+function captureChecked(command, arguments_, environment) {
+  const result = spawnSync(command, arguments_, { env: environment, encoding: 'utf8' });
+  if (result.error || result.status !== 0) throw new Error(`Release verification failed: ${path.basename(command)}.`);
+  return result.stdout;
+}
+
 function runChecked(command, arguments_, label, environment) {
   console.log(`\n${label}`);
   const result = spawnSync(command, arguments_, {
@@ -217,6 +288,12 @@ async function main() {
     return;
   }
 
+  const signingFile = process.env.WEAVE_ANDROID_SIGNING_ENV
+    ?? path.join(homedir(), '.local', 'share', 'weave', 'signing', 'release-signing.env');
+  if (existsSync(signingFile)) process.loadEnvFile(signingFile);
+  else if (process.env.WEAVE_ANDROID_SIGNING_ENV) throw new Error('The configured release-signing environment file is missing.');
+  const signing = validatedSigningEnvironment();
+
   const backendUrl = validatedBackendUrl(
     process.env.WEAVE_ARTIFACT_BACKEND_URL ?? DEFAULT_BACKEND_URL,
   );
@@ -230,16 +307,17 @@ async function main() {
   const javaHome = resolveJava17Home();
   const buildEnvironment = {
     ...process.env,
+    WEAVE_ANDROID_KEYSTORE: signing.keystorePath,
+    WEAVE_ANDROID_CERT_SHA256: signing.certificateSha256,
     EXPO_PUBLIC_BACKEND_URL: backendUrl,
     JAVA_HOME: javaHome,
     NODE_ENV: 'production',
     PATH: `${path.join(javaHome, 'bin')}${path.delimiter}${process.env.PATH ?? ''}`,
-    // Internal QA builds do not publish source maps. Store/production release
-    // automation can upload them separately with scoped Sentry credentials.
+    // Upload source maps separately using scoped Sentry credentials.
     SENTRY_DISABLE_AUTO_UPLOAD: 'true',
   };
 
-  console.log(`Building internal-QA APK against ${backendUrl}`);
+  console.log(`Building signed release APK against ${backendUrl}`);
   console.log(`Using JDK 17 from ${javaHome}`);
   console.log(`Building Android ABI(s): ${androidArchitectures}`);
 
@@ -332,6 +410,13 @@ async function main() {
   if (!existsSync(gradleOutput)) {
     throw new Error(`Gradle succeeded but the APK was not found at ${gradleOutput}.`);
   }
+  const tools = androidBuildTools(buildEnvironment);
+  const config = JSON.parse(readFileSync(path.join(REPOSITORY_ROOT, 'app.json'), 'utf8')).expo;
+  const metadata = verifiedReleaseMetadata(
+    captureChecked(tools.apksigner, ['verify', '--print-certs', gradleOutput], buildEnvironment),
+    captureChecked(tools.aapt, ['dump', 'badging', gradleOutput], buildEnvironment),
+    { certificateSha256: signing.certificateSha256, packageName: config.android.package, versionCode: config.android.versionCode },
+  );
 
   const artifactDirectory = path.join(REPOSITORY_ROOT, 'artifacts');
   const artifactPath = path.join(artifactDirectory, ARTIFACT_NAME);
@@ -348,6 +433,8 @@ async function main() {
   const digest = await sha256File(artifactPath);
   console.log(`\nArtifact: ${path.relative(REPOSITORY_ROOT, artifactPath)}`);
   console.log(`Verified backend: ${backendUrl}`);
+  console.log(`Verified package: ${metadata.packageName} (${metadata.versionCode})`);
+  console.log(`Signing certificate SHA-256: ${metadata.certificateSha256}`);
   console.log(`SHA-256: ${digest}`);
 }
 

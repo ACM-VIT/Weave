@@ -42,6 +42,11 @@ example
 /ios
 /android
 
+# Private Android signing material must never enter source control.
+*.jks
+*.keystore
+*.p12
+
 # backend build output
 backend/dist/
 
