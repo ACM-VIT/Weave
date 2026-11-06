@@ -163,7 +163,7 @@ export function validatedSigningEnvironment(environment = process.env) {
   for (const name of ['WEAVE_ANDROID_KEYSTORE', 'WEAVE_ANDROID_KEY_ALIAS',
     'WEAVE_ANDROID_STORE_PASSWORD', 'WEAVE_ANDROID_KEY_PASSWORD', 'WEAVE_ANDROID_CERT_SHA256']) {
     if (typeof environment[name] !== 'string' || !environment[name].trim()) {
-      throw new Error(`${name} is required for release signing.`);
+      throw new Error(`${name} is required for release signing. Run "npm run build:android:artifact -- --help" for setup.`);
     }
   }
   const keyAlias = environment.WEAVE_ANDROID_KEY_ALIAS;
