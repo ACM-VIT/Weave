@@ -7,6 +7,8 @@ import jwt from "jsonwebtoken";
 import supabase, {
   createOAuthSupabaseClient,
   createRecoverySupabaseClient,
+  createEmailAuthSupabaseClient,
+  requireEmailConfirmation,
   supabaseAdmin,
 } from "../config/supabase.js";
 import redisClient from "../config/redis.js";
@@ -19,6 +21,7 @@ import {
 } from "../services/identityService.js";
 import { RefreshUserLookupTimeoutError, withRefreshUserLookupDeadline } from '../services/refreshUserLookup.js';
 import { updatePasswordFromRecoverySession } from "../services/passwordRecoveryService.js";
+import { authAttemptStartedAt, issueRefreshToken, revokeRefreshSessions, rotateRefreshToken, RefreshTokenRotatedError } from '../services/authSessionService.js';
 import {
   OAuthPkceCoordinator,
   RedisOAuthAttemptStore,
@@ -60,6 +63,12 @@ if (!BACKEND_URL)
 const JWT_SECRET = process.env.JWT_SECRET as string;
 const PASSWORD_RESET_URL = process.env.PASSWORD_RESET_URL
   ?? CLIENT_URL.replace(/callback\/?$/, "reset-password");
+const clientUrl = new URL(CLIENT_URL);
+const EMAIL_CONFIRMATION_URL = process.env.EMAIL_CONFIRMATION_URL
+  ? new URL(process.env.EMAIL_CONFIRMATION_URL).toString()
+  : ['http:', 'https:'].includes(clientUrl.protocol)
+    ? new URL('/confirm-email', clientUrl).toString()
+    : `${clientUrl.protocol}//confirm-email`;
 
 if (!JWT_SECRET) {
   throw new Error(
@@ -150,23 +159,6 @@ const getBackendCallbackUrl = (req: Request): URL => {
   );
 };
 
-// Helper: Create and store a refresh token securely
-const createAndStoreRefreshToken = async (userId: string, tx: any = db) => {
-  const refreshToken = crypto.randomBytes(40).toString("hex");
-  const tokenHash = hashToken(refreshToken);
-
-  // Expiration set to 30 days
-  const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
-
-  await tx.insert(refreshTokens).values({
-    userId,
-    tokenHash,
-    expiresAt,
-  });
-
-  return refreshToken;
-};
-
 // POST /api/auth/signup
 export async function signUp(req: Request, res: Response): Promise<void> {
   const { email, password, full_name, date_of_birth } = req.body;
@@ -188,6 +180,7 @@ export async function signUp(req: Request, res: Response): Promise<void> {
   }
 
   try {
+    await requireEmailConfirmation();
     // 0. Pre-emptively check if username is taken to avoid messy trigger constraint violations
     if (explicitUsername) {
       const existingUser = await db
@@ -199,50 +192,31 @@ export async function signUp(req: Request, res: Response): Promise<void> {
       }
     }
 
-    const { data, error } = await supabaseAdmin.auth.admin.createUser({
+    const { data, error } = await createEmailAuthSupabaseClient().auth.signUp({
       email,
       password,
-      email_confirm: true, // Bypass email verification so we can login immediately
-      user_metadata: {
-        ...(explicitUsername ? { user_name: explicitUsername } : {}),
-        full_name: full_name,
-        date_of_birth,
+      options: {
+        emailRedirectTo: EMAIL_CONFIRMATION_URL,
+        data: {
+          ...(explicitUsername ? { user_name: explicitUsername } : {}),
+          full_name,
+          date_of_birth,
+        },
       },
     });
 
     if (error) return sendError(res, error.status || 400, error.message);
 
-    const userId = data.user.id;
-    const profileUsername = explicitUsername
-      ?? fallbackUsername(userId, data.user.user_metadata);
-
-    try {
-      await ensureIdentityProfile({
-        userId,
-        username: profileUsername,
-        fullName: full_name ?? null,
-        dateOfBirth: date_of_birth,
-        onboardingCompleted: false,
-      });
-      // Generate and persist both session credentials only after the product
-      // profile exists. Any failure rolls the new identity back below.
-      const accessToken = jwt.sign({ userId, email }, JWT_SECRET, {
-        expiresIn: "15m",
-      });
-      const refreshToken = await createAndStoreRefreshToken(userId);
-
-      res.cookie("refresh_token", refreshToken, refreshCookieOptions());
-      return sendSuccess(res, 201, {
-        message: "Signup successful",
-        accessToken,
-        token: accessToken,
-        user: data.user,
-      });
-    } catch (provisioningError) {
-      const { error: cleanupError } = await supabaseAdmin.auth.admin.deleteUser(userId);
-      if (cleanupError) console.error("Failed to roll back incomplete signup:", cleanupError.message);
-      throw provisioningError;
+    if (data.session) {
+      // Confirmation must also remain enabled in the provider configuration.
+      return sendError(res, 503, 'Email confirmation is unavailable. Please try again later.');
     }
+    // Never reserve a product username or issue app credentials before mailbox
+    // verification. Normal verified login provisions the product profile.
+    return sendSuccess(res, 202, {
+      requiresEmailConfirmation: true,
+      message: 'Check your email to confirm your account, then sign in.',
+    });
   } catch (error) {
     sendControllerError(res, error as Error);
   }
@@ -253,12 +227,17 @@ export async function login(req: Request, res: Response): Promise<void> {
   const { email, password } = req.body;
 
   try {
-    const { data, error } = await supabase.auth.signInWithPassword({
+    await requireEmailConfirmation();
+    const startedAt = await authAttemptStartedAt();
+    const { data, error } = await createEmailAuthSupabaseClient().auth.signInWithPassword({
       email,
       password,
     });
 
     if (error) return sendError(res, error.status || 401, error.message);
+    if (!data.user.email_confirmed_at) {
+      return sendError(res, 403, 'Confirm your email before signing in.');
+    }
 
     const userId = data.user.id;
     const githubIdentity = await githubIdentityForProvisioning(data.user, async () => {
@@ -272,9 +251,9 @@ export async function login(req: Request, res: Response): Promise<void> {
       .where(eq(users.userId, userId))
       .limit(1);
 
-    await ensureIdentityProfile({
+    const profile = {
       userId,
-      username: fallbackUsername(userId, data.user.user_metadata),
+      username: normalizeUsername(data.user.user_metadata?.user_name) ?? fallbackUsername(userId, data.user.user_metadata),
       fullName: typeof data.user.user_metadata?.full_name === "string" ? data.user.user_metadata.full_name : null,
       dateOfBirth: typeof data.user.user_metadata?.date_of_birth === "string" ? data.user.user_metadata.date_of_birth : null,
       githubId: githubIdentity.githubId,
@@ -286,13 +265,19 @@ export async function login(req: Request, res: Response): Promise<void> {
       onboardingCompleted: loginOnboardingCompleted(
         existingProductProfile?.onboardingCompleted,
       ),
-    });
+    };
+    try { await ensureIdentityProfile(profile); } catch (error: any) {
+      // Migration 0009 uses citext UNIQUE; adopted Drizzle schemas may use the
+      // explicitly named lower-case index. Other identity conflicts must fail.
+      if (error?.code !== '23505' || !['users_username_key', 'app_users_username_lower_uidx'].includes(error?.constraint_name)) throw error;
+      await ensureIdentityProfile({...profile,username:fallbackUsername(userId,data.user.user_metadata)});
+    }
 
     const accessToken = jwt.sign({ userId, email }, JWT_SECRET, {
       expiresIn: "15m",
     });
 
-    const refreshToken = await createAndStoreRefreshToken(userId);
+    const refreshToken = await issueRefreshToken(userId, startedAt);
 
     res.cookie("refresh_token", refreshToken, refreshCookieOptions());
 
@@ -354,6 +339,7 @@ export async function refreshToken(req: Request, res: Response): Promise<void> {
       .select({
         user_id: refreshTokens.userId,
         expires_at: refreshTokens.expiresAt,
+        last_used_at: refreshTokens.lastUsedAt,
       })
       .from(refreshTokens)
       .where(eq(refreshTokens.tokenHash, tokenHash))
@@ -366,6 +352,7 @@ export async function refreshToken(req: Request, res: Response): Promise<void> {
     if (new Date(tokenData.expires_at) < new Date()) {
       throw new Error("ExpiredToken");
     }
+    if (tokenData.last_used_at != null) throw new RefreshTokenRotatedError();
 
     // 2. Fetch user metadata from Supabase Auth via Admin Client
     // IMPORTANT: We do this BEFORE the transaction so we don't hold database connections open across network calls!
@@ -384,21 +371,7 @@ export async function refreshToken(req: Request, res: Response): Promise<void> {
     );
 
     // 4. Run the actual DB mutation in a fast, isolated atomic transaction
-    const newRefreshToken = await db.transaction(async (tx) => {
-      // Atomically attempt to delete the exact token.
-      // If another concurrent request beat us to it, this returns empty.
-      const deletedTokens = await tx
-        .delete(refreshTokens)
-        .where(eq(refreshTokens.tokenHash, tokenHash))
-        .returning();
-
-      if (deletedTokens.length === 0) {
-        throw new Error("InvalidToken"); // Race condition lost! Safely abort.
-      }
-
-      // Generate and store the new token inside the same atomic transaction
-      return await createAndStoreRefreshToken(authData.user.id, tx);
-    });
+    const newRefreshToken = await rotateRefreshToken(authData.user.id, tokenHash);
 
     // 5. Send new refresh token in cookie
     res.cookie("refresh_token", newRefreshToken, refreshCookieOptions());
@@ -409,12 +382,17 @@ export async function refreshToken(req: Request, res: Response): Promise<void> {
       user: authData.user,
     });
   } catch (error: any) {
+    if (error?.code === 'REFRESH_TOKEN_ROTATED') {
+      res.status(409).json({success:false,error:error.message,code:'REFRESH_TOKEN_ROTATED',retryable:true});
+      return;
+    }
     if (error instanceof RefreshUserLookupTimeoutError) {
       // No token mutation has started, so preserve the caller's refresh cookie.
       return sendError(res, 503, 'Session refresh is temporarily unavailable. Please try again.');
     }
     if (error.message === "InvalidToken" || error.message === "ExpiredToken") {
-      res.clearCookie("refresh_token", clearRefreshCookieOptions());
+      // This response can arrive after another request established a newer
+      // cookie. Only an explicit successful logout may clear shared credentials.
       return sendError(
         res,
         401,
@@ -477,6 +455,7 @@ export async function confirmPasswordReset(req: Request, res: Response): Promise
       recoveryClient.auth,
       { access_token: accessToken, refresh_token: refreshToken },
       password,
+      revokeRefreshSessions,
     );
     if (result === "session-unavailable") {
       return sendError(res, 503, "The recovery service is temporarily unavailable. Please try again.");
@@ -695,6 +674,7 @@ export async function exchangeAuthCode(
       .returning({
         user_id: oauthCodes.userId,
         expires_at: oauthCodes.expiresAt,
+        created_at: sql<string>`${oauthCodes.createdAt}::text`,
       });
 
     if (!codeData) {
@@ -719,15 +699,7 @@ export async function exchangeAuthCode(
     // 5. Mint tokens
     const token = jwt.sign({ userId, email }, JWT_SECRET, { expiresIn: "15m" });
 
-    const refreshToken = crypto.randomBytes(40).toString("hex");
-    const tokenHash = hashToken(refreshToken);
-
-    const newExpiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
-    await db.insert(refreshTokens).values({
-      userId,
-      tokenHash,
-      expiresAt: newExpiresAt,
-    });
+    const refreshToken = await issueRefreshToken(userId, codeData.created_at);
 
     res.cookie("refresh_token", refreshToken, refreshCookieOptions());
 

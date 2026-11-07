@@ -80,24 +80,35 @@ const refreshAccessToken = (
   if (await isSessionRestoreBlocked()) throw new SessionChangedError();
   lease.assertCurrent();
 
-  const response = await fetch(`${API_URL}/auth/refresh`, {
-    method: 'POST',
-    credentials: 'include',
-    headers: { Accept: 'application/json' },
-    signal,
-  });
-  lease.assertCurrent();
-
+  let response!: Response;
   let payload: ApiEnvelope<RefreshResponse> | null;
-  try {
-    payload = await readJson(response) as ApiEnvelope<RefreshResponse> | null;
-  } catch (error) {
+  for (let attempt = 0; ; attempt++) {
     lease.assertCurrent();
-    if (isTerminalRefreshStatus(response.status)) {
-      await expireStoredSession(lease);
-      Object.assign(error as object, { status: response.status });
+    if (await isSessionRestoreBlocked()) throw new SessionChangedError();
+    lease.assertCurrent();
+    response = await fetch(`${API_URL}/auth/refresh`, {
+      method: 'POST', credentials: 'include', headers: { Accept: 'application/json' }, signal,
+    });
+    lease.assertCurrent();
+    try {
+      payload = await readJson(response) as ApiEnvelope<RefreshResponse> | null;
+    } catch (error) {
+      lease.assertCurrent();
+      if (isTerminalRefreshStatus(response.status)) {
+        await expireStoredSession(lease);
+        Object.assign(error as object, { status: response.status });
+      }
+      throw error;
     }
-    throw error;
+    lease.assertCurrent();
+    if (attempt < 2 && response.status === 409 && payload && 'code' in payload
+      && payload.code === 'REFRESH_TOKEN_ROTATED' && payload.retryable === true) {
+      // A concurrent tab owns the replacement cookie. Wait briefly for its
+      // headers; never reuse the consumed credential or relax owner checks.
+      await new Promise(resolve => setTimeout(resolve, 150 * (attempt + 1)));
+      continue;
+    }
+    break;
   }
   lease.assertCurrent();
 

@@ -57,6 +57,7 @@ export const appUsers = appSchema.table('users', {
   profileVersion: bigint('profile_version', { mode: 'bigint' }).notNull().default(1n),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  sessionsRevokedAt: timestamp('sessions_revoked_at', { withTimezone: true }),
 }, (table) => [
   uniqueIndex('app_users_username_lower_uidx').on(sql`lower(${table.username})`),
   uniqueIndex('app_users_verified_github_id_uidx')
@@ -65,6 +66,13 @@ export const appUsers = appSchema.table('users', {
   check('app_users_status_check', sql`${table.status} IN ('active','suspended','deleted')`),
   check('app_users_onboarding_taxonomy_object', sql`jsonb_typeof(${table.onboardingTaxonomy})='object' AND octet_length(${table.onboardingTaxonomy}::text)<=32768`),
 ]);
+
+// Keyed by the Supabase Auth UUID; intentionally independent of app.users so a
+// password reset can fence credentials before first profile provisioning.
+export const authSessionFences = appSchema.table('auth_session_fences', {
+  userId: uuid('user_id').primaryKey(),
+  revokedAt: timestamp('revoked_at', { withTimezone: true }),
+});
 
 export const userGithubImports = appSchema.table('user_github_imports', {
   userId: uuid('user_id').primaryKey().references(() => appUsers.userId, { onDelete: 'cascade' }),

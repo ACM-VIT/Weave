@@ -112,3 +112,26 @@ test('a web reconnect callback handed to its opener cannot consume the proof aga
   try{assert.equal(completions,0,'the opener owns completion after successful browser handoff');}
   finally{await act(async()=>root.unmount());}
 });
+
+test('pending email signup never establishes or persists an app session', async (t) => {
+  let established = false;
+  t.mock.method(globalThis, 'fetch', async () => new Response(JSON.stringify({success:true,data:{requiresEmailConfirmation:true,message:'Check your email.'}}),{status:202}));
+  const auth = loadSource('src/api/auth.ts', {
+    './config': {API_URL:'http://127.0.0.1:1/api'},
+    './session-transitions': {establishSession:async()=>{established=true;throw new Error('Pending signup must not establish a session');}},
+  });
+  const result = await auth.register('tarun@example.test','a-secure-new-password','Tarun','tarun','2005-01-01');
+  assert.equal(result.requiresEmailConfirmation,true);
+  assert.equal(established,false);
+  assert.equal(result.accessToken,undefined);
+});
+
+test('email confirmation stays mounted for an existing account until its explicit return action',async()=>{
+  const app=startup({segments:['(auth)','confirm-email'],pathname:'/confirm-email',
+    viewer:{user_id:'Tarun',username:'Tarun',onboarding_completed:true}});
+  await app.mount();
+  try {
+    await act(async()=>{app.fonts.resolve();app.session.resolve('stored-token');});
+    assert.ok(app.navigationMounts>0);assert.deepEqual(app.redirects,[]);
+  }finally{await app.unmount();}
+});

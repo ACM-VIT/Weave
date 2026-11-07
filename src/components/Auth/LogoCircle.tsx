@@ -1,4 +1,5 @@
-import { Image, View } from "react-native";
+import { View } from "react-native";
+import WeaveSymbol from '@/assets/images/logo/weave-symbol.svg';
 
 interface LogoCircleProps {
   size?: number;
@@ -16,11 +17,7 @@ export default function LogoCircle({ size = 190 }: LogoCircleProps) {
         overflow: 'hidden',
       }}
     >
-      <Image
-        source={require('../../../assets/images/logo/weavelogo.png')}
-        style={{ width: size, height: size, borderRadius: size / 2 }}
-        resizeMode="cover"
-      />
+      <WeaveSymbol width={size * 0.7} height={size * 0.7 * (650 / 740)} accessible={false} />
     </View>
   );
 }

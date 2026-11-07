@@ -187,7 +187,10 @@ export class FeedGenerationService {
         schema_version: 2,
         generation_id: generationId,
         user_id: userId,
-        limit: generationLimit,
+        // A full hint window can omit older exposures. Fetch the existing
+        // contract's bounded ranked window so SQL can filter a rejected prefix
+        // without repeatedly asking ML for that same prefix on every retry.
+        limit: excluded.length === 500 ? 100 : generationLimit,
         exclude_repo_ids: excluded,
         social_repo_ids: socialRepoIds,
         ...(socialCandidates === undefined ? {} : { social_candidates: socialCandidates }),
@@ -285,7 +288,8 @@ export class FeedGenerationService {
         return { status: 'satisfied', feedVersion };
       }
       if (mode === 'prewarm' && await this.persistence.hasServedFeed?.(userId, feedVersion)) return { status: 'stale', feedVersion };
-      const canonical = canonicalEntries(this.indexedRefill ? usableItems.slice(0, generationLimit) : usableItems,
+      const canonical = canonicalEntries(this.indexedRefill || excluded.length === 500
+        ? usableItems.slice(0, generationLimit) : usableItems,
         response.model_version, summaries, response.generation_id).map(entry => {
           if (!capture) return entry;
           const reference = capturedReferences.find(reference => reference.repo_id === entry.repo_id);

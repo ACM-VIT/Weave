@@ -151,6 +151,9 @@ function ActionButton({
         <Icon color={colour} fill={active && fillActive ? colour : 'none'} size={renderedIconSize} strokeWidth={1.9} />
       </View>
       <Text
+        numberOfLines={label === 'Not interested' ? 2 : undefined}
+        adjustsFontSizeToFit={label === 'Not interested'}
+        minimumFontScale={0.8}
         style={[
           styles.actionLabel,
           dense && styles.actionLabelDense,

@@ -10,7 +10,7 @@ if (!supabaseUrl || !supabaseKey) {
 
 const supabase: SupabaseClient = createClient(supabaseUrl, supabaseKey);
 
-export const createRecoverySupabaseClient = (): SupabaseClient => createClient(
+export const createEmailAuthSupabaseClient = (): SupabaseClient => createClient(
   supabaseUrl,
   supabaseKey,
   {
@@ -21,6 +21,24 @@ export const createRecoverySupabaseClient = (): SupabaseClient => createClient(
     },
   },
 );
+
+export const createRecoverySupabaseClient = createEmailAuthSupabaseClient;
+
+/** Fail closed rather than trusting auto-confirmed timestamps after config drift. */
+export async function requireEmailConfirmation(): Promise<void> {
+  try {
+    const response = await fetch(`${supabaseUrl!.replace(/\/$/, '')}/auth/v1/settings`, {
+      headers: { apikey: supabaseKey! }, signal: AbortSignal.timeout(5_000),
+    });
+    if (!response.ok) throw new Error('Auth settings unavailable');
+    const settings = await response.json() as { mailer_autoconfirm?: boolean; external?: { email?: boolean } };
+    if (settings.mailer_autoconfirm !== false || settings.external?.email !== true) {
+      throw new Error('Email confirmation must be enabled');
+    }
+  } catch {
+    throw Object.assign(new Error('Email verification is temporarily unavailable. Please try again later.'), { statusCode: 503 });
+  }
+}
 
 export const createOAuthSupabaseClient = (
   storage: OAuthPkceStorageAdapter,

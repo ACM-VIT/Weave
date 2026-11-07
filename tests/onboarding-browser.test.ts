@@ -10,7 +10,7 @@ import test from 'node:test';
 // RUN_ONBOARDING_BROWSER=1 node --import tsx --test tests/onboarding-browser.test.ts
 // Real React Native Web controls/context/routes; only router, image, keyboard
 // controller and auth/storage transport boundaries are supplied by the fixture.
-test('onboarding selections survive Back/Continue and expose operable selected states', {
+test('concise onboarding retains selected topics and supports keyboard input', {
   skip: process.env.RUN_ONBOARDING_BROWSER !== '1', timeout: 45_000,
 }, async t => {
   const directory = await mkdtemp(path.join(tmpdir(), 'weave-onboarding-browser-'));
@@ -18,22 +18,19 @@ test('onboarding selections survive Back/Continue and expose operable selected s
   await build({ stdin: { resolveDir: process.cwd(), loader: 'tsx', contents: `
     import React,{useEffect,useState} from 'react';import{createRoot}from'react-dom/client';
     import{OnboardingProvider,useOnboarding}from'./src/store/OnboardingContext';
-    import Step2 from './src/app/onboarding/step2';import Step3 from './src/app/onboarding/step3';
-    import SkillCard from './src/components/onboarding/SkillCard';
+    import PreferencesScreen from './src/components/onboarding/PreferencesScreen';
     window.fixture={};
-    function Flow(){const[screen,setScreen]=useState(3);const{data,updateData}=useOnboarding();
-      useEffect(()=>updateData({skills:['web'],tech_stack:['TypeScript']}),[]);
-      window.fixture.navigate=()=>setScreen(3);window.fixture.data=data;
-      return <><SkillCard title='Web development' image={null} selected={(data.skills??[]).includes('web')}
-        onPress={()=>updateData({skills:(data.skills??[]).includes('web')?[]:['web']})}/>
-        <button aria-label='Back to technologies' onClick={()=>setScreen(2)}>Back</button>
-        {screen===3?<Step3/>:<Step2/>}</>;}
+    function Flow(){const[revision,setRevision]=useState(0);const{data}=useOnboarding();
+      window.fixture.data=data;
+      return <><PreferencesScreen key={revision}/>
+        <button aria-label='Reopen preferences' onClick={()=>setRevision(value=>value+1)}>Reopen</button></>;}
     createRoot(document.getElementById('root')).render(<OnboardingProvider><Flow/></OnboardingProvider>);
   ` }, outfile: path.join(directory, 'bundle.js'), bundle: true, platform: 'browser', format: 'iife', jsx: 'automatic',
     alias: { 'react-native': 'react-native-web', 'lucide-react-native': path.resolve('node_modules/lucide-react-native/dist/esm/icons/index.mjs') },
     plugins: [{ name: 'native-and-transport-boundaries', setup(builder) {
       builder.onResolve({ filter: /^@\/assets\// }, args => ({ path: args.path, namespace: 'image' }));
       builder.onLoad({ filter: /.*/, namespace: 'image' }, () => ({ contents: 'export default function Image(){return null;}' }));
+      builder.onResolve({ filter: /GitHubImportPanel$/ }, () => ({ path: 'github', namespace: 'boundary' }));
       builder.onResolve({ filter: /keyboard\/keyboard-layout$/ }, () => ({ path: 'keyboard', namespace: 'boundary' }));
       builder.onResolve({ filter: /store\/AuthContext$/ }, () => ({ path: 'auth', namespace: 'boundary' }));
       builder.onResolve({ filter: /utils\/storage$/ }, () => ({ path: 'storage', namespace: 'boundary' }));
@@ -41,8 +38,9 @@ test('onboarding selections survive Back/Continue and expose operable selected s
       builder.onResolve({ filter: /^expo-router$/ }, () => ({ path: 'router', namespace: 'boundary' }));
       builder.onResolve({ filter: /^react-native-safe-area-context$/ }, () => ({ path: 'safearea', namespace: 'boundary' }));
       builder.onLoad({ filter: /.*/, namespace: 'boundary' }, args => ({ loader: 'tsx', resolveDir: process.cwd(), contents: {
+        github: "export const GitHubImportPanel=()=>null;",
         keyboard: "export {ScrollView as KeyboardForm} from 'react-native-web';",
-        auth: "export const useAuth=()=>({checkOnboardingStatus:async()=>{},completeOnboarding:async()=>{},reconcileOnboarding:async()=>{},onboardingSave:{status:'idle',message:null}});",
+        auth: "export const useAuth=()=>({checkOnboardingStatus:async()=>{},completeOnboarding:async(data)=>{window.fixture.saved=data},reconcileOnboarding:async()=>{},onboardingSave:{status:'idle',message:null}});",
         storage: "export const getItemAsync=async()=> 'fixture-token';",
         onboarding: 'export const setupOnboarding=async()=>({completed:true});',
         router: 'export const router={push:()=>window.fixture.navigate()};',
@@ -95,30 +93,23 @@ test('onboarding selections survive Back/Continue and expose operable selected s
   };
   await send('Page.enable');
   await send('Page.navigate', { url: `http://127.0.0.1:${address.port}` });
-  await until('document.body.innerText.includes("CHOOSE YOUR INTERESTS")');
-  await until('window.fixture.data.skills?.includes("web")');
-  await t.test('skill and technology chips expose checked state and respond to Enter/Space', async () => {
-    for (const label of ['Web development', 'react']) {
+  await until('document.body.innerText.includes("What are your")');
+  await t.test('broad topics expose checked state and respond to Enter/Space', async () => {
+    assert.equal(await evaluate(`document.querySelectorAll('[role="checkbox"]').length`), 7);
+    for (const label of ['Frontend', 'AI & ML']) {
       const selector = `[aria-label="${label}"]`;
-      assert.equal(await evaluate(`document.querySelector('${selector}')?.getAttribute('role')`), 'checkbox');
-      const before = await evaluate(`document.querySelector('${selector}').getAttribute('aria-checked')`);
+      assert.equal(await evaluate(`document.querySelector('${selector}').getAttribute('aria-checked')`), 'false');
       await evaluate(`document.querySelector('${selector}').focus()`);
-      for (const type of ['keyDown', 'keyUp']) await send('Input.dispatchKeyEvent', { type, key: label === 'react' ? ' ' : 'Enter', code: label === 'react' ? 'Space' : 'Enter', windowsVirtualKeyCode: label === 'react' ? 32 : 13 });
-      await until(`document.querySelector('${selector}')?.getAttribute('aria-checked')==='${before === 'true' ? 'false' : 'true'}'`);
-      // Restore the category so the actual interest page stays visible.
-      await evaluate(`document.querySelector('${selector}').click()`);
-      await until(`document.querySelector('${selector}')?.getAttribute('aria-checked')==='${before}'`);
+      for (const type of ['keyDown', 'keyUp']) await send('Input.dispatchKeyEvent', { type, key: label === 'Frontend' ? ' ' : 'Enter', code: label === 'Frontend' ? 'Space' : 'Enter', windowsVirtualKeyCode: label === 'Frontend' ? 32 : 13 });
+      await until(`document.querySelector('${selector}')?.getAttribute('aria-checked')==='true'`);
     }
   });
-  await t.test('step3 Back to step2 then Continue retains the context-backed interest selection', async () => {
-    // Find the existing control by its text even before accessible labels exist.
-    await evaluate(`Array.from(document.querySelectorAll('[tabindex]')).find(el=>el.textContent.replace(/\\s/g,'')==='react+').click()`);
-    await until('document.body.innerText.includes("react")');
-    await evaluate(`document.querySelector('[aria-label="Back to technologies"]').click()`);
-    await until('document.body.innerText.includes("do you use?")');
-    await evaluate(`Array.from(document.querySelectorAll('[role="button"]')).find(el=>el.textContent==='Continue').click()`);
-    await until('document.body.innerText.includes("CHOOSE YOUR INTERESTS")');
-    assert.equal(await evaluate(`window.fixture.data.interests?.includes('react')`), true, 'interest is saved into the per-user draft before navigation');
-    assert.equal(await evaluate(`document.querySelector('[aria-label="react"]')?.getAttribute('aria-checked')`), 'true');
+  await t.test('reopening retains topics and Finish submits the concise draft', async () => {
+    await evaluate(`document.querySelector('[aria-label="Reopen preferences"]').click()`);
+    await until(`document.querySelector('[aria-label="Frontend"]')?.getAttribute('aria-checked')==='true'`);
+    assert.equal(await evaluate(`document.querySelector('[aria-label="AI & ML"]').getAttribute('aria-checked')`), 'true');
+    await evaluate(`Array.from(document.querySelectorAll('[role="button"]')).find(el=>el.textContent==='Finish').click()`);
+    await until('window.fixture.saved?.skills?.length===2');
+    assert.deepEqual(await evaluate('window.fixture.saved.interests'), ['frontend', 'machine learning']);
   });
 });

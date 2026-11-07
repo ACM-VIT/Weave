@@ -535,3 +535,53 @@ test('same-turn failed logout restores a fresh onboarding lease without reviving
     assert.equal(writes, 1);
   } finally { await app.unmount(); }
 });
+
+test('independent browser tabs recover a consumed-cookie conflict without retiring either session', async t => {
+  const { fixtureToken } = await import('./support/startup-harness');
+  const owner='00000000-0000-4000-8000-000000000001';
+  const old=fixtureToken(owner),fresh=old.replace('signature','renewed-signature');
+  let cookie='original',arrivals=0,releaseWinner!:()=>void;
+  const bothArrived=new Promise<void>(resolve=>{releaseWinner=resolve;});
+  const winnerFinished=deferred<void>();
+  const retired:string[]=[];
+  t.mock.method(globalThis,'fetch',async()=>{
+    const supplied=cookie;
+    if(supplied==='original'){
+      if(++arrivals===1){await bothArrived;cookie='replacement';winnerFinished.resolve();
+        return new Response(JSON.stringify({success:true,data:{accessToken:fresh,user:{id:owner}}}),{status:200});}
+      releaseWinner();await winnerFinished.promise;
+      return new Response(JSON.stringify({success:false,code:'REFRESH_TOKEN_ROTATED',retryable:true,error:'Concurrent refresh'}),{status:409});
+    }
+    cookie='next-replacement';
+    return new Response(JSON.stringify({success:true,data:{accessToken:fresh,user:{id:owner}}}),{status:200});
+  });
+  const tab=(id:string)=>loadSource('src/api/client.ts',{
+    './config':{API_URL:'https://fixture.invalid/api'},
+    '../utils/storage':{getStorageItem:async()=>old},
+    './session-lifecycle':{...createRequire(resolve('src/api/client.ts'))('./session-lifecycle'),authSessionLifecycle:new SessionLifecycle()},
+    './session-transitions':{isSessionRestoreBlocked:async()=>false,retireSessionIfCurrent:async()=>{retired.push(id);return true;},storeAccessTokenForLease:async(lease:{assertCurrent:()=>void})=>lease.assertCurrent()},
+  });
+  const a=tab('a'),b=tab('b');
+  assert.deepEqual(await Promise.all([a.refreshSession(old),b.refreshSession(old)]),[fresh,fresh]);
+  assert.deepEqual(retired,[]);
+  assert.equal(cookie,'next-replacement');
+});
+
+test('persistent rotation conflicts stop after bounded retries without clearing credentials', async t => {
+  const token=fixtureToken('00000000-0000-4000-8000-000000000001');
+  let attempts=0,retirements=0,writes=0;
+  t.mock.method(globalThis,'fetch',async()=>{
+    attempts++;
+    return new Response(JSON.stringify({success:false,code:'REFRESH_TOKEN_ROTATED',retryable:true}),{status:409});
+  });
+  const client=loadSource('src/api/client.ts',{
+    './config':{API_URL:'https://fixture.invalid/api'},
+    '../utils/storage':{getStorageItem:async()=>token},
+    './session-lifecycle':{...createRequire(resolve('src/api/client.ts'))('./session-lifecycle'),authSessionLifecycle:new SessionLifecycle()},
+    './session-transitions':{isSessionRestoreBlocked:async()=>false,retireSessionIfCurrent:async()=>{retirements++;return true;},storeAccessTokenForLease:async()=>{writes++;}},
+  });
+  await assert.rejects(client.refreshSession(token),{status:409});
+  assert.equal(attempts,3);
+  assert.equal(retirements,0);
+  assert.equal(writes,0);
+});

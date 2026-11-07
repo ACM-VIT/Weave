@@ -1,0 +1,41 @@
+// Signing credentials live outside the checkout and are never embedded in JS.
+// Always remove the generated template's debug-key fallback for release builds.
+android.buildTypes.release.signingConfig = null
+
+def releaseRequested = gradle.startParameter.taskNames.any { task ->
+    task.toLowerCase(Locale.ROOT).contains('release')
+}
+def signingNames = ['WEAVE_ANDROID_KEYSTORE', 'WEAVE_ANDROID_KEY_ALIAS',
+    'WEAVE_ANDROID_STORE_PASSWORD', 'WEAVE_ANDROID_KEY_PASSWORD', 'WEAVE_ANDROID_CERT_SHA256']
+def signingValues = signingNames.collectEntries { name -> [(name): System.getenv(name)] }
+def hasSigning = signingNames.every { name -> signingValues[name]?.trim() }
+
+if (hasSigning) {
+    def keystoreFile = new File(signingValues.WEAVE_ANDROID_KEYSTORE).canonicalFile
+    def checkout = rootProject.projectDir.parentFile.canonicalFile.toPath()
+    if (!new File(signingValues.WEAVE_ANDROID_KEYSTORE).isAbsolute()
+            || !keystoreFile.isFile() || keystoreFile.toPath().startsWith(checkout)
+            || signingValues.WEAVE_ANDROID_KEY_ALIAS.equalsIgnoreCase('androiddebugkey')
+            || !(signingValues.WEAVE_ANDROID_CERT_SHA256 ==~ /(?i)[0-9a-f]{64}/)) {
+        throw new GradleException('Release signing requires an external keystore, a release alias and a pinned SHA-256 certificate.')
+    }
+    def keystore = java.security.KeyStore.getInstance(keystoreFile, signingValues.WEAVE_ANDROID_STORE_PASSWORD.toCharArray())
+    def certificate = keystore.getCertificate(signingValues.WEAVE_ANDROID_KEY_ALIAS)
+    if (certificate == null || !keystore.isKeyEntry(signingValues.WEAVE_ANDROID_KEY_ALIAS)) {
+        throw new GradleException('The configured alias is not a release signing identity.')
+    }
+    def fingerprint = java.security.MessageDigest.getInstance('SHA-256')
+        .digest(certificate.encoded).collect { value -> String.format('%02x', value & 0xff) }.join()
+    if (fingerprint != signingValues.WEAVE_ANDROID_CERT_SHA256.toLowerCase(Locale.ROOT)
+            || certificate.subjectX500Principal.name ==~ /(?i).*\bCN\s*=\s*Android Debug\b.*/) {
+        throw new GradleException('The signing certificate is a debug identity or differs from the pinned release certificate.')
+    }
+    def releaseSigning = android.signingConfigs.maybeCreate('weaveRelease')
+    releaseSigning.storeFile = keystoreFile
+    releaseSigning.storePassword = signingValues.WEAVE_ANDROID_STORE_PASSWORD
+    releaseSigning.keyAlias = signingValues.WEAVE_ANDROID_KEY_ALIAS
+    releaseSigning.keyPassword = signingValues.WEAVE_ANDROID_KEY_PASSWORD
+    android.buildTypes.release.signingConfig = releaseSigning
+} else if (releaseRequested) {
+    throw new GradleException('Release signing is not configured. Set WEAVE_ANDROID_KEYSTORE, WEAVE_ANDROID_KEY_ALIAS, WEAVE_ANDROID_STORE_PASSWORD, WEAVE_ANDROID_KEY_PASSWORD and WEAVE_ANDROID_CERT_SHA256. Debug signing is never used for release.')
+}
