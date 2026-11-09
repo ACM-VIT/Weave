@@ -344,8 +344,8 @@ test('auth HTTP admission refuses Redis failure and invalid counters without rea
   ]);
   const filename=fileURLToPath(new URL('../../middlewares/securityMiddleware.ts',import.meta.url));
   const require=createRequire(filename);
-  let outcome: number | string | Error = 1, admitted=0;
-  const redis={async eval(){if(outcome instanceof Error)throw outcome;return outcome;}};
+  let outcome: number | string | Error | Promise<number | string> = 1, admitted=0, evalCalls=0;
+  const redis={status:'ready',async eval(){evalCalls++;if(outcome instanceof Error)throw outcome;return outcome;}};
   const box={exports:{}};
   const source=ts.transpileModule(readFileSync(filename,'utf8'),{fileName:filename,compilerOptions:{module:ts.ModuleKind.CommonJS,esModuleInterop:true}}).outputText;
   new Function('require','module','exports',source)((name:string)=>name==='../config/redis.js'?redis:require(name),box,box.exports);
@@ -373,4 +373,30 @@ test('auth HTTP admission refuses Redis failure and invalid counters without rea
   assert.equal((await fetch(base+'/api/v2/probe')).status,204,'the auth outage policy does not block unrelated product routes');
   outcome=1;
   assert.equal((await fetch(base+'/api/auth/login',{method:'POST'})).status,204,'admission recovers when Redis does');
+
+  const admittedBeforePending=admitted;
+  let rejectPending!: (error: Error) => void;
+  outcome=new Promise((_resolve,reject)=>{rejectPending=reject;});
+  const started=performance.now();
+  const pending=await fetch(base+'/api/auth/login',{method:'POST',signal:AbortSignal.timeout(4_000)});
+  assert.equal(pending.status,503,'a Redis command that does not settle must fail closed within the auth admission budget');
+  assert.equal(pending.headers.get('set-cookie'),null);
+  assert.equal(pending.headers.get('retry-after'),'5');
+  assert.equal(admitted,admittedBeforePending,'a timed-out Redis command cannot reach the auth handler');
+  assert.ok(performance.now()-started<3_500,'auth admission must not wait for Redis reconnect retries');
+  rejectPending(new Error('Redis command completed with a late failure'));
+  await new Promise<void>(resolve=>setImmediate(resolve));
+
+  const callsBeforeNotReady=evalCalls;
+  redis.status='reconnecting';
+  const notReadyStarted=performance.now();
+  const notReady=await fetch(base+'/api/auth/login',{method:'POST'});
+  assert.equal(notReady.status,503,'a non-ready Redis client cannot admit authentication');
+  assert.ok(performance.now()-notReadyStarted<500,'non-ready Redis should be rejected without waiting for command timeouts');
+  assert.equal(evalCalls,callsBeforeNotReady,'do not enqueue new limiter commands while Redis is reconnecting');
+  assert.equal(admitted,admittedBeforePending);
+  redis.status='ready';
+  outcome=1;
+  assert.equal((await fetch(base+'/api/auth/login',{method:'POST'})).status,204,'auth admission recovers when Redis returns to ready');
+  assert.equal(admitted,admittedBeforePending+1);
 });
